@@ -1,0 +1,5 @@
+0:	from all lookup local
+30972:	from all lookup main suppress_prefixlength 0
+30973:	not from all fwmark 0xea13b2c lookup 245447468
+32766:	from all lookup main
+32767:	from all lookup default

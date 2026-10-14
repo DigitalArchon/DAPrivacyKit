@@ -1,0 +1,36 @@
+{
+   "blockdevices": [
+      {
+         "name": "nvme0n1",
+         "type": "disk",
+         "fstype": null,
+         "mountpoints": [
+            null
+         ],
+         "rm": false,
+         "hotplug": false,
+         "children": [
+            {
+               "name": "nvme0n1p1",
+               "type": "part",
+               "fstype": "vfat",
+               "mountpoints": [
+                  "/boot"
+               ],
+               "rm": false,
+               "hotplug": false
+            },
+            {
+               "name": "nvme0n1p2",
+               "type": "part",
+               "fstype": "zfs_member",
+               "mountpoints": [
+                  null
+               ],
+               "rm": false,
+               "hotplug": false
+            }
+         ]
+      }
+   ]
+}

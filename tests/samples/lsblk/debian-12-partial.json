@@ -1,0 +1,102 @@
+{
+   "blockdevices": [
+      {
+         "name": "sda",
+         "type": "disk",
+         "fstype": null,
+         "mountpoints": [
+            null
+         ],
+         "rm": false,
+         "hotplug": false,
+         "children": [
+            {
+               "name": "sda1",
+               "type": "part",
+               "fstype": "vfat",
+               "mountpoints": [
+                  "/boot/efi"
+               ],
+               "rm": false,
+               "hotplug": false
+            },
+            {
+               "name": "sda2",
+               "type": "part",
+               "fstype": "ext4",
+               "mountpoints": [
+                  "/boot"
+               ],
+               "rm": false,
+               "hotplug": false
+            },
+            {
+               "name": "sda3",
+               "type": "part",
+               "fstype": "crypto_LUKS",
+               "mountpoints": [
+                  null
+               ],
+               "rm": false,
+               "hotplug": false,
+               "children": [
+                  {
+                     "name": "sda3_crypt",
+                     "type": "crypt",
+                     "fstype": "LVM2_member",
+                     "mountpoints": [
+                        null
+                     ],
+                     "rm": false,
+                     "hotplug": false,
+                     "children": [
+                        {
+                           "name": "vg-root",
+                           "type": "lvm",
+                           "fstype": "ext4",
+                           "mountpoints": [
+                              "/"
+                           ],
+                           "rm": false,
+                           "hotplug": false
+                        },
+                        {
+                           "name": "vg-swap_1",
+                           "type": "lvm",
+                           "fstype": "swap",
+                           "mountpoints": [
+                              "[SWAP]"
+                           ],
+                           "rm": false,
+                           "hotplug": false
+                        }
+                     ]
+                  }
+               ]
+            }
+         ]
+      },
+      {
+         "name": "sdb",
+         "type": "disk",
+         "fstype": null,
+         "mountpoints": [
+            null
+         ],
+         "rm": false,
+         "hotplug": false,
+         "children": [
+            {
+               "name": "sdb1",
+               "type": "part",
+               "fstype": "ext4",
+               "mountpoints": [
+                  "/srv/data"
+               ],
+               "rm": false,
+               "hotplug": false
+            }
+         ]
+      }
+   ]
+}

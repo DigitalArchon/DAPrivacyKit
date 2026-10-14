@@ -1,0 +1,504 @@
+# browsers.yaml
+# Web browsers: how the app recognises each one on this computer, how it judges it, and the receipts
+# for that judgement. Shipped with each release, copied into the package like the catalogue.
+#
+# Receipts, not assertions: every fact has the page it came from (`source`) and the day it was last
+# checked against that page (`verified`). `why` is the app's own view, shown as such; it is blunt
+# where the record is, and cites the facts rather than being one. packaging/check-vpn-links.py checks
+# these links too.
+#
+# SCHEMA (list `browsers`)
+#   id          Stable identifier. Never rename once shipped.
+#   name        As its maker calls it.
+#   class       surveillance  a maker with a record of collecting more than it said, or an owner hard to
+#                             trust (br.surveillance_browsers: 3 installed, 5 as default)
+#               closed_ui     its interface is closed source (br.default_browser: 3 as default)
+#               privacy       built to leak as little as possible: fine as the default
+#               other         the rest (br.default_browser: 2 as default)
+#   no_ublock   true when it can't run the full uBlock Origin any more (Chrome, Edge): one level more in
+#               br.surveillance_browsers
+#   blocking    builtin (a blocker on by default; `blocker` names it) | extension (needs one: uBlock
+#               Origin) | none_allowed (Tor Browser: add nothing)
+#   profiles    where its profiles are, to look for uBlock Origin: {chromium: <name in _util's
+#               CHROMIUM_BROWSERS>} or {mozilla: <name in _util's MOZILLA_APPS>}. Omitted: not looked for.
+#   detect      desktop: menu entry ids (file names) in any application folder; appimage: regexes for
+#               AppImage file names (case-insensitive)
+#   facts       {topic, text, source, verified}. topic: maker | code | record | blocking | security | use
+#   why         The app's view (shown as "DA Privacy Kit's view").
+#   verify      Developer note: names to confirm on a real system. Developer mode only.
+
+schema_version: 1
+
+browsers:
+
+  - id: chrome
+    name: Google Chrome
+    class: surveillance
+    no_ublock: true
+    blocking: extension
+    profiles: {chromium: Google Chrome}
+    detect:
+      desktop: [google-chrome.desktop, google-chrome-beta.desktop, google-chrome-unstable.desktop,
+                com.google.Chrome.desktop, com.google.ChromeDev.desktop]
+    why: >-
+      Google's business is knowing what you do, and a jury has found it collected data from people who had
+      told it to stop. Chrome is how it watches the web: closed source, and since 2025 unable to run
+      proper ad blocking at all. The only good reasons to keep it are testing websites you build, or a
+      bank or government site that refuses everything else; try Brave or ungoogled-chromium first, as
+      they run the same engine.
+    facts:
+      - topic: code
+        text: Chrome is proprietary; it is Google's closed build on top of the open-source Chromium.
+        source: https://en.wikipedia.org/wiki/Google_Chrome
+        verified: 2026-10-04
+      - topic: record
+        text: >-
+          In September 2025 a US federal jury found Google liable for collecting data from people who had
+          turned its Web & App Activity tracking off, and awarded $425 million; the judge upheld the verdict
+          in August 2026, and Google is appealing.
+        source: https://en.wikipedia.org/wiki/Rodriguez_et_al._v._Google_LLC
+        verified: 2026-10-04
+      - topic: record
+        text: >-
+          In 2022 Google paid $391.5 million to 40 US states that said it misled people about location
+          tracking, recording where they went after they had turned Location History off.
+        source: https://www.cnn.com/2022/11/14/tech/google-location-tracking-settlement
+        verified: 2026-10-04
+      - topic: record
+        text: >-
+          Sued for tracking people in Chrome's Incognito mode, Google settled in 2024 by agreeing to delete
+          or de-identify billions of records of private browsing.
+        source: https://www.findlaw.com/legalblogs/courtside/googles-public-settlement-over-private-browsing/
+        verified: 2026-10-04
+      - topic: record
+        text: In 2025 Google paid Texas $1.375 billion over location tracking, Incognito mode and biometric data.
+        source: https://thehackernews.com/2025/05/google-pays-1375-billion-to-texas-over.html
+        verified: 2026-10-04
+      - topic: blocking
+        text: >-
+          Since Chrome 139 it can't run uBlock Origin at all (Google removed the extension format it needs);
+          only the weaker uBlock Origin Lite works.
+        source: https://cyberinsider.com/google-removes-ublock-origin-from-chrome-web-store-in-final-manifest-v2-purge/
+        verified: 2026-10-04
+      - topic: security
+        text: >-
+          Installed from Google's package on Debian, Ubuntu or Mint, it adds Google's software repository,
+          and a daily job writes that repository entry back if you change it.
+        source: https://dredyson.com/how-i-fixed-google-chromes-invasive-apt-source-overwrites-on-ubuntu-24-04-a-complete-step-by-step-finops-guide-to-eliminating-unnecessary-cron-jobs-reducing-system-overhead-and-cutting-h-2/
+        verified: 2026-10-04
+
+  - id: edge
+    name: Microsoft Edge
+    class: surveillance
+    no_ublock: true
+    blocking: extension
+    profiles: {chromium: Microsoft Edge}
+    detect:
+      desktop: [microsoft-edge.desktop, microsoft-edge-beta.desktop, microsoft-edge-dev.desktop,
+                com.microsoft.Edge.desktop]
+    why: >-
+      Microsoft has repeatedly been caught collecting or keeping what it told people it didn't, and called
+      it a bug each time; Edge itself sent nearly every page you visited to Bing without saying so. It is
+      closed source, and can't run proper ad blocking any more. Keep it only to test websites you build, or
+      for a site that refuses everything else, and try Brave or ungoogled-chromium first.
+    facts:
+      - topic: code
+        text: Edge is proprietary; it is Microsoft's closed build on top of the open-source Chromium.
+        source: https://en.wikipedia.org/wiki/Microsoft_Edge
+        verified: 2026-10-04
+      - topic: record
+        text: >-
+          In 1999 Windows 98 sent Microsoft a unique hardware ID even when people chose not to send hardware
+          details; Microsoft called it a bug and deleted the data it had collected.
+        source: https://www.theregister.com/1999/03/12/microsoft_caught_with_pants_down/
+        verified: 2026-10-04
+      - topic: record
+        text: >-
+          In 2016 Edge's InPrivate mode was found keeping a record of every site visited, while telling people
+          it didn't; Microsoft said it was "not working as designed" and fixed it.
+        source: https://news.thewindowsclub.com/microsoft-fix-edge-private-browsing-bug-81845/
+        verified: 2026-10-04
+      - topic: record
+        text: >-
+          A 2020 study found Edge sends Microsoft an identifier tied to the computer's hardware, which survives
+          reinstalling the browser; it ranked Edge, with Yandex, the least private of six browsers.
+        source: https://www.scss.tcd.ie/Doug.Leith/pubs/browser_privacy.pdf
+        verified: 2026-10-04
+      - topic: record
+        text: In 2022 France fined Microsoft €60 million because Bing set advertising cookies without consent.
+        source: https://www.infosecurity-magazine.com/news/france-fines-microsoft-64m-dollars/
+        verified: 2026-10-04
+      - topic: record
+        text: In 2023 Edge sent nearly every page people visited to Bing, on by default and undisclosed.
+        source: https://9to5google.com/2023/04/26/microsoft-edge-bing-urls/
+        verified: 2026-10-04
+      - topic: record
+        text: In 2024 Edge copied people's open tabs and data from Chrome without their permission.
+        source: https://www.theregister.com/2024/01/30/microsoft_edge_tabs/
+        verified: 2026-10-04
+      - topic: blocking
+        text: Edge disabled uBlock Origin in 2025, with the rest of the extension format it needs.
+        source: https://alternativeto.net/news/2025/3/edge-begins-disabling-ublock-origin-and-other-manifest-v2-extensions-following-google
+        verified: 2026-10-04
+    verify: Whether Microsoft's Linux package adds a repository-rewriting cron job like Chrome's.
+
+  - id: opera
+    name: Opera
+    class: surveillance
+    blocking: extension
+    profiles: {chromium: Opera}
+    detect:
+      desktop: [opera.desktop, opera-beta.desktop, opera-developer.desktop, com.opera.Opera.desktop,
+                opera_opera.desktop]
+    why: >-
+      Closed source, and controlled since 2016 by a Chinese company whose stewardship drew a short-seller's
+      report on predatory lending apps. A browser sees everything you do; this is not a company to hand that to.
+    facts:
+      - topic: code
+        text: It is freeware, not open source.
+        source: https://en.wikipedia.org/wiki/Opera_(web_browser)
+        verified: 2026-10-04
+      - topic: maker
+        text: >-
+          In 2016 Opera was bought by a Chinese consortium including Kunlun Tech and Qihoo 360; Kunlun Tech
+          holds a majority of it.
+        source: https://en.wikipedia.org/wiki/Opera_(web_browser)
+        verified: 2026-10-04
+      - topic: record
+        text: >-
+          A 2020 report by Hindenburg Research described the company running predatory short-term lending
+          apps in Africa and moving its cash to its chairman's interests.
+        source: https://hindenburgresearch.com/opera-phantom-of-the-turnaround/
+        verified: 2026-10-04
+    verify: Opera's Linux desktop file ids and Snap name.
+
+  - id: yandex
+    name: Yandex Browser
+    class: surveillance
+    blocking: extension
+    detect:
+      desktop: [yandex-browser.desktop, yandex-browser-stable.desktop, yandex-browser-beta.desktop]
+    why: >-
+      Made by a Russian company, closed source, and measured sending a hardware identifier, every address
+      you type and every page you visit back home.
+    facts:
+      - topic: code
+        text: It is freeware, not open source.
+        source: https://en.wikipedia.org/wiki/Yandex_Browser
+        verified: 2026-10-04
+      - topic: maker
+        text: Made by Yandex, a Russian technology company.
+        source: https://en.wikipedia.org/wiki/Yandex_Browser
+        verified: 2026-10-04
+      - topic: record
+        text: >-
+          A 2020 study found it sends Yandex a hashed hardware identifier, every letter typed in the address
+          bar and every address visited.
+        source: https://en.wikipedia.org/wiki/Yandex_Browser
+        verified: 2026-10-04
+    verify: Yandex Browser's Linux desktop file ids.
+
+  - id: vivaldi
+    name: Vivaldi
+    class: closed_ui
+    blocking: extension
+    profiles: {chromium: Vivaldi}
+    detect:
+      desktop: [vivaldi-stable.desktop, vivaldi-snapshot.desktop, com.vivaldi.Vivaldi.desktop,
+                vivaldi_vivaldi-stable.desktop]
+    why: >-
+      Nothing on record against how Vivaldi uses data, but its interface can't be checked, and every
+      install reports in daily with an ID of its own.
+    facts:
+      - topic: code
+        text: Its engine is the open-source Chromium, but its interface is closed source.
+        source: https://en.wikipedia.org/wiki/Vivaldi_(web_browser)
+        verified: 2026-10-04
+      - topic: record
+        text: >-
+          Each install gets a unique ID, sent to Vivaldi's servers in Iceland every 24 hours with the version,
+          processor type and screen resolution, to count active users (privacy policy of 15 December 2023).
+        source: https://vivaldi.com/privacy/browser/
+        verified: 2026-10-04
+
+  - id: firefox
+    name: Firefox
+    class: other
+    blocking: extension
+    profiles: {mozilla: Firefox}
+    detect:
+      desktop: [firefox.desktop, firefox-esr.desktop, org.mozilla.firefox.desktop, firefox_firefox.desktop]
+    why: >-
+      Open source and far better than Chrome or Edge, but Mozilla now builds advertising features into it,
+      on by default. A fork that strips them (LibreWolf, Waterfox, Zen, Floorp) keeps Firefox's engine without them.
+    facts:
+      - topic: record
+        text: >-
+          In 2024 Firefox switched on "privacy-preserving attribution", which measures ads for advertisers,
+          by default without asking; the privacy group noyb complained to Austria's data protection authority.
+        source: https://therecord.media/noyb-europe-complaint-mozilla-firefox-privacy-preserving-attribution
+        verified: 2026-10-04
+      - topic: record
+        text: >-
+          In 2025 Mozilla's new terms of use drew a backlash; it rewrote them, and stopped promising never to
+          sell people's data, citing legal definitions of a sale.
+        source: https://techcrunch.com/2025/03/03/mozilla-rewrites-firefoxs-terms-of-use-after-user-backlash/
+        verified: 2026-10-04
+      - topic: blocking
+        text: Mozilla keeps supporting the extension format uBlock Origin needs.
+        source: https://alternativeto.net/news/2025/2/firefox-confirms-support-for-manifest-v2-and-v3-extensions-contrasting-google-s-phase-out
+        verified: 2026-10-04
+
+  - id: chromium
+    name: Chromium
+    class: other
+    blocking: extension
+    profiles: {chromium: Chromium}
+    detect:
+      desktop: [chromium.desktop, chromium-browser.desktop, org.chromium.Chromium.desktop,
+                chromium_chromium.desktop]
+    why: >-
+      Open source, but it follows Chrome in dropping the extension format proper ad blocking needs.
+      ungoogled-chromium or Brave keep the engine and go further.
+    facts:
+      - topic: code
+        text: Chromium is the open-source project Chrome, Edge, Brave and others are built from.
+        source: https://en.wikipedia.org/wiki/Google_Chrome
+        verified: 2026-10-04
+    verify: Some distributions package ungoogled-chromium as chromium.desktop; it is then reported as Chromium.
+
+  - id: brave
+    name: Brave
+    class: privacy
+    blocking: builtin
+    blocker: Brave Shields
+    detect:
+      desktop: [brave-browser.desktop, brave-browser-beta.desktop, brave-browser-nightly.desktop,
+                com.brave.Browser.desktop, brave_brave.desktop]
+    why: >-
+      Private by default and practical for every day. Better still is Brave Origin, free on Linux: install
+      it as its own package and Rewards, the wallet, the VPN, the AI assistant, News and the usage pings are
+      compiled out, not just switched off. Regular Brave can be set up much the same, turning each feature
+      off one by one in its settings.
+    facts:
+      - topic: record
+        text: A 2020 study ranked Brave the most private of six browsers, sending the least to its maker.
+        source: https://www.sophos.com/en-us/blog/brave-beats-other-browsers-in-privacy-study
+        verified: 2026-10-04
+      - topic: record
+        text: >-
+          In 2020 it was caught completing addresses of cryptocurrency exchanges with its own affiliate codes;
+          Brave apologised and stopped.
+        source: https://www.tomsguide.com/uk/news/brave-affiliate-links-autocomplete
+        verified: 2026-10-04
+      - topic: record
+        text: >-
+          From 2022 its Windows installer added Brave's VPN services without asking, even for people who
+          never bought the VPN; Brave removed them after criticism in 2023. (Not on Linux.)
+        source: https://www.windowscentral.com/software-apps/browsing/brave-browser-is-installing-a-vpn-without-your-permission
+        verified: 2026-10-04
+      - topic: use
+        text: >-
+          Brave Origin is free on Linux ($59.99 elsewhere). Downloaded as its own app, the extra features are
+          compiled out of the build; as an upgrade to regular Brave they are only switched off. Regular Brave
+          users can also hide or turn off most of these features themselves.
+        source: https://brave.com/blog/brave-origin/
+        verified: 2026-10-04
+
+  - id: brave_origin
+    name: Brave Origin
+    class: privacy
+    blocking: builtin
+    blocker: Brave Shields
+    detect:
+      # the brave-origin package (Mint 22.3, 2026-10-04) installs both names in /usr/share/applications
+      desktop: [brave-origin.desktop, com.brave.Origin.desktop]
+    why: >-
+      Brave with everything but the browser compiled out: no Rewards, wallet, VPN, AI assistant, News or
+      usage pings. The best choice of the Chromium-based browsers for every day.
+    facts:
+      - topic: use
+        text: >-
+          Brave Origin removes Leo AI, Brave News, Rewards and ads, the wallet, the VPN, Tor windows, the daily
+          usage ping, crash reports and product analytics; it keeps Brave Shields and its security updates.
+        source: https://brave.com/blog/brave-origin/
+        verified: 2026-10-04
+      - topic: use
+        text: It is free on Linux; elsewhere it is a one-time purchase of $59.99.
+        source: https://linuxiac.com/brave-gives-linux-users-its-stripped-down-origin-browser-for-free/
+        verified: 2026-10-04
+
+  - id: librewolf
+    name: LibreWolf
+    class: privacy
+    blocking: builtin
+    blocker: uBlock Origin, preinstalled
+    detect:
+      desktop: [librewolf.desktop, io.gitlab.librewolf-community.desktop]
+    why: >-
+      Firefox with Mozilla's telemetry and advertising features removed, and uBlock Origin built in. It deletes
+      cookies when it closes; for every day, keep history (Settings → Privacy & Security → History).
+    facts:
+      - topic: blocking
+        text: uBlock Origin comes preinstalled.
+        source: https://www.xda-developers.com/reasons-why-you-should-use-librewolf/
+        verified: 2026-10-04
+      - topic: use
+        text: By default it deletes cookies and history when it closes; that can be turned off.
+        source: https://en.wikipedia.org/wiki/LibreWolf
+        verified: 2026-10-04
+
+  - id: waterfox
+    name: Waterfox
+    class: privacy
+    blocking: extension
+    profiles: {mozilla: Waterfox}
+    detect:
+      desktop: [waterfox.desktop, net.waterfox.waterfox.desktop]
+    why: Firefox without Mozilla's telemetry, independent again since 2023. Add uBlock Origin.
+    facts:
+      - topic: maker
+        text: >-
+          Owned by the advertising company System1 from 2020; its developer bought it back and it has been
+          independent again since July 2023.
+        source: https://www.ghacks.net/2023/07/04/waterfox-browser-cuts-ties-with-system-1-to-celebrate-independence/
+        verified: 2026-10-04
+    verify: Waterfox's desktop file ids and profile folder (.waterfox).
+
+  - id: zen
+    name: Zen
+    class: privacy
+    blocking: extension
+    profiles: {mozilla: Zen}
+    detect:
+      desktop: [zen.desktop, zen-browser.desktop, app.zen_browser.zen.desktop]
+      appimage: ['^zen[-_.]']
+    why: >-
+      A Firefox fork with a modern interface, practical for every day. A young project with a small team:
+      until 2026 its updater would install updates nobody had signed. Add uBlock Origin.
+    facts:
+      - topic: maker
+        text: Developed by the Zen Browser team, open source (Mozilla Public License 2.0).
+        source: https://en.wikipedia.org/wiki/Zen_Browser
+        verified: 2026-10-04
+      - topic: security
+        text: >-
+          Until version 1.19.9b (2026) its updater had Firefox's signature checks removed, so it would install
+          unsigned updates; the advisory rated it High (8.0).
+        source: https://github.com/zen-browser/desktop/security/advisories/GHSA-qpj9-m8jc-mw6q
+        verified: 2026-10-04
+    verify: Zen's desktop file ids and profile folder (.zen).
+
+  - id: floorp
+    name: Floorp
+    class: privacy
+    blocking: extension
+    profiles: {mozilla: Floorp}
+    detect:
+      desktop: [floorp.desktop, one.ablaze.floorp.desktop]
+      appimage: ['^floorp']
+    why: A Firefox fork without Mozilla's telemetry, from a young project with a small team. Add uBlock Origin.
+    facts:
+      - topic: maker
+        text: >-
+          Made by Ablaze, a Japanese student community; it has followed Firefox's regular releases since
+          August 2025.
+        source: https://en.wikipedia.org/wiki/Floorp
+        verified: 2026-10-04
+    verify: Floorp's desktop file ids and profile folder (.floorp).
+
+  - id: helium
+    name: Helium
+    class: privacy
+    blocking: builtin
+    blocker: uBlock Origin, built in
+    detect:
+      desktop: [helium.desktop, net.imput.helium.desktop]
+      appimage: ['^helium']
+    why: >-
+      ungoogled-chromium with uBlock Origin built in and nothing sent home. A young project, not yet at
+      version 1.0, from a small team; on Linux it is mostly an AppImage you update yourself.
+    facts:
+      - topic: code
+        text: Open source (GPL-3.0), built on ungoogled-chromium, with uBlock Origin built in.
+        source: https://pasqualepillitteri.it/en/news/14572/helium-browser-chromium-without-google
+        verified: 2026-10-04
+      - topic: use
+        text: After a crash it asks before sending a report; sending them automatically is a setting you turn on.
+        source: https://github.com/imputnet/helium/releases/tag/0.14.6
+        verified: 2026-10-04
+    verify: Helium's desktop file ids on Linux.
+
+  - id: ungoogled_chromium
+    name: ungoogled-chromium
+    class: privacy
+    blocking: extension
+    detect:
+      desktop: [ungoogled-chromium.desktop, io.github.ungoogled_software.ungoogled_chromium.desktop]
+    why: Chromium without Google. It still runs the full uBlock Origin, installed by hand; add it.
+    facts:
+      - topic: blocking
+        text: It still supports the extension format the full uBlock Origin needs.
+        source: https://dobes.dev/blog/why-i-switched-from-google-chrome-to-ungoogled-chromium
+        verified: 2026-10-04
+
+  - id: cromite
+    name: Cromite
+    class: privacy
+    blocking: builtin
+    blocker: Cromite's own blocker
+    detect:
+      desktop: [cromite.desktop]
+    why: Chromium with privacy patches and its own ad blocker.
+    facts:
+      - topic: blocking
+        text: Built-in support for ad blocking; Linux builds are offered.
+        source: https://github.com/uazo/cromite
+        verified: 2026-10-04
+    verify: Cromite's desktop file id (it ships as a tarball).
+
+  - id: mullvad_browser
+    name: Mullvad Browser
+    class: privacy
+    blocking: builtin
+    blocker: uBlock Origin, preinstalled
+    detect:
+      desktop: [mullvad-browser.desktop, start-mullvad-browser.desktop, net.mullvad.MullvadBrowser.desktop]
+    why: >-
+      Tor Browser without the Tor network: built to make everyone look the same to websites. Much better
+      privacy than the everyday browsers; it keeps nothing when it closes.
+    facts:
+      - topic: maker
+        text: Made by Mullvad together with the Tor Project; private mode is always on and no cookies are kept between sessions.
+        source: https://mullvad.net/en/browser
+        verified: 2026-10-04
+      - topic: blocking
+        text: It uses uBlock Origin to block third-party trackers.
+        source: https://mullvad.net/en/browser
+        verified: 2026-10-04
+    verify: Mullvad Browser's desktop file ids per packaging.
+
+  - id: tor_browser
+    name: Tor Browser
+    class: privacy
+    blocking: none_allowed
+    detect:
+      desktop: [torbrowser.desktop, start-tor-browser.desktop, org.torproject.torbrowser-launcher.desktop,
+                com.github.micahflee.torbrowser-launcher.desktop]
+    why: >-
+      The most private browser there is. With a VPN on this computer too, your internet provider can't see
+      you use Tor (that can matter in some countries), and if Tor ever failed to protect your address, sites
+      would see the VPN's rather than yours. Never the reverse: a VPN on top of Tor is a mistake, if a hard
+      one to make by accident. Add no extensions: they make your browser stand out.
+    facts:
+      - topic: use
+        text: The Tor Project advises against installing any add-ons in Tor Browser, as they can make it identifiable.
+        source: https://support.torproject.org/tor-browser/features/plugins/
+        verified: 2026-10-04
+      - topic: use
+        text: >-
+          The Tor Project doesn't generally recommend a VPN with Tor unless you know how to set both up; a VPN
+          first, then Tor, hides from your provider that you use Tor.
+        source: https://discuss.privacyguides.net/t/clarification-of-tor-vpn-recommendations/16200
+        verified: 2026-10-04
+    verify: Desktop file ids of torbrowser-launcher across distributions.

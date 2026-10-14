@@ -1,0 +1,5288 @@
+{
+"state": {
+"version": "0.1.0.dev1",
+"catalogue": [
+{
+"id": "enc.fde_missing",
+"title": "Full-disk encryption not enabled",
+"category": "encryption",
+"severity": 10,
+"scope": "user",
+"tier": "advice",
+"detect": [
+"lsblk -J -o NAME,TYPE,FSTYPE,MOUNTPOINTS",
+"Walk parents of the device mounted at /; pass if any ancestor has TYPE == \"crypt\""
+],
+"fix": "Explain options: reinstall with encryption (safest), or offline in-place conversion with \"cryptsetup reencrypt --encrypt\" (risky, requires full backup). Never automate.",
+"modifiers": [
+{
+"when": "device == 'desktop'",
+"severity": 8,
+"when_text": "device type is desktop"
+}
+],
+"applies_to": [],
+"why": "Anyone who takes the device or boots a live USB can read every file. Most other at-rest checks become far more serious when this fails.",
+"related": [
+"enc.partial_fde",
+"auth.autologin"
+],
+"verify": "",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "enc.partial_fde",
+"title": "Some mounted filesystems are not encrypted",
+"category": "encryption",
+"severity": 8,
+"scope": "user",
+"tier": "advice",
+"detect": [
+"lsblk -J -o NAME,TYPE,FSTYPE,MOUNTPOINTS,RM,HOTPLUG",
+"For every mounted block filesystem except /boot and /boot/efi, require a crypt ancestor",
+"Ignore removable/hotplug devices here (see enc.removable_unencrypted)"
+],
+"fix": "Recommend encrypting the affected volume (LUKS) after backing it up.",
+"modifiers": [
+{
+"when": "fde == 'none'",
+"severity": 0,
+"when_text": "disk encryption is none"
+}
+],
+"applies_to": [],
+"why": "Root is encrypted but /home, a second drive, or a data partition is not, so the user's files may sit in plain text while the system appears protected.",
+"related": [],
+"verify": "",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "enc.swap_unencrypted",
+"title": "Swap on an unencrypted device or filesystem",
+"category": "encryption",
+"severity": 8,
+"scope": "user",
+"tier": "guided",
+"detect": [
+"swapon --show=NAME,TYPE --noheadings --raw",
+"TYPE partition: require crypt ancestor in lsblk",
+"TYPE file: resolve backing block device (findmnt -T <file>) and require crypt ancestor",
+"zram devices pass (see enc.swap_persistent for writeback)"
+],
+"fix": "Move swap onto LUKS, or replace with zram (zram-generator). Warn that ephemeral swap disables hibernation.",
+"modifiers": [
+{
+"when": "hibernation",
+"severity": 9,
+"when_text": "hibernation possible"
+},
+{
+"when": "fde == 'none'",
+"severity": 0,
+"when_text": "disk encryption is none"
+}
+],
+"applies_to": [],
+"why": "Decrypted data from encrypted volumes (documents, passwords, keys) is paged out in plain text.",
+"related": [
+"enc.hibernate_unencrypted",
+"enc.swap_persistent"
+],
+"verify": "",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "enc.hibernate_unencrypted",
+"title": "Hibernation image written to unencrypted storage",
+"category": "encryption",
+"severity": 9,
+"scope": "user",
+"tier": "guided",
+"detect": [
+"grep -o \"resume=[^ ]*\" /proc/cmdline; cat /sys/power/resume",
+"Check the resume device (and resume_offset swap file) has a crypt ancestor"
+],
+"fix": "Put swap on LUKS or disable hibernation.",
+"modifiers": [
+{
+"when": "fde == 'none'",
+"severity": 0,
+"when_text": "disk encryption is none"
+}
+],
+"applies_to": [],
+"why": "The hibernation image is a copy of all RAM, including LUKS master keys for other volumes, open documents and unlocked password manager contents.",
+"related": [],
+"verify": "",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "enc.swap_persistent",
+"title": "Swap keeps old memory on the disk across restarts",
+"category": "encryption",
+"severity": 3,
+"scope": "user",
+"tier": "guided",
+"detect": [
+"If swap is zram: check /sys/block/zram*/backing_dev; anything other than \"none\" means writeback to disk",
+"If swap is LUKS: check /etc/crypttab for a random key (/dev/urandom) vs a persistent keyslot",
+"Note: zswap (/sys/module/zswap/parameters/enabled) still writes to disk swap; it is not zram"
+],
+"fix": "Offer zram-generator, or crypttab swap with a random key. Warn that both rule out hibernation.",
+"modifiers": [],
+"applies_to": [],
+"why": "Old swapped-out data stays recoverable by anyone who later gets the LUKS passphrase (for example through compelled disclosure).",
+"related": [],
+"verify": "",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "enc.luks_weak_kdf",
+"title": "Disk encryption passphrase is easier to brute-force than it needs to be (LUKS key slots)",
+"category": "encryption",
+"severity": 5,
+"scope": "system",
+"tier": "advice",
+"detect": [
+"cryptsetup luksDump <device>  (root)",
+"Flag \"Version: 1\" or any keyslot with \"PBKDF: pbkdf2\""
+],
+"fix": "Explain \"cryptsetup luksConvertKey --pbkdf argon2id\". Warn that GRUB-decrypted /boot may not support Argon2id and the machine could become unbootable.",
+"modifiers": [],
+"applies_to": [],
+"why": "LUKS1 and PBKDF2 keyslots are much cheaper to brute-force than Argon2id. Common on installs that encrypt /boot for GRUB.",
+"related": [],
+"verify": "",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "enc.tpm_no_pin",
+"title": "TPM-only disk unlock without a PIN",
+"category": "encryption",
+"severity": 6,
+"scope": "system",
+"tier": "guided",
+"detect": [
+"cryptsetup luksDump <device>: systemd-tpm2 token with \"tpm2-pin: false\"",
+"clevis luks list -d <device> (tpm2 pin)",
+"grep tpm2-device /etc/crypttab"
+],
+"fix": "systemd-cryptenroll --wipe-slot=tpm2 --tpm2-device=auto --tpm2-with-pin=yes <device>",
+"modifiers": [
+{
+"when": "autologin",
+"severity": 10,
+"when_text": "automatic login"
+}
+],
+"applies_to": [],
+"why": "The disk unlocks automatically at boot, so protection depends entirely on the login screen. Combined with autologin, nothing protects the data.",
+"related": [
+"auth.autologin"
+],
+"verify": "",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "enc.backups_unencrypted",
+"title": "Backups are not encrypted",
+"category": "encryption",
+"severity": 7,
+"scope": "user",
+"tier": "guided",
+"detect": [
+"Timeshift: /etc/timeshift/timeshift.json (Timeshift has no encryption)",
+"Déjà Dup: gsettings list-recursively org.gnome.DejaDup; check repository for encryption",
+"Duplicity: volumes ending in .gpg are encrypted",
+"Borg: borg info <repo> shows Encrypted; restic always encrypts"
+],
+"fix": "Recommend an encrypting tool (restic, borg, Déjà Dup with encryption) or a LUKS target drive.",
+"modifiers": [],
+"applies_to": [],
+"why": "Backups often outlive the original data and are stored on easily lost drives.",
+"related": [],
+"verify": "",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "enc.removable_unencrypted",
+"title": "External or removable drives are not encrypted",
+"category": "encryption",
+"severity": 5,
+"scope": "user",
+"tier": "advice",
+"detect": [
+"lsblk -J -o NAME,FSTYPE,RM,HOTPLUG,MOUNTPOINTS; flag RM/HOTPLUG devices without crypto_LUKS"
+],
+"fix": "Offer guidance to format new drives with LUKS (GNOME Disks / KDE Partition Manager).",
+"modifiers": [],
+"applies_to": [],
+"why": "",
+"related": [],
+"verify": "",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "enc.coredumps_retained",
+"title": "Core dumps and crash reports kept on disk",
+"category": "encryption",
+"severity": 5,
+"scope": "system",
+"tier": "guided",
+"detect": [
+"cat /proc/sys/kernel/core_pattern",
+"systemd-coredump: Storage= in /etc/systemd/coredump.conf and coredump.conf.d/*",
+"ls /var/lib/systemd/coredump; coredumpctl list",
+"apport (Ubuntu): /var/crash/*.crash; grep enabled /etc/default/apport"
+],
+"fix": "Drop-in coredump.conf.d with Storage=none and ProcessSizeMax=0; delete existing dumps; disable apport.",
+"modifiers": [],
+"applies_to": [],
+"why": "Dumps contain process memory from browsers, password managers and messengers.",
+"related": [],
+"verify": "",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "enc.snapshots_retain_deleted",
+"title": "Filesystem snapshots keep deleted files",
+"category": "encryption",
+"severity": 4,
+"scope": "system",
+"tier": "advice",
+"detect": [
+"snapper list-configs; snapper -c <cfg> list",
+"btrfs subvolume list -s /",
+"zfs list -t snapshot",
+"/etc/timeshift/timeshift.json (btrfs mode, include @home?)"
+],
+"fix": "Explain that deleted files persist until snapshots expire; suggest excluding sensitive subvolumes and shorter retention.",
+"modifiers": [],
+"applies_to": [
+"openSUSE (Snapper default)",
+"btrfs",
+"zfs",
+"Timeshift"
+],
+"why": "",
+"related": [],
+"verify": "",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "enc.journal_persistent",
+"title": "System journal kept indefinitely",
+"category": "encryption",
+"severity": 3,
+"scope": "system",
+"tier": "guided",
+"detect": [
+"test -d /var/log/journal",
+"systemd-analyze cat-config systemd/journald.conf  (Storage, MaxRetentionSec, SystemMaxUse)"
+],
+"fix": "Drop-in journald.conf.d with MaxRetentionSec=2week (or Storage=volatile); journalctl --vacuum-time=2weeks.",
+"modifiers": [],
+"applies_to": [],
+"why": "Records USB serials, Wi-Fi SSIDs, volume labels, sudo command lines and app messages.",
+"related": [],
+"verify": "",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "enc.trash",
+"title": "Trash not emptied (including on removable drives)",
+"category": "encryption",
+"severity": 3,
+"scope": "user",
+"tier": "auto",
+"detect": [
+"$XDG_DATA_HOME/Trash/{files,info}",
+"For each mount: <mount>/.Trash-$UID and <mount>/.Trash/$UID",
+"GNOME: gsettings get org.gnome.desktop.privacy remove-old-trash-files / old-files-age"
+],
+"fix": "Empty on confirmation; enable automatic removal of old trash on GNOME.",
+"modifiers": [],
+"applies_to": [],
+"why": "",
+"related": [],
+"verify": "",
+"contacts": [],
+"kind": "hygiene",
+"warn_lower": 2
+},
+{
+"id": "enc.boot_no_secureboot",
+"title": "Unencrypted /boot without Secure Boot (evil-maid risk)",
+"category": "encryption",
+"severity": 3,
+"scope": "user",
+"tier": "advice",
+"detect": [
+"mokutil --sb-state",
+"Check /boot has no crypt ancestor"
+],
+"fix": "Explain Secure Boot and measured boot options. Note the kernel lockdown mode (/sys/kernel/security/lockdown): confidentiality stops even root reading kernel memory.",
+"modifiers": [
+{
+"when": "fde == 'none'",
+"severity": 0,
+"when_text": "disk encryption is none"
+}
+],
+"applies_to": [],
+"why": "An attacker with brief physical access can modify the initramfs to capture the disk passphrase.",
+"related": [],
+"verify": "",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "enc.tmp_on_disk",
+"title": "/tmp is on disk rather than in memory",
+"category": "encryption",
+"severity": 2,
+"scope": "user",
+"tier": "guided",
+"detect": [
+"findmnt -n -o FSTYPE /tmp"
+],
+"fix": "Enable tmp.mount (systemd) or an fstab tmpfs entry.",
+"modifiers": [],
+"applies_to": [],
+"why": "",
+"related": [],
+"verify": "",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "enc.trim_through_luks",
+"title": "TRIM passed through LUKS",
+"category": "encryption",
+"severity": 1,
+"scope": "system",
+"tier": "advice",
+"detect": [
+"grep discard /etc/crypttab; cryptsetup status <name> shows \"flags: discards\""
+],
+"fix": "Informational only; this passes with a note when TRIM is on, since it is the usual choice.",
+"modifiers": [],
+"applies_to": [],
+"why": "Reveals which blocks are in use (not their contents). Usually an acceptable trade-off.",
+"related": [],
+"verify": "",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "auth.autologin",
+"title": "Automatic login enabled",
+"category": "auth",
+"severity": 6,
+"scope": "user",
+"tier": "guided",
+"detect": [
+"GDM: AutomaticLoginEnable in /etc/gdm3/custom.conf or /etc/gdm/custom.conf",
+"SDDM: [Autologin] User= in /etc/sddm.conf and /etc/sddm.conf.d/*.conf",
+"LightDM: autologin-user= in /etc/lightdm/lightdm.conf and lightdm.conf.d/*"
+],
+"fix": "Disable autologin (root). Explain the keyring consequences before and after.",
+"modifiers": [
+{
+"when": "tpm_unlock_no_pin",
+"severity": 10,
+"when_text": "TPM unlock without a PIN"
+}
+],
+"applies_to": [],
+"why": "Anyone who powers on the device (after LUKS unlock, if any) gets the full session. Usually also leads to a blank keyring password (auth.keyring_blank).",
+"related": [
+"auth.keyring_blank",
+"enc.tpm_no_pin"
+],
+"verify": "",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "auth.empty_password",
+"title": "User account has an empty password",
+"category": "auth",
+"severity": 8,
+"scope": "system",
+"tier": "guided",
+"detect": [
+"passwd -S <user>  -> status \"NP\"  (root)"
+],
+"fix": "Set a password with passwd.",
+"modifiers": [],
+"applies_to": [],
+"why": "",
+"related": [],
+"verify": "",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "auth.screen_lock",
+"title": "Screen lock disabled, delayed, or not applied on suspend",
+"category": "auth",
+"severity": 7,
+"scope": "user",
+"tier": "auto",
+"detect": [
+"GNOME: org.gnome.desktop.screensaver lock-enabled, lock-delay; org.gnome.desktop.session idle-delay (0 = never)",
+"Ubuntu GNOME: org.gnome.desktop.screensaver ubuntu-lock-on-suspend",
+"KDE: kreadconfig6 --file kscreenlockerrc --group Daemon --key Autolock / Timeout / LockOnResume (empty = default)",
+"Cinnamon: org.cinnamon.desktop.screensaver lock-enabled",
+"XFCE: xfconf-query -c xfce4-screensaver -p /lock/enabled (or light-locker settings)"
+],
+"fix": "Enable locking, idle timeout of 5 minutes or less, lock on suspend and lid close.",
+"modifiers": [
+{
+"when": "device == 'desktop' and not multi_user",
+"severity": 5,
+"when_text": "device type is desktop and not several user accounts"
+}
+],
+"applies_to": [],
+"why": "",
+"related": [],
+"verify": "KDE defaults are not written to the file; treat a missing key as the default.",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 4
+},
+{
+"id": "auth.lockscreen_notifications",
+"title": "Notification content shown on the lock screen",
+"category": "auth",
+"severity": 3,
+"scope": "user",
+"tier": "auto",
+"detect": [
+"GNOME: gsettings get org.gnome.desktop.notifications show-in-lock-screen"
+],
+"fix": "Disable notification previews on the lock screen.",
+"modifiers": [],
+"applies_to": [],
+"why": "",
+"related": [],
+"verify": "Confirm the equivalent KDE/Cinnamon setting and key location per version.",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "auth.keyring_blank",
+"title": "Keyring or wallet with a blank password (secrets stored unencrypted)",
+"category": "auth",
+"severity": 7,
+"scope": "user",
+"tier": "guided",
+"detect": [
+"GNOME Keyring: $XDG_DATA_HOME/keyrings/*.keyring; encrypted files begin with the binary magic \"GnomeKeyring\\n\\r\\0\\n\", unencrypted ones are plain-text INI starting with \"[keyring]\"",
+"KWallet: $XDG_DATA_HOME/kwalletd/*.kwl"
+],
+"fix": "Set a keyring password via Seahorse or KWalletManager; explain the trade-off with autologin.",
+"modifiers": [],
+"applies_to": [],
+"why": "Saved Wi-Fi, email, browser and app secrets are readable by anyone with file access.",
+"related": [
+"auth.autologin",
+"auth.chromium_basic_store"
+],
+"verify": "Confirm a reliable way to detect a blank-password KWallet.",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "auth.chromium_basic_store",
+"title": "Chromium/Electron apps using the \"basic\" password store",
+"category": "auth",
+"severity": 7,
+"scope": "user",
+"tier": "guided",
+"detect": [
+"Launch flags: --password-store=basic in ~/.config/*-flags.conf, .desktop Exec lines, wrapper scripts",
+"Profile \"Login Data\" (SQLite) logins.password_value and \"Cookies\" encrypted_value: prefix \"v10\" = hardcoded key, \"v11\" = keyring key",
+"Check that a Secret Service provider is on the session bus (org.freedesktop.secrets)"
+],
+"fix": "Ensure gnome-keyring or KWallet Secret Service is running; remove the flag; re-save credentials.",
+"modifiers": [],
+"applies_to": [
+"Chrome",
+"Chromium",
+"Brave",
+"Edge",
+"Vivaldi",
+"Electron apps using safeStorage"
+],
+"why": "Without a Secret Service keyring, saved passwords and cookies are encrypted with a hardcoded key, which is effectively plaintext.",
+"related": [],
+"verify": "",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "auth.remote_desktop",
+"title": "Remote desktop or screen sharing server enabled",
+"category": "auth",
+"severity": 7,
+"scope": "user",
+"tier": "guided",
+"detect": [
+"GNOME: grdctl status; systemctl --user is-active gnome-remote-desktop",
+"KDE: krdpserver / krfb in autostart or running",
+"systemctl is-active xrdp x11vnc; ss -tlnp for 3389 and 5900-5910"
+],
+"fix": "Disable when not needed; otherwise require strong credentials and bind to a VPN interface.",
+"modifiers": [],
+"applies_to": [],
+"why": "",
+"related": [],
+"verify": "",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "auth.ssh_key_no_passphrase",
+"title": "SSH private keys without a passphrase",
+"category": "auth",
+"severity": 6,
+"scope": "user",
+"tier": "guided",
+"detect": [
+"For each private key in ~/.ssh: \"ssh-keygen -y -P \\\"\\\" -f <key>\" succeeds = no passphrase"
+],
+"fix": "ssh-keygen -p -f <key>; recommend an agent (ssh-agent, gnome-keyring, KeePassXC).",
+"modifiers": [],
+"applies_to": [],
+"why": "",
+"related": [],
+"verify": "",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "auth.plaintext_credentials",
+"title": "Plaintext credential files",
+"category": "auth",
+"severity": 6,
+"scope": "user",
+"tier": "guided",
+"detect": [
+"~/.git-credentials, ~/.netrc, ~/.aws/credentials, ~/.docker/config.json (\"auths\" with \"auth\" values)",
+"~/.pgpass, ~/.my.cnf, ~/.config/rclone/rclone.conf (obscured, not encrypted), ~/.config/gh/hosts.yml",
+".env files under home (limit depth, skip node_modules)",
+"Also flag group/world-readable permissions on any of these"
+],
+"fix": "Move to credential helpers (git-credential-libsecret, docker credential helpers); chmod 600 at minimum.",
+"modifiers": [],
+"applies_to": [],
+"why": "",
+"related": [],
+"verify": "",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "auth.shell_history_secrets",
+"title": "Shell and REPL history containing secrets",
+"category": "auth",
+"severity": 6,
+"scope": "user",
+"tier": "guided",
+"detect": [
+"Files: ~/.bash_history, ~/.zsh_history, $HISTFILE, ~/.local/share/fish/fish_history, ~/.python_history, ~/.psql_history, ~/.mysql_history, ~/.sqlite_history, ~/.node_repl_history, ~/.lesshst",
+"Patterns: password=, passwd, -p<value>, token, secret, Authorization:, Bearer, AKIA[0-9A-Z]{16}, ghp_[A-Za-z0-9]{36}, xox[bp]-"
+],
+"fix": "Offer per-line redaction; suggest HISTCONTROL=ignorespace (bash) or setopt HIST_IGNORE_SPACE (zsh).",
+"modifiers": [],
+"applies_to": [],
+"why": "",
+"related": [],
+"verify": "",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "auth.sudo_nopasswd",
+"title": "Passwordless sudo",
+"category": "auth",
+"severity": 6,
+"scope": "user",
+"tier": "guided",
+"detect": [
+"sudo -n -l 2>/dev/null | grep NOPASSWD"
+],
+"fix": "Remove NOPASSWD entries via visudo.",
+"modifiers": [],
+"applies_to": [],
+"why": "Lets malware running as the user escalate silently.",
+"related": [],
+"verify": "",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "auth.firefox_no_primary_password",
+"title": "Firefox or Thunderbird without a Primary Password",
+"category": "auth",
+"severity": 5,
+"scope": "user",
+"tier": "guided",
+"detect": [
+"Profiles: ~/.mozilla/firefox, ~/.var/app/org.mozilla.firefox/.mozilla/firefox, ~/snap/firefox/common/.mozilla/firefox, ~/.thunderbird and Flatpak/Snap equivalents",
+"If logins.json is non-empty, use NSS on key4.db: PK11_NeedLogin on the internal key slot"
+],
+"fix": "Guide the user to set a Primary Password.",
+"modifiers": [],
+"applies_to": [],
+"why": "",
+"related": [],
+"verify": "Firefox 157 on Linux Mint 22 keeps profiles in $XDG_CONFIG_HOME/mozilla/firefox (seen 2026-10-03); check other distributions and whether older ~/.mozilla profiles are moved there.",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "auth.home_world_readable",
+"title": "Home directory readable by other users",
+"category": "auth",
+"severity": 5,
+"scope": "user",
+"tier": "guided",
+"detect": [
+"stat -c %a $HOME  (flag if the \"other\" digit is non-zero)"
+],
+"fix": "chmod 750 or 700 $HOME (warn about ~/public_html and similar).",
+"modifiers": [
+{
+"when": "not multi_user",
+"severity": 2,
+"when_text": "not several user accounts"
+}
+],
+"applies_to": [
+"Ubuntu before 21.04",
+"other distros defaulting to 755"
+],
+"why": "",
+"related": [],
+"verify": "",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "auth.gpg_no_passphrase",
+"title": "GPG secret keys without a passphrase",
+"category": "auth",
+"severity": 4,
+"scope": "user",
+"tier": "guided",
+"detect": [
+"~/.gnupg/private-keys-v1.d/*.key: \"(protected-private-key\" = protected, \"(private-key\" = unprotected"
+],
+"fix": "gpg --edit-key <id> passwd.",
+"modifiers": [],
+"applies_to": [],
+"why": "",
+"related": [],
+"verify": "",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "auth.umask",
+"title": "New files can be read by other accounts (default umask)",
+"category": "auth",
+"severity": 2,
+"scope": "user",
+"tier": "advice",
+"detect": [
+"umask  (0022 = new files readable by other users)"
+],
+"fix": "Suggest 027 or 077 in the login profile.",
+"modifiers": [
+{
+"when": "not multi_user",
+"severity": 1,
+"when_text": "not several user accounts"
+}
+],
+"applies_to": [],
+"why": "",
+"related": [],
+"verify": "",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "auth.ssh_known_hosts_plain",
+"title": "SSH known_hosts lists the servers you connect to",
+"category": "auth",
+"severity": 3,
+"scope": "user",
+"tier": "auto",
+"detect": [
+"~/.ssh/known_hosts: lines whose first field does not start with \"|1|\" are plain host names",
+"~/.ssh/config: HashKnownHosts yes (new entries are then hashed)"
+],
+"fix": "ssh-keygen -H -f ~/.ssh/known_hosts (the plain copy it leaves as known_hosts.old is deleted), and HashKnownHosts yes in ~/.ssh/config. The file is backed up for revert.",
+"modifiers": [],
+"applies_to": [],
+"why": "~/.ssh/known_hosts names every server this account has ever connected to. Hashed entries still verify servers but don't reveal them to whoever reads the file.",
+"related": [],
+"verify": "",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "auth.login_history",
+"title": "Login history readable by every user",
+"category": "auth",
+"severity": 3,
+"scope": "user",
+"tier": "advice",
+"detect": [
+"stat /var/log/wtmp /var/log/lastlog /var/log/btmp (and wtmp.1, lastlog under /var/lib/wtmpdb): flag world-readable"
+],
+"fix": "chmod o-r on wtmp and lastlog (non-administrators then can't run `last`); btmp should already be root-only.",
+"modifiers": [
+{
+"when": "not multi_user",
+"severity": 0,
+"when_text": "not several user accounts"
+}
+],
+"applies_to": [],
+"why": "/var/log/wtmp and /var/log/lastlog record when, and from which address, every account logged in; the `last` and `lastlog` commands show them to any user.",
+"related": [],
+"verify": "",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "net.exposed_services",
+"title": "Services listening on all interfaces",
+"category": "network",
+"severity": 7,
+"scope": "user",
+"tier": "guided",
+"detect": [
+"ss -tulpnH; flag local addresses 0.0.0.0, [::], *",
+"Allowlist expected listeners (DHCP client on 68, mDNS on 5353 handled by net.hostname_broadcast)",
+"sshd: sshd -T | grep -Ei \"passwordauthentication|permitrootlogin\"",
+"CUPS: cupsctl | grep _share_printers=1",
+"Active firewall: ufw status verbose (root), or firewall-cmd --list-all for the active zones; a port the firewall blocks is listening but not reachable (firewall_blocks_exposed when all of them are). nftables/iptables rulesets are not interpreted: unknown."
+],
+"fix": "Disable unneeded services, bind dev servers to 127.0.0.1, disable SSH password and root login.",
+"modifiers": [
+{
+"when": "firewall_blocks_exposed",
+"severity": 2,
+"when_text": "the firewall blocks the exposed services"
+}
+],
+"applies_to": [],
+"why": "",
+"related": [
+"net.firewall_off",
+"net.docker_bypass"
+],
+"verify": "",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "net.docker_bypass",
+"title": "Docker published ports bypass the host firewall",
+"category": "network",
+"severity": 7,
+"scope": "user",
+"tier": "guided",
+"detect": [
+"docker ps --format \"{{.Names}} {{.Ports}}\"; flag 0.0.0.0: or :::"
+],
+"fix": "Publish as 127.0.0.1:<port>:<port>, or add rules to the DOCKER-USER chain.",
+"modifiers": [],
+"applies_to": [],
+"why": "Docker inserts its own iptables/nftables rules ahead of ufw (and often firewalld zones).",
+"related": [],
+"verify": "Check rootful Podman (netavark) behaviour too.",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "net.firewall_off",
+"title": "Host firewall disabled",
+"category": "network",
+"severity": 3,
+"scope": "system",
+"tier": "guided",
+"detect": [
+"ufw status; firewall-cmd --state; nft list ruleset (empty = no rules)"
+],
+"fix": "Enable ufw or firewalld with a default-deny inbound policy.",
+"modifiers": [
+{
+"when": "exposed_services",
+"severity": 6,
+"when_text": "services exposed to the network"
+}
+],
+"applies_to": [],
+"why": "",
+"related": [],
+"verify": "",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "net.mac_permanent",
+"title": "Wi-Fi connections use the permanent MAC address",
+"category": "network",
+"severity": 4,
+"scope": "user",
+"tier": "auto",
+"detect": [
+"nmcli -g 802-11-wireless.cloned-mac-address connection show <id>",
+"/etc/NetworkManager/conf.d/*.conf [connection] wifi.cloned-mac-address",
+"NetworkManager --print-config [device] wifi.scan-rand-mac-address (default yes; no = the permanent address while scanning)"
+],
+"fix": "Set \"stable\" (stable per network) by default, \"random\" for hostile networks; note captive portal side effects.",
+"modifiers": [
+{
+"when": "device == 'desktop'",
+"severity": 2,
+"when_text": "device type is desktop"
+}
+],
+"applies_to": [],
+"why": "Lets public networks and their operators recognise the device across visits.",
+"related": [],
+"verify": "",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "net.hostname_broadcast",
+"title": "Identifying hostname broadcast via DHCP and mDNS",
+"category": "network",
+"severity": 4,
+"scope": "user",
+"tier": "guided",
+"detect": [
+"hostnamectl hostname; compare with the user's name from getent passwd (GECOS)",
+"nmcli -g ipv4.dhcp-send-hostname,ipv6.dhcp-send-hostname connection show <id>",
+"systemctl is-active avahi-daemon; /etc/avahi/avahi-daemon.conf [publish]",
+"resolvectl status: a link with MulticastDNS=yes announces the hostname too (resolve only answers)"
+],
+"fix": "Offer a generic hostname, dhcp-send-hostname=no on untrusted networks, disable Avahi publishing if unused.",
+"modifiers": [],
+"applies_to": [],
+"why": "",
+"related": [],
+"verify": "",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "net.kdeconnect",
+"title": "KDE Connect / GSConnect enabled",
+"category": "network",
+"severity": 4,
+"scope": "user",
+"tier": "advice",
+"detect": [
+"pgrep kdeconnectd; ~/.config/kdeconnect/trusted_devices",
+"gnome-extensions list --enabled | grep gsconnect",
+"ss -tulpn for ports 1714-1764"
+],
+"fix": "Review paired devices and enabled plugins; disable when unused.",
+"modifiers": [],
+"applies_to": [],
+"why": "Listens on the LAN and can sync notifications, clipboard and files with paired phones.",
+"related": [],
+"verify": "",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "net.vpn_leaks",
+"title": "VPN without DNS leak protection or kill switch",
+"category": "network",
+"severity": 4,
+"scope": "user",
+"tier": "advice",
+"detect": [
+"While a VPN is up: resolvectl status; check non-VPN links do not provide DNS for the \"~.\" routing domain"
+],
+"fix": "Configure DNS routing to the VPN link and a kill switch where the VPN client supports it.",
+"modifiers": [],
+"applies_to": [],
+"why": "",
+"related": [],
+"verify": "",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "net.dns_unencrypted",
+"title": "Unencrypted DNS",
+"category": "network",
+"severity": 3,
+"scope": "system",
+"tier": "guided",
+"detect": [
+"resolvectl status (DNSOverTLS setting); check whether systemd-resolved is in use at all"
+],
+"fix": "Configure DNSOverTLS in resolved.conf.d with a chosen resolver, or use the browser's DoH.",
+"modifiers": [],
+"applies_to": [],
+"why": "",
+"related": [],
+"verify": "",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "net.ipv6_privacy",
+"title": "IPv6 privacy extensions disabled",
+"category": "network",
+"severity": 3,
+"scope": "user",
+"tier": "auto",
+"detect": [
+"sysctl net.ipv6.conf.all.use_tempaddr (and per interface); nmcli -g ipv6.ip6-privacy connection show <id>"
+],
+"fix": "Set use_tempaddr=2 / ip6-privacy=2.",
+"modifiers": [],
+"applies_to": [],
+"why": "",
+"related": [],
+"verify": "",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "net.hidden_ssid",
+"title": "Saved hidden-SSID networks",
+"category": "network",
+"severity": 3,
+"scope": "user",
+"tier": "guided",
+"detect": [
+"nmcli -g 802-11-wireless.hidden connection show <id>"
+],
+"fix": "Suggest making the network visible on the router, or removing the saved profile.",
+"modifiers": [],
+"applies_to": [],
+"why": "The device broadcasts the network names in probe requests wherever it goes.",
+"related": [],
+"verify": "",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "net.bluetooth",
+"title": "Bluetooth always on, discoverable, or named after the user",
+"category": "network",
+"severity": 3,
+"scope": "user",
+"tier": "guided",
+"detect": [
+"bluetoothctl show (Powered, Discoverable, Alias)",
+"/etc/bluetooth/main.conf DiscoverableTimeout"
+],
+"fix": "Non-discoverable and a generic alias (recommended); turning the radio off is offered as a separate step, since it disconnects whatever is connected.",
+"modifiers": [],
+"applies_to": [],
+"why": "",
+"related": [],
+"verify": "",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "net.connectivity_check",
+"title": "Connectivity checks to distro servers",
+"category": "network",
+"severity": 1,
+"scope": "system",
+"tier": "guided",
+"detect": [
+"NetworkManager config [connectivity] uri / enabled (NetworkManager --print-config)"
+],
+"fix": "Informational; can be disabled at the cost of captive-portal detection.",
+"modifiers": [],
+"applies_to": [],
+"why": "",
+"related": [],
+"verify": "",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "net.wifi_history",
+"title": "Saved Wi-Fi networks record where this machine has been",
+"category": "network",
+"severity": 3,
+"scope": "user",
+"tier": "guided",
+"detect": [
+"nmcli -g connection.timestamp connection show <uuid> for each 802-11-wireless connection (counts and ages, never names)"
+],
+"fix": "Forget networks not used for months (nmcli connection delete); the app lists which ones in the guide.",
+"modifiers": [
+{
+"when": "fde == 'none'",
+"severity": 5,
+"when_text": "disk encryption is none"
+}
+],
+"applies_to": [],
+"why": "Every saved network keeps the time it was last used, so together they are a history of places; their passwords sit in /etc/NetworkManager/system-connections, readable from a live USB when the disk isn't encrypted.",
+"related": [
+"net.hidden_ssid",
+"enc.fde_missing"
+],
+"verify": "",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "net.open_autoconnect",
+"title": "Saved open Wi-Fi networks reconnect automatically",
+"category": "network",
+"severity": 3,
+"scope": "user",
+"tier": "auto",
+"detect": [
+"nmcli: 802-11-wireless connections with no 802-11-wireless-security.key-mgmt and connection.autoconnect yes"
+],
+"fix": "connection.autoconnect no for each; they still connect when chosen by hand.",
+"modifiers": [],
+"applies_to": [],
+"why": "A saved network without a password is matched by its name alone, so any hotspot with the same name (an attacker's) gets this machine to join it without asking.",
+"related": [],
+"verify": "",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "tel.crash_reporters",
+"title": "Crash reporters and usage surveys",
+"category": "telemetry",
+"severity": 3,
+"scope": "system",
+"tier": "guided",
+"detect": [
+"Ubuntu: systemctl is-enabled apport whoopsie; /etc/default/apport enabled=",
+"Fedora/RHEL: systemctl is-enabled abrtd",
+"Debian: /etc/popularity-contest.conf PARTICIPATE=",
+"KDE: DrKonqi asks before sending; User Feedback has its own check (tel.kde_feedback)"
+],
+"fix": "Disable or set to ask before sending.",
+"modifiers": [],
+"applies_to": [],
+"why": "Crash reports can include memory contents and are uploaded to vendors.",
+"related": [
+"tel.kde_feedback"
+],
+"verify": "",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "tel.location",
+"title": "Location services enabled",
+"category": "telemetry",
+"severity": 3,
+"scope": "user",
+"tier": "auto",
+"detect": [
+"GNOME: gsettings get org.gnome.system.location enabled",
+"/etc/geoclue/geoclue.conf (per-app allowlist)"
+],
+"fix": "Disable globally or review per-app access.",
+"modifiers": [],
+"applies_to": [],
+"why": "GeoClue sends nearby Wi-Fi access points to an online lookup service.",
+"related": [],
+"verify": "",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "tel.browser_telemetry",
+"title": "Browser telemetry and studies",
+"category": "telemetry",
+"severity": 3,
+"scope": "system",
+"tier": "guided",
+"detect": [
+"Firefox and Thunderbird prefs: datareporting.healthreport.uploadEnabled, toolkit.telemetry.enabled, app.shield.optoutstudies.enabled",
+"Firefox policies.json: DisableTelemetry, DisableFirefoxStudies",
+"Chromium family: MetricsReportingEnabled policy in /etc/opt/chrome/policies/managed, /etc/chromium/policies/managed, etc."
+],
+"fix": "Apply enterprise policies (root) or per-profile prefs (user).",
+"modifiers": [],
+"applies_to": [],
+"why": "",
+"related": [],
+"verify": "",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "tel.devtools",
+"title": "Developer tool telemetry",
+"category": "telemetry",
+"severity": 2,
+"scope": "user",
+"tier": "auto",
+"detect": [
+"VS Code / VSCodium: settings.json \"telemetry.telemetryLevel\"; GitHub Copilot extension noted (sends code to GitHub)",
+"JetBrains IDEs: ~/.config/JetBrains/<Product>/options/usage.statistics.xml",
+"Env vars: DOTNET_CLI_TELEMETRY_OPTOUT, HOMEBREW_NO_ANALYTICS, NEXT_TELEMETRY_DISABLED, CHECKPOINT_DISABLE (HashiCorp), AZURE_CORE_COLLECT_TELEMETRY, SAM_CLI_TELEMETRY, GATSBY_TELEMETRY_DISABLED, NUXT_TELEMETRY_DISABLED, ASTRO_TELEMETRY_DISABLED, STRIPE_CLI_TELEMETRY_OPTOUT, DO_NOT_TRACK"
+],
+"fix": "Set opt-out env vars in ~/.config/environment.d/*.conf and the VS Code setting.",
+"modifiers": [],
+"applies_to": [],
+"why": "",
+"related": [],
+"verify": "The JetBrains usage.statistics.xml layout, and which tools honour DO_NOT_TRACK.",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "tel.http_repos",
+"title": "Package repositories over plain HTTP",
+"category": "telemetry",
+"severity": 2,
+"scope": "system",
+"tier": "advice",
+"detect": [
+"grep -r \"http://\" /etc/apt/sources.list /etc/apt/sources.list.d/  (including deb822 URIs: fields)"
+],
+"fix": "Switch to HTTPS mirrors.",
+"modifiers": [],
+"applies_to": [],
+"why": "Packages are signature-verified, but network observers can see what software is installed.",
+"related": [],
+"verify": "",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "tel.countme",
+"title": "Fedora counts this computer in its statistics (DNF countme)",
+"category": "telemetry",
+"severity": 1,
+"scope": "system",
+"tier": "auto",
+"detect": [
+"grep countme /etc/dnf/dnf.conf /etc/yum.repos.d/*.repo"
+],
+"fix": "Set countme=0 (anonymous weekly counter; informational).",
+"modifiers": [],
+"applies_to": [
+"Fedora",
+"RHEL family"
+],
+"why": "",
+"related": [],
+"verify": "",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "tel.kde_feedback",
+"title": "KDE user feedback (telemetry) enabled",
+"category": "telemetry",
+"severity": 2,
+"scope": "user",
+"tier": "auto",
+"detect": [
+"~/.config/PlasmaUserFeedback [Global] FeedbackLevel: absent or 0 = disabled (KUserFeedback NoTelemetry); 16 basic system information, 32, 48, 64 send more each"
+],
+"fix": "FeedbackLevel=0 (kwriteconfig, reversible).",
+"modifiers": [],
+"applies_to": [
+"KDE Plasma"
+],
+"why": "Plasma can send system and usage statistics to KDE; it is off unless turned on.",
+"related": [],
+"verify": "KUserFeedback's level values on Plasma 6 (NoTelemetry = 16).",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "tel.cloud_sync",
+"title": "Accounts and sync clients that copy data off this machine",
+"category": "telemetry",
+"severity": 3,
+"scope": "user",
+"tier": "advice",
+"detect": [
+"GNOME Online Accounts: $XDG_CONFIG_HOME/goa-1.0/accounts.conf (provider types only)",
+"KDE: $XDG_CONFIG_HOME/libaccounts-glib/accounts.db (count)",
+"Nextcloud, ownCloud, Dropbox, Insync, MEGA, OneDrive clients: their config directories, native and Flatpak"
+],
+"fix": "Informational; review what each account and client syncs, and whether it is end-to-end encrypted.",
+"modifiers": [],
+"applies_to": [],
+"why": "Not a fault: an inventory of what leaves this machine by design, so it can be weighed with the rest. Online accounts sync calendars, contacts and mail; sync clients copy folders.",
+"related": [],
+"verify": "",
+"contacts": [],
+"kind": "info",
+"warn_lower": 2
+},
+{
+"id": "tel.background_callers",
+"title": "Services that contact servers in the background",
+"category": "telemetry",
+"severity": 1,
+"scope": "user",
+"tier": "advice",
+"detect": [
+"systemctl is-enabled fwupd-refresh.timer; snapd.service active; packagekit-background.timer / PackageKit",
+"systemd-timesyncd or chronyd: configured NTP servers (timesyncd.conf, chrony.conf), else the distribution pool"
+],
+"fix": "Informational; each can be turned off at a cost (no firmware updates, no snap updates, drifting clock).",
+"modifiers": [],
+"applies_to": [],
+"why": "Not telemetry, but regular contact that shows the machine's address to someone: firmware metadata from LVFS, Snap Store refresh checks, package metadata, and time servers.",
+"related": [],
+"verify": "",
+"contacts": [],
+"kind": "info",
+"warn_lower": 2
+},
+{
+"id": "br.crashpad_dumps",
+"title": "Chromium-family crash dumps on disk",
+"category": "browser",
+"severity": 3,
+"scope": "user",
+"tier": "auto",
+"detect": [
+"<profile root>/Crash Reports/{pending,completed}, for google-chrome, chromium, BraveSoftware/Brave-Browser, microsoft-edge, vivaldi",
+"Flatpak: ~/.var/app/<id>/config/<browser>/Crash Reports; Snap: ~/snap/chromium/common/chromium"
+],
+"fix": "Delete existing dumps; disable crash/metrics reporting by policy.",
+"modifiers": [],
+"applies_to": [],
+"why": "Minidumps can contain memory fragments, including URLs and content from incognito windows.",
+"related": [],
+"verify": "Measure (fatrace, iotop) whether dumps are written locally when reporting is disabled, and how much the browser writes overall, before the app makes any claim about SSD wear.",
+"contacts": [],
+"kind": "hygiene",
+"warn_lower": 2
+},
+{
+"id": "br.extensions_broad",
+"title": "Extensions with access to all sites",
+"category": "browser",
+"severity": 5,
+"scope": "user",
+"tier": "advice",
+"detect": [
+"Chromium: <profile>/Extensions/<id>/<version>/manifest.json permissions and host_permissions containing <all_urls>, *://*/*, http://*/*, https://*/*",
+"Firefox: <profile>/extensions.json userPermissions.origins"
+],
+"fix": "List them with names and let the user review or remove.",
+"modifiers": [],
+"applies_to": [],
+"why": "",
+"related": [],
+"verify": "",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "br.history_retention",
+"title": "History, cookies and site data kept indefinitely",
+"category": "browser",
+"severity": 4,
+"scope": "user",
+"tier": "guided",
+"detect": [
+"Firefox: privacy.sanitize.sanitizeOnShutdown and related clearOnShutdown prefs",
+"Chromium: ClearBrowsingDataOnExitList policy"
+],
+"fix": "Offer clear-on-exit for cookies, cache and history, with exceptions for sites the user wants to stay logged in to.",
+"modifiers": [],
+"applies_to": [],
+"why": "",
+"related": [],
+"verify": "",
+"contacts": [],
+"kind": "hygiene",
+"warn_lower": 2
+},
+{
+"id": "br.tracking_protection",
+"title": "Weak tracking protection",
+"category": "browser",
+"severity": 4,
+"scope": "user",
+"tier": "guided",
+"detect": [
+"Firefox: browser.contentblocking.category (standard / strict / custom)",
+"Chromium: BlockThirdPartyCookies policy (default allows third-party cookies)"
+],
+"fix": "Strict mode in Firefox; block third-party cookies in Chromium.",
+"modifiers": [],
+"applies_to": [],
+"why": "",
+"related": [],
+"verify": "",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "br.private_download_leak",
+"title": "Private-session downloads leaking through the OS",
+"category": "browser",
+"severity": 4,
+"scope": "user",
+"tier": "advice",
+"detect": [
+"Cross-reference files in the Downloads directory with desk.thumbnails, desk.recent_files and desk.indexers"
+],
+"fix": "Point to the related clean-ups.",
+"modifiers": [],
+"applies_to": [],
+"why": "The browser forgets them, but thumbnails, recent-file lists and indexers still record them.",
+"related": [
+"desk.thumbnails",
+"desk.recent_files",
+"desk.indexers"
+],
+"verify": "",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "br.disk_cache",
+"title": "Disk cache and session store on persistent storage",
+"category": "browser",
+"severity": 3,
+"scope": "user",
+"tier": "guided",
+"detect": [
+"Firefox: browser.cache.disk.enable, browser.sessionstore.privacy_level",
+"Check for profile-sync-daemon"
+],
+"fix": "Memory-only cache, sessionstore privacy level 2, or profile-sync-daemon.",
+"modifiers": [],
+"applies_to": [],
+"why": "",
+"related": [],
+"verify": "",
+"contacts": [],
+"kind": "hygiene",
+"warn_lower": 2
+},
+{
+"id": "br.webrtc",
+"title": "WebRTC IP exposure",
+"category": "browser",
+"severity": 2,
+"scope": "user",
+"tier": "guided",
+"detect": [
+"Firefox: media.peerconnection.ice.default_address_only",
+"Chromium: WebRtcIPHandling policy"
+],
+"fix": "Restrict to the default route; mostly relevant with split-tunnel VPNs.",
+"modifiers": [],
+"applies_to": [],
+"why": "",
+"related": [],
+"verify": "",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "br.account_sync",
+"title": "Browser signed in to an account that syncs history and passwords",
+"category": "browser",
+"severity": 5,
+"scope": "user",
+"tier": "advice",
+"detect": [
+"Chromium: <profile>/Preferences account_info non-empty or sync.has_setup_completed; sync.encryption passphrase flags",
+"Firefox: services.sync.username in prefs.js (only whether it is set, never the address)"
+],
+"fix": "Sign out, or sync fewer data types; in Chrome set a sync passphrase so Google can't read it.",
+"modifiers": [],
+"applies_to": [],
+"why": "With sync on, history, passwords, bookmarks and open tabs are copied to Google, Microsoft or Mozilla. Firefox Sync is end-to-end encrypted; Chrome and Edge sync can be read by the provider unless a sync passphrase is set.",
+"related": [],
+"verify": "The Preferences keys for a custom sync passphrase across Chrome versions.",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "br.ad_features",
+"title": "Browser ad and suggestion features that report what you do",
+"category": "browser",
+"severity": 3,
+"scope": "user",
+"tier": "guided",
+"detect": [
+"Chromium: Preferences privacy_sandbox.m1.topics_enabled / fledge_enabled / ad_measurement_enabled, search.suggest_enabled, safebrowsing.enhanced",
+"Firefox: browser.search.suggest.enabled, browser.urlbar.suggest.quicksuggest.sponsored, browser.newtabpage.activity-stream.showSponsoredTopSites"
+],
+"fix": "Firefox prefs while it is closed; Chromium policies (PrivacySandboxAdTopicsEnabled, PrivacySandboxSiteEnabledAdsEnabled, PrivacySandboxAdMeasurementEnabled, SearchSuggestEnabled) for every user, or the settings page per profile.",
+"modifiers": [],
+"applies_to": [],
+"why": "Chrome's Privacy Sandbox profiles your interests for advertisers from your history; search suggestions send every keystroke in the address bar to the search engine; sponsored shortcuts and suggestions in Firefox report what is shown and clicked.",
+"related": [],
+"verify": "Chromium's Preferences keys for the Privacy Sandbox APIs, and the policy names, on current releases.",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "desk.thumbnails",
+"title": "Thumbnail cache persists and references sensitive locations",
+"category": "desktop",
+"severity": 4,
+"scope": "user",
+"tier": "guided",
+"detect": [
+"$XDG_CACHE_HOME/thumbnails/{normal,large,x-large,xx-large,fail} and ~/.var/app/*/cache/thumbnails",
+"Parse PNG tEXt chunk Thumb::URI; flag orphans (file no longer exists)",
+"Flag URIs under /media, /run/media, VeraCrypt mount points, or other crypt mounts separate from home",
+"App-specific caches: gThumb, Shotwell, digiKam (see app.photo_dbs)",
+"GNOME: org.gnome.desktop.thumbnail-cache maximum-age / maximum-size"
+],
+"fix": "Delete orphans and sensitive entries; set a maximum age; optionally keep the cache in memory: a tmpfs line in /etc/fstab for $XDG_CACHE_HOME/thumbnails (size-capped, nofail), mounted at once, so it is empty at every boot.",
+"modifiers": [
+{
+"when": "thumbnails_reference_removable_or_container",
+"severity": 7,
+"when_text": "thumbnails show files from removable or encrypted drives"
+}
+],
+"applies_to": [],
+"why": "Thumbnails survive deletion of the original, and each PNG embeds Thumb::URI (the full original path). Browsing an open encrypted container or USB stick leaves images and paths outside it.",
+"related": [],
+"verify": "",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "desk.recent_files",
+"title": "Recent files list (recently-used.xbel)",
+"category": "desktop",
+"severity": 5,
+"scope": "user",
+"tier": "auto",
+"detect": [
+"$XDG_DATA_HOME/recently-used.xbel and ~/.var/app/*/data/recently-used.xbel",
+"GNOME: org.gnome.desktop.privacy remember-recent-files, recent-files-max-age"
+],
+"fix": "Clear; disable or set a short maximum age.",
+"modifiers": [],
+"applies_to": [],
+"why": "Written by any GTK app regardless of desktop, so KDE users have it too.",
+"related": [],
+"verify": "",
+"contacts": [],
+"kind": "hygiene",
+"warn_lower": 2
+},
+{
+"id": "desk.kde_activities",
+"title": "KDE activity database and recent documents",
+"category": "desktop",
+"severity": 5,
+"scope": "user",
+"tier": "auto",
+"detect": [
+"$XDG_DATA_HOME/kactivitymanagerd/resources/database (SQLite, plus -wal and -shm)",
+"$XDG_DATA_HOME/RecentDocuments/*.desktop",
+"~/.config/kactivitymanagerd-pluginsrc (what to remember, history length)",
+"kdeglobals [RecentDocuments] UseRecent, MaxEntries",
+"Plasma 6 per-app state in $XDG_STATE_HOME/*staterc (Dolphin, Kate, etc.)"
+],
+"fix": "Stop kactivitymanagerd, clear the event and score tables, clear RecentDocuments, apply settings, restart.",
+"modifiers": [],
+"applies_to": [
+"KDE Plasma"
+],
+"why": "Users report that the activity database keeps recording even when history is turned off.",
+"related": [],
+"verify": "Confirm table names and pluginsrc key names on the target Plasma version.",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "desk.indexers",
+"title": "File content indexers (Baloo, LocalSearch/Tracker)",
+"category": "desktop",
+"severity": 6,
+"scope": "user",
+"tier": "guided",
+"detect": [
+"Baloo: balooctl6 status (balooctl on Plasma 5); $XDG_DATA_HOME/baloo/index; ~/.config/baloofilerc",
+"GNOME 47+: localsearch status; older: tracker3 status; data in $XDG_CACHE_HOME/tracker3"
+],
+"fix": "Basic (filename-only) indexing or disable; exclude sensitive folders and mount points; purge the index.",
+"modifiers": [],
+"applies_to": [],
+"why": "Indexers extract text from documents into their own database, which can retain content after deletion and can cover mounted encrypted containers.",
+"related": [],
+"verify": "",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "desk.clipboard_history",
+"title": "Clipboard history saved to disk",
+"category": "desktop",
+"severity": 5,
+"scope": "user",
+"tier": "auto",
+"detect": [
+"Klipper: $XDG_DATA_HOME/klipper/ and klipperrc (save history across sessions)",
+"GPaste: $XDG_DATA_HOME/gpaste/; CopyQ: ~/.config/copyq/",
+"xfce4-clipman: $XDG_CACHE_HOME/xfce4/clipman/",
+"GNOME extensions (e.g. Clipboard Indicator): check the extension's cache directory"
+],
+"fix": "Clear; disable persistence; recommend password managers that set the clipboard-exclusion hint and auto-clear.",
+"modifiers": [],
+"applies_to": [],
+"why": "Copied passwords and sensitive text persist across reboots.",
+"related": [],
+"verify": "Klipper storage format changed in Plasma 6; confirm file names.",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "desk.zeitgeist",
+"title": "Zeitgeist activity log",
+"category": "desktop",
+"severity": 4,
+"scope": "user",
+"tier": "auto",
+"detect": [
+"$XDG_DATA_HOME/zeitgeist/activity.sqlite; pgrep zeitgeist-daemon"
+],
+"fix": "Clear and disable.",
+"modifiers": [],
+"applies_to": [],
+"why": "",
+"related": [],
+"verify": "",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "desk.gvfs_metadata",
+"title": "File manager and viewers keep notes on each file (GVFS metadata)",
+"category": "desktop",
+"severity": 3,
+"scope": "user",
+"tier": "auto",
+"detect": [
+"$XDG_DATA_HOME/gvfs-metadata/"
+],
+"fix": "Stop gvfsd-metadata and clear.",
+"modifiers": [],
+"applies_to": [],
+"why": "",
+"related": [],
+"verify": "",
+"contacts": [],
+"kind": "hygiene",
+"warn_lower": 2
+},
+{
+"id": "desk.screenshots",
+"title": "Screenshots accumulating automatically",
+"category": "desktop",
+"severity": 3,
+"scope": "user",
+"tier": "advice",
+"detect": [
+"$(xdg-user-dir PICTURES)/Screenshots; Spectacle save location"
+],
+"fix": "Report count and age; offer review.",
+"modifiers": [],
+"applies_to": [],
+"why": "",
+"related": [],
+"verify": "",
+"contacts": [],
+"kind": "hygiene",
+"warn_lower": 2
+},
+{
+"id": "desk.gnome_app_usage",
+"title": "GNOME application usage tracking",
+"category": "desktop",
+"severity": 2,
+"scope": "user",
+"tier": "auto",
+"detect": [
+"gsettings get org.gnome.desktop.privacy remember-app-usage",
+"$XDG_DATA_HOME/gnome-shell/application_state"
+],
+"fix": "Disable and clear.",
+"modifiers": [],
+"applies_to": [
+"GNOME"
+],
+"why": "",
+"related": [],
+"verify": "",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "desk.session_restore",
+"title": "Session restore reopens apps and documents",
+"category": "desktop",
+"severity": 2,
+"scope": "user",
+"tier": "auto",
+"detect": [
+"KDE: ksmserverrc [General] loginMode",
+"GNOME: org.gnome.SessionManager auto-save-session"
+],
+"fix": "Start with an empty session.",
+"modifiers": [],
+"applies_to": [],
+"why": "",
+"related": [],
+"verify": "",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "desk.folder_view_records",
+"title": "File manager per-folder view records",
+"category": "desktop",
+"severity": 2,
+"scope": "user",
+"tier": "advice",
+"detect": [
+"Dolphin: $XDG_DATA_HOME/dolphin/view_properties; .directory files on removable drives"
+],
+"fix": "Informational; offer cleanup.",
+"modifiers": [],
+"applies_to": [],
+"why": "",
+"related": [],
+"verify": "",
+"contacts": [],
+"kind": "hygiene",
+"warn_lower": 2
+},
+{
+"id": "app.photo_dbs",
+"title": "Photo manager databases, including face recognition data",
+"category": "apps",
+"severity": 5,
+"scope": "user",
+"tier": "guided",
+"detect": [
+"digiKam: digikam4.db, thumbnails-digikam.db, recognition.db (in the collection root by default)",
+"Shotwell: $XDG_DATA_HOME/shotwell/data/photo.db, $XDG_CACHE_HOME/shotwell/",
+"gThumb: native and Flatpak (org.gnome.gThumb) cache directories"
+],
+"fix": "Inform; offer to clear caches and face data.",
+"modifiers": [],
+"applies_to": [],
+"why": "",
+"related": [],
+"verify": "",
+"contacts": [],
+"kind": "hygiene",
+"warn_lower": 2
+},
+{
+"id": "app.messengers_mail",
+"title": "Messenger and email local stores",
+"category": "apps",
+"severity": 5,
+"scope": "user",
+"tier": "advice",
+"detect": [
+"Signal ~/.config/Signal; Telegram $XDG_DATA_HOME/TelegramDesktop; Discord ~/.config/discord; Slack ~/.config/Slack; Thunderbird profiles",
+"Include Flatpak and Snap variants"
+],
+"fix": "Recommend local passcodes (Telegram), keyring-backed safeStorage, attachment cache cleanup.",
+"modifiers": [],
+"applies_to": [],
+"why": "",
+"related": [
+"auth.chromium_basic_store"
+],
+"verify": "",
+"contacts": [],
+"kind": "hygiene",
+"warn_lower": 4
+},
+{
+"id": "app.editor_residue",
+"title": "Editor swap, backup and undo files",
+"category": "apps",
+"severity": 4,
+"scope": "user",
+"tier": "guided",
+"detect": [
+"Vim: ~/.viminfo, swap files (.*.swp next to files or in directory option), undodir",
+"Neovim: $XDG_STATE_HOME/nvim/{shada,swap,undo}",
+"Emacs: #file# and file~ backups",
+"gedit: file~ backups; Kate: swap file directory (configurable)"
+],
+"fix": "Offer cleanup; suggest swap/undo directories on tmpfs or inside the encrypted container.",
+"modifiers": [],
+"applies_to": [],
+"why": "Copies of files edited inside encrypted containers can end up outside them.",
+"related": [],
+"verify": "",
+"contacts": [],
+"kind": "hygiene",
+"warn_lower": 2
+},
+{
+"id": "app.office",
+"title": "Office suite recent lists and autorecovery copies",
+"category": "apps",
+"severity": 4,
+"scope": "user",
+"tier": "guided",
+"detect": [
+"LibreOffice: ~/.config/libreoffice/4/user/registrymodifications.xcu (history entries), backup/",
+"Flatpak: ~/.var/app/org.libreoffice.LibreOffice/config/libreoffice",
+"OnlyOffice: $XDG_DATA_HOME/onlyoffice"
+],
+"fix": "Clear history via the app (editing registrymodifications.xcu directly is fragile); clear backup copies.",
+"modifiers": [],
+"applies_to": [],
+"why": "",
+"related": [],
+"verify": "",
+"contacts": [],
+"kind": "hygiene",
+"warn_lower": 2
+},
+{
+"id": "app.media_players",
+"title": "Media player history and resume data",
+"category": "apps",
+"severity": 4,
+"scope": "user",
+"tier": "auto",
+"detect": [
+"mpv: $XDG_STATE_HOME/mpv/watch_later (newer) or ~/.config/mpv/watch_later (older)",
+"VLC: ~/.config/vlc/vlc-qt-interface.conf [RecentsMRL]; vlcrc qt-recentplay",
+"SMPlayer: ~/.config/smplayer/"
+],
+"fix": "Clear; disable recent lists where supported.",
+"modifiers": [],
+"applies_to": [],
+"why": "",
+"related": [],
+"verify": "",
+"contacts": [],
+"kind": "hygiene",
+"warn_lower": 2
+},
+{
+"id": "app.cups_spool",
+"title": "Print jobs and history retained by CUPS",
+"category": "apps",
+"severity": 4,
+"scope": "system",
+"tier": "guided",
+"detect": [
+"/etc/cups/cupsd.conf PreserveJobFiles, PreserveJobHistory",
+"ls /var/spool/cups (d* = document data)",
+"lpstat -W completed -o"
+],
+"fix": "Set PreserveJobFiles No and PreserveJobHistory to No or a short time; purge completed jobs.",
+"modifiers": [],
+"applies_to": [],
+"why": "By default CUPS keeps document files for a day and job history (including titles) indefinitely.",
+"related": [],
+"verify": "",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "app.pdf_readers",
+"title": "PDF reader document history",
+"category": "apps",
+"severity": 3,
+"scope": "user",
+"tier": "auto",
+"detect": [
+"Okular: $XDG_DATA_HOME/okular/docdata/",
+"Evince/Atril: stored in GVFS metadata (desk.gvfs_metadata)"
+],
+"fix": "Clear.",
+"modifiers": [],
+"applies_to": [],
+"why": "",
+"related": [],
+"verify": "",
+"contacts": [],
+"kind": "hygiene",
+"warn_lower": 2
+},
+{
+"id": "app.electron_caches",
+"title": "Electron app caches",
+"category": "apps",
+"severity": 3,
+"scope": "user",
+"tier": "auto",
+"detect": [
+"~/.config/<App>/{Cache,Code Cache,GPUCache,IndexedDB,Service Worker}"
+],
+"fix": "Clear only while the app is not running.",
+"modifiers": [],
+"applies_to": [],
+"why": "",
+"related": [],
+"verify": "",
+"contacts": [],
+"kind": "hygiene",
+"warn_lower": 2
+},
+{
+"id": "app.package_logs",
+"title": "Package manager logs reveal installation history",
+"category": "apps",
+"severity": 2,
+"scope": "system",
+"tier": "advice",
+"detect": [
+"/var/log/apt/history.log, /var/log/dpkg.log, /var/log/pacman.log, /var/log/zypp/history, dnf history"
+],
+"fix": "Informational.",
+"modifiers": [],
+"applies_to": [],
+"why": "",
+"related": [],
+"verify": "",
+"contacts": [],
+"kind": "hygiene",
+"warn_lower": 2
+},
+{
+"id": "app.mail_remote_content",
+"title": "Mail clients load remote content (tracking pixels)",
+"category": "apps",
+"severity": 4,
+"scope": "user",
+"tier": "guided",
+"detect": [
+"Thunderbird: mailnews.message_display.disable_remote_image (true = blocked, the default)",
+"Evolution: gsettings org.gnome.evolution.mail image-loading-policy (never | sometimes | always)"
+],
+"fix": "Thunderbird pref back to blocked (while it is closed); Evolution image-loading-policy never.",
+"modifiers": [],
+"applies_to": [],
+"why": "Loading images from the sender's server tells them when, where and on what you opened a message. Both clients block it by default; this catches it turned on.",
+"related": [],
+"verify": "",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "app.shared_file_metadata",
+"title": "Documents you save carry your name",
+"category": "apps",
+"severity": 4,
+"scope": "user",
+"tier": "guided",
+"detect": [
+"LibreOffice registrymodifications.xcu: /org.openoffice.UserProfile/Data givenname or sn set (whether, not what)",
+"LibreOffice /org.openoffice.Office.Common/Security/Scripting RemovePersonalInfoOnSaving (true = stripped on save)",
+"mat2 / exiftool installed, for stripping metadata from files by hand"
+],
+"fix": "Turn on \"Remove personal information on saving\" (while LibreOffice is closed); recommend mat2 for photos.",
+"modifiers": [],
+"applies_to": [],
+"why": "LibreOffice writes the user name from its settings into every document's author and editing history, and photos can carry GPS coordinates; both travel with the file when shared.",
+"related": [],
+"verify": "The registrymodifications.xcu paths for RemovePersonalInfoOnSaving on LibreOffice 7 and 24.x.",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "sbx.flatpak_broad_perms",
+"title": "Flatpak apps with broad permissions",
+"category": "sandbox",
+"severity": 5,
+"scope": "user",
+"tier": "guided",
+"detect": [
+"flatpak list --app --columns=application; flatpak info --show-permissions <id>; flatpak override --show <id>",
+"Flag filesystems=home|host|host-os|host-etc, devices=all, session bus access",
+"Flag talk access to org.freedesktop.Flatpak as critical (allows escaping the sandbox)"
+],
+"fix": "flatpak override --user --nofilesystem=home <id> (and similar); suggest Flatseal.",
+"modifiers": [],
+"applies_to": [],
+"why": "",
+"related": [],
+"verify": "",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "sbx.flatpak_caches",
+"title": "Flatpak apps keep separate caches and history",
+"category": "sandbox",
+"severity": 2,
+"scope": "user",
+"tier": "auto",
+"detect": [
+"~/.var/app/<id>/{cache,config,data,.local/state}"
+],
+"fix": "Every other check must enumerate these paths; this check reports totals.",
+"modifiers": [],
+"applies_to": [],
+"why": "Cleaners that only look at native paths miss everything under ~/.var/app.",
+"related": [],
+"verify": "",
+"contacts": [],
+"kind": "hygiene",
+"warn_lower": 2
+},
+{
+"id": "sbx.x11_session",
+"title": "X11 session allows apps to snoop on each other",
+"category": "sandbox",
+"severity": 5,
+"scope": "user",
+"tier": "advice",
+"detect": [
+"echo $XDG_SESSION_TYPE"
+],
+"fix": "Recommend a Wayland session where the hardware and apps allow it.",
+"modifiers": [
+{
+"when": "session == 'wayland'",
+"severity": 0,
+"when_text": "display session is Wayland"
+}
+],
+"applies_to": [],
+"why": "Any X11 client can log keystrokes and capture other windows, including password prompts.",
+"related": [],
+"verify": "",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "sbx.leftover_data",
+"title": "Leftover data from uninstalled apps",
+"category": "sandbox",
+"severity": 3,
+"scope": "user",
+"tier": "guided",
+"detect": [
+"~/.var/app/* not in flatpak list",
+"~/snap/* not in snap list",
+"Native ~/.config and ~/.local/share dirs with no matching installed package (low confidence)"
+],
+"fix": "List for review; never auto-delete native candidates.",
+"modifiers": [],
+"applies_to": [],
+"why": "",
+"related": [],
+"verify": "",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "sbx.portal_permissions",
+"title": "Persisted portal permissions (camera, microphone, location, screenshots)",
+"category": "sandbox",
+"severity": 3,
+"scope": "user",
+"tier": "guided",
+"detect": [
+"flatpak permissions; flatpak permission-show <id>"
+],
+"fix": "Review; flatpak permission-reset <id>.",
+"modifiers": [],
+"applies_to": [],
+"why": "",
+"related": [],
+"verify": "",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "sbx.snap",
+"title": "Snap retained revisions and classic confinement",
+"category": "sandbox",
+"severity": 3,
+"scope": "user",
+"tier": "guided",
+"detect": [
+"snap list --all (disabled revisions); snap get system refresh.retain",
+"snap list: \"classic\" in Notes = unconfined",
+"~/snap/<name>/<rev> per-revision data copies"
+],
+"fix": "Remove disabled revisions; inform about classic snaps.",
+"modifiers": [],
+"applies_to": [],
+"why": "",
+"related": [],
+"verify": "",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "sbx.appimages",
+"title": "AppImages run without a sandbox",
+"category": "sandbox",
+"severity": 2,
+"scope": "user",
+"tier": "advice",
+"detect": [
+"*.AppImage under ~/Applications, ~/Downloads, ~/bin, ~/.local/bin, ~/.local/share/applications (count only)"
+],
+"fix": "Informational; prefer the Flatpak where the app offers one, and keep AppImages from sources you trust.",
+"modifiers": [],
+"applies_to": [],
+"why": "An AppImage is a plain program with full access to your files; nothing confines it.",
+"related": [],
+"verify": "",
+"contacts": [],
+"kind": "info",
+"warn_lower": 2
+},
+{
+"id": "kern.updates",
+"title": "Security updates not applied",
+"category": "kernel",
+"severity": 6,
+"scope": "system",
+"tier": "guided",
+"detect": [
+"Debian/Ubuntu: apt list --upgradable; /etc/apt/apt.conf.d/20auto-upgrades",
+"Fedora: dnf check-update; dnf-automatic timer",
+"Arch: checkupdates (pacman-contrib); openSUSE: zypper lu",
+"flatpak remote-ls --updates; snap refresh --list"
+],
+"fix": "Prompt to update; offer automatic security updates where the distro supports them.",
+"modifiers": [],
+"applies_to": [],
+"why": "",
+"related": [],
+"verify": "",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "kern.ptrace_scope",
+"title": "Processes can read each other's memory (ptrace_scope 0)",
+"category": "kernel",
+"severity": 4,
+"scope": "system",
+"tier": "guided",
+"detect": [
+"cat /proc/sys/kernel/yama/ptrace_scope"
+],
+"fix": "sysctl.d drop-in kernel.yama.ptrace_scope=1 (note it affects attaching debuggers).",
+"modifiers": [],
+"applies_to": [],
+"why": "Any process running as the user can read password manager and browser memory.",
+"related": [],
+"verify": "",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "kern.dmesg_restrict",
+"title": "Any user can read the kernel log (dmesg_restrict 0)",
+"category": "kernel",
+"severity": 3,
+"scope": "system",
+"tier": "auto",
+"detect": [
+"cat /proc/sys/kernel/dmesg_restrict (0 = anyone may read)",
+"Members of adm / systemd-journal can still read kernel messages through the journal"
+],
+"fix": "sysctl kernel.dmesg_restrict=1 now and a sysctl.d drop-in for boot (root, reversible).",
+"modifiers": [
+{
+"when": "multi_user",
+"severity": 5,
+"when_text": "several user accounts"
+}
+],
+"applies_to": [],
+"why": "The kernel log records every USB device plugged in (with serial numbers), drives mounted, and Wi-Fi and Bluetooth activity: a record of what was done with the machine, readable by every account and every program.",
+"related": [
+"kern.proc_hidepid"
+],
+"verify": "",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "kern.proc_hidepid",
+"title": "Other users can see your processes and their command lines",
+"category": "kernel",
+"severity": 4,
+"scope": "user",
+"tier": "advice",
+"detect": [
+"/proc/self/mountinfo: options of the /proc mount; hidepid=2 or hidepid=invisible (or 1/noaccess) hides them"
+],
+"fix": "Explain the fstab option (hidepid=invisible,gid=proc) and that systemd-logind, polkit and monitoring tools need the gid exception; some distributions break without it. Never automate.",
+"modifiers": [
+{
+"when": "not multi_user",
+"severity": 0,
+"when_text": "not several user accounts"
+}
+],
+"applies_to": [],
+"why": "Without hidepid on /proc, every account can list what you run with its full command line, including passwords and tokens passed as arguments.",
+"related": [
+"auth.shell_history_secrets",
+"kern.dmesg_restrict"
+],
+"verify": "Which distributions' logind and polkit work with hidepid out of the box.",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "kern.init_on_free",
+"title": "Freed memory isn't cleared (init_on_free)",
+"category": "kernel",
+"severity": 1,
+"scope": "system",
+"tier": "advice",
+"detect": [
+"/proc/cmdline init_on_free=",
+"CONFIG_INIT_ON_FREE_DEFAULT_ON in /boot/config-$(uname -r) or /proc/config.gz"
+],
+"fix": "Explain the kernel parameter and its performance cost.",
+"modifiers": [],
+"applies_to": [],
+"why": "Freed memory keeps its old contents until it is reused, so secrets linger a little longer for a memory dump or cold-boot attack to find. Defence in depth with a real performance cost, which is why few distributions enable it; live data is in memory either way, so it narrows the risk rather than removing it.",
+"related": [],
+"verify": "",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "kern.landlock",
+"title": "Kernel can't keep sandboxed programs from the session's hidden sockets (Landlock)",
+"category": "kernel",
+"severity": 1,
+"scope": "user",
+"tier": "advice",
+"detect": [
+"/sys/kernel/security/lsm"
+],
+"fix": "A kernel 6.12 or newer.",
+"modifiers": [],
+"applies_to": [],
+"why": "Landlock.",
+"related": [],
+"verify": "",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "kern.init_on_alloc",
+"title": "Kernel memory isn't cleared before use (init_on_alloc)",
+"category": "kernel",
+"severity": 2,
+"scope": "system",
+"tier": "advice",
+"detect": [
+"/proc/cmdline init_on_alloc=",
+"CONFIG_INIT_ON_ALLOC_DEFAULT_ON in the kernel config"
+],
+"fix": "Explain the kernel parameter and its performance cost.",
+"modifiers": [],
+"applies_to": [],
+"why": "Kernel hardening against bugs that leak uninitialised kernel memory to programs. Not a serious threat on its own, but it is on by default in almost every distribution kernel, costs almost nothing and meaningfully improves security, so finding it off is strange: it usually means a custom kernel or a boot option turned it off, and is worth looking into.",
+"related": [],
+"verify": "",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "kern.suspend_keys_in_ram",
+"title": "Suspend keeps disk keys in RAM",
+"category": "kernel",
+"severity": 3,
+"scope": "user",
+"tier": "advice",
+"detect": [
+"Informational for laptops with FDE",
+"Memory encryption: /proc/cpuinfo flags sme (AMD; active with mem_encrypt=on or CONFIG_AMD_MEM_ENCRYPT_ACTIVE_BY_DEFAULT) or tme (Intel; turned on in firmware, the kernel log says \"x86/tme: enabled by BIOS\")"
+],
+"fix": "Advise shutting down when travelling; note memory encryption when the CPU has it but it is off.",
+"modifiers": [
+{
+"when": "device == 'desktop'",
+"severity": 1,
+"when_text": "device type is desktop"
+},
+{
+"when": "fde == 'none'",
+"severity": 0,
+"when_text": "disk encryption is none"
+}
+],
+"applies_to": [],
+"why": "A stolen sleeping laptop has its keys in memory, exposed to DMA or cold-boot attacks.",
+"related": [],
+"verify": "",
+"contacts": [],
+"kind": "hygiene",
+"warn_lower": 2
+},
+{
+"id": "kern.dma",
+"title": "Thunderbolt/DMA protections weak",
+"category": "kernel",
+"severity": 3,
+"scope": "user",
+"tier": "advice",
+"detect": [
+"boltctl domains (security level); /sys/bus/thunderbolt/devices/domain*/security",
+"/sys/bus/thunderbolt/devices/domain*/iommu_dma_protection; ls /sys/class/iommu"
+],
+"fix": "Explain enabling IOMMU and bolt security levels. Note that memory encryption (SME/TME) is no substitute.",
+"modifiers": [],
+"applies_to": [],
+"why": "",
+"related": [],
+"verify": "",
+"contacts": [],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "tel.observed_traffic",
+"title": "Phone-home traffic seen on the network",
+"category": "telemetry",
+"severity": 4,
+"scope": "online",
+"tier": "advice",
+"detect": [
+"With root: resolvectl monitor --json=short (DNS names asked) and ss -tunp samples (which program) for N seconds",
+"Without root: ss -tunp samples of your own programs, matched against addresses of known phone-home hosts",
+"Match names against a list of known telemetry, crash-report, connectivity-check and location hosts",
+"Other names are only counted per program, never listed: they would be your browsing"
+],
+"fix": "Point to the check that turns off what was seen (browser telemetry, crash reporters, connectivity check...).",
+"modifiers": [],
+"applies_to": [],
+"why": "Settings say what should happen; watching the traffic shows what does. Confirms that telemetry, crash reporting and connectivity checks you turned off really stopped.",
+"related": [
+"tel.browser_telemetry",
+"tel.crash_reporters",
+"net.connectivity_check",
+"tel.devtools",
+"tel.location"
+],
+"verify": "The host list, and resolvectl monitor's JSON format (systemd 254+).",
+"contacts": [
+"Nobody: it only watches. Without root it looks up the addresses of known phone-home hosts (your DNS resolver sees those lookups)."
+],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "net.dns_encryption_in_use",
+"title": "DNS over TLS configured but not used",
+"category": "network",
+"severity": 3,
+"scope": "online",
+"tier": "advice",
+"detect": [
+"Only when resolved has DNSOverTLS set",
+"resolvectl query --cache=no <probe name>: \"Data was acquired via local or encrypted transport: yes|no\""
+],
+"fix": "Use DNSOverTLS=yes with a server that supports it (see net.dns_unencrypted's guide).",
+"modifiers": [],
+"applies_to": [],
+"why": "systemd-resolved can be set to DNS over TLS yet fall back to plain DNS (opportunistic mode, or a server that doesn't support it) without saying so.",
+"related": [
+"net.dns_unencrypted"
+],
+"verify": "The resolvectl query output line across systemd versions.",
+"contacts": [
+"Your configured DNS server: one lookup of example.com."
+],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "net.dns_leak",
+"title": "DNS queries leak outside the VPN",
+"category": "network",
+"severity": 7,
+"scope": "online",
+"tier": "advice",
+"detect": [
+"Get a test id from the leak-test service, look up unique names under it, ask the service which resolvers asked",
+"With a VPN: resolvers run by a different network than the VPN exit may be leaking",
+"Without a VPN: informational, shows who resolves your names"
+],
+"fix": "Use the VPN's DNS (its app's DNS leak protection), or route all DNS through the tunnel (resolved ~. on the VPN link).",
+"modifiers": [
+{
+"when": "not vpn_active",
+"severity": 1,
+"when_text": "not VPN connected"
+}
+],
+"applies_to": [],
+"why": "With a VPN on, the sites you look up should be resolved through it. If queries reach your internet provider's resolvers instead, it sees every site you visit despite the VPN.",
+"related": [
+"net.vpn_leaks"
+],
+"verify": "The bash.ws API and JSON format.",
+"contacts": [
+"bash.ws (the leak-test service): sees your public IP address and which resolvers asked for its test names.",
+"Your DNS resolvers: ten lookups of random names under bash.ws."
+],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "net.dnssec_validation",
+"title": "DNS answers aren't checked with DNSSEC",
+"category": "network",
+"severity": 2,
+"scope": "online",
+"tier": "advice",
+"detect": [
+"Look up a correctly signed name (it must resolve) and dnssec-failed.org (deliberately broken: must fail)"
+],
+"fix": "Explain resolved's DNSSEC= setting and validating resolvers; many networks break DNSSEC, so allow-downgrade is common.",
+"modifiers": [],
+"applies_to": [],
+"why": "Without DNSSEC validation, a forged DNS answer (on public Wi-Fi, or from a compromised resolver) is accepted and can send you to the wrong server.",
+"related": [],
+"verify": "",
+"contacts": [
+"Your DNS resolver: lookups of example.com and dnssec-failed.org (its servers see the second lookup)."
+],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "net.nxdomain_rewrite",
+"title": "Failed DNS lookups are redirected",
+"category": "network",
+"severity": 4,
+"scope": "online",
+"tier": "advice",
+"detect": [
+"Look up a random, non-existent .com name; any address in reply means NXDOMAIN rewriting"
+],
+"fix": "Use a different DNS resolver (or DNS over TLS), and turn off \"DNS assist\" / \"search help\" in the provider account or router.",
+"modifiers": [],
+"applies_to": [],
+"why": "Some providers and routers answer lookups of names that don't exist with their own server (for search pages or ads): they are reading and altering your DNS.",
+"related": [
+"net.dns_unencrypted"
+],
+"verify": "",
+"contacts": [
+"Your DNS resolver: one lookup of a random, non-existent .com name (the .com servers see it too)."
+],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "net.vpn_ipv6_leak",
+"title": "IPv6 traffic bypasses the VPN",
+"category": "network",
+"severity": 7,
+"scope": "online",
+"tier": "advice",
+"detect": [
+"IPv6 default route via a non-VPN interface",
+"Ask an IPv6 address echo service which address it sees; a global address of a non-VPN interface is a leak",
+"Also show the public IPv4 address websites see"
+],
+"fix": "Turn on the VPN's IPv6 support or leak protection, or disable IPv6 on the physical interface while the VPN is on.",
+"modifiers": [
+{
+"when": "not vpn_active",
+"severity": 0,
+"when_text": "not VPN connected"
+}
+],
+"applies_to": [],
+"why": "Many VPN setups only carry IPv4. If IPv6 still works outside the tunnel, sites reachable over IPv6 see your real address.",
+"related": [
+"net.vpn_leaks",
+"net.dns_leak"
+],
+"verify": "",
+"contacts": [
+"api.ipify.org and api6.ipify.org (address echo services): see your public IPv4 and IPv6 addresses."
+],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "net.upnp_forwards",
+"title": "The router forwards internet ports to this machine (UPnP)",
+"category": "network",
+"severity": 6,
+"scope": "online",
+"tier": "advice",
+"detect": [
+"SSDP search for an Internet Gateway Device on the local network",
+"Its description, then GetGenericPortMappingEntry for each mapping; keep those whose internal client is this machine"
+],
+"fix": "Turn off UPnP in the app that opened the port, or in the router. Then check the service with net.exposed_services.",
+"modifiers": [],
+"applies_to": [],
+"why": "Apps (games, torrent clients, media servers) can ask the router to open ports to them with UPnP, without asking you. Those services are then reachable from the whole internet.",
+"related": [
+"net.exposed_services",
+"net.firewall_off"
+],
+"verify": "",
+"contacts": [
+"Your router only (local network): an SSDP search and its UPnP control interface. Nothing on the internet."
+],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "net.tls_interception",
+"title": "Encrypted connections are intercepted",
+"category": "network",
+"severity": 7,
+"scope": "online",
+"tier": "advice",
+"detect": [
+"TLS connections to a few well-known sites; who issued their certificates",
+"An issuer known for interception (antivirus, corporate proxies, debugging proxies) fails; an unknown issuer or an untrusted certificate warns",
+"Also note root certificates added locally (/usr/local/share/ca-certificates, /etc/pki/ca-trust/source/anchors, ...)"
+],
+"fix": "Find the product doing it (the issuer names it) and turn off its HTTPS scanning, or remove its root certificate.",
+"modifiers": [],
+"applies_to": [],
+"why": "A corporate proxy, antivirus \"web shield\" or network device that decrypts HTTPS sees passwords, messages and everything else sent to websites.",
+"related": [],
+"verify": "The lists of public and intercepting issuers.",
+"contacts": [
+"www.wikipedia.org, www.mozilla.org, letsencrypt.org, www.debian.org: a TLS connection to each (they see your IP address)."
+],
+"kind": "finding",
+"warn_lower": 3
+},
+{
+"id": "kern.updates_refreshed",
+"title": "Security updates not applied (with fresh package lists)",
+"category": "kernel",
+"severity": 6,
+"scope": "online",
+"tier": "advice",
+"detect": [
+"apt: apt-get update into a temporary lists directory as you (the system lists are not touched), then apt list --upgradable",
+"dnf: dnf check-update --refresh (and updateinfo --security); pacman: checkupdates; flatpak remote-ls --updates; snap refresh --list"
+],
+"fix": "Install the updates (see kern.updates).",
+"modifiers": [],
+"applies_to": [],
+"why": "The offline check counts only updates the machine already knows about; this one fetches fresh package lists first, so it also counts what was published since your last refresh.",
+"related": [
+"kern.updates"
+],
+"verify": "apt-get update as a normal user into its own lists directory.",
+"contacts": [
+"Your distribution's package mirrors (as in its repository files), Flathub and the Snap Store if used: they see your IP address. apt downloads tens of MB of lists."
+],
+"kind": "finding",
+"warn_lower": 2
+},
+{
+"id": "net.ipv6_reachable",
+"title": "Services reachable from the internet over IPv6",
+"category": "network",
+"severity": 6,
+"scope": "online",
+"tier": "advice",
+"detect": [
+"Listening services on all interfaces that the host firewall lets through",
+"With a port probe server of your own (online.json port_probe): ask it to connect to each one from outside",
+"Otherwise: likely reachable; confirm with daprivacyscanner --probe from a device on another network"
+],
+"fix": "Stop the service, bind it to a local address, or block it in the host firewall (see net.exposed_services).",
+"modifiers": [
+{
+"when": "not ipv6_global",
+"severity": 0,
+"when_text": "not public IPv6 address"
+}
+],
+"applies_to": [],
+"why": "With a public IPv6 address there is no home-router NAT in the way: a listening service the host firewall lets through can be reached from anywhere, unless the router blocks it.",
+"related": [
+"net.exposed_services",
+"net.firewall_off"
+],
+"verify": "",
+"contacts": [
+"Nobody by default. With a port probe server set: that server, which connects to your public IPv6 address on the listed ports."
+],
+"kind": "finding",
+"warn_lower": 2
+}
+],
+"categories": {
+"encryption": "Encryption and data at rest",
+"auth": "Authentication, sessions and secrets",
+"network": "Network exposure and tracking",
+"telemetry": "Telemetry and phone-home",
+"browser": "Browsers",
+"desktop": "Desktop activity tracking",
+"apps": "Applications",
+"sandbox": "Sandboxing and permissions",
+"kernel": "Kernel and physical attack surface"
+},
+"context_keys": [
+"fde",
+"virtualization",
+"device",
+"multi_user",
+"session",
+"hibernation",
+"tpm_unlock_no_pin",
+"autologin",
+"exposed_services",
+"vpn_active",
+"ipv6_global"
+],
+"implemented": [
+"app.cups_spool",
+"app.editor_residue",
+"app.electron_caches",
+"app.mail_remote_content",
+"app.media_players",
+"app.messengers_mail",
+"app.office",
+"app.package_logs",
+"app.pdf_readers",
+"app.photo_dbs",
+"app.shared_file_metadata",
+"auth.autologin",
+"auth.chromium_basic_store",
+"auth.empty_password",
+"auth.firefox_no_primary_password",
+"auth.gpg_no_passphrase",
+"auth.home_world_readable",
+"auth.keyring_blank",
+"auth.lockscreen_notifications",
+"auth.login_history",
+"auth.plaintext_credentials",
+"auth.remote_desktop",
+"auth.screen_lock",
+"auth.shell_history_secrets",
+"auth.ssh_key_no_passphrase",
+"auth.ssh_known_hosts_plain",
+"auth.sudo_nopasswd",
+"auth.umask",
+"br.account_sync",
+"br.ad_features",
+"br.crashpad_dumps",
+"br.disk_cache",
+"br.extensions_broad",
+"br.history_retention",
+"br.private_download_leak",
+"br.tracking_protection",
+"br.webrtc",
+"desk.clipboard_history",
+"desk.folder_view_records",
+"desk.gnome_app_usage",
+"desk.gvfs_metadata",
+"desk.indexers",
+"desk.kde_activities",
+"desk.recent_files",
+"desk.screenshots",
+"desk.session_restore",
+"desk.thumbnails",
+"desk.zeitgeist",
+"enc.backups_unencrypted",
+"enc.boot_no_secureboot",
+"enc.coredumps_retained",
+"enc.fde_missing",
+"enc.hibernate_unencrypted",
+"enc.journal_persistent",
+"enc.luks_weak_kdf",
+"enc.partial_fde",
+"enc.removable_unencrypted",
+"enc.snapshots_retain_deleted",
+"enc.swap_persistent",
+"enc.swap_unencrypted",
+"enc.tmp_on_disk",
+"enc.tpm_no_pin",
+"enc.trash",
+"enc.trim_through_luks",
+"kern.dma",
+"kern.dmesg_restrict",
+"kern.init_on_alloc",
+"kern.init_on_free",
+"kern.proc_hidepid",
+"kern.ptrace_scope",
+"kern.suspend_keys_in_ram",
+"kern.updates",
+"kern.updates_refreshed",
+"net.bluetooth",
+"net.connectivity_check",
+"net.dns_encryption_in_use",
+"net.dns_leak",
+"net.dns_unencrypted",
+"net.dnssec_validation",
+"net.docker_bypass",
+"net.exposed_services",
+"net.firewall_off",
+"net.hidden_ssid",
+"net.hostname_broadcast",
+"net.ipv6_privacy",
+"net.ipv6_reachable",
+"net.kdeconnect",
+"net.mac_permanent",
+"net.nxdomain_rewrite",
+"net.open_autoconnect",
+"net.tls_interception",
+"net.upnp_forwards",
+"net.vpn_ipv6_leak",
+"net.vpn_leaks",
+"net.wifi_history",
+"sbx.appimages",
+"sbx.flatpak_broad_perms",
+"sbx.flatpak_caches",
+"sbx.leftover_data",
+"sbx.portal_permissions",
+"sbx.snap",
+"sbx.x11_session",
+"tel.background_callers",
+"tel.browser_telemetry",
+"tel.cloud_sync",
+"tel.countme",
+"tel.crash_reporters",
+"tel.devtools",
+"tel.http_repos",
+"tel.kde_feedback",
+"tel.location",
+"tel.observed_traffic"
+],
+"report": {
+"started": 1791027244.471641,
+"duration_ms": 27,
+"privileged": false,
+"context": {
+"values": {
+"fde": {
+"key": "fde",
+"value": "partial",
+"evidence": [
+{
+"kind": "value",
+"label": "Root filesystem device",
+"value": "vg-root (ext4)"
+},
+{
+"kind": "path",
+"label": "Not encrypted",
+"value": "/srv/data"
+}
+],
+"note": "/ is encrypted; some other mounted filesystems are not",
+"partial": false,
+"notes": []
+},
+"virtualization": {
+"key": "virtualization",
+"value": "none",
+"evidence": [
+{
+"kind": "note",
+"label": "No hypervisor or container found",
+"value": null
+}
+],
+"note": "No sign of a virtual machine or container",
+"partial": false,
+"notes": []
+},
+"device": {
+"key": "device",
+"value": null,
+"evidence": [
+{
+"kind": "value",
+"label": "SMBIOS chassis type",
+"value": "unavailable"
+}
+],
+"note": "The chassis type doesn't say whether this is a laptop",
+"partial": false,
+"notes": []
+},
+"multi_user": {
+"key": "multi_user",
+"value": null,
+"evidence": [],
+"note": "Neither getent nor /etc/passwd is available",
+"partial": false,
+"notes": []
+},
+"session": {
+"key": "session",
+"value": null,
+"evidence": [
+{
+"kind": "value",
+"label": "XDG_SESSION_TYPE",
+"value": "unset"
+}
+],
+"note": "No graphical session found",
+"partial": false,
+"notes": []
+},
+"hibernation": {
+"key": "hibernation",
+"value": null,
+"evidence": [],
+"note": "/sys/power/state is not available",
+"partial": false,
+"notes": []
+},
+"tpm_unlock_no_pin": {
+"key": "tpm_unlock_no_pin",
+"value": null,
+"evidence": [],
+"note": "Needs administrator access to read the LUKS headers, where TPM unlock and PINs are recorded",
+"partial": false,
+"notes": [
+{
+"kind": "limitation",
+"title": "Scan with administrator access to check TPM unlock",
+"text": "Whether this disk unlocks from the TPM alone, with no PIN, is recorded in the LUKS header, which only an administrator can read. Until then, findings that depend on it (such as automatic login) show their lower severity.",
+"related": [
+"enc.tpm_no_pin",
+"auth.autologin"
+]
+}
+]
+},
+"autologin": {
+"key": "autologin",
+"value": false,
+"evidence": [],
+"note": "From every known display manager's configuration and console getty overrides",
+"partial": false,
+"notes": []
+},
+"exposed_services": {
+"key": "exposed_services",
+"value": null,
+"evidence": [],
+"note": "ss (iproute2) is not installed",
+"partial": false,
+"notes": []
+},
+"vpn_active": {
+"key": "vpn_active",
+"value": false,
+"evidence": [],
+"note": "No WireGuard or tun interface is up",
+"partial": false,
+"notes": []
+},
+"ipv6_global": {
+"key": "ipv6_global",
+"value": false,
+"evidence": [],
+"note": "IPv6 is off",
+"partial": false,
+"notes": []
+}
+},
+"desktop": {
+"names": [
+"gnome"
+],
+"plasma_major": null,
+"gnome_major": null,
+"label": "GNOME"
+}
+},
+"results": {
+"enc.fde_missing": {
+"id": "enc.fde_missing",
+"status": "pass",
+"effective_severity": 10,
+"base_severity": 10,
+"evidence": [
+{
+"kind": "value",
+"label": "Root filesystem device",
+"value": "vg-root (ext4)"
+},
+{
+"kind": "path",
+"label": "Not encrypted",
+"value": "/srv/data"
+}
+],
+"fixable": false,
+"summary": "The root filesystem is encrypted.",
+"partial": false,
+"uncertain_on": [
+"device"
+],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 0,
+"kind": "finding",
+"is_finding": false,
+"is_hygiene": false
+},
+"enc.partial_fde": {
+"id": "enc.partial_fde",
+"status": "fail",
+"effective_severity": 8,
+"base_severity": 8,
+"evidence": [
+{
+"kind": "value",
+"label": "Root filesystem device",
+"value": "vg-root (ext4)"
+},
+{
+"kind": "path",
+"label": "Not encrypted",
+"value": "/srv/data"
+}
+],
+"fixable": false,
+"summary": "Some fixed, mounted filesystems are not encrypted.",
+"partial": false,
+"uncertain_on": [],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 0,
+"kind": "finding",
+"is_finding": true,
+"is_hygiene": false
+},
+"enc.swap_unencrypted": {
+"id": "enc.swap_unencrypted",
+"status": "pass",
+"effective_severity": 8,
+"base_severity": 8,
+"evidence": [],
+"fixable": false,
+"summary": "No swap is in use.",
+"partial": false,
+"uncertain_on": [
+"hibernation"
+],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 0,
+"kind": "finding",
+"is_finding": false,
+"is_hygiene": false
+},
+"enc.hibernate_unencrypted": {
+"id": "enc.hibernate_unencrypted",
+"status": "unknown",
+"effective_severity": 9,
+"base_severity": 9,
+"evidence": [],
+"fixable": false,
+"summary": "Couldn't tell whether this machine can hibernate: /sys/power/state is not available",
+"partial": true,
+"uncertain_on": [],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 0,
+"kind": "finding",
+"is_finding": false,
+"is_hygiene": false
+},
+"enc.swap_persistent": {
+"id": "enc.swap_persistent",
+"status": "pass",
+"effective_severity": 3,
+"base_severity": 3,
+"evidence": [],
+"fixable": false,
+"summary": "No swap is in use.",
+"partial": false,
+"uncertain_on": [],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 0,
+"kind": "finding",
+"is_finding": false,
+"is_hygiene": false
+},
+"enc.luks_weak_kdf": {
+"id": "enc.luks_weak_kdf",
+"status": "unknown",
+"effective_severity": 5,
+"base_severity": 5,
+"evidence": [],
+"fixable": false,
+"summary": "Partial detection: Reading the LUKS headers needs administrator access. Scan with administrator access to check it.",
+"partial": true,
+"uncertain_on": [],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 0,
+"kind": "finding",
+"is_finding": false,
+"is_hygiene": false
+},
+"enc.tpm_no_pin": {
+"id": "enc.tpm_no_pin",
+"status": "unknown",
+"effective_severity": 6,
+"base_severity": 6,
+"evidence": [],
+"fixable": false,
+"summary": "Couldn't check: Needs administrator access to read the LUKS headers, where TPM unlock and PINs are recorded",
+"partial": true,
+"uncertain_on": [],
+"findings": {},
+"notes": [
+{
+"kind": "limitation",
+"title": "Scan with administrator access to check TPM unlock",
+"text": "Whether this disk unlocks from the TPM alone, with no PIN, is recorded in the LUKS header, which only an administrator can read. Until then, findings that depend on it (such as automatic login) show their lower severity.",
+"related": [
+"enc.tpm_no_pin",
+"auth.autologin"
+]
+}
+],
+"error": "",
+"duration_ms": 0,
+"kind": "finding",
+"is_finding": false,
+"is_hygiene": false
+},
+"enc.backups_unencrypted": {
+"id": "enc.backups_unencrypted",
+"status": "pass",
+"effective_severity": 7,
+"base_severity": 7,
+"evidence": [],
+"fixable": false,
+"summary": "No Timeshift or Déjà Dup backups are set up.",
+"partial": false,
+"uncertain_on": [],
+"findings": {},
+"notes": [
+{
+"kind": "limitation",
+"title": "Other backup tools aren't checked",
+"text": "Borg, restic, rsync scripts and cloud backup apps keep their settings in places the app doesn't read yet. If you use one, check that it encrypts.",
+"related": []
+}
+],
+"error": "",
+"duration_ms": 0,
+"kind": "finding",
+"is_finding": false,
+"is_hygiene": false
+},
+"enc.removable_unencrypted": {
+"id": "enc.removable_unencrypted",
+"status": "pass",
+"effective_severity": 5,
+"base_severity": 5,
+"evidence": [],
+"fixable": false,
+"summary": "No removable drives are attached.",
+"partial": false,
+"uncertain_on": [],
+"findings": {},
+"notes": [
+{
+"kind": "limitation",
+"title": "Only drives attached now are checked",
+"text": "Plug in your USB sticks and external drives and scan again to check them.",
+"related": []
+}
+],
+"error": "",
+"duration_ms": 0,
+"kind": "finding",
+"is_finding": false,
+"is_hygiene": false
+},
+"enc.coredumps_retained": {
+"id": "enc.coredumps_retained",
+"status": "pass",
+"effective_severity": 5,
+"base_severity": 5,
+"evidence": [
+{
+"kind": "value",
+"label": "core_pattern",
+"value": "unknown"
+}
+],
+"fixable": false,
+"summary": "Crash dumps aren't kept.",
+"partial": false,
+"uncertain_on": [],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 0,
+"kind": "finding",
+"is_finding": false,
+"is_hygiene": false
+},
+"enc.snapshots_retain_deleted": {
+"id": "enc.snapshots_retain_deleted",
+"status": "pass",
+"effective_severity": 4,
+"base_severity": 4,
+"evidence": [],
+"fixable": false,
+"summary": "No filesystem snapshots are configured.",
+"partial": false,
+"uncertain_on": [],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 0,
+"kind": "finding",
+"is_finding": false,
+"is_hygiene": false
+},
+"enc.journal_persistent": {
+"id": "enc.journal_persistent",
+"status": "pass",
+"effective_severity": 3,
+"base_severity": 3,
+"evidence": [
+{
+"kind": "value",
+"label": "Storage",
+"value": "auto (default)"
+}
+],
+"fixable": false,
+"summary": "The system journal is kept in memory only.",
+"partial": false,
+"uncertain_on": [],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 0,
+"kind": "finding",
+"is_finding": false,
+"is_hygiene": false
+},
+"enc.trash": {
+"id": "enc.trash",
+"status": "fail",
+"effective_severity": 3,
+"base_severity": 3,
+"evidence": [
+{
+"kind": "value",
+"label": "~/.local/share/Trash",
+"value": "1 item, 1 bytes"
+}
+],
+"fixable": true,
+"summary": "1 item is in the trash.",
+"partial": false,
+"uncertain_on": [],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 22,
+"kind": "hygiene",
+"is_finding": false,
+"is_hygiene": true
+},
+"enc.boot_no_secureboot": {
+"id": "enc.boot_no_secureboot",
+"status": "fail",
+"effective_severity": 3,
+"base_severity": 3,
+"evidence": [
+{
+"kind": "value",
+"label": "/boot",
+"value": "sda2 (ext4), not encrypted"
+},
+{
+"kind": "value",
+"label": "Firmware",
+"value": "legacy BIOS"
+},
+{
+"kind": "value",
+"label": "Secure Boot",
+"value": "off"
+}
+],
+"fixable": false,
+"summary": "/boot isn't encrypted and Secure Boot is off.",
+"partial": false,
+"uncertain_on": [],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 0,
+"kind": "finding",
+"is_finding": true,
+"is_hygiene": false
+},
+"enc.tmp_on_disk": {
+"id": "enc.tmp_on_disk",
+"status": "fail",
+"effective_severity": 2,
+"base_severity": 2,
+"evidence": [
+{
+"kind": "value",
+"label": "/tmp",
+"value": "the root filesystem"
+}
+],
+"fixable": true,
+"summary": "/tmp is on disk: the root filesystem.",
+"partial": false,
+"uncertain_on": [],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 0,
+"kind": "finding",
+"is_finding": true,
+"is_hygiene": false
+},
+"enc.trim_through_luks": {
+"id": "enc.trim_through_luks",
+"status": "pass",
+"effective_severity": 1,
+"base_severity": 1,
+"evidence": [],
+"fixable": false,
+"summary": "TRIM isn't passed through encrypted volumes.",
+"partial": false,
+"uncertain_on": [],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 0,
+"kind": "finding",
+"is_finding": false,
+"is_hygiene": false
+},
+"auth.autologin": {
+"id": "auth.autologin",
+"status": "pass",
+"effective_severity": 6,
+"base_severity": 6,
+"evidence": [],
+"fixable": false,
+"summary": "Automatic login is off.",
+"partial": false,
+"uncertain_on": [
+"tpm_unlock_no_pin"
+],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 0,
+"kind": "finding",
+"is_finding": false,
+"is_hygiene": false
+},
+"auth.empty_password": {
+"id": "auth.empty_password",
+"status": "unknown",
+"effective_severity": 8,
+"base_severity": 8,
+"evidence": [],
+"fixable": false,
+"summary": "Partial detection: Reading /etc/shadow needs administrator access. Scan with administrator access to check it.",
+"partial": true,
+"uncertain_on": [],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 0,
+"kind": "finding",
+"is_finding": false,
+"is_hygiene": false
+},
+"auth.screen_lock": {
+"id": "auth.screen_lock",
+"status": "unknown",
+"effective_severity": 7,
+"base_severity": 7,
+"evidence": [
+{
+"kind": "value",
+"label": "Lock enabled",
+"value": null
+},
+{
+"kind": "value",
+"label": "Idle delay",
+"value": null
+},
+{
+"kind": "value",
+"label": "Lock delay after blanking",
+"value": "0 s"
+}
+],
+"fixable": false,
+"summary": "Couldn't read all of GNOME's screen lock settings.",
+"partial": true,
+"uncertain_on": [
+"device",
+"multi_user"
+],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 0,
+"kind": "finding",
+"is_finding": false,
+"is_hygiene": false
+},
+"auth.lockscreen_notifications": {
+"id": "auth.lockscreen_notifications",
+"status": "unknown",
+"effective_severity": 3,
+"base_severity": 3,
+"evidence": [],
+"fixable": false,
+"summary": "Couldn't read GNOME's notification settings.",
+"partial": true,
+"uncertain_on": [],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 0,
+"kind": "finding",
+"is_finding": false,
+"is_hygiene": false
+},
+"auth.keyring_blank": {
+"id": "auth.keyring_blank",
+"status": "not_applicable",
+"effective_severity": 7,
+"base_severity": 7,
+"evidence": [],
+"fixable": false,
+"summary": "No GNOME keyring or KWallet files were found.",
+"partial": false,
+"uncertain_on": [],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 5,
+"kind": "finding",
+"is_finding": false,
+"is_hygiene": false
+},
+"auth.chromium_basic_store": {
+"id": "auth.chromium_basic_store",
+"status": "not_applicable",
+"effective_severity": 7,
+"base_severity": 7,
+"evidence": [],
+"fixable": false,
+"summary": "No Chromium-based browser profiles were found.",
+"partial": false,
+"uncertain_on": [],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 1,
+"kind": "finding",
+"is_finding": false,
+"is_hygiene": false
+},
+"auth.remote_desktop": {
+"id": "auth.remote_desktop",
+"status": "pass",
+"effective_severity": 7,
+"base_severity": 7,
+"evidence": [],
+"fixable": false,
+"summary": "No remote desktop or screen sharing server is running.",
+"partial": false,
+"uncertain_on": [],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 0,
+"kind": "finding",
+"is_finding": false,
+"is_hygiene": false
+},
+"auth.ssh_key_no_passphrase": {
+"id": "auth.ssh_key_no_passphrase",
+"status": "not_applicable",
+"effective_severity": 6,
+"base_severity": 6,
+"evidence": [],
+"fixable": false,
+"summary": "No SSH private keys in ~/.ssh.",
+"partial": false,
+"uncertain_on": [],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 0,
+"kind": "finding",
+"is_finding": false,
+"is_hygiene": false
+},
+"auth.plaintext_credentials": {
+"id": "auth.plaintext_credentials",
+"status": "pass",
+"effective_severity": 6,
+"base_severity": 6,
+"evidence": [],
+"fixable": false,
+"summary": "No plaintext credential files were found.",
+"partial": false,
+"uncertain_on": [],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 16,
+"kind": "finding",
+"is_finding": false,
+"is_hygiene": false
+},
+"auth.shell_history_secrets": {
+"id": "auth.shell_history_secrets",
+"status": "not_applicable",
+"effective_severity": 6,
+"base_severity": 6,
+"evidence": [],
+"fixable": false,
+"summary": "No shell or REPL history files were found.",
+"partial": false,
+"uncertain_on": [],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 0,
+"kind": "finding",
+"is_finding": false,
+"is_hygiene": false
+},
+"auth.sudo_nopasswd": {
+"id": "auth.sudo_nopasswd",
+"status": "not_applicable",
+"effective_severity": 6,
+"base_severity": 6,
+"evidence": [],
+"fixable": false,
+"summary": "Neither sudo nor doas is set up.",
+"partial": false,
+"uncertain_on": [],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 0,
+"kind": "finding",
+"is_finding": false,
+"is_hygiene": false
+},
+"auth.firefox_no_primary_password": {
+"id": "auth.firefox_no_primary_password",
+"status": "not_applicable",
+"effective_severity": 5,
+"base_severity": 5,
+"evidence": [],
+"fixable": false,
+"summary": "No Firefox or Thunderbird profiles were found.",
+"partial": false,
+"uncertain_on": [],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 0,
+"kind": "finding",
+"is_finding": false,
+"is_hygiene": false
+},
+"auth.home_world_readable": {
+"id": "auth.home_world_readable",
+"status": "fail",
+"effective_severity": 5,
+"base_severity": 5,
+"evidence": [
+{
+"kind": "value",
+"label": "Home directory mode",
+"value": "775"
+}
+],
+"fixable": true,
+"summary": "Other users can open your home directory (mode 775).",
+"partial": false,
+"uncertain_on": [
+"multi_user"
+],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 0,
+"kind": "finding",
+"is_finding": true,
+"is_hygiene": false
+},
+"auth.gpg_no_passphrase": {
+"id": "auth.gpg_no_passphrase",
+"status": "not_applicable",
+"effective_severity": 4,
+"base_severity": 4,
+"evidence": [],
+"fixable": false,
+"summary": "No GnuPG secret keys.",
+"partial": false,
+"uncertain_on": [],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 0,
+"kind": "finding",
+"is_finding": false,
+"is_hygiene": false
+},
+"auth.umask": {
+"id": "auth.umask",
+"status": "unknown",
+"effective_severity": 2,
+"base_severity": 2,
+"evidence": [
+{
+"kind": "value",
+"label": "umask set in a shell profile",
+"value": "none"
+}
+],
+"fixable": false,
+"summary": "Couldn't read the umask.",
+"partial": true,
+"uncertain_on": [
+"multi_user"
+],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 0,
+"kind": "finding",
+"is_finding": false,
+"is_hygiene": false
+},
+"auth.ssh_known_hosts_plain": {
+"id": "auth.ssh_known_hosts_plain",
+"status": "not_applicable",
+"effective_severity": 3,
+"base_severity": 3,
+"evidence": [],
+"fixable": false,
+"summary": "No ~/.ssh/known_hosts.",
+"partial": false,
+"uncertain_on": [],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 0,
+"kind": "finding",
+"is_finding": false,
+"is_hygiene": false
+},
+"auth.login_history": {
+"id": "auth.login_history",
+"status": "not_applicable",
+"effective_severity": 3,
+"base_severity": 3,
+"evidence": [],
+"fixable": false,
+"summary": "No login records (wtmp, lastlog) on this system.",
+"partial": false,
+"uncertain_on": [
+"multi_user"
+],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 0,
+"kind": "finding",
+"is_finding": false,
+"is_hygiene": false
+},
+"net.exposed_services": {
+"id": "net.exposed_services",
+"status": "unknown",
+"effective_severity": 7,
+"base_severity": 7,
+"evidence": [],
+"fixable": false,
+"summary": "Couldn't list listening services: ss (iproute2) is not installed",
+"partial": true,
+"uncertain_on": [
+"firewall_blocks_exposed"
+],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 0,
+"kind": "finding",
+"is_finding": false,
+"is_hygiene": false
+},
+"net.docker_bypass": {
+"id": "net.docker_bypass",
+"status": "not_applicable",
+"effective_severity": 7,
+"base_severity": 7,
+"evidence": [],
+"fixable": false,
+"summary": "Docker isn't installed.",
+"partial": false,
+"uncertain_on": [],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 0,
+"kind": "finding",
+"is_finding": false,
+"is_hygiene": false
+},
+"net.firewall_off": {
+"id": "net.firewall_off",
+"status": "fail",
+"effective_severity": 3,
+"base_severity": 3,
+"evidence": [
+{
+"kind": "value",
+"label": "Active firewall",
+"value": "none found"
+}
+],
+"fixable": true,
+"summary": "No host firewall is active.",
+"partial": true,
+"uncertain_on": [
+"exposed_services"
+],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 0,
+"kind": "finding",
+"is_finding": true,
+"is_hygiene": false
+},
+"net.mac_permanent": {
+"id": "net.mac_permanent",
+"status": "not_applicable",
+"effective_severity": 4,
+"base_severity": 4,
+"evidence": [],
+"fixable": false,
+"summary": "No Wi-Fi hardware.",
+"partial": false,
+"uncertain_on": [
+"device"
+],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 0,
+"kind": "finding",
+"is_finding": false,
+"is_hygiene": false
+},
+"net.hostname_broadcast": {
+"id": "net.hostname_broadcast",
+"status": "pass",
+"effective_severity": 4,
+"base_severity": 4,
+"evidence": [
+{
+"kind": "value",
+"label": "Hostname",
+"value": "unknown"
+},
+{
+"kind": "value",
+"label": "Announced via",
+"value": "nothing found"
+}
+],
+"fixable": false,
+"summary": "The hostname doesn't contain your name.",
+"partial": false,
+"uncertain_on": [],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 0,
+"kind": "finding",
+"is_finding": false,
+"is_hygiene": false
+},
+"net.kdeconnect": {
+"id": "net.kdeconnect",
+"status": "not_applicable",
+"effective_severity": 4,
+"base_severity": 4,
+"evidence": [],
+"fixable": false,
+"summary": "Neither KDE Connect nor GSConnect is in use.",
+"partial": false,
+"uncertain_on": [],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 0,
+"kind": "finding",
+"is_finding": false,
+"is_hygiene": false
+},
+"net.vpn_leaks": {
+"id": "net.vpn_leaks",
+"status": "not_applicable",
+"effective_severity": 4,
+"base_severity": 4,
+"evidence": [],
+"fixable": false,
+"summary": "No VPN is connected now. Connect it and scan again to check for DNS leaks.",
+"partial": false,
+"uncertain_on": [],
+"findings": {},
+"notes": [
+{
+"kind": "limitation",
+"title": "Kill switches aren't checked",
+"text": "Whether traffic stops when the VPN drops depends on the VPN app and can't be seen from its configuration. Check your VPN client's kill switch setting.",
+"related": []
+}
+],
+"error": "",
+"duration_ms": 0,
+"kind": "finding",
+"is_finding": false,
+"is_hygiene": false
+},
+"net.dns_unencrypted": {
+"id": "net.dns_unencrypted",
+"status": "fail",
+"effective_severity": 3,
+"base_severity": 3,
+"evidence": [
+{
+"kind": "value",
+"label": "Nameservers in /etc/resolv.conf",
+"value": "none"
+}
+],
+"fixable": true,
+"summary": "DNS queries are sent unencrypted.",
+"partial": false,
+"uncertain_on": [],
+"findings": {},
+"notes": [
+{
+"kind": "limitation",
+"title": "Browsers may encrypt DNS themselves",
+"text": "Firefox and Chromium-based browsers can send DNS over HTTPS on their own; the app can't see that setting yet. Only the system's own DNS is judged here.",
+"related": []
+}
+],
+"error": "",
+"duration_ms": 0,
+"kind": "finding",
+"is_finding": true,
+"is_hygiene": false
+},
+"net.ipv6_privacy": {
+"id": "net.ipv6_privacy",
+"status": "not_applicable",
+"effective_severity": 3,
+"base_severity": 3,
+"evidence": [],
+"fixable": false,
+"summary": "No physical network interfaces.",
+"partial": false,
+"uncertain_on": [],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 0,
+"kind": "finding",
+"is_finding": false,
+"is_hygiene": false
+},
+"net.hidden_ssid": {
+"id": "net.hidden_ssid",
+"status": "not_applicable",
+"effective_severity": 3,
+"base_severity": 3,
+"evidence": [],
+"fixable": false,
+"summary": "No Wi-Fi hardware.",
+"partial": false,
+"uncertain_on": [],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 0,
+"kind": "finding",
+"is_finding": false,
+"is_hygiene": false
+},
+"net.bluetooth": {
+"id": "net.bluetooth",
+"status": "not_applicable",
+"effective_severity": 3,
+"base_severity": 3,
+"evidence": [],
+"fixable": false,
+"summary": "No Bluetooth adapter.",
+"partial": false,
+"uncertain_on": [],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 0,
+"kind": "finding",
+"is_finding": false,
+"is_hygiene": false
+},
+"net.connectivity_check": {
+"id": "net.connectivity_check",
+"status": "not_applicable",
+"effective_severity": 1,
+"base_severity": 1,
+"evidence": [],
+"fixable": false,
+"summary": "NetworkManager isn't installed.",
+"partial": false,
+"uncertain_on": [],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 0,
+"kind": "finding",
+"is_finding": false,
+"is_hygiene": false
+},
+"net.wifi_history": {
+"id": "net.wifi_history",
+"status": "not_applicable",
+"effective_severity": 3,
+"base_severity": 3,
+"evidence": [],
+"fixable": false,
+"summary": "No Wi-Fi hardware.",
+"partial": false,
+"uncertain_on": [],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 0,
+"kind": "finding",
+"is_finding": false,
+"is_hygiene": false
+},
+"net.open_autoconnect": {
+"id": "net.open_autoconnect",
+"status": "not_applicable",
+"effective_severity": 3,
+"base_severity": 3,
+"evidence": [],
+"fixable": false,
+"summary": "No Wi-Fi hardware.",
+"partial": false,
+"uncertain_on": [],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 0,
+"kind": "finding",
+"is_finding": false,
+"is_hygiene": false
+},
+"tel.crash_reporters": {
+"id": "tel.crash_reporters",
+"status": "pass",
+"effective_severity": 3,
+"base_severity": 3,
+"evidence": [],
+"fixable": false,
+"summary": "No crash reporter or usage survey is reporting.",
+"partial": false,
+"uncertain_on": [],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 0,
+"kind": "finding",
+"is_finding": false,
+"is_hygiene": false
+},
+"tel.location": {
+"id": "tel.location",
+"status": "fail",
+"effective_severity": 3,
+"base_severity": 3,
+"evidence": [
+{
+"kind": "value",
+"label": "GNOME location services",
+"value": true
+}
+],
+"fixable": true,
+"summary": "Location services are on: nearby Wi-Fi networks are sent to an online lookup service.",
+"partial": false,
+"uncertain_on": [],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 0,
+"kind": "finding",
+"is_finding": true,
+"is_hygiene": false
+},
+"tel.browser_telemetry": {
+"id": "tel.browser_telemetry",
+"status": "not_applicable",
+"effective_severity": 3,
+"base_severity": 3,
+"evidence": [],
+"fixable": false,
+"summary": "No Firefox or Chromium-based browser profiles were found.",
+"partial": false,
+"uncertain_on": [],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 9,
+"kind": "finding",
+"is_finding": false,
+"is_hygiene": false
+},
+"tel.devtools": {
+"id": "tel.devtools",
+"status": "not_applicable",
+"effective_severity": 2,
+"base_severity": 2,
+"evidence": [],
+"fixable": false,
+"summary": "No developer tools with telemetry were found.",
+"partial": false,
+"uncertain_on": [],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 0,
+"kind": "finding",
+"is_finding": false,
+"is_hygiene": false
+},
+"tel.http_repos": {
+"id": "tel.http_repos",
+"status": "not_applicable",
+"effective_severity": 2,
+"base_severity": 2,
+"evidence": [],
+"fixable": false,
+"summary": "No apt, dnf, zypper or pacman repositories were found.",
+"partial": false,
+"uncertain_on": [],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 0,
+"kind": "finding",
+"is_finding": false,
+"is_hygiene": false
+},
+"tel.countme": {
+"id": "tel.countme",
+"status": "not_applicable",
+"effective_severity": 1,
+"base_severity": 1,
+"evidence": [],
+"fixable": false,
+"summary": "DNF isn't used on this system.",
+"partial": false,
+"uncertain_on": [],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 0,
+"kind": "finding",
+"is_finding": false,
+"is_hygiene": false
+},
+"tel.kde_feedback": {
+"id": "tel.kde_feedback",
+"status": "not_applicable",
+"effective_severity": 2,
+"base_severity": 2,
+"evidence": [],
+"fixable": false,
+"summary": "Not a KDE Plasma session.",
+"partial": false,
+"uncertain_on": [],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 0,
+"kind": "finding",
+"is_finding": false,
+"is_hygiene": false
+},
+"tel.cloud_sync": {
+"id": "tel.cloud_sync",
+"status": "pass",
+"effective_severity": 3,
+"base_severity": 3,
+"evidence": [],
+"fixable": false,
+"summary": "No online accounts or sync clients were found.",
+"partial": false,
+"uncertain_on": [],
+"findings": {},
+"notes": [
+{
+"kind": "info",
+"title": "What this means",
+"text": "Each of these copies calendars, contacts, mail or whole folders to a provider, who can read them unless the client encrypts end to end (Nextcloud's E2E folders, MEGA, rclone crypt). It is a choice, not a fault; this lists it so it can be weighed.",
+"related": []
+}
+],
+"error": "",
+"duration_ms": 0,
+"kind": "info",
+"is_finding": false,
+"is_hygiene": false
+},
+"tel.background_callers": {
+"id": "tel.background_callers",
+"status": "pass",
+"effective_severity": 1,
+"base_severity": 1,
+"evidence": [],
+"fixable": false,
+"summary": "No scheduled background callers were found.",
+"partial": false,
+"uncertain_on": [],
+"findings": {},
+"notes": [
+{
+"kind": "info",
+"title": "Regular, ordinary contact",
+"text": "None of this sends anything about you beyond your address, and each has a job: firmware and package updates, and the clock. They are listed so that what the machine does on its own is known, not because they should be off.",
+"related": []
+}
+],
+"error": "",
+"duration_ms": 0,
+"kind": "info",
+"is_finding": false,
+"is_hygiene": false
+},
+"br.crashpad_dumps": {
+"id": "br.crashpad_dumps",
+"status": "not_applicable",
+"effective_severity": 3,
+"base_severity": 3,
+"evidence": [],
+"fixable": false,
+"summary": "No Chromium-based browsers were found.",
+"partial": false,
+"uncertain_on": [],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 6,
+"kind": "hygiene",
+"is_finding": false,
+"is_hygiene": false
+},
+"br.extensions_broad": {
+"id": "br.extensions_broad",
+"status": "not_applicable",
+"effective_severity": 5,
+"base_severity": 5,
+"evidence": [],
+"fixable": false,
+"summary": "No browser profiles were found.",
+"partial": false,
+"uncertain_on": [],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 10,
+"kind": "finding",
+"is_finding": false,
+"is_hygiene": false
+},
+"br.history_retention": {
+"id": "br.history_retention",
+"status": "not_applicable",
+"effective_severity": 4,
+"base_severity": 4,
+"evidence": [],
+"fixable": false,
+"summary": "No browser profiles were found.",
+"partial": false,
+"uncertain_on": [],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 1,
+"kind": "hygiene",
+"is_finding": false,
+"is_hygiene": false
+},
+"br.tracking_protection": {
+"id": "br.tracking_protection",
+"status": "not_applicable",
+"effective_severity": 4,
+"base_severity": 4,
+"evidence": [],
+"fixable": false,
+"summary": "No browser profiles were found.",
+"partial": false,
+"uncertain_on": [],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 1,
+"kind": "finding",
+"is_finding": false,
+"is_hygiene": false
+},
+"br.private_download_leak": {
+"id": "br.private_download_leak",
+"status": "not_applicable",
+"effective_severity": 4,
+"base_severity": 4,
+"evidence": [],
+"fixable": false,
+"summary": "There is no Downloads folder.",
+"partial": false,
+"uncertain_on": [],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 0,
+"kind": "finding",
+"is_finding": false,
+"is_hygiene": false
+},
+"br.disk_cache": {
+"id": "br.disk_cache",
+"status": "not_applicable",
+"effective_severity": 3,
+"base_severity": 3,
+"evidence": [],
+"fixable": false,
+"summary": "No browser profiles were found.",
+"partial": false,
+"uncertain_on": [],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 1,
+"kind": "hygiene",
+"is_finding": false,
+"is_hygiene": false
+},
+"br.webrtc": {
+"id": "br.webrtc",
+"status": "not_applicable",
+"effective_severity": 2,
+"base_severity": 2,
+"evidence": [],
+"fixable": false,
+"summary": "No browser profiles were found.",
+"partial": false,
+"uncertain_on": [],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 11,
+"kind": "finding",
+"is_finding": false,
+"is_hygiene": false
+},
+"br.account_sync": {
+"id": "br.account_sync",
+"status": "not_applicable",
+"effective_severity": 5,
+"base_severity": 5,
+"evidence": [],
+"fixable": false,
+"summary": "No browser profiles were found.",
+"partial": false,
+"uncertain_on": [],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 4,
+"kind": "finding",
+"is_finding": false,
+"is_hygiene": false
+},
+"br.ad_features": {
+"id": "br.ad_features",
+"status": "not_applicable",
+"effective_severity": 3,
+"base_severity": 3,
+"evidence": [],
+"fixable": false,
+"summary": "No browser profiles were found.",
+"partial": false,
+"uncertain_on": [],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 0,
+"kind": "finding",
+"is_finding": false,
+"is_hygiene": false
+},
+"desk.thumbnails": {
+"id": "desk.thumbnails",
+"status": "pass",
+"effective_severity": 4,
+"base_severity": 4,
+"evidence": [],
+"fixable": false,
+"summary": "No thumbnails are cached.",
+"partial": false,
+"uncertain_on": [],
+"findings": {
+"thumbnails_reference_removable_or_container": false
+},
+"notes": [],
+"error": "",
+"duration_ms": 0,
+"kind": "finding",
+"is_finding": false,
+"is_hygiene": false
+},
+"desk.recent_files": {
+"id": "desk.recent_files",
+"status": "pass",
+"effective_severity": 5,
+"base_severity": 5,
+"evidence": [],
+"fixable": false,
+"summary": "The recent files list is empty.",
+"partial": false,
+"uncertain_on": [],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 0,
+"kind": "hygiene",
+"is_finding": false,
+"is_hygiene": false
+},
+"desk.kde_activities": {
+"id": "desk.kde_activities",
+"status": "not_applicable",
+"effective_severity": 5,
+"base_severity": 5,
+"evidence": [],
+"fixable": false,
+"summary": "Not a KDE Plasma session.",
+"partial": false,
+"uncertain_on": [],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 0,
+"kind": "finding",
+"is_finding": false,
+"is_hygiene": false
+},
+"desk.indexers": {
+"id": "desk.indexers",
+"status": "not_applicable",
+"effective_severity": 6,
+"base_severity": 6,
+"evidence": [],
+"fixable": false,
+"summary": "No file indexer is installed.",
+"partial": false,
+"uncertain_on": [],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 0,
+"kind": "finding",
+"is_finding": false,
+"is_hygiene": false
+},
+"desk.clipboard_history": {
+"id": "desk.clipboard_history",
+"status": "pass",
+"effective_severity": 5,
+"base_severity": 5,
+"evidence": [],
+"fixable": false,
+"summary": "No clipboard history is saved to disk.",
+"partial": false,
+"uncertain_on": [],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 0,
+"kind": "finding",
+"is_finding": false,
+"is_hygiene": false
+},
+"desk.zeitgeist": {
+"id": "desk.zeitgeist",
+"status": "not_applicable",
+"effective_severity": 4,
+"base_severity": 4,
+"evidence": [],
+"fixable": false,
+"summary": "Zeitgeist isn't in use.",
+"partial": false,
+"uncertain_on": [],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 0,
+"kind": "finding",
+"is_finding": false,
+"is_hygiene": false
+},
+"desk.gvfs_metadata": {
+"id": "desk.gvfs_metadata",
+"status": "not_applicable",
+"effective_severity": 3,
+"base_severity": 3,
+"evidence": [],
+"fixable": false,
+"summary": "No GVFS metadata.",
+"partial": false,
+"uncertain_on": [],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 0,
+"kind": "hygiene",
+"is_finding": false,
+"is_hygiene": false
+},
+"desk.screenshots": {
+"id": "desk.screenshots",
+"status": "pass",
+"effective_severity": 3,
+"base_severity": 3,
+"evidence": [],
+"fixable": false,
+"summary": "No screenshots are piling up.",
+"partial": false,
+"uncertain_on": [],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 5,
+"kind": "hygiene",
+"is_finding": false,
+"is_hygiene": false
+},
+"desk.gnome_app_usage": {
+"id": "desk.gnome_app_usage",
+"status": "unknown",
+"effective_severity": 2,
+"base_severity": 2,
+"evidence": [
+{
+"kind": "value",
+"label": "Remember app usage",
+"value": null
+},
+{
+"kind": "value",
+"label": "Usage file",
+"value": "none"
+}
+],
+"fixable": false,
+"summary": "Couldn't read GNOME's app usage setting.",
+"partial": true,
+"uncertain_on": [],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 0,
+"kind": "finding",
+"is_finding": false,
+"is_hygiene": false
+},
+"desk.session_restore": {
+"id": "desk.session_restore",
+"status": "unknown",
+"effective_severity": 2,
+"base_severity": 2,
+"evidence": [],
+"fixable": false,
+"summary": "Couldn't read the session manager's settings.",
+"partial": true,
+"uncertain_on": [],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 0,
+"kind": "finding",
+"is_finding": false,
+"is_hygiene": false
+},
+"desk.folder_view_records": {
+"id": "desk.folder_view_records",
+"status": "not_applicable",
+"effective_severity": 2,
+"base_severity": 2,
+"evidence": [],
+"fixable": false,
+"summary": "Dolphin isn't in use.",
+"partial": false,
+"uncertain_on": [],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 4,
+"kind": "hygiene",
+"is_finding": false,
+"is_hygiene": false
+},
+"app.photo_dbs": {
+"id": "app.photo_dbs",
+"status": "not_applicable",
+"effective_severity": 5,
+"base_severity": 5,
+"evidence": [],
+"fixable": false,
+"summary": "No digiKam, Shotwell or gThumb data.",
+"partial": false,
+"uncertain_on": [],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 0,
+"kind": "hygiene",
+"is_finding": false,
+"is_hygiene": false
+},
+"app.messengers_mail": {
+"id": "app.messengers_mail",
+"status": "not_applicable",
+"effective_severity": 5,
+"base_severity": 5,
+"evidence": [],
+"fixable": false,
+"summary": "No desktop messengers or mail clients were found.",
+"partial": false,
+"uncertain_on": [],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 0,
+"kind": "hygiene",
+"is_finding": false,
+"is_hygiene": false
+},
+"app.editor_residue": {
+"id": "app.editor_residue",
+"status": "pass",
+"effective_severity": 4,
+"base_severity": 4,
+"evidence": [],
+"fixable": false,
+"summary": "No editor swap, backup or undo files were found.",
+"partial": false,
+"uncertain_on": [],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 3,
+"kind": "hygiene",
+"is_finding": false,
+"is_hygiene": false
+},
+"app.office": {
+"id": "app.office",
+"status": "not_applicable",
+"effective_severity": 4,
+"base_severity": 4,
+"evidence": [],
+"fixable": false,
+"summary": "No LibreOffice or ONLYOFFICE data.",
+"partial": false,
+"uncertain_on": [],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 0,
+"kind": "hygiene",
+"is_finding": false,
+"is_hygiene": false
+},
+"app.media_players": {
+"id": "app.media_players",
+"status": "not_applicable",
+"effective_severity": 4,
+"base_severity": 4,
+"evidence": [],
+"fixable": false,
+"summary": "No mpv, VLC or SMPlayer data.",
+"partial": false,
+"uncertain_on": [],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 0,
+"kind": "hygiene",
+"is_finding": false,
+"is_hygiene": false
+},
+"app.cups_spool": {
+"id": "app.cups_spool",
+"status": "not_applicable",
+"effective_severity": 4,
+"base_severity": 4,
+"evidence": [],
+"fixable": false,
+"summary": "CUPS (printing) isn't installed.",
+"partial": false,
+"uncertain_on": [],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 0,
+"kind": "finding",
+"is_finding": false,
+"is_hygiene": false
+},
+"app.pdf_readers": {
+"id": "app.pdf_readers",
+"status": "not_applicable",
+"effective_severity": 3,
+"base_severity": 3,
+"evidence": [],
+"fixable": false,
+"summary": "Okular, Evince, Atril and Papers aren't in use.",
+"partial": false,
+"uncertain_on": [],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 0,
+"kind": "hygiene",
+"is_finding": false,
+"is_hygiene": false
+},
+"app.electron_caches": {
+"id": "app.electron_caches",
+"status": "not_applicable",
+"effective_severity": 3,
+"base_severity": 3,
+"evidence": [],
+"fixable": false,
+"summary": "No Electron app caches were found.",
+"partial": false,
+"uncertain_on": [],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 0,
+"kind": "hygiene",
+"is_finding": false,
+"is_hygiene": false
+},
+"app.package_logs": {
+"id": "app.package_logs",
+"status": "not_applicable",
+"effective_severity": 2,
+"base_severity": 2,
+"evidence": [],
+"fixable": false,
+"summary": "No package manager logs were found.",
+"partial": false,
+"uncertain_on": [],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 0,
+"kind": "hygiene",
+"is_finding": false,
+"is_hygiene": false
+},
+"app.mail_remote_content": {
+"id": "app.mail_remote_content",
+"status": "not_applicable",
+"effective_severity": 4,
+"base_severity": 4,
+"evidence": [],
+"fixable": false,
+"summary": "No Thunderbird or Evolution.",
+"partial": false,
+"uncertain_on": [],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 0,
+"kind": "finding",
+"is_finding": false,
+"is_hygiene": false
+},
+"app.shared_file_metadata": {
+"id": "app.shared_file_metadata",
+"status": "not_applicable",
+"effective_severity": 4,
+"base_severity": 4,
+"evidence": [
+{
+"kind": "value",
+"label": "Metadata tools installed",
+"value": "none (mat2 is recommended)"
+}
+],
+"fixable": false,
+"summary": "No LibreOffice profile; strip metadata from shared files with mat2.",
+"partial": false,
+"uncertain_on": [],
+"findings": {},
+"notes": [
+{
+"kind": "info",
+"title": "Photos and other files",
+"text": "Photos carry the camera and often the GPS position; mat2 (`mat2 photo.jpg`) strips metadata from most file types before sharing.",
+"related": []
+}
+],
+"error": "",
+"duration_ms": 0,
+"kind": "finding",
+"is_finding": false,
+"is_hygiene": false
+},
+"sbx.flatpak_broad_perms": {
+"id": "sbx.flatpak_broad_perms",
+"status": "not_applicable",
+"effective_severity": 5,
+"base_severity": 5,
+"evidence": [],
+"fixable": false,
+"summary": "Flatpak isn't installed.",
+"partial": false,
+"uncertain_on": [],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 0,
+"kind": "finding",
+"is_finding": false,
+"is_hygiene": false
+},
+"sbx.flatpak_caches": {
+"id": "sbx.flatpak_caches",
+"status": "not_applicable",
+"effective_severity": 2,
+"base_severity": 2,
+"evidence": [],
+"fixable": false,
+"summary": "No Flatpak app data in ~/.var/app.",
+"partial": false,
+"uncertain_on": [],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 0,
+"kind": "hygiene",
+"is_finding": false,
+"is_hygiene": false
+},
+"sbx.x11_session": {
+"id": "sbx.x11_session",
+"status": "unknown",
+"effective_severity": 5,
+"base_severity": 5,
+"evidence": [],
+"fixable": false,
+"summary": "Couldn't tell the session type: No graphical session found",
+"partial": true,
+"uncertain_on": [
+"session"
+],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 0,
+"kind": "finding",
+"is_finding": false,
+"is_hygiene": false
+},
+"sbx.leftover_data": {
+"id": "sbx.leftover_data",
+"status": "not_applicable",
+"effective_severity": 3,
+"base_severity": 3,
+"evidence": [],
+"fixable": false,
+"summary": "Neither Flatpak nor Snap is installed.",
+"partial": false,
+"uncertain_on": [],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 0,
+"kind": "finding",
+"is_finding": false,
+"is_hygiene": false
+},
+"sbx.portal_permissions": {
+"id": "sbx.portal_permissions",
+"status": "not_applicable",
+"effective_severity": 3,
+"base_severity": 3,
+"evidence": [],
+"fixable": false,
+"summary": "Flatpak isn't installed.",
+"partial": false,
+"uncertain_on": [],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 0,
+"kind": "finding",
+"is_finding": false,
+"is_hygiene": false
+},
+"sbx.snap": {
+"id": "sbx.snap",
+"status": "not_applicable",
+"effective_severity": 3,
+"base_severity": 3,
+"evidence": [],
+"fixable": false,
+"summary": "Snap isn't installed.",
+"partial": false,
+"uncertain_on": [],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 0,
+"kind": "finding",
+"is_finding": false,
+"is_hygiene": false
+},
+"sbx.appimages": {
+"id": "sbx.appimages",
+"status": "not_applicable",
+"effective_severity": 2,
+"base_severity": 2,
+"evidence": [],
+"fixable": false,
+"summary": "No AppImages were found in the usual folders.",
+"partial": false,
+"uncertain_on": [],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 0,
+"kind": "info",
+"is_finding": false,
+"is_hygiene": false
+},
+"kern.updates": {
+"id": "kern.updates",
+"status": "unknown",
+"effective_severity": 6,
+"base_severity": 6,
+"evidence": [],
+"fixable": false,
+"summary": "No supported package manager (apt, dnf, pacman, zypper) was found.",
+"partial": true,
+"uncertain_on": [],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 0,
+"kind": "finding",
+"is_finding": false,
+"is_hygiene": false
+},
+"kern.ptrace_scope": {
+"id": "kern.ptrace_scope",
+"status": "fail",
+"effective_severity": 4,
+"base_severity": 4,
+"evidence": [
+{
+"kind": "value",
+"label": "ptrace_scope",
+"value": "not available"
+}
+],
+"fixable": true,
+"summary": "The Yama security module isn't active, so any process can read the memory of others you run.",
+"partial": false,
+"uncertain_on": [],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 0,
+"kind": "finding",
+"is_finding": true,
+"is_hygiene": false
+},
+"kern.dmesg_restrict": {
+"id": "kern.dmesg_restrict",
+"status": "unknown",
+"effective_severity": 3,
+"base_severity": 3,
+"evidence": [],
+"fixable": false,
+"summary": "Couldn't read kernel.dmesg_restrict.",
+"partial": true,
+"uncertain_on": [
+"multi_user"
+],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 0,
+"kind": "finding",
+"is_finding": false,
+"is_hygiene": false
+},
+"kern.proc_hidepid": {
+"id": "kern.proc_hidepid",
+"status": "unknown",
+"effective_severity": 4,
+"base_severity": 4,
+"evidence": [],
+"fixable": false,
+"summary": "Couldn't find the /proc mount.",
+"partial": true,
+"uncertain_on": [
+"multi_user"
+],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 0,
+"kind": "finding",
+"is_finding": false,
+"is_hygiene": false
+},
+"kern.init_on_free": {
+"id": "kern.init_on_free",
+"status": "unknown",
+"effective_severity": 1,
+"base_severity": 1,
+"evidence": [
+{
+"kind": "value",
+"label": "Kernel config",
+"value": "not readable"
+}
+],
+"fixable": false,
+"summary": "Couldn't tell whether init_on_free is on.",
+"partial": true,
+"uncertain_on": [],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 0,
+"kind": "finding",
+"is_finding": false,
+"is_hygiene": false
+},
+"kern.init_on_alloc": {
+"id": "kern.init_on_alloc",
+"status": "unknown",
+"effective_severity": 2,
+"base_severity": 2,
+"evidence": [
+{
+"kind": "value",
+"label": "Kernel config",
+"value": "not readable"
+}
+],
+"fixable": false,
+"summary": "Couldn't tell whether init_on_alloc is on.",
+"partial": true,
+"uncertain_on": [],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 0,
+"kind": "finding",
+"is_finding": false,
+"is_hygiene": false
+},
+"kern.suspend_keys_in_ram": {
+"id": "kern.suspend_keys_in_ram",
+"status": "pass",
+"effective_severity": 3,
+"base_severity": 3,
+"evidence": [],
+"fixable": false,
+"summary": "This machine can't suspend to RAM.",
+"partial": false,
+"uncertain_on": [
+"device"
+],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 0,
+"kind": "hygiene",
+"is_finding": false,
+"is_hygiene": false
+},
+"kern.dma": {
+"id": "kern.dma",
+"status": "not_applicable",
+"effective_severity": 3,
+"base_severity": 3,
+"evidence": [],
+"fixable": false,
+"summary": "No Thunderbolt or USB4 controller.",
+"partial": false,
+"uncertain_on": [],
+"findings": {},
+"notes": [],
+"error": "",
+"duration_ms": 0,
+"kind": "finding",
+"is_finding": false,
+"is_hygiene": false
+}
+},
+"not_implemented": {},
+"modifiers": {
+"enc.fde_missing": [
+null
+],
+"enc.partial_fde": [
+false
+],
+"enc.swap_unencrypted": [
+null,
+false
+],
+"enc.hibernate_unencrypted": [
+false
+],
+"enc.swap_persistent": [],
+"enc.luks_weak_kdf": [],
+"enc.tpm_no_pin": [
+false
+],
+"enc.backups_unencrypted": [],
+"enc.removable_unencrypted": [],
+"enc.coredumps_retained": [],
+"enc.snapshots_retain_deleted": [],
+"enc.journal_persistent": [],
+"enc.trash": [],
+"enc.boot_no_secureboot": [
+false
+],
+"enc.tmp_on_disk": [],
+"enc.trim_through_luks": [],
+"auth.autologin": [
+null
+],
+"auth.empty_password": [],
+"auth.screen_lock": [
+null
+],
+"auth.lockscreen_notifications": [],
+"auth.keyring_blank": [],
+"auth.chromium_basic_store": [],
+"auth.remote_desktop": [],
+"auth.ssh_key_no_passphrase": [],
+"auth.plaintext_credentials": [],
+"auth.shell_history_secrets": [],
+"auth.sudo_nopasswd": [],
+"auth.firefox_no_primary_password": [],
+"auth.home_world_readable": [
+null
+],
+"auth.gpg_no_passphrase": [],
+"auth.umask": [
+null
+],
+"auth.ssh_known_hosts_plain": [],
+"auth.login_history": [
+null
+],
+"net.exposed_services": [
+null
+],
+"net.docker_bypass": [],
+"net.firewall_off": [
+null
+],
+"net.mac_permanent": [
+null
+],
+"net.hostname_broadcast": [],
+"net.kdeconnect": [],
+"net.vpn_leaks": [],
+"net.dns_unencrypted": [],
+"net.ipv6_privacy": [],
+"net.hidden_ssid": [],
+"net.bluetooth": [],
+"net.connectivity_check": [],
+"net.wifi_history": [
+false
+],
+"net.open_autoconnect": [],
+"tel.crash_reporters": [],
+"tel.location": [],
+"tel.browser_telemetry": [],
+"tel.devtools": [],
+"tel.http_repos": [],
+"tel.countme": [],
+"tel.kde_feedback": [],
+"tel.cloud_sync": [],
+"tel.background_callers": [],
+"br.crashpad_dumps": [],
+"br.extensions_broad": [],
+"br.history_retention": [],
+"br.tracking_protection": [],
+"br.private_download_leak": [],
+"br.disk_cache": [],
+"br.webrtc": [],
+"br.account_sync": [],
+"br.ad_features": [],
+"desk.thumbnails": [
+false
+],
+"desk.recent_files": [],
+"desk.kde_activities": [],
+"desk.indexers": [],
+"desk.clipboard_history": [],
+"desk.zeitgeist": [],
+"desk.gvfs_metadata": [],
+"desk.screenshots": [],
+"desk.gnome_app_usage": [],
+"desk.session_restore": [],
+"desk.folder_view_records": [],
+"app.photo_dbs": [],
+"app.messengers_mail": [],
+"app.editor_residue": [],
+"app.office": [],
+"app.media_players": [],
+"app.cups_spool": [],
+"app.pdf_readers": [],
+"app.electron_caches": [],
+"app.package_logs": [],
+"app.mail_remote_content": [],
+"app.shared_file_metadata": [],
+"sbx.flatpak_broad_perms": [],
+"sbx.flatpak_caches": [],
+"sbx.x11_session": [
+null
+],
+"sbx.leftover_data": [],
+"sbx.portal_permissions": [],
+"sbx.snap": [],
+"sbx.appimages": [],
+"kern.updates": [],
+"kern.ptrace_scope": [],
+"kern.dmesg_restrict": [
+null
+],
+"kern.proc_hidepid": [
+null
+],
+"kern.init_on_free": [],
+"kern.init_on_alloc": [],
+"kern.suspend_keys_in_ram": [
+null,
+false
+],
+"kern.dma": []
+},
+"online_pending": [
+"tel.observed_traffic",
+"net.dns_encryption_in_use",
+"net.dns_leak",
+"net.dnssec_validation",
+"net.nxdomain_rewrite",
+"net.vpn_ipv6_leak",
+"net.upnp_forwards",
+"net.tls_interception",
+"kern.updates_refreshed",
+"net.ipv6_reachable"
+],
+"extra_notes": {},
+"admin": {
+"requested": false,
+"granted": false,
+"message": "",
+"dropped": false
+},
+"changes": null
+},
+"can_quit": false,
+"admin_active": false,
+"admin_idle_minutes": 5,
+"helper_installed": false,
+"dev": false,
+"reads": [
+{
+"what": "Disks, partitions and swap",
+"why": "To tell which filesystems and swap are encrypted and where a hibernation image would go.",
+"how": "lsblk, /proc/swaps, /proc/mounts, /sys/power, /etc/crypttab; LUKS headers only with administrator access, through the helper (versions and key-slot types, never keys or salts)."
+},
+{
+"what": "Login and session settings",
+"why": "Automatic login, screen lock, notifications on the lock screen.",
+"how": "Display manager files under /etc, gsettings, KDE's kscreenlockerrc; /etc/shadow only with administrator access, and only whether an account's password field is empty."
+},
+{
+"what": "Keys, keyrings and credential files",
+"why": "To find secrets stored without a passphrase or in plain text.",
+"how": "The first bytes of ~/.ssh keys, keyring and GnuPG files (to see whether they are encrypted); whether ~/.netrc, ~/.aws/credentials, ~/.git-credentials, ~/.docker/config.json and similar hold a credential. Their contents never appear in the report: only that they do, and their permissions."
+},
+{
+"what": "Shell and REPL history",
+"why": "To count lines that look like passwords or tokens.",
+"how": "~/.bash_history, ~/.zsh_history, fish, Python, psql and MySQL histories. The report holds counts, never the lines."
+},
+{
+"what": "Browser profiles",
+"why": "Telemetry, tracking protection, history retention, extensions, sync, crash dumps.",
+"how": "prefs.js, Preferences, Local State and extension manifests of Firefox-family and Chromium-family profiles; Login Data and Cookies are opened read-only to count entries encrypted with the built-in key. No URLs, cookies or passwords are read into the report."
+},
+{
+"what": "Desktop activity records",
+"why": "Thumbnails, recent files, KDE activity and clipboard histories.",
+"how": "The thumbnail cache (each PNG's embedded path, to see which drive it came from), recently-used.xbel, kactivitymanagerd's database (counts), clipboard managers' folders (sizes)."
+},
+{
+"what": "Apps' data folders",
+"why": "Caches, histories and backups that outlive the files they came from.",
+"how": "Sizes and counts under ~/.config, ~/.local/share, ~/.cache, ~/.var/app and ~/snap; LibreOffice, media players, PDF readers, editors, messengers and mail clients."
+},
+{
+"what": "Network state",
+"why": "Exposed services, firewall, DNS, Wi-Fi settings, Bluetooth, VPN.",
+"how": "ss, nmcli (saved connections' settings and last-used times, never passwords), resolvectl, bluetoothctl, /proc/net; ufw's rules only with administrator access."
+},
+{
+"what": "System configuration",
+"why": "Crash reporting, journal retention, updates, kernel hardening, sandboxing.",
+"how": "systemd and apt/dnf settings under /etc, /proc/sys, package lists already on disk (nothing is downloaded), flatpak and snap listings."
+},
+{
+"what": "Processes",
+"why": "To skip apps that are running when a fix would clear their data, and to spot guest agents, indexers and remote desktop servers.",
+"how": "Process names from /proc, and which of your own processes hold a file open under a folder a fix would clear."
+}
+],
+"never": [
+"Nothing is sent anywhere during a scan. The online tests are separate, run only when you start them, and each says who it contacts first.",
+"File contents are never copied into the report: it holds paths, counts and settings.",
+"Scans change nothing. Fixes show exactly what they will do first, and settings changes can be reverted from History."
+],
+"accepted": {
+"enc.partial_fde": {
+"note": "scratch disk",
+"when": 1791027244.506409
+}
+},
+"last_scan": 1791027244.471641,
+"labels": {
+"fde": "disk encryption",
+"virtualization": "virtual machine or container",
+"device": "device type",
+"multi_user": "several user accounts",
+"session": "display session",
+"hibernation": "hibernation possible",
+"tpm_unlock_no_pin": "TPM unlock without a PIN",
+"autologin": "automatic login",
+"exposed_services": "services exposed to the network",
+"vpn_active": "VPN connected",
+"ipv6_global": "public IPv6 address",
+"firewall_blocks_exposed": "the firewall blocks the exposed services",
+"thumbnails_reference_removable_or_container": "thumbnails show files from removable or encrypted drives",
+"thumbnails_on_disk_none_leaking": "no thumbnail leaks yet, but the cache is on disk",
+"thumbnails_expire": "the desktop deletes thumbnails within 30 days",
+"security_updates_pending": "security updates are waiting",
+"kernel_update_pending": "a kernel or microcode update is waiting",
+"kernel_restart_pending": "a newer kernel is installed than the one running",
+"signature_checks_off": "a package manager doesn't check signatures for some repositories",
+"unsigned_over_http": "one of them is used over plain HTTP",
+"home_ecryptfs": "the home folder is encrypted with eCryptfs",
+"indexes_outside_home": "file search indexes removable drives or other volumes",
+"index_on_unencrypted_disk": "the file search index is on an unencrypted disk",
+"data_on_encrypted_disk": "it is kept on an encrypted disk",
+"vpn_avoid": "the VPN provider has harm on record",
+"vpn_closed_client": "the VPN's Linux app is closed source",
+"vpn_ownership_concerns": "the VPN's owner has a record that is hard to trust",
+"chrome_or_edge_installed": "Chrome or Edge is installed",
+"surveillance_default": "the default browser is Chrome, Edge, Opera or Yandex",
+"chrome_or_edge_default": "the default browser is Chrome or Edge",
+"default_closed_ui": "the default browser's interface is closed source",
+"agent_forwarded_everywhere": "every server you log in to gets your SSH agent",
+"host_keys_unchecked": "ssh doesn't check that servers are who they claim",
+"agent_keys_unlimited": "keys stay in the SSH agent until you log out",
+"sshd_reachable": "an SSH server is listening for other machines",
+"weak_authorized_keys": "a weak key can log in as you",
+"gpg_weak_key": "one of your GnuPG keys is weak",
+"site_default_allow": "a browser lets every website use the camera, microphone or location"
+}
+}
+}

@@ -1,0 +1,1 @@
+1: sss '{"t":2,"pins":{"tpm2":{"pcr_ids":"7"},"tang":[{"url":"http://tang.example"}]}}'

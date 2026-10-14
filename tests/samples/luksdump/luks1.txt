@@ -1,0 +1,25 @@
+LUKS header information for /dev/sda3
+
+Version:       	1
+Cipher name:   	aes
+Cipher mode:   	xts-plain64
+Hash spec:     	sha256
+Payload offset:	4096
+MK bits:       	512
+MK digest:     	1e 0a 6b 33 9c 52 0d 71 a4 8f 22 e6 50 b9 13 7c 2d 45 9a 01 
+MK salt:       	5b 21 c8 0e 7a 93 f4 16 2b 6d e0 47 a9 1c 38 d5 
+MK iterations: 	117870
+UUID:          	3c1e5b7d-0a2f-4e61-9b84-7d2c1f6e0a93
+
+Key Slot 0: ENABLED
+	Iterations:         	1820444
+	Salt:               	2a 64 b1 0f 7e 39 c5 d8 13 4a 9e 27 f0 6b 52 c1 
+	Key material offset:	8
+	AF stripes:            	4000
+Key Slot 1: DISABLED
+Key Slot 2: DISABLED
+Key Slot 3: DISABLED
+Key Slot 4: DISABLED
+Key Slot 5: DISABLED
+Key Slot 6: DISABLED
+Key Slot 7: DISABLED

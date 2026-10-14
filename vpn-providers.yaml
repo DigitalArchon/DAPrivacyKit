@@ -1,0 +1,628 @@
+# vpn-providers.yaml
+# Data about VPN providers, used to recognise the one in use (offline), to rate it, and to judge
+# where traffic exits (online tests). Shipped with each release, copied into the package like the
+# catalogue.
+#
+# Receipts, not assertions: every claim the app shows has the page it came from (`source`) and the
+# day it was last checked against that page (`verified`, YYYY-MM-DD). What isn't known is left out,
+# never guessed. Ownership changes often in this industry: re-check each claim before a release
+# (packaging/check-vpn-links.py lists the oldest), and update `verified` only after reading the source.
+#
+# RATING (vpn.rate). Only the Linux client is judged: this is a Linux tool. Gates come first, from
+# facts tagged with `supports`, so the facts that decided a rating are the ones shown with it:
+#   avoid       a fact supports `harm`: logging despite a no-logs claim, selling users' bandwidth,
+#               harvesting what they do. Severity 8.
+#   closed      a fact supports `closed_client`: its Linux app's source isn't published, so what it
+#               does on the computer can't be checked. Severity 5; 6 when its owner is capped too.
+#   ownership   its group has `cap: ownership` (Kape). Severity 4.
+# A provider that passes every gate has the tier set here (rating.tier), which needs a fact
+# supporting `open_client`:
+#   recommended  open client, anonymous signup and payment, audited, tested in practice (a raid,
+#                seizure or court case, or a transparency record of no data handed over), and no
+#                Linux flaw (a fact supporting `linux_flaw` rules it out)
+#   good         open client and no harm on record, short of recommended on a point
+#   acceptable   open client and audited, but not anonymous
+# `rating.why` is the app's own reasoning, shown as such; it cites the facts, it isn't one.
+#
+# SCHEMA
+#   groups       Companies that own several providers: {id: {name, cap, facts}}. cap: ownership
+#                limits each of its providers to "ownership concerns" at best.
+#   providers    List of:
+#     id           Stable identifier. Never rename once shipped.
+#     name         As the provider calls itself.
+#     group        Optional id from `groups`: its facts are shown with the provider's.
+#     facts        List of {topic, text, source, verified, supports}. topic: owner | jurisdiction |
+#                  account | payment | client | features | audit | legal | harm. supports (optional):
+#                  open_client | closed_client | linux_flaw | harm | ownership. Text is plain words
+#                  for the user, one claim per fact.
+#     rating       Optional {tier, why}: see RATING.
+#     detect       How the app recognises it on this machine, offline. All optional:
+#                    interfaces  names of its tunnel interfaces; a trailing * matches a prefix
+#                    processes   process names (comm, 15 characters at most) of its daemon
+#                    resolvers   DNS servers it sets inside the tunnel (a match counts only when the
+#                                server is set on a tunnel interface)
+#                    status      argv of a status command that asks only its local daemon
+#                                (never the network: architecture rule 10)
+#                    extensions  browser extension ids (Chromium store ids, Firefox add-on ids)
+#     exit_networks  Text found in the name of the network that owns its exit addresses (as an
+#                  address-owner lookup reports it), for providers that run their own networks.
+#                  Most rent from datacentres: then the exit can't be told from any other VPN's.
+#     exit_check   Optional: the provider's own service that says whether an address is one of its
+#                  exits. Online tests use it only when this provider is the one in use.
+#     leak_test    Optional {url, verified}: the provider's own page for checking the connection.
+#     verify       Optional developer note: what must be confirmed on a real system. Shown in
+#                  developer mode only.
+#     browser_proxy  Optional: the SOCKS5 proxy inside its tunnel that Mullvad Browser's extension is set
+#                  to when Tor or Mullvad Browser in memory sets the browser up for this VPN (only Mullvad:
+#                  the setting is its extension's). {hostname, address, port, city, country, country_code,
+#                  source, verified}: from the provider's own list of proxies; the address must be one the
+#                  browser's sandbox lets through (sandbox.FENCE_ALLOWED, a test checks).
+#   datacentres  Text found in the names of hosting networks that VPNs commonly rent exit servers
+#                from. A match is a hint ("a datacentre network, typical of VPNs"), never proof.
+#   public_dns   Text found in the names of the networks of public DNS services. A VPN may send its
+#                users' lookups to one inside the tunnel: that isn't a leak to the internet provider.
+
+schema_version: 1
+
+groups:
+  kape:
+    name: Kape Technologies
+    cap: ownership
+    facts:
+      - topic: owner
+        text: >-
+          Kape began in 2011 as Crossrider, whose browser-extension platform was used by ad injectors
+          and adware. It left that business in 2016 and was renamed Kape Technologies in 2018.
+        source: https://en.wikipedia.org/wiki/Kape_Technologies
+        verified: 2026-10-03
+        supports: [ownership]
+      - topic: owner
+        text: >-
+          Owned by businessman Teddy Sagi, who took it off the London Stock Exchange in 2023. It owns
+          CyberGhost (since 2017), Private Internet Access (2019) and ExpressVPN (2021); ZenMate (2018)
+          was merged into CyberGhost in 2023.
+        source: https://en.wikipedia.org/wiki/Kape_Technologies
+        verified: 2026-10-03
+        supports: [ownership]
+      - topic: owner
+        text: Kape also bought Webselenese, a publisher of VPN reviews, in 2021.
+        source: https://en.wikipedia.org/wiki/Kape_Technologies
+        verified: 2026-10-04
+        supports: [ownership]
+      - topic: owner
+        text: >-
+          It owns the VPN review sites vpnMentor and WizCase, which has led to accusations that their
+          reviews favour its own VPNs.
+        source: https://proprivacy.com/vpn/guides/who-owns-your-vpn
+        verified: 2026-10-04
+        supports: [ownership]
+  nord_security:
+    name: Nord Security
+    facts:
+      - topic: owner
+        text: >-
+          NordVPN's parent company. Nord Security and Surfshark merged under one holding company in
+          2022; the two services still run separate apps and servers.
+        source: https://en.wikipedia.org/wiki/Surfshark_B.V.
+        verified: 2026-10-03
+  ziff_davis:
+    name: Ziff Davis
+    facts:
+      - topic: owner
+        text: >-
+          A US media and internet company (formerly J2 Global) that bought IPVanish and StrongVPN in
+          2019. SaferVPN and Encrypt.me, also bought then, have since been folded into them.
+        source: https://vpntesting.com/ownership/ziff-davis/
+        verified: 2026-10-03
+
+providers:
+
+  - id: mullvad
+    name: Mullvad VPN
+    rating:
+      tier: recommended
+      why: >-
+        It asks for as little trust as a VPN can: an open-source app that works properly on
+        Linux (split tunnelling keeps working in lockdown mode), an account that is only a number,
+        cash or Monero, regular audits, and a police search that found nothing because nothing was
+        kept. DAITA and its browser go further than anyone else.
+    facts:
+      - topic: owner
+        text: Run by Mullvad VPN AB, a Swedish company, since 2009.
+        source: https://en.wikipedia.org/wiki/Mullvad
+        verified: 2026-10-03
+      - topic: account
+        text: An account is a random 16-digit number; no email address is asked for.
+        source: https://en.wikipedia.org/wiki/Mullvad
+        verified: 2026-10-03
+      - topic: payment
+        text: Accepts cash and cryptocurrency (Monero, Bitcoin) as well as cards and bank transfers.
+        source: https://en.wikipedia.org/wiki/Mullvad
+        verified: 2026-10-03
+      - topic: client
+        text: Its apps, the Linux one included, are open source (GPL-3.0).
+        source: https://github.com/mullvad/mullvadvpn-app
+        verified: 2026-10-04
+        supports: [open_client]
+      - topic: client
+        text: >-
+          On Linux, apps excluded with split tunnelling keep working while lockdown mode blocks everything
+          else from going around the VPN.
+        source: https://mullvad.net/en/help/using-mullvad-vpn-app
+        verified: 2026-10-04
+      - topic: features
+        text: >-
+          DAITA disguises the size and timing of traffic against AI-guided traffic analysis; multihop
+          switches on by itself when a server needs it.
+        source: https://cyberinsider.com/mullvad-overhauls-multihop-with-new-automatic-routing-modes/
+        verified: 2026-10-04
+      - topic: features
+        text: >-
+          Its browser extension sends the browser through a Mullvad proxy in another location while the
+          VPN is on: a second hop for browsing.
+        source: https://www.engadget.com/cybersecurity/vpn/mullvad-vpn-review-near-total-privacy-with-a-few-sacrifices-130000056.html
+        verified: 2026-10-04
+      - topic: audit
+        text: Its apps have been audited by Cure53, first in 2018.
+        source: https://en.wikipedia.org/wiki/Mullvad
+        verified: 2026-10-03
+      - topic: legal
+        text: >-
+          In April 2023 Swedish police came to its office with a search warrant for customer data
+          and left with nothing: none was stored.
+        source: https://en.wikipedia.org/wiki/Mullvad
+        verified: 2026-10-03
+    detect:
+      interfaces: [wg0-mullvad]
+      processes: [mullvad-daemon]
+      resolvers: [10.64.0.1]
+      status: [mullvad, status]
+    exit_networks: ["31173 Services", "Mullvad"]
+    exit_check: mullvad
+    leak_test: {url: "https://mullvad.net/check", verified: 2026-10-03}
+    browser_proxy:
+      hostname: ch-zrh-wg-socks5-001.relays.mullvad.net
+      address: 10.124.0.241
+      port: 1080
+      city: Zurich
+      country: Switzerland
+      country_code: ch
+      source: https://api.mullvad.net/network/v1-beta1/socks-proxies
+      verified: 2026-10-11
+    verify: >-
+      `mullvad status` output across versions (the relay name, e.g. se-got-wg-001); the network
+      names of Mullvad-owned exits in RIPEstat.
+
+  - id: ivpn
+    name: IVPN
+    rating:
+      tier: recommended
+      why: >-
+        Nearly everything Mullvad offers: an open-source app with split tunnelling on Linux, an
+        account ID without email, cash or Monero, an audit every year, and a published record of
+        legal requests with no data ever handed over. No DAITA and no browser of its own.
+    facts:
+      - topic: owner
+        text: Run by IVPN Limited (formerly Privatus Limited), based in Gibraltar.
+        source: https://en.wikipedia.org/wiki/IVPN
+        verified: 2026-10-03
+      - topic: account
+        text: No email address is needed to sign up; the account is an ID.
+        source: https://en.wikipedia.org/wiki/IVPN
+        verified: 2026-10-03
+      - topic: payment
+        text: Accepts cash and Monero.
+        source: https://en.wikipedia.org/wiki/IVPN
+        verified: 2026-10-03
+      - topic: client
+        text: Its desktop app, the Linux one included (daemon, CLI and interface), is open source (GPLv3).
+        source: https://github.com/ivpn/desktop-app
+        verified: 2026-10-04
+        supports: [open_client]
+      - topic: client
+        text: >-
+          Its Linux app has split tunnelling. In inverse mode (only chosen apps use the VPN) its firewall
+          can't be used.
+        source: https://www.ivpn.net/knowledgebase/general/split-tunnel-faq/
+        verified: 2026-10-04
+      - topic: features
+        text: It dropped port forwarding in 2023, after abuse brought law-enforcement inquiries.
+        source: https://www.ivpn.net/blog/gradual-removal-of-port-forwarding/
+        verified: 2026-10-04
+      - topic: audit
+        text: Audited by Cure53, for its no-logging claim in 2019 and with a penetration test in 2020.
+        source: https://en.wikipedia.org/wiki/IVPN
+        verified: 2026-10-03
+      - topic: legal
+        text: >-
+          Its transparency report lists every legal request by year: none has led to data being handed
+          over (2024: 12 requests, 1 legally valid, no data).
+        source: https://www.ivpn.net/en/transparency-report/
+        verified: 2026-10-04
+    detect:
+      interfaces: [wgivpn]
+      processes: [ivpn-service]
+    exit_check: ivpn
+    verify: >-
+      The interface and daemon names of IVPN's Linux app; api.ivpn.net's geo-lookup fields; whether
+      its firewall stays on with normal (not inverse) split tunnelling on Linux.
+
+  - id: proton
+    name: Proton VPN
+    rating:
+      tier: good
+      why: >-
+        Reputable, open source and audited, but its Linux app shows less care than the leaders': split
+        tunnelling, which most people use, switches the kill switch off. A gap like that is how real
+        problems go unnoticed. Its port forwarding is useful, but each open port is one more way to reach you
+        through the VPN.
+    facts:
+      - topic: owner
+        text: Run by Proton AG, a Swiss company, which announced in 2024 that it is moving to a non-profit foundation.
+        source: https://en.wikipedia.org/wiki/Proton_VPN
+        verified: 2026-10-03
+      - topic: payment
+        text: Accepts cash (Swiss francs, US dollars, euros) and Bitcoin.
+        source: https://protonvpn.com/support/payment-options
+        verified: 2026-10-04
+      - topic: client
+        text: All its apps, the Linux app included, are open source.
+        source: https://protonvpn.com/blog/open-source
+        verified: 2026-10-04
+        supports: [open_client]
+      - topic: client
+        text: >-
+          On Linux, split tunnelling (only in its Ubuntu, Fedora and Arch apps) can't be used with the kill
+          switch: turning one on means turning the other off. Only on Windows do the two work together.
+        source: https://protonvpn.com/support/protonvpn-split-tunneling
+        verified: 2026-10-04
+        supports: [linux_flaw]
+      - topic: audit
+        text: Its no-logs policy was audited by Securitum in 2022, 2023 and 2024.
+        source: https://en.wikipedia.org/wiki/Proton_VPN
+        verified: 2026-10-03
+      - topic: owner
+        text: Most of its servers are rented from hosting networks such as M247 and Datacamp.
+        source: https://en.wikipedia.org/wiki/Proton_VPN
+        verified: 2026-10-03
+    detect:
+      # proton0 is the tunnel (WireGuard, policy-routed: table 245447468, fwmark 0xea13b2c);
+      # pvpnksintrf0 is the kill switch's dummy interface. Seen with the Linux app on Mint 22.3,
+      # 2026-10-04, which also carried IPv6 in the tunnel. ipv6leakintrf0 is from older versions,
+      # which blocked IPv6 instead.
+      interfaces: [proton0, pvpnksintrf0, ipv6leakintrf0]
+      resolvers: [10.2.0.1]
+    exit_networks: ["Proton AG", "PROTON"]
+    verify: The network names of Proton-owned exits in RIPEstat.
+
+  - id: windscribe
+    name: Windscribe
+    rating:
+      tier: good
+      why: >-
+        Open source, an account without email (even a bare hash), and tested twice: a court accepted that
+        it keeps no logs, and a seized server held nothing. No independent audit is on record here, and
+        nothing like DAITA.
+    facts:
+      - topic: owner
+        text: Run by Windscribe Limited, a Canadian company founded in 2016.
+        source: https://en.wikipedia.org/wiki/Windscribe
+        verified: 2026-10-03
+      - topic: account
+        text: An email address is optional; an anonymous account logs in with a 32-character hash alone.
+        source: https://windscribe.com/blog/hashed-login-anonymous-vpn-account/
+        verified: 2026-10-04
+      - topic: client
+        text: Its desktop app for Windows, macOS and Linux is open source (GPL-2.0).
+        source: https://github.com/Windscribe/Desktop-App
+        verified: 2026-10-04
+        supports: [open_client]
+      - topic: legal
+        text: >-
+          Greek prosecutors charged its CEO in 2023 over something a user did through one of its
+          servers; the case was dismissed in April 2025, and the court accepted that it keeps no logs.
+        source: https://cyberinsider.com/windscribe-vpn-acquitted-in-legal-case-affirming-no-logs-policy/
+        verified: 2026-10-03
+      - topic: legal
+        text: >-
+          In February 2026 Dutch authorities took one of its servers; it runs from memory alone, so it held
+          no user data.
+        source: https://www.tomsguide.com/computing/vpns/authorities-have-seized-one-of-windscribes-servers-but-heres-why-your-data-is-safe
+        verified: 2026-10-04
+    detect:
+      processes: [windscribe, WindscribeEngine]
+    verify: Daemon and interface names of Windscribe's Linux app.
+
+  - id: airvpn
+    name: AirVPN
+    rating:
+      tier: good
+      why: >-
+        Open source and run by privacy activists since 2010, with payment in Monero and no real email
+        needed. No independent audit or legal test is on record here, and it offers port forwarding.
+    facts:
+      - topic: owner
+        text: Run from Italy since 2010 by activists and privacy, security and law experts.
+        source: https://vpntesting.com/ownership/airvpn/
+        verified: 2026-10-04
+      - topic: account
+        text: Registration asks for an email address, but it needn't be a real one.
+        source: https://airvpn.org/forums/topic/30776-valid-email-necessary-to-sign-up/
+        verified: 2026-10-04
+      - topic: payment
+        text: Accepts Bitcoin, Litecoin, Bitcoin Cash, Dogecoin and Monero directly, with no intermediary.
+        source: https://airvpn.org/forums/topic/43868-several-cryptocurrencies-accepted-directly/
+        verified: 2026-10-04
+      - topic: client
+        text: Its app, Eddie, is open source (GPLv3).
+        source: https://github.com/AirVPN/Eddie
+        verified: 2026-10-04
+        supports: [open_client]
+    detect:
+      processes: [eddie-ui, eddie-cli]
+    verify: Eddie's process and interface names on Linux.
+
+  - id: nordvpn
+    name: NordVPN
+    group: nord_security
+    rating:
+      tier: acceptable
+      why: >-
+        Its Linux app is open source and it is audited often, but an account is an email address, a
+        break-in at a rented server in 2018 only came out the next year, and it has hedged on handing over
+        data.
+    facts:
+      - topic: jurisdiction
+        text: Developed by Nord Security s.a., incorporated in Panama, with its operations in Lithuania.
+        source: https://en.wikipedia.org/wiki/NordVPN
+        verified: 2026-10-03
+      - topic: account
+        text: Every account is registered with an email address, which is also its username.
+        source: https://support.nordvpn.com/hc/en-us/articles/19571345334033-What-is-a-Nord-Account-and-how-do-you-use-it
+        verified: 2026-10-04
+      - topic: client
+        text: Its Linux app is open source (GPLv3); its Windows and macOS apps aren't.
+        source: https://github.com/NordSecurity/nordvpn-linux
+        verified: 2026-10-04
+        supports: [open_client]
+      - topic: audit
+        text: Its no-logs policy was audited by PwC (2018, 2020) and Deloitte (2022, 2023, 2024).
+        source: https://en.wikipedia.org/wiki/NordVPN
+        verified: 2026-10-03
+      - topic: legal
+        text: >-
+          A server in a Finnish data centre it rented was broken into in 2018 through the data centre's
+          remote management system; it became public in 2019.
+        source: https://en.wikipedia.org/wiki/NordVPN
+        verified: 2026-10-03
+      - topic: legal
+        text: >-
+          In 2023 it changed a statement on government data requests from "will not comply" to "will only
+          comply" with those made according to the law; it says nothing changed in practice.
+        source: https://www.makeuseof.com/why-nordvpn-comply-with-data-requests/
+        verified: 2026-10-04
+    detect:
+      interfaces: [nordlynx, nordtun]
+      processes: [nordvpnd]
+    exit_networks: ["Packethub"]
+    verify: Whether NordVPN-run exits show as Packethub in RIPEstat.
+
+  - id: surfshark
+    name: Surfshark
+    group: nord_security
+    rating:
+      why: >-
+        An outlier: a reasonably good reputation and repeated audits, but a closed Linux app, so what it
+        does on your computer can't be checked. Audits look at servers and policies, not at the app you run.
+    facts:
+      - topic: jurisdiction
+        text: Run by Surfshark B.V., which moved from the British Virgin Islands to the Netherlands in 2021.
+        source: https://en.wikipedia.org/wiki/Surfshark_B.V.
+        verified: 2026-10-03
+      - topic: account
+        text: Signing up needs an email address.
+        source: https://gizmodo.com/best-vpn/surfshark
+        verified: 2026-10-04
+      - topic: client
+        text: Its apps, the Linux one included, are proprietary; their source isn't published.
+        source: https://en.wikipedia.org/wiki/Surfshark_VPN
+        verified: 2026-10-04
+        supports: [closed_client]
+      - topic: audit
+        text: Its no-logs policy was audited by Deloitte at the end of 2022 and again in 2025.
+        source: https://en.wikipedia.org/wiki/Surfshark_B.V.
+        verified: 2026-10-03
+      - topic: legal
+        text: In 2022 it closed its servers in India rather than keep users' data for five years as India required.
+        source: https://en.wikipedia.org/wiki/Surfshark_B.V.
+        verified: 2026-10-04
+    detect:
+      interfaces: [surfshark_wg, surfshark_ipv6]
+    verify: Interface names of Surfshark's Linux app.
+
+  - id: expressvpn
+    name: ExpressVPN
+    group: kape
+    facts:
+      - topic: owner
+        text: Bought by Kape Technologies in September 2021, for $936 million.
+        source: https://en.wikipedia.org/wiki/ExpressVPN
+        verified: 2026-10-03
+      - topic: jurisdiction
+        text: Incorporated in the British Virgin Islands.
+        source: https://en.wikipedia.org/wiki/ExpressVPN
+        verified: 2026-10-03
+      - topic: client
+        text: Its apps are proprietary; only its Lightway protocol has been published as open source (2021).
+        source: https://alternativeto.net/software/expressvpn/about/
+        verified: 2026-10-04
+        supports: [closed_client]
+      - topic: legal
+        text: >-
+          In 2017 Turkish investigators seized one of its servers and found no user data on it.
+        source: https://en.wikipedia.org/wiki/ExpressVPN
+        verified: 2026-10-03
+      - topic: legal
+        text: >-
+          In 2021 its chief information officer, Daniel Gericke, agreed with the US Justice Department to
+          pay $335,000 over hacking work he had done earlier for the United Arab Emirates.
+        source: https://en.wikipedia.org/wiki/ExpressVPN
+        verified: 2026-10-03
+    detect:
+      processes: [expressvpnd, expressvpn-daem]
+    verify: Daemon and interface names of the current ExpressVPN Linux app (expressvpnctl).
+
+  - id: cyberghost
+    name: CyberGhost
+    group: kape
+    facts:
+      - topic: owner
+        text: Bought by Kape (then Crossrider) in 2017; ZenMate's users were moved to it in 2023.
+        source: https://en.wikipedia.org/wiki/Kape_Technologies
+        verified: 2026-10-03
+      - topic: client
+        text: Its apps are proprietary.
+        source: https://alternativeto.net/software/cyberghost/about/
+        verified: 2026-10-04
+        supports: [closed_client]
+      - topic: audit
+        text: Its no-logs policy was audited by Deloitte Romania (2022, 2024).
+        source: https://www.techradar.com/computing/cyber-security/independent-auditors-confirm-top-vpns-privacy-claims
+        verified: 2026-10-03
+    detect:
+      processes: [cyberghostvpn]
+    verify: How CyberGhost's Linux CLI names its tunnel.
+
+  - id: pia
+    name: Private Internet Access
+    group: kape
+    rating:
+      why: >-
+        An outlier: its early record was very solid, with an open-source app and a no-logs claim that held
+        up when the FBI came asking. But that test was in 2016, and in 2019 it was sold to Kape, a company
+        whose history runs against everything PIA stood for. Why sell to them?
+    facts:
+      - topic: owner
+        text: Founded in 2010 (London Trust Media); bought by Kape Technologies in November 2019.
+        source: https://en.wikipedia.org/wiki/Private_Internet_Access
+        verified: 2026-10-03
+      - topic: client
+        text: Its desktop app for Windows, macOS and Linux is open source (GPLv3).
+        source: https://github.com/pia-foss/desktop
+        verified: 2026-10-04
+        supports: [open_client]
+      - topic: audit
+        text: Its no-logs policy was audited by Deloitte, completed in June 2022.
+        source: https://en.wikipedia.org/wiki/Private_Internet_Access
+        verified: 2026-10-03
+      - topic: legal
+        text: >-
+          In a 2016 FBI case, a subpoena got nothing from it beyond which region of servers was used:
+          it had no logs to give.
+        source: https://torrentfreak.com/vpn-providers-no-logging-claims-tested-in-fbi-case-160312/
+        verified: 2026-10-03
+    detect:
+      interfaces: [wgpia*]
+      processes: [pia-daemon]
+    verify: The WireGuard interface name of PIA's Linux app (wgpia0).
+
+  - id: ipvanish
+    name: IPVanish
+    group: ziff_davis
+    facts:
+      - topic: jurisdiction
+        text: A US company, based in New York.
+        source: https://en.wikipedia.org/wiki/IPVanish
+        verified: 2026-10-03
+      - topic: client
+        text: Its apps, the Linux one included, are proprietary.
+        source: https://en.wikipedia.org/wiki/IPVanish
+        verified: 2026-10-04
+        supports: [closed_client]
+      - topic: harm
+        text: >-
+          In 2016, under its previous owner, it gave customer information to US Homeland Security,
+          against its stated no-logs policy; this became public in 2018.
+        source: https://en.wikipedia.org/wiki/IPVanish
+        verified: 2026-10-03
+        supports: [harm]
+      - topic: audit
+        text: Its no-logs policy was audited by Leviathan Security (2022) and Schellman (2025).
+        source: https://en.wikipedia.org/wiki/IPVanish
+        verified: 2026-10-03
+
+  - id: purevpn
+    name: PureVPN
+    facts:
+      - topic: owner
+        text: Owned by GZ Systems Ltd, based in the British Virgin Islands.
+        source: https://en.wikipedia.org/wiki/PureVPN
+        verified: 2026-10-04
+      - topic: harm
+        text: >-
+          In 2017 it gave the FBI connection records that helped identify a user, despite claiming to keep
+          no logs.
+        source: https://torrentfreak.com/purevpn-logs-helped-fbi-net-alleged-cyberstalker-171009/
+        verified: 2026-10-04
+        supports: [harm]
+    verify: Daemon and interface names of PureVPN's Linux app.
+
+  - id: hotspotshield
+    name: Hotspot Shield
+    facts:
+      - topic: owner
+        text: Developed and run by Pango (formerly AnchorFree).
+        source: https://en.wikipedia.org/wiki/Hotspot_Shield
+        verified: 2026-10-04
+      - topic: client
+        text: Its apps are proprietary.
+        source: https://alternativeto.net/software/hotspot-shield/about/
+        verified: 2026-10-04
+        supports: [closed_client]
+      - topic: legal
+        text: >-
+          In 2017 the Center for Democracy and Technology complained to the US Federal Trade Commission
+          that its free app shared data and redirected traffic without saying so; the company denied it.
+        source: https://en.wikipedia.org/wiki/Hotspot_Shield
+        verified: 2026-10-04
+    verify: Daemon and interface names of Hotspot Shield's Linux CLI.
+
+  - id: hola
+    name: Hola
+    facts:
+      - topic: harm
+        text: >-
+          Its free users become exit nodes of Bright Data (formerly Luminati), which sells their bandwidth
+          as a residential proxy network; in 2015 that network was used to attack a website.
+        source: https://en.wikipedia.org/wiki/Hola_(VPN)
+        verified: 2026-10-04
+        supports: [harm]
+    detect:
+      extensions: [gkojfkhlekighikafcpjkiklfbnlmeio]
+    verify: Hola's extension ids in the Chrome, Edge and Opera stores, and Firefox's add-on id (Chrome and Firefox removed it in 2021).
+
+  - id: urbanvpn
+    name: Urban VPN
+    facts:
+      - topic: owner
+        text: Run by Urban Cyber Security Inc., which is affiliated with the data broker BiScience.
+        source: https://thehackernews.com/2025/12/featured-chrome-browser-extension.html
+        verified: 2026-10-04
+      - topic: harm
+        text: >-
+          From July 2025 its browser extensions silently captured users' conversations with AI chatbots
+          (ChatGPT, Claude, Gemini and others) and sent them to its own servers.
+        source: https://thehackernews.com/2025/12/featured-chrome-browser-extension.html
+        verified: 2026-10-04
+        supports: [harm]
+    detect:
+      # Chrome Web Store ids of the four extensions Koi Security found harvesting (Urban VPN Proxy,
+      # 1ClickVPN Proxy, Urban Browser Guard, Urban Ad Blocker)
+      extensions: [eppiocemhmnlbhjplcgkofciiegomcon, pphgdbgldlmicfdkhondlafkiomnelnk,
+                   almalgbpmcfpdaopimbdchdliminoign, feflcgofneboehfdeebcfglbodaceghj]
+    verify: The same extensions' ids in the Edge store.
+
+datacentres: [M247, Datacamp, CDN77, Leaseweb, OVH, Hetzner, DigitalOcean, Vultr, Choopa, Zenlayer, xTom,
+              Clouvider, HostRoyale, Tzulo, Performive, GSL Networks]
+
+public_dns: [Cloudflare, Google, Quad9, OpenDNS, Cisco, AdGuard, NextDNS, CleanBrowsing, Control D, DNS.WATCH]

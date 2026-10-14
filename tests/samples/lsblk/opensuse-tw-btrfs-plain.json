@@ -1,0 +1,55 @@
+{
+   "blockdevices": [
+      {
+         "name": "vda",
+         "type": "disk",
+         "fstype": null,
+         "mountpoints": [
+            null
+         ],
+         "rm": false,
+         "hotplug": false,
+         "children": [
+            {
+               "name": "vda1",
+               "type": "part",
+               "fstype": null,
+               "mountpoints": [
+                  null
+               ],
+               "rm": false,
+               "hotplug": false
+            },
+            {
+               "name": "vda2",
+               "type": "part",
+               "fstype": "btrfs",
+               "mountpoints": [
+                  "/var",
+                  "/usr/local",
+                  "/srv",
+                  "/root",
+                  "/opt",
+                  "/home",
+                  "/boot/grub2/x86_64-efi",
+                  "/boot/grub2/i386-pc",
+                  "/.snapshots",
+                  "/"
+               ],
+               "rm": false,
+               "hotplug": false
+            },
+            {
+               "name": "vda3",
+               "type": "part",
+               "fstype": "swap",
+               "mountpoints": [
+                  "[SWAP]"
+               ],
+               "rm": false,
+               "hotplug": false
+            }
+         ]
+      }
+   ]
+}

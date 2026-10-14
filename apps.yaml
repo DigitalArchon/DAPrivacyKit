@@ -1,0 +1,1382 @@
+# apps.yaml
+# The apps whose files the checks read or whose settings the fixes change, and the version each was made for.
+# Apps change where and how they keep their data, most often in a major release. When an app here is installed in a
+# newer major version than `checked`, every check listed under it gets a note saying so (and its fix's dry run a
+# line), and a check that found nothing, where the app keeps nothing where it used to (`data`), says it couldn't
+# check rather than passing. app.newer_than_checked lists them all. Shipped with each release, copied into the
+# package like the catalogue.
+#
+# packaging/check-app-versions.py compares `checked` with the latest release upstream (Repology), writes a review
+# brief for the apps with a new major version (what to read, what the checks rely on), and records a version once
+# it is reviewed (--mark). See packaging/README.md.
+#
+# SCHEMA (list `apps`)
+#   id           Stable identifier. Never rename once shipped.
+#   name         As its maker calls it.
+#   packages     Package names (dpkg, rpm, pacman) the installed version is read from; the newest installed counts.
+#   flatpak      Flatpak app ids. snap: snap names. At least one of packages, flatpak, snap.
+#   checked      The version the checks and fixes were made for.
+#   basis        tested   checked on a real system at that version
+#                current  the release current when the checks were written (`checked_on`), not tested at it
+#   checked_on   When (YYYY-MM-DD).
+#   major_parts  How many of the version's numbers make its major version: 1 (default; Firefox 157), 2 where the
+#                first number never moves (VS Code 1.105, mpv 0.40, LibreOffice 25.8).
+#   tolerance    Major versions ahead before the note shows, for apps with a new major version every few weeks
+#                (Firefox, Chromium): 3 is about three months. Default 0.
+#   checks       Catalogue ids of the checks that read it (a test keeps them in step with the catalogue).
+#   data         Where it keeps what the checks read, as <config|data|cache|state|home>:<path>; looked for natively,
+#                in its Flatpak and in its Snap. Nothing there while a newer major version is installed: "couldn't
+#                check". Left out for apps whose settings live in gsettings, /etc or a command's output.
+#   relies_on    What the checks and fixes rely on (files, keys, tables, commands): what to compare in a new release.
+#   upstream     repology (its project name there; absent: no version source), notes (release notes), source (code).
+#   verify       Developer note: something to confirm. Developer mode only.
+
+schema_version: 1
+
+apps:
+
+  - id: firefox
+    name: "Firefox"
+    packages: [firefox, firefox-esr]
+    flatpak: [org.mozilla.firefox]
+    snap: [firefox]
+    checked: "157"
+    basis: tested
+    checked_on: 2026-10-07
+    tolerance: 3
+    checks: [auth.firefox_no_primary_password, br.account_sync, br.ad_features, br.content_blocking, br.crashpad_dumps, br.default_browser, br.disk_cache, br.extensions_broad, br.history_retention, br.https_only, br.site_permissions, br.tracking_protection, br.vpn_extensions, br.webrtc, net.dns_unencrypted, tel.browser_telemetry]
+    data: [home:.mozilla/firefox, config:mozilla/firefox]
+    relies_on: >-
+      profiles.ini (in ~/.mozilla/firefox, and ~/.config/mozilla/firefox for profiles made since 147); in each profile
+      prefs.js and user.js (the preference names), logins.json and key4.db, extensions.json and
+      extension-preferences.json, permissions.sqlite (moz_perms), the cache in ~/.cache/mozilla; policies.json in
+      /etc/firefox/policies and the install's distribution folder
+    upstream:
+      repology: firefox
+      notes: https://www.mozilla.org/en-US/firefox/releases/
+      source: https://github.com/mozilla-firefox/firefox
+
+  - id: thunderbird
+    name: "Thunderbird"
+    packages: [thunderbird]
+    flatpak: [org.mozilla.Thunderbird]
+    snap: [thunderbird]
+    checked: "157.0.1"
+    basis: current
+    checked_on: 2026-10-08
+    tolerance: 3
+    checks: [auth.firefox_no_primary_password, app.mail_remote_content, app.messengers_mail, tel.browser_telemetry]
+    data: [home:.thunderbird]
+    relies_on: >-
+      profiles.ini in ~/.thunderbird; prefs.js (mailnews.message_display.disable_remote_image, telemetry), logins.json
+      and key4.db
+    upstream:
+      repology: thunderbird
+      notes: https://www.thunderbird.net/en-US/thunderbird/releases/
+      source: https://hg.mozilla.org/comm-central
+
+  - id: librewolf
+    name: "LibreWolf"
+    packages: [librewolf, librewolf-bin]
+    flatpak: [io.gitlab.librewolf-community]
+    checked: "157.0"
+    basis: current
+    checked_on: 2026-10-08
+    tolerance: 3
+    checks: [auth.firefox_no_primary_password, br.account_sync, br.ad_features, br.content_blocking, br.crashpad_dumps, br.default_browser, br.disk_cache, br.extensions_broad, br.history_retention, br.https_only, br.site_permissions, br.tracking_protection, br.vpn_extensions, br.webrtc, net.dns_unencrypted, tel.browser_telemetry]
+    data: [home:.librewolf]
+    relies_on: >-
+      As Firefox's, in ~/.librewolf
+    upstream:
+      repology: librewolf
+      notes: https://codeberg.org/librewolf/source/releases
+      source: https://codeberg.org/librewolf/source
+    verify: "Whether newer releases keep profiles in ~/.config/librewolf"
+
+  - id: waterfox
+    name: "Waterfox"
+    packages: [waterfox, waterfox-bin]
+    flatpak: [net.waterfox.waterfox]
+    checked: "6.7.5"
+    basis: current
+    checked_on: 2026-10-08
+    checks: [auth.firefox_no_primary_password, br.account_sync, br.ad_features, br.content_blocking, br.crashpad_dumps, br.default_browser, br.disk_cache, br.extensions_broad, br.history_retention, br.https_only, br.site_permissions, br.tracking_protection, br.vpn_extensions, br.webrtc, net.dns_unencrypted, tel.browser_telemetry]
+    data: [home:.waterfox]
+    relies_on: >-
+      As Firefox's, in ~/.waterfox
+    upstream:
+      repology: waterfox
+      notes: https://www.waterfox.net/docs/releases/
+      source: https://github.com/BrowserWorks/waterfox
+
+  - id: zen-browser
+    name: "Zen"
+    packages: [zen-browser, zen-browser-bin]
+    flatpak: [app.zen_browser.zen]
+    checked: "1.23b"
+    basis: current
+    checked_on: 2026-10-08
+    major_parts: 2
+    checks: [auth.firefox_no_primary_password, br.account_sync, br.ad_features, br.content_blocking, br.crashpad_dumps, br.default_browser, br.disk_cache, br.extensions_broad, br.history_retention, br.https_only, br.site_permissions, br.tracking_protection, br.vpn_extensions, br.webrtc, net.dns_unencrypted, tel.browser_telemetry]
+    data: [home:.zen]
+    relies_on: >-
+      As Firefox's, in ~/.zen
+    upstream:
+      repology: zen-browser
+      notes: https://zen-browser.app/release-notes/
+      source: https://github.com/zen-browser/desktop
+
+  - id: floorp
+    name: "Floorp"
+    packages: [floorp, floorp-bin]
+    flatpak: [one.ablaze.floorp]
+    checked: "12.19.0"
+    basis: current
+    checked_on: 2026-10-08
+    checks: [auth.firefox_no_primary_password, br.account_sync, br.ad_features, br.content_blocking, br.crashpad_dumps, br.default_browser, br.disk_cache, br.extensions_broad, br.history_retention, br.https_only, br.site_permissions, br.tracking_protection, br.vpn_extensions, br.webrtc, net.dns_unencrypted, tel.browser_telemetry]
+    data: [home:.floorp]
+    relies_on: >-
+      As Firefox's, in ~/.floorp
+    upstream:
+      repology: floorp
+      notes: https://github.com/Floorp-Projects/Floorp/releases
+      source: https://github.com/Floorp-Projects/Floorp
+
+  - id: chrome
+    name: "Google Chrome"
+    packages: [google-chrome-stable, google-chrome, google-chrome-beta, google-chrome-unstable]
+    flatpak: [com.google.Chrome]
+    checked: "154.0.8037.97"
+    basis: current
+    checked_on: 2026-10-08
+    tolerance: 3
+    checks: [auth.chromium_basic_store, br.account_sync, br.ad_features, br.content_blocking, br.crashpad_dumps, br.default_browser, br.disk_cache, br.extensions_broad, br.history_retention, br.https_only, br.site_permissions, br.surveillance_browsers, br.tracking_protection, br.vpn_extensions, br.webrtc, tel.browser_telemetry]
+    data: [config:google-chrome]
+    relies_on: >-
+      Local State and each profile's Preferences (JSON keys: sync, extensions.settings, webrtc, privacy sandbox and ad
+      settings), Login Data (logins) and Cookies (cookies) tables, Extensions folders, Crashpad, Cache and Code Cache,
+      managed policies in /etc/<browser>/policies/managed; the menu entry google-chrome.desktop
+    upstream:
+      repology: google-chrome
+      notes: https://chromereleases.googleblog.com/
+      source: https://chromium.googlesource.com/chromium/src
+
+  - id: chromium
+    name: "Chromium"
+    packages: [chromium, chromium-browser]
+    flatpak: [org.chromium.Chromium]
+    snap: [chromium]
+    checked: "155.0.8059.39"
+    basis: current
+    checked_on: 2026-10-08
+    tolerance: 3
+    checks: [auth.chromium_basic_store, br.account_sync, br.ad_features, br.content_blocking, br.crashpad_dumps, br.default_browser, br.disk_cache, br.extensions_broad, br.history_retention, br.https_only, br.site_permissions, br.tracking_protection, br.vpn_extensions, br.webrtc, tel.browser_telemetry]
+    data: [config:chromium]
+    relies_on: >-
+      Local State and each profile's Preferences (JSON keys: sync, extensions.settings, webrtc, privacy sandbox and ad
+      settings), Login Data (logins) and Cookies (cookies) tables, Extensions folders, Crashpad, Cache and Code Cache,
+      managed policies in /etc/<browser>/policies/managed
+    upstream:
+      repology: chromium
+      notes: https://chromereleases.googleblog.com/
+      source: https://chromium.googlesource.com/chromium/src
+
+  - id: brave
+    name: "Brave"
+    packages: [brave-browser, brave-bin, brave]
+    flatpak: [com.brave.Browser]
+    snap: [brave]
+    checked: "1.97.56"
+    basis: current
+    checked_on: 2026-10-08
+    major_parts: 2
+    tolerance: 3
+    checks: [auth.chromium_basic_store, br.account_sync, br.ad_features, br.content_blocking, br.crashpad_dumps, br.default_browser, br.disk_cache, br.extensions_broad, br.history_retention, br.https_only, br.site_permissions, br.tracking_protection, br.vpn_extensions, br.webrtc, tel.browser_telemetry]
+    data: [config:BraveSoftware/Brave-Browser]
+    relies_on: >-
+      Local State and each profile's Preferences (JSON keys: sync, extensions.settings, webrtc, privacy sandbox and ad
+      settings), Login Data (logins) and Cookies (cookies) tables, Extensions folders, Crashpad, Cache and Code Cache,
+      managed policies in /etc/<browser>/policies/managed; Brave's own keys (brave.*: Rewards, Wallet, Leo, news)
+    upstream:
+      repology: brave
+      notes: https://brave.com/latest/
+      source: https://github.com/brave/brave-browser
+
+  - id: edge
+    name: "Microsoft Edge"
+    packages: [microsoft-edge-stable, microsoft-edge-beta, microsoft-edge-dev]
+    flatpak: [com.microsoft.Edge]
+    checked: "154.0.4258.62"
+    basis: current
+    checked_on: 2026-10-08
+    tolerance: 3
+    checks: [auth.chromium_basic_store, br.account_sync, br.ad_features, br.content_blocking, br.crashpad_dumps, br.default_browser, br.disk_cache, br.extensions_broad, br.history_retention, br.https_only, br.site_permissions, br.surveillance_browsers, br.tracking_protection, br.vpn_extensions, br.webrtc, tel.browser_telemetry]
+    data: [config:microsoft-edge]
+    relies_on: >-
+      Local State and each profile's Preferences (JSON keys: sync, extensions.settings, webrtc, privacy sandbox and ad
+      settings), Login Data (logins) and Cookies (cookies) tables, Extensions folders, Crashpad, Cache and Code Cache,
+      managed policies in /etc/<browser>/policies/managed
+    upstream:
+      repology: microsoft-edge
+      notes: https://learn.microsoft.com/en-us/deployedge/microsoft-edge-relnote-stable-channel
+      source: https://chromium.googlesource.com/chromium/src
+
+  - id: vivaldi
+    name: "Vivaldi"
+    packages: [vivaldi, vivaldi-stable]
+    flatpak: [com.vivaldi.Vivaldi]
+    checked: "8.2.4133.84"
+    basis: current
+    checked_on: 2026-10-08
+    major_parts: 2
+    tolerance: 2
+    checks: [auth.chromium_basic_store, br.account_sync, br.ad_features, br.content_blocking, br.crashpad_dumps, br.default_browser, br.disk_cache, br.extensions_broad, br.history_retention, br.https_only, br.site_permissions, br.tracking_protection, br.vpn_extensions, br.webrtc, tel.browser_telemetry]
+    data: [config:vivaldi]
+    relies_on: >-
+      Local State and each profile's Preferences (JSON keys: sync, extensions.settings, webrtc, privacy sandbox and ad
+      settings), Login Data (logins) and Cookies (cookies) tables, Extensions folders, Crashpad, Cache and Code Cache,
+      managed policies in /etc/<browser>/policies/managed
+    upstream:
+      repology: vivaldi
+      notes: https://vivaldi.com/blog/
+      source: https://vivaldi.com/source/
+
+  - id: opera
+    name: "Opera"
+    packages: [opera, opera-stable]
+    flatpak: [com.opera.Opera]
+    snap: [opera]
+    checked: "137.0.6036.39"
+    basis: current
+    checked_on: 2026-10-08
+    tolerance: 3
+    checks: [auth.chromium_basic_store, br.account_sync, br.ad_features, br.content_blocking, br.crashpad_dumps, br.default_browser, br.disk_cache, br.extensions_broad, br.history_retention, br.https_only, br.site_permissions, br.surveillance_browsers, br.tracking_protection, br.vpn_extensions, br.webrtc, tel.browser_telemetry]
+    data: [config:opera]
+    relies_on: >-
+      Local State and each profile's Preferences (JSON keys: sync, extensions.settings, webrtc, privacy sandbox and ad
+      settings), Login Data (logins) and Cookies (cookies) tables, Extensions folders, Crashpad, Cache and Code Cache,
+      managed policies in /etc/<browser>/policies/managed
+    upstream:
+      repology: opera
+      notes: https://blogs.opera.com/desktop/
+
+  - id: signal
+    name: "Signal Desktop"
+    packages: [signal-desktop]
+    flatpak: [org.signal.Signal]
+    snap: [signal-desktop]
+    checked: "8.30.0"
+    basis: tested
+    checked_on: 2026-10-07
+    checks: [app.messengers_mail, app.electron_caches, auth.chromium_basic_store]
+    data: [config:Signal]
+    relies_on: >-
+      config.json: key (the database key in plain text) or encryptedKey (kept with safeStorage); the folder's size;
+      Electron caches
+    upstream:
+      repology: signal-desktop
+      notes: https://github.com/signalapp/Signal-Desktop/releases
+      source: https://github.com/signalapp/Signal-Desktop
+
+  - id: telegram
+    name: "Telegram Desktop"
+    packages: [telegram-desktop]
+    flatpak: [org.telegram.desktop]
+    snap: [telegram-desktop]
+    checked: "7.2.10"
+    basis: current
+    checked_on: 2026-10-08
+    checks: [app.messengers_mail]
+    data: [data:TelegramDesktop]
+    relies_on: >-
+      The data folder's size
+    upstream:
+      repology: telegram-desktop
+      notes: https://github.com/telegramdesktop/tdesktop/releases
+      source: https://github.com/telegramdesktop/tdesktop
+
+  - id: discord
+    name: "Discord"
+    packages: [discord]
+    flatpak: [com.discordapp.Discord]
+    snap: [discord]
+    checked: "0.0"
+    basis: current
+    checked_on: 2026-10-08
+    checks: [app.messengers_mail, app.electron_caches]
+    data: [config:discord]
+    relies_on: >-
+      The data folder's size; Electron caches
+    upstream:
+      notes: https://discord.com/blog
+    verify: "No version source upstream (Repology has no Discord project), and its versions (0.0.N) don't mark major changes: watch its blog."
+
+  - id: slack
+    name: "Slack"
+    packages: [slack-desktop, slack]
+    flatpak: [com.slack.Slack]
+    snap: [slack]
+    checked: "4.52.178"
+    basis: current
+    checked_on: 2026-10-08
+    checks: [app.messengers_mail, app.electron_caches]
+    data: [config:Slack]
+    relies_on: >-
+      The data folder's size; Electron caches
+    upstream:
+      repology: slack
+      notes: https://slack.com/release-notes/linux
+
+  - id: element
+    name: "Element"
+    packages: [element-desktop]
+    flatpak: [im.riot.Riot]
+    snap: [element-desktop]
+    checked: "1.12.30"
+    basis: current
+    checked_on: 2026-10-08
+    major_parts: 2
+    checks: [app.messengers_mail, app.electron_caches]
+    data: [config:Element]
+    relies_on: >-
+      The data folder's size; Electron caches
+    upstream:
+      repology: element-desktop
+      notes: https://github.com/element-hq/element-desktop/releases
+      source: https://github.com/element-hq/element-desktop
+
+  - id: evolution
+    name: "Evolution"
+    packages: [evolution]
+    flatpak: [org.gnome.Evolution]
+    checked: "3.62.0"
+    basis: current
+    checked_on: 2026-10-08
+    major_parts: 2
+    checks: [app.messengers_mail, app.mail_remote_content]
+    data: [data:evolution]
+    relies_on: >-
+      gsettings org.gnome.evolution.mail image-loading-policy; the data folder's size
+    upstream:
+      repology: evolution
+      notes: https://gitlab.gnome.org/GNOME/evolution/-/blob/master/NEWS
+      source: https://gitlab.gnome.org/GNOME/evolution
+
+  - id: geary
+    name: "Geary"
+    packages: [geary]
+    flatpak: [org.gnome.Geary]
+    checked: "46.0"
+    basis: current
+    checked_on: 2026-10-08
+    checks: [app.messengers_mail]
+    data: [data:geary]
+    relies_on: >-
+      The data folder's size
+    upstream:
+      repology: geary
+      notes: https://gitlab.gnome.org/GNOME/geary/-/blob/main/NEWS
+      source: https://gitlab.gnome.org/GNOME/geary
+
+  - id: vscode
+    name: "Visual Studio Code"
+    packages: [code, visual-studio-code-bin, code-oss, vscodium, vscodium-bin, codium]
+    flatpak: [com.visualstudio.code, com.vscodium.codium]
+    snap: [code, codium]
+    checked: "1.141.0"
+    basis: tested
+    checked_on: 2026-10-07
+    major_parts: 2
+    tolerance: 6
+    checks: [app.editor_residue, app.electron_caches, tel.devtools, tel.browser_telemetry]
+    data: [config:Code, config:VSCodium, "config:Code - OSS"]
+    relies_on: >-
+      User/settings.json (telemetry.telemetryLevel, telemetry.enableTelemetry), User/History (local history), Backups
+      (unsaved files), ~/.vscode/extensions (Copilot)
+    upstream:
+      repology: vscode
+      notes: https://code.visualstudio.com/updates
+      source: https://github.com/microsoft/vscode
+
+  - id: libreoffice
+    name: "LibreOffice"
+    packages: [libreoffice-core, libreoffice, libreoffice-fresh, libreoffice-still]
+    flatpak: [org.libreoffice.LibreOffice]
+    snap: [libreoffice]
+    checked: "26.8.1.1"
+    basis: current
+    checked_on: 2026-10-08
+    major_parts: 2
+    checks: [app.office, app.shared_file_metadata, app.editor_residue]
+    data: [config:libreoffice/4/user]
+    relies_on: >-
+      libreoffice/4/user/registrymodifications.xcu: Histories PickList (recent documents), UserProfile/Data (the name
+      it writes into documents), Security/Scripting RemovePersonalInfoOnSaving; the backup folder
+    upstream:
+      repology: libreoffice
+      notes: https://wiki.documentfoundation.org/ReleaseNotes
+      source: https://git.libreoffice.org/core
+
+  - id: onlyoffice
+    name: "ONLYOFFICE Desktop Editors"
+    packages: [onlyoffice-desktopeditors, onlyoffice-bin]
+    flatpak: [org.onlyoffice.desktopeditors]
+    checked: "9.4.0"
+    basis: current
+    checked_on: 2026-10-08
+    checks: [app.office]
+    data: [data:onlyoffice]
+    relies_on: >-
+      Its recent files and the data folder
+    upstream:
+      repology: onlyoffice-desktopeditors
+      notes: https://github.com/ONLYOFFICE/DesktopEditors/releases
+      source: https://github.com/ONLYOFFICE/DesktopEditors
+
+  - id: gimp
+    name: "GIMP"
+    packages: [gimp]
+    flatpak: [org.gimp.GIMP]
+    snap: [gimp]
+    checked: "3.2.6"
+    basis: current
+    checked_on: 2026-10-08
+    major_parts: 2
+    checks: [app.shared_file_metadata]
+    data: [config:GIMP]
+    relies_on: >-
+      GIMP/<version>/gimprc: export-metadata-exif, export-metadata-xmp, export-metadata-iptc
+    upstream:
+      repology: gimp
+      notes: https://www.gimp.org/release-notes/
+      source: https://gitlab.gnome.org/GNOME/gimp
+
+  - id: vlc
+    name: "VLC"
+    packages: [vlc, vlc-bin]
+    flatpak: [org.videolan.VLC]
+    snap: [vlc]
+    checked: "3.0.24"
+    basis: current
+    checked_on: 2026-10-08
+    checks: [app.media_players]
+    data: [config:vlc]
+    relies_on: >-
+      vlc-qt-interface.conf ([RecentsMRL] list, restore-playback-pos), vlcrc
+    upstream:
+      repology: vlc
+      notes: https://www.videolan.org/vlc/releases/
+      source: https://code.videolan.org/videolan/vlc
+
+  - id: mpv
+    name: "mpv"
+    packages: [mpv]
+    flatpak: [io.mpv.Mpv]
+    checked: "0.41.0"
+    basis: current
+    checked_on: 2026-10-08
+    major_parts: 2
+    checks: [app.media_players]
+    data: [config:mpv, state:mpv]
+    relies_on: >-
+      watch_later (in ~/.local/state/mpv, ~/.config/mpv in older releases), mpv.conf save-position-on-quit
+    upstream:
+      repology: mpv
+      notes: https://github.com/mpv-player/mpv/releases
+      source: https://github.com/mpv-player/mpv
+
+  - id: smplayer
+    name: "SMPlayer"
+    packages: [smplayer]
+    flatpak: [info.smplayer.SMPlayer]
+    checked: "26.8.29"
+    basis: current
+    checked_on: 2026-10-08
+    checks: [app.media_players]
+    data: [config:smplayer]
+    relies_on: >-
+      smplayer.ini (history, remember-position settings), file_settings
+    upstream:
+      repology: smplayer
+      notes: https://www.smplayer.info/en/changes
+      source: https://github.com/smplayer-dev/smplayer
+
+  - id: celluloid
+    name: "Celluloid"
+    packages: [celluloid]
+    flatpak: [io.github.celluloid_player.Celluloid]
+    checked: "0.30"
+    basis: tested
+    checked_on: 2026-10-07
+    major_parts: 2
+    checks: [app.media_players]
+    data: [config:celluloid]
+    relies_on: >-
+      celluloid/watch_later; gsettings io.github.celluloid-player.Celluloid
+    upstream:
+      repology: celluloid
+      notes: https://github.com/celluloid-player/celluloid/releases
+      source: https://github.com/celluloid-player/celluloid
+
+  - id: haruna
+    name: "Haruna"
+    packages: [haruna]
+    flatpak: [org.kde.haruna]
+    checked: "1.8.1"
+    basis: current
+    checked_on: 2026-10-08
+    major_parts: 2
+    checks: [app.media_players]
+    data: [config:haruna]
+    relies_on: >-
+      haruna.conf; haruna.db tables recent_files and playback_position
+    upstream:
+      repology: haruna
+      notes: https://invent.kde.org/multimedia/haruna/-/releases
+      source: https://invent.kde.org/multimedia/haruna
+
+  - id: okular
+    name: "Okular"
+    packages: [okular]
+    flatpak: [org.kde.okular]
+    checked: "26.08.1"
+    basis: tested
+    checked_on: 2026-10-07
+    checks: [app.pdf_readers, app.kde_recent_files]
+    data: [data:okular, config:okularrc, state:okularstaterc]
+    relies_on: >-
+      okular/docdata (an XML file per document), [Recent Files] in okularrc or okularstaterc
+    upstream:
+      repology: okular
+      notes: https://kde.org/announcements/
+      source: https://invent.kde.org/graphics/okular
+
+  - id: kolourpaint
+    name: "KolourPaint"
+    packages: [kolourpaint]
+    flatpak: [org.kde.kolourpaint]
+    checked: "26.08.1"
+    basis: tested
+    checked_on: 2026-10-08
+    checks: [app.kde_recent_files]
+    data: [config:kolourpaintrc]
+    relies_on: >-
+      kolourpaintrc [Recent Files] File<N>[$e] and Name<N>[$e], written as a file is opened; honours [Recent Files][$i]
+    upstream:
+      repology: kolourpaint
+      notes: https://kde.org/announcements/
+      source: https://invent.kde.org/graphics/kolourpaint
+
+  - id: ark
+    name: "Ark"
+    packages: [ark]
+    flatpak: [org.kde.ark]
+    checked: "26.08.1"
+    basis: tested
+    checked_on: 2026-10-08
+    checks: [app.kde_recent_files]
+    data: [data:ark]
+    relies_on: >-
+      ~/.local/share/ark/ark_recentfiles, a QSettings file ([RecentFiles] files\N\url, files\size), written when it
+      quits; a read-only folder in its place stops it
+    upstream:
+      repology: ark
+      notes: https://kde.org/announcements/
+      source: https://invent.kde.org/utilities/ark
+
+  - id: gwenview
+    name: "Gwenview"
+    packages: [gwenview]
+    flatpak: [org.kde.gwenview]
+    checked: "26.08.1"
+    basis: tested
+    checked_on: 2026-10-08
+    checks: [app.kde_recent_files]
+    data: [data:gwenview]
+    relies_on: >-
+      ~/.local/share/gwenview/recentfolders/gvhistory*rc, one per folder browsed ([general] url, dateTime); an empty
+      read-only folder stops it
+    upstream:
+      repology: gwenview
+      notes: https://kde.org/announcements/
+      source: https://invent.kde.org/graphics/gwenview
+
+  - id: kate
+    name: "Kate and KWrite"
+    packages: [kate, kwrite]
+    flatpak: [org.kde.kate, org.kde.kwrite]
+    checked: "26.08.1"
+    basis: tested
+    checked_on: 2026-10-08
+    checks: [app.kde_recent_files]
+    data: [data:kate, data:kwrite]
+    relies_on: >-
+      ~/.local/share/{kate,kwrite}/anonymous.katesession: [Recent Files] File<N>[$e], and [Document N] URL= for the
+      documents open at the last close; rewritten whole (so [$i] doesn't hold), a read-only folder in its place stops it
+    upstream:
+      repology: kate
+      notes: https://kde.org/announcements/
+      source: https://invent.kde.org/utilities/kate
+
+  - id: zathura
+    name: "Zathura"
+    packages: [zathura]
+    flatpak: [org.pwmt.zathura]
+    checked: "2026.10.4"
+    basis: tested
+    checked_on: 2026-10-07
+    major_parts: 2
+    checks: [app.pdf_readers]
+    data: [data:zathura]
+    relies_on: >-
+      bookmarks.sqlite (tables fileinfo, bookmarks, quickmarks), the plain history and bookmarks files
+    upstream:
+      repology: zathura
+      notes: https://pwmt.org/projects/zathura/changelog/
+      source: https://github.com/pwmt/zathura
+
+  - id: digikam
+    name: "digiKam"
+    packages: [digikam]
+    flatpak: [org.kde.digikam]
+    checked: "9.1.0"
+    basis: current
+    checked_on: 2026-10-08
+    checks: [app.photo_dbs]
+    data: [config:digikamrc]
+    relies_on: >-
+      digikamrc [Database Settings] Database Name; digikam4.db, recognition.db (table Identities),
+      thumbnails-digikam.db, similarity.db
+    upstream:
+      repology: digikam
+      notes: https://www.digikam.org/news/
+      source: https://invent.kde.org/graphics/digikam
+
+  - id: shotwell
+    name: "Shotwell"
+    packages: [shotwell]
+    flatpak: [org.gnome.Shotwell]
+    checked: "33.0"
+    basis: current
+    checked_on: 2026-10-08
+    major_parts: 2
+    checks: [app.photo_dbs]
+    data: [data:shotwell]
+    relies_on: >-
+      shotwell/data/photo.db (table FaceTable)
+    upstream:
+      repology: shotwell
+      notes: https://gitlab.gnome.org/GNOME/shotwell/-/blob/master/NEWS
+      source: https://gitlab.gnome.org/GNOME/shotwell
+
+  - id: gthumb
+    name: "gThumb"
+    packages: [gthumb]
+    flatpak: [org.gnome.gThumb]
+    checked: "4.0"
+    basis: current
+    checked_on: 2026-10-08
+    checks: [app.photo_dbs]
+    data: [cache:gthumb]
+    relies_on: >-
+      Its cache folder
+    upstream:
+      repology: gthumb
+      notes: https://gitlab.gnome.org/GNOME/gthumb/-/blob/master/NEWS
+      source: https://gitlab.gnome.org/GNOME/gthumb
+
+  - id: deja-dup
+    name: "Déjà Dup"
+    packages: [deja-dup]
+    flatpak: [org.gnome.DejaDup]
+    checked: "50.2"
+    basis: current
+    checked_on: 2026-10-08
+    checks: [enc.backups_unencrypted]
+    relies_on: >-
+      gsettings org.gnome.DejaDup (backend, its location keys), the Flatpak's keyfile; whether the backup is encrypted
+    upstream:
+      repology: deja-dup
+      notes: https://gitlab.gnome.org/World/deja-dup/-/blob/main/NEWS.md
+      source: https://gitlab.gnome.org/World/deja-dup
+
+  - id: backintime
+    name: "Back In Time"
+    packages: [backintime-qt, backintime-common, backintime]
+    checked: "1.6.1"
+    basis: current
+    checked_on: 2026-10-08
+    major_parts: 2
+    checks: [enc.backups_unencrypted]
+    data: [config:backintime]
+    relies_on: >-
+      backintime/config profileN.snapshots.mode and .path
+    upstream:
+      repology: backintime
+      notes: https://github.com/bit-team/backintime/blob/dev/CHANGES
+      source: https://github.com/bit-team/backintime
+
+  - id: kup
+    name: "Kup"
+    packages: [kup, kup-backup]
+    checked: "6.7.91"
+    basis: current
+    checked_on: 2026-10-12
+    checks: [enc.backups_unencrypted]
+    data: [config:kuprc]
+    relies_on: >-
+      kuprc [Plan/N] Destination type and External drive UUID (the same in 0.10 and in 6.7.91, a pre-release of
+      6.8: Kup is released with Plasma now, and numbered like it)
+    upstream:
+      repology: kup-backup
+      notes: https://invent.kde.org/system/kup/-/releases
+      source: https://invent.kde.org/system/kup
+
+  - id: vorta
+    name: "Vorta"
+    packages: [vorta]
+    flatpak: [com.borgbase.Vorta]
+    checked: "0.11.6"
+    basis: tested
+    checked_on: 2026-10-07
+    major_parts: 2
+    checks: [enc.backups_unencrypted]
+    data: [data:Vorta]
+    relies_on: >-
+      Vorta/settings.db, table repomodel (encryption column)
+    upstream:
+      repology: vorta
+      notes: https://github.com/borgbase/vorta/releases
+      source: https://github.com/borgbase/vorta
+
+  - id: pika-backup
+    name: "Pika Backup"
+    packages: [pika-backup]
+    flatpak: [org.gnome.World.PikaBackup]
+    checked: "0.8.4"
+    basis: tested
+    checked_on: 2026-10-07
+    major_parts: 2
+    checks: [enc.backups_unencrypted]
+    data: [config:pika-backup]
+    relies_on: >-
+      pika-backup/config.json: a list of backups, each with encryption_mode
+    upstream:
+      repology: pika-backup
+      notes: https://gitlab.gnome.org/World/pika-backup/-/blob/main/CHANGELOG.md
+      source: https://gitlab.gnome.org/World/pika-backup
+
+  - id: timeshift
+    name: "Timeshift"
+    packages: [timeshift]
+    checked: "26.09.0"
+    basis: current
+    checked_on: 2026-10-08
+    checks: [enc.backups_unencrypted, enc.snapshots_retain_deleted]
+    relies_on: >-
+      /etc/timeshift/timeshift.json: btrfs_mode, backup_device_uuid, include_btrfs_home_for_backup, schedule_* and
+      count_*
+    upstream:
+      repology: timeshift
+      notes: https://github.com/linuxmint/timeshift/releases
+      source: https://github.com/linuxmint/timeshift
+
+  - id: snapper
+    name: "Snapper"
+    packages: [snapper]
+    checked: "0.13.2"
+    basis: current
+    checked_on: 2026-10-08
+    major_parts: 2
+    checks: [enc.snapshots_retain_deleted]
+    relies_on: >-
+      /etc/snapper/configs/*: SUBVOLUME, NUMBER_LIMIT*, TIMELINE_* (and snapper's defaults for keys left out); snapper
+      cleanup
+    upstream:
+      repology: snapper
+      notes: https://github.com/openSUSE/snapper/blob/master/package/snapper.changes
+      source: https://github.com/openSUSE/snapper
+
+  - id: btrbk
+    name: "btrbk"
+    packages: [btrbk]
+    checked: "0.32"
+    basis: tested
+    checked_on: 2026-10-07
+    major_parts: 2
+    checks: [enc.snapshots_retain_deleted]
+    relies_on: >-
+      btrbk.conf: volume, subvolume, snapshot_preserve_min (all unless set), snapshot_preserve
+    upstream:
+      repology: btrbk
+      notes: https://github.com/digint/btrbk/blob/master/ChangeLog
+      source: https://github.com/digint/btrbk
+
+  - id: nextcloud
+    name: "Nextcloud"
+    packages: [nextcloud-desktop, nextcloud-client]
+    flatpak: [com.nextcloud.desktopclient.nextcloud]
+    checked: "35.0.0"
+    basis: current
+    checked_on: 2026-10-12
+    checks: [tel.cloud_sync]
+    data: [config:Nextcloud]
+    relies_on: >-
+      Its config folder (set up or not)
+    upstream:
+      repology: nextcloud-desktop
+      notes: https://github.com/nextcloud/desktop/releases
+      source: https://github.com/nextcloud/desktop
+
+  - id: owncloud
+    name: "ownCloud"
+    packages: [owncloud-client]
+    flatpak: [com.owncloud.desktopclient]
+    checked: "7.1.1.19543"
+    basis: current
+    checked_on: 2026-10-08
+    checks: [tel.cloud_sync]
+    data: [config:ownCloud]
+    relies_on: >-
+      Its config folder
+    upstream:
+      repology: owncloud-client
+      notes: https://github.com/owncloud/client/releases
+      source: https://github.com/owncloud/client
+
+  - id: dropbox
+    name: "Dropbox"
+    packages: [dropbox, nautilus-dropbox]
+    flatpak: [com.dropbox.Client]
+    checked: "273.4.4708"
+    basis: current
+    checked_on: 2026-10-08
+    checks: [tel.cloud_sync]
+    data: [home:.dropbox]
+    relies_on: >-
+      ~/.dropbox
+    upstream:
+      repology: dropbox
+      notes: https://www.dropboxforum.com/
+
+  - id: megasync
+    name: "MEGAsync"
+    packages: [megasync]
+    flatpak: [nz.mega.MEGAsync]
+    checked: "6.6.2"
+    basis: current
+    checked_on: 2026-10-08
+    checks: [tel.cloud_sync]
+    data: ["data:Mega Limited"]
+    relies_on: >-
+      Its data folder
+    upstream:
+      repology: megasync
+      notes: https://github.com/meganz/MEGAsync/releases
+      source: https://github.com/meganz/MEGAsync
+
+  - id: onedrive
+    name: "OneDrive (abraunegg)"
+    packages: [onedrive, onedrive-abraunegg]
+    checked: "2.5.11"
+    basis: current
+    checked_on: 2026-10-08
+    checks: [tel.cloud_sync]
+    data: [config:onedrive]
+    relies_on: >-
+      ~/.config/onedrive
+    upstream:
+      repology: onedrive
+      notes: https://github.com/abraunegg/onedrive/releases
+      source: https://github.com/abraunegg/onedrive
+
+  - id: rclone
+    name: "rclone"
+    packages: [rclone]
+    snap: [rclone]
+    checked: "1.75.1"
+    basis: current
+    checked_on: 2026-10-08
+    major_parts: 2
+    checks: [tel.cloud_sync, auth.plaintext_credentials]
+    data: [config:rclone]
+    relies_on: >-
+      rclone/rclone.conf: its [remote] sections, and passwords in it
+    upstream:
+      repology: rclone
+      notes: https://rclone.org/changelog/
+      source: https://github.com/rclone/rclone
+
+  - id: copyq
+    name: "CopyQ"
+    packages: [copyq]
+    flatpak: [com.github.hluk.copyq]
+    checked: "17.0.0"
+    basis: tested
+    checked_on: 2026-10-12
+    checks: [desk.clipboard_history]
+    data: [config:copyq, data:copyq/copyq]
+    relies_on: >-
+      copyq.conf: [Options] clipboard_tab, [Tabs] N\store_items; copyq_tab_<name in base64>.dat, beside copyq.conf
+      up to 16 and in its data folder (copyq/copyq) from 17, four zero bytes when the tab holds nothing;
+      copyq-commands.ini; the copyq command line (disable, enable, its commands)
+    upstream:
+      repology: copyq
+      notes: https://github.com/hluk/CopyQ/releases
+      source: https://github.com/hluk/CopyQ
+
+  - id: gpaste
+    name: "GPaste"
+    packages: [gpaste, gpaste-2]
+    checked: "51.0"
+    basis: current
+    checked_on: 2026-10-08
+    checks: [desk.clipboard_history]
+    data: [data:gpaste]
+    relies_on: >-
+      gpaste's history files; gsettings org.gnome.GPaste track-changes
+    upstream:
+      repology: gpaste
+      notes: https://github.com/Keruspe/GPaste/releases
+      source: https://github.com/Keruspe/GPaste
+
+  - id: clipman
+    name: "Clipman (Xfce)"
+    packages: [xfce4-clipman-plugin]
+    checked: "1.7.0"
+    basis: current
+    checked_on: 2026-10-08
+    major_parts: 2
+    checks: [desk.clipboard_history]
+    data: [cache:xfce4/clipman]
+    relies_on: >-
+      xfce4/clipman's history; xfconf xfce4-panel clipman settings
+    upstream:
+      repology: xfce4-clipman-plugin
+      notes: https://docs.xfce.org/panel-plugins/xfce4-clipman-plugin/start
+      source: https://gitlab.xfce.org/panel-plugins/xfce4-clipman-plugin
+
+  - id: baloo
+    name: "Baloo (KDE file search)"
+    packages: [baloo, kf6-baloo, baloo6, libkf6baloo6]
+    checked: "6.30"
+    basis: tested
+    checked_on: 2026-10-07
+    checks: [desk.indexers]
+    relies_on: >-
+      baloofilerc ([Basic Settings] Indexing-Enabled, only basic indexing, folders), ~/.local/share/baloo/index,
+      balooctl6
+    upstream:
+      repology: baloo
+      notes: https://kde.org/announcements/
+      source: https://invent.kde.org/frameworks/baloo
+
+  - id: localsearch
+    name: "LocalSearch (GNOME file search)"
+    packages: [localsearch, tracker-miners, tracker3-miners]
+    checked: "3.12.0"
+    basis: tested
+    checked_on: 2026-10-07
+    checks: [desk.indexers]
+    relies_on: >-
+      localsearch / tracker3 commands, the index in ~/.cache/tracker3/files or ~/.cache/localsearch; gsettings
+      org.freedesktop.Tracker3.Miner.Files
+    upstream:
+      repology: localsearch
+      notes: https://gitlab.gnome.org/GNOME/localsearch/-/blob/main/NEWS
+      source: https://gitlab.gnome.org/GNOME/localsearch
+
+  - id: recoll
+    name: "Recoll"
+    packages: [recoll]
+    flatpak: [org.recoll.recoll]
+    checked: "1.44.2"
+    basis: tested
+    checked_on: 2026-10-07
+    major_parts: 2
+    checks: [desk.indexers]
+    data: [home:.recoll]
+    relies_on: >-
+      ~/.recoll/recoll.conf (topdirs), the xapiandb index
+    upstream:
+      repology: recoll
+      notes: https://www.recoll.org/pages/release-history.html
+      source: https://framagit.org/medoc92/recoll
+
+  - id: zeitgeist
+    name: "Zeitgeist"
+    packages: [zeitgeist, zeitgeist-core]
+    checked: "1.0.4"
+    basis: current
+    checked_on: 2026-10-08
+    major_parts: 2
+    checks: [desk.zeitgeist]
+    data: [data:zeitgeist]
+    relies_on: >-
+      zeitgeist/activity.sqlite; the daemon and its data-source extensions
+    upstream:
+      repology: zeitgeist
+      notes: https://gitlab.freedesktop.org/zeitgeist/zeitgeist/-/blob/master/NEWS
+      source: https://gitlab.freedesktop.org/zeitgeist/zeitgeist
+
+  - id: kdeconnect
+    name: "KDE Connect"
+    packages: [kdeconnect, kde-connect]
+    checked: "26.08.1"
+    basis: current
+    checked_on: 2026-10-08
+    checks: [net.kdeconnect]
+    relies_on: >-
+      kdeconnect/trusted_devices; kdeconnectd running
+    upstream:
+      repology: kdeconnect
+      notes: https://kdeconnect.kde.org/
+      source: https://invent.kde.org/network/kdeconnect-kde
+
+  - id: gsconnect
+    name: "GSConnect"
+    packages: [gnome-shell-extension-gsconnect]
+    checked: "73"
+    basis: current
+    checked_on: 2026-10-08
+    checks: [net.kdeconnect]
+    relies_on: >-
+      gnome-extensions list (gsconnect@andyholmes.github.io)
+    upstream:
+      repology: gnome:gsconnect
+      notes: https://github.com/GSConnect/gnome-shell-extension-gsconnect/releases
+      source: https://github.com/GSConnect/gnome-shell-extension-gsconnect
+
+  - id: gnome-keyring
+    name: "GNOME Keyring"
+    packages: [gnome-keyring]
+    checked: "51.1"
+    basis: current
+    checked_on: 2026-10-08
+    checks: [auth.keyring_blank]
+    relies_on: >-
+      ~/.local/share/keyrings/*.keyring: the GnomeKeyring header (encrypted) or a [keyring] text file (blank password)
+    upstream:
+      repology: gnome-keyring
+      notes: https://gitlab.gnome.org/GNOME/gnome-keyring/-/blob/main/NEWS
+      source: https://gitlab.gnome.org/GNOME/gnome-keyring
+
+  - id: kwallet
+    name: "KWallet"
+    packages: [kwallet, kf6-kwallet, kwalletd6, libkf6wallet6]
+    checked: "6.30"
+    basis: tested
+    checked_on: 2026-10-07
+    checks: [auth.keyring_blank, auth.chromium_basic_store]
+    relies_on: >-
+      ~/.local/share/kwalletd/*.kwl (the wallet file format, Blowfish or GnuPG; opened with an empty password in
+      memory)
+    upstream:
+      repology: kwallet
+      notes: https://kde.org/announcements/
+      source: https://invent.kde.org/frameworks/kwallet
+
+  - id: spectacle
+    name: "Spectacle"
+    packages: [spectacle]
+    flatpak: [org.kde.spectacle]
+    checked: "6.7.5"
+    basis: tested
+    checked_on: 2026-10-07
+    checks: [desk.screenshots]
+    relies_on: >-
+      spectaclerc: [ImageSave] imageSaveLocation (Plasma 6), [General] defaultSaveLocation (Plasma 5)
+    upstream:
+      repology: spectacle
+      notes: https://kde.org/announcements/
+      source: https://invent.kde.org/plasma/spectacle
+
+  - id: opensnitch
+    name: "OpenSnitch"
+    packages: [opensnitch]
+    checked: "1.8.0"
+    basis: tested
+    checked_on: 2026-10-12
+    major_parts: 2
+    checks: [net.outgoing_firewall]
+    relies_on: >-
+      /etc/opensnitchd/default-config.json (DefaultAction, LogLevel, Firewall), rules folder (000-daprivacyscanner-*;
+      upstream's package comes with 000-allow-localhost and 000-allow-localhost6), ~/.config/opensnitch/settings.conf
+      (global/default_action, default_timeout, database file), opensnitch-ui; the process names it asks about. 1.8.0
+      keeps its firewall rules in one nftables table, opensnitch (the guide was applied and reverted on Mint 22.3 with
+      upstream's packages; with Mullvad VPN only 1.7.2 was tried)
+    upstream:
+      repology: opensnitch
+      notes: https://github.com/evilsocket/opensnitch/releases
+      source: https://github.com/evilsocket/opensnitch
+
+  - id: mullvad-vpn
+    name: "Mullvad VPN"
+    packages: [mullvad-vpn, mullvad-vpn-bin]
+    checked: "2026.5"
+    basis: tested
+    checked_on: 2026-10-07
+    checks: [net.outgoing_firewall]
+    relies_on: >-
+      mullvad-daemon's path and its API and 10.64.0.1:1337 for the starter rules; the kernel WireGuard connections
+    upstream:
+      repology: mullvad-vpn
+      notes: https://github.com/mullvad/mullvadvpn-app/releases
+      source: https://github.com/mullvad/mullvadvpn-app
+
+  - id: gnome
+    name: "GNOME"
+    packages: [gnome-shell]
+    checked: "51.0"
+    basis: current
+    checked_on: 2026-10-08
+    checks: [auth.screen_lock, auth.lockscreen_notifications, auth.remote_desktop, desk.session_restore, desk.gnome_app_usage, desk.thumbnails, tel.location]
+    relies_on: >-
+      gsettings schemas: org.gnome.desktop.screensaver, .session, .notifications, .privacy, .thumbnail-cache,
+      org.gnome.SessionManager, org.gnome.system.location, org.gnome.desktop.remote-desktop; grdctl status;
+      ~/.local/share/gnome-shell/application_state
+    upstream:
+      repology: gnome-shell
+      notes: https://release.gnome.org/
+      source: https://gitlab.gnome.org/GNOME/gnome-shell
+
+  - id: plasma
+    name: "KDE Plasma"
+    packages: [plasma-workspace]
+    checked: "6.7.5"
+    basis: tested
+    checked_on: 2026-10-07
+    checks: [auth.screen_lock, auth.lockscreen_notifications, desk.session_restore, desk.kde_activities, desk.clipboard_history, tel.kde_feedback, desk.recent_files]
+    relies_on: >-
+      kscreenlockerrc, ksmserverrc loginMode, klipperrc and Klipper's history3.sqlite, kactivitymanagerd's database
+      (ResourceEvent, ResourceScoreCache), RecentDocuments, PlasmaUserFeedback, the system tray's applets in
+      plasma-org.kde.plasma.desktop-appletsrc and plasmashell's scripting (evaluateScript)
+    upstream:
+      repology: plasma-workspace
+      notes: https://kde.org/announcements/
+      source: https://invent.kde.org/plasma/plasma-workspace
+
+  - id: cinnamon
+    name: "Cinnamon"
+    packages: [cinnamon]
+    checked: "6.6.9"
+    basis: tested
+    checked_on: 2026-10-03
+    checks: [auth.screen_lock, auth.lockscreen_notifications, desk.session_restore, desk.thumbnails]
+    relies_on: >-
+      gsettings org.cinnamon.desktop.screensaver, .session, .privacy, .thumbnail-cache, org.cinnamon.SessionManager,
+      org.cinnamon.settings-daemon.plugins.power
+    upstream:
+      repology: cinnamon
+      notes: https://github.com/linuxmint/cinnamon/releases
+      source: https://github.com/linuxmint/cinnamon
+
+  - id: xfce
+    name: "Xfce"
+    packages: [xfce4-session]
+    checked: "4.20.4"
+    basis: tested
+    checked_on: 2026-10-07
+    major_parts: 2
+    checks: [auth.screen_lock, desk.session_restore]
+    relies_on: >-
+      xfconf channels xfce4-session, xfce4-screensaver and xfce4-power-manager; ~/.cache/sessions
+    upstream:
+      repology: xfce4-session
+      notes: https://www.xfce.org/about/news
+      source: https://gitlab.xfce.org/xfce/xfce4-session
+
+  - id: mate
+    name: "MATE"
+    packages: [mate-session-manager]
+    checked: "1.28.0"
+    basis: current
+    checked_on: 2026-10-08
+    major_parts: 2
+    checks: [auth.screen_lock, desk.session_restore, desk.thumbnails]
+    relies_on: >-
+      gsettings org.mate.screensaver, org.mate.session, org.mate.thumbnail-cache
+    upstream:
+      repology: mate-session-manager
+      notes: https://mate-desktop.org/blog/
+      source: https://github.com/mate-desktop/mate-session-manager
+
+  - id: dolphin
+    name: "Dolphin"
+    packages: [dolphin]
+    checked: "26.08.1"
+    basis: current
+    checked_on: 2026-10-08
+    checks: [desk.folder_view_records, desk.file_manager_actions]
+    relies_on: >-
+      dolphin/view_properties, .directory files, the user.kde.fm.viewproperties#1 attribute; service menus in
+      ~/.local/share/kio/servicemenus
+    upstream:
+      repology: dolphin-fm
+      notes: https://kde.org/announcements/
+      source: https://invent.kde.org/system/dolphin
+
+  - id: nautilus
+    name: "Files (Nautilus)"
+    packages: [nautilus]
+    checked: "51.0.1"
+    basis: current
+    checked_on: 2026-10-08
+    checks: [desk.file_manager_actions]
+    relies_on: >-
+      ~/.local/share/nautilus/scripts
+    upstream:
+      repology: nautilus
+      notes: https://gitlab.gnome.org/GNOME/nautilus/-/blob/main/NEWS
+      source: https://gitlab.gnome.org/GNOME/nautilus
+
+  - id: nemo
+    name: "Nemo"
+    packages: [nemo]
+    checked: "6.6.4"
+    basis: current
+    checked_on: 2026-10-08
+    checks: [desk.file_manager_actions]
+    relies_on: >-
+      ~/.local/share/nemo/actions/*.nemo_action
+    upstream:
+      repology: nemo
+      notes: https://github.com/linuxmint/nemo/releases
+      source: https://github.com/linuxmint/nemo
+
+  - id: gvfs
+    name: "GVFS"
+    packages: [gvfs]
+    checked: "1.62.0"
+    basis: current
+    checked_on: 2026-10-08
+    major_parts: 2
+    checks: [desk.gvfs_metadata]
+    relies_on: >-
+      ~/.local/share/gvfs-metadata (its files), gio info metadata:: keys
+    upstream:
+      repology: gvfs
+      notes: https://gitlab.gnome.org/GNOME/gvfs/-/blob/master/NEWS
+      source: https://gitlab.gnome.org/GNOME/gvfs
+
+  - id: gtk
+    name: "GTK"
+    packages: [gtk4, libgtk-4-1]
+    checked: "4.24.1"
+    basis: current
+    checked_on: 2026-10-08
+    checks: [desk.recent_files]
+    relies_on: >-
+      ~/.local/share/recently-used.xbel; gsettings org.gnome.desktop.privacy remember-recent-files and
+      recent-files-max-age
+    upstream:
+      repology: gtk
+      notes: https://gitlab.gnome.org/GNOME/gtk/-/blob/main/NEWS
+      source: https://gitlab.gnome.org/GNOME/gtk
+
+  - id: cups
+    name: "CUPS"
+    packages: [cups, cups-daemon]
+    checked: "2.4.20"
+    basis: current
+    checked_on: 2026-10-08
+    checks: [app.cups_spool]
+    relies_on: >-
+      /var/spool/cups (c and d files), /var/cache/cups, cupsd.conf PreserveJobFiles and PreserveJobHistory
+    upstream:
+      repology: cups
+      notes: https://github.com/OpenPrinting/cups/releases
+      source: https://github.com/OpenPrinting/cups
+
+  - id: flatpak
+    name: "Flatpak"
+    packages: [flatpak]
+    checked: "1.18.4"
+    basis: current
+    checked_on: 2026-10-08
+    major_parts: 2
+    checks: [sbx.flatpak_broad_perms, sbx.flatpak_caches, sbx.leftover_data, sbx.portal_permissions]
+    relies_on: >-
+      flatpak info --show-permissions, overrides in ~/.local/share/flatpak/overrides and /var/lib/flatpak/overrides,
+      ~/.var/app, the permission store (flatpak permissions)
+    upstream:
+      repology: flatpak
+      notes: https://github.com/flatpak/flatpak/releases
+      source: https://github.com/flatpak/flatpak
+
+  - id: snapd
+    name: "snapd"
+    packages: [snapd]
+    checked: "2.77.1"
+    basis: current
+    checked_on: 2026-10-08
+    checks: [sbx.snap, sbx.leftover_data]
+    relies_on: >-
+      snap list --all (retained revisions), snap connections, refresh.retain; ~/snap
+    upstream:
+      repology: snapd
+      notes: https://github.com/canonical/snapd/releases
+      source: https://github.com/canonical/snapd
+
+  - id: gnupg
+    name: "GnuPG"
+    packages: [gnupg, gnupg2, gpg]
+    checked: "2.5.24"
+    basis: current
+    checked_on: 2026-10-08
+    major_parts: 2
+    checks: [auth.gpg_no_passphrase, auth.gpg_keys]
+    relies_on: >-
+      gpg --list-secret-keys --with-colons, the private-keys-v1.d key files (protected or not), gpg-agent.conf
+      default-cache-ttl and max-cache-ttl
+    upstream:
+      repology: gnupg
+      notes: https://gnupg.org/download/release_notes.html
+      source: https://dev.gnupg.org/source/gnupg/
+
+  - id: fwupd
+    name: "fwupd"
+    packages: [fwupd]
+    checked: "2.0.20"
+    basis: tested
+    checked_on: 2026-10-12
+    checks: [kern.updates]
+    relies_on: >-
+      fwupdmgr get-updates --json --no-metadata-check --no-unreported-check --no-reboot-check: Devices[] with a
+      Name and Releases[] for each device with an update waiting; no metadata refresh
+    upstream:
+      repology: fwupd
+      notes: https://github.com/fwupd/fwupd/releases
+      source: https://github.com/fwupd/fwupd
+    verify: The JSON with updates waiting, on real hardware (tested in a VM, where the list is empty).
+
+  - id: openssh
+    name: "OpenSSH"
+    packages: [openssh-client, openssh, openssh-clients]
+    checked: "10.6p1"
+    basis: current
+    checked_on: 2026-10-08
+    checks: [auth.ssh_key_no_passphrase, auth.ssh_known_hosts_plain, auth.ssh_client_settings, auth.ssh_authorized_keys]
+    relies_on: >-
+      ~/.ssh key files (the openssh-key-v1 format's cipher), known_hosts (hashed or not), ssh_config and ssh -G,
+      authorized_keys
+    upstream:
+      repology: openssh
+      notes: https://www.openssh.com/releasenotes.html
+      source: https://github.com/openssh/openssh-portable
+
+  - id: networkmanager
+    name: "NetworkManager"
+    packages: [network-manager, networkmanager, NetworkManager]
+    checked: "1.58.1"
+    basis: current
+    checked_on: 2026-10-08
+    major_parts: 2
+    checks: [net.mac_permanent, net.hidden_ssid, net.hostname_broadcast, net.connectivity_check, net.wifi_history, net.open_autoconnect, net.ipv6_privacy]
+    relies_on: >-
+      nmcli -t output (connection fields: 802-11-wireless.cloned-mac-address, .hidden, ipv4.dhcp-send-hostname,
+      ipv6.ip6-privacy, connection.autoconnect), NetworkManager.conf and conf.d (connectivity, [connection] defaults)
+    upstream:
+      repology: networkmanager
+      notes: https://gitlab.freedesktop.org/NetworkManager/NetworkManager/-/blob/main/NEWS
+      source: https://gitlab.freedesktop.org/NetworkManager/NetworkManager

@@ -1,0 +1,58 @@
+{
+   "blockdevices": [
+      {
+         "name": "sda",
+         "type": "disk",
+         "fstype": null,
+         "mountpoint": null,
+         "rm": "0",
+         "hotplug": "0",
+         "children": [
+            {
+               "name": "sda1",
+               "type": "part",
+               "fstype": "ext4",
+               "mountpoint": "/boot",
+               "rm": "0",
+               "hotplug": "0"
+            },
+            {
+               "name": "sda2",
+               "type": "part",
+               "fstype": "crypto_LUKS",
+               "mountpoint": null,
+               "rm": "0",
+               "hotplug": "0",
+               "children": [
+                  {
+                     "name": "root",
+                     "type": "crypt",
+                     "fstype": "ext4",
+                     "mountpoint": "/",
+                     "rm": "0",
+                     "hotplug": "0"
+                  }
+               ]
+            }
+         ]
+      },
+      {
+         "name": "sdc",
+         "type": "disk",
+         "fstype": null,
+         "mountpoint": null,
+         "rm": "1",
+         "hotplug": "1",
+         "children": [
+            {
+               "name": "sdc1",
+               "type": "part",
+               "fstype": "exfat",
+               "mountpoint": "/media/usb",
+               "rm": "1",
+               "hotplug": "1"
+            }
+         ]
+      }
+   ]
+}

@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=DA Privacy Kit
+GenericName=Privacy checker
+Comment=Finds common privacy issues on this computer and, where it is safe, fixes them
+Exec=daprivacyscanner
+Icon=daprivacyscanner
+StartupWMClass=daprivacyscanner
+Terminal=false
+Categories=System;Security;
+Keywords=privacy;security;encryption;tracking;telemetry;audit;
+X-AppImage-Name=DA Privacy Kit
+X-AppImage-Version=@VERSION@

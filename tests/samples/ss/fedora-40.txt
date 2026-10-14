@@ -1,0 +1,14 @@
+udp   UNCONN 0      0            0.0.0.0:5353       0.0.0.0:*                                     
+udp   UNCONN 0      0            0.0.0.0:5355       0.0.0.0:*                                     
+udp   UNCONN 0      0      127.0.0.53%lo:53         0.0.0.0:*                                     
+udp   UNCONN 0      0         127.0.0.54:53         0.0.0.0:*                                     
+udp   UNCONN 0      0               [::]:5353          [::]:*                                     
+udp   UNCONN 0      0               [::]:5355          [::]:*                                     
+udp   UNCONN 0      0      [fe80::8e1:4fff:fe3a:1b2c]%wlp0s20f3:546 [::]:*                        
+udp   UNCONN 0      0               [::]:41641         [::]:*    users:(("tailscaled",pid=1000,fd=12))
+tcp   LISTEN 0      4096   127.0.0.53%lo:53         0.0.0.0:*                                     
+tcp   LISTEN 0      4096         0.0.0.0:5355       0.0.0.0:*                                     
+tcp   LISTEN 0      4096       127.0.0.1:631        0.0.0.0:*                                     
+tcp   LISTEN 0      4096      127.0.0.54:53         0.0.0.0:*                                     
+tcp   LISTEN 0      4096           [::1]:631           [::]:*                                     
+tcp   LISTEN 0      4096            [::]:5355          [::]:*                                     

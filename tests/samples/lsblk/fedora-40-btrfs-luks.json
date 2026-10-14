@@ -1,0 +1,91 @@
+{
+   "blockdevices": [
+      {
+         "name": "sda",
+         "type": "disk",
+         "fstype": null,
+         "mountpoints": [
+            null
+         ],
+         "rm": true,
+         "hotplug": true,
+         "children": [
+            {
+               "name": "sda1",
+               "type": "part",
+               "fstype": "vfat",
+               "mountpoints": [
+                  "/run/media/alice/STICK"
+               ],
+               "rm": true,
+               "hotplug": true
+            }
+         ]
+      },
+      {
+         "name": "zram0",
+         "type": "disk",
+         "fstype": null,
+         "mountpoints": [
+            "[SWAP]"
+         ],
+         "rm": false,
+         "hotplug": false
+      },
+      {
+         "name": "nvme0n1",
+         "type": "disk",
+         "fstype": null,
+         "mountpoints": [
+            null
+         ],
+         "rm": false,
+         "hotplug": false,
+         "children": [
+            {
+               "name": "nvme0n1p1",
+               "type": "part",
+               "fstype": "vfat",
+               "mountpoints": [
+                  "/boot/efi"
+               ],
+               "rm": false,
+               "hotplug": false
+            },
+            {
+               "name": "nvme0n1p2",
+               "type": "part",
+               "fstype": "ext4",
+               "mountpoints": [
+                  "/boot"
+               ],
+               "rm": false,
+               "hotplug": false
+            },
+            {
+               "name": "nvme0n1p3",
+               "type": "part",
+               "fstype": "crypto_LUKS",
+               "mountpoints": [
+                  null
+               ],
+               "rm": false,
+               "hotplug": false,
+               "children": [
+                  {
+                     "name": "luks-0f2c4e5a-1b2c-4d3e-8f90-123456789abc",
+                     "type": "crypt",
+                     "fstype": "btrfs",
+                     "mountpoints": [
+                        "/home",
+                        "/"
+                     ],
+                     "rm": false,
+                     "hotplug": false
+                  }
+               ]
+            }
+         ]
+      }
+   ]
+}

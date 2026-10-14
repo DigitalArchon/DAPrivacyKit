@@ -1,0 +1,1 @@
+2001:db8::10 from :: dev proton0 table 245447468 proto static src 2001:db8::10 metric 50 pref medium

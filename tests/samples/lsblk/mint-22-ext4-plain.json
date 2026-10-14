@@ -1,0 +1,53 @@
+{
+   "blockdevices": [
+      {
+         "name": "sda",
+         "type": "disk",
+         "fstype": null,
+         "mountpoints": [
+             null
+         ],
+         "rm": false,
+         "hotplug": false,
+         "children": [
+            {
+               "name": "sda1",
+               "type": "part",
+               "fstype": null,
+               "mountpoints": [
+                   null
+               ],
+               "rm": false,
+               "hotplug": false
+            },{
+               "name": "sda2",
+               "type": "part",
+               "fstype": "vfat",
+               "mountpoints": [
+                   "/boot/efi"
+               ],
+               "rm": false,
+               "hotplug": false
+            },{
+               "name": "sda3",
+               "type": "part",
+               "fstype": "ext4",
+               "mountpoints": [
+                   "/"
+               ],
+               "rm": false,
+               "hotplug": false
+            }
+         ]
+      },{
+         "name": "sr0",
+         "type": "rom",
+         "fstype": null,
+         "mountpoints": [
+             null
+         ],
+         "rm": true,
+         "hotplug": false
+      }
+   ]
+}

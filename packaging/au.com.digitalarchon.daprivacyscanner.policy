@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+  "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<!-- DA Privacy Kit's administrator helper: only this root-owned program, and the password is
+     asked every time it starts (auth_admin, not auth_admin_keep). -->
+<policyconfig>
+  <vendor>DA Privacy Kit</vendor>
+  <action id="au.com.digitalarchon.daprivacyscanner.helper">
+    <description>Run DA Privacy Kit's administrator helper</description>
+    <message>DA Privacy Kit needs administrator access to check or change system privacy settings</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/daprivacyscanner/daprivacyscanner-helper</annotate>
+  </action>
+</policyconfig>

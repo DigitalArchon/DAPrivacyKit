@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>au.com.digitalarchon.daprivacyscanner</id>
+  <name>DA Privacy Kit</name>
+  <summary>Finds common privacy issues on this computer and, where it is safe, fixes them</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <developer id="au.com.digitalarchon"><name>Digital Archon</name></developer>
+  <description>
+    <p>A read-only scan of disk encryption, swap, screen locking, browsers, desktop activity
+    records, network exposure, telemetry and more, with the severity of each finding weighed
+    against this machine. Fixes show exactly what they change first and can be reverted.</p>
+  </description>
+  <launchable type="desktop-id">daprivacyscanner.desktop</launchable>
+  <url type="homepage">https://github.com/DigitalArchon/DAPrivacyKit</url>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="@VERSION@" date="@DATE@"/>
+  </releases>
+</component>

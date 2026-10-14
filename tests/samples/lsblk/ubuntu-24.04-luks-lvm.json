@@ -1,0 +1,90 @@
+{
+   "blockdevices": [
+      {
+         "name": "loop0",
+         "type": "loop",
+         "fstype": "squashfs",
+         "mountpoints": [
+            "/snap/bare/5"
+         ],
+         "rm": false,
+         "hotplug": false
+      },
+      {
+         "name": "loop1",
+         "type": "loop",
+         "fstype": "squashfs",
+         "mountpoints": [
+            "/snap/firefox/4793"
+         ],
+         "rm": false,
+         "hotplug": false
+      },
+      {
+         "name": "nvme0n1",
+         "type": "disk",
+         "fstype": null,
+         "mountpoints": [
+            null
+         ],
+         "rm": false,
+         "hotplug": false,
+         "children": [
+            {
+               "name": "nvme0n1p1",
+               "type": "part",
+               "fstype": "vfat",
+               "mountpoints": [
+                  "/boot/efi"
+               ],
+               "rm": false,
+               "hotplug": false
+            },
+            {
+               "name": "nvme0n1p2",
+               "type": "part",
+               "fstype": "ext4",
+               "mountpoints": [
+                  "/boot"
+               ],
+               "rm": false,
+               "hotplug": false
+            },
+            {
+               "name": "nvme0n1p3",
+               "type": "part",
+               "fstype": "crypto_LUKS",
+               "mountpoints": [
+                  null
+               ],
+               "rm": false,
+               "hotplug": false,
+               "children": [
+                  {
+                     "name": "dm_crypt-0",
+                     "type": "crypt",
+                     "fstype": "LVM2_member",
+                     "mountpoints": [
+                        null
+                     ],
+                     "rm": false,
+                     "hotplug": false,
+                     "children": [
+                        {
+                           "name": "ubuntu--vg-ubuntu--lv",
+                           "type": "lvm",
+                           "fstype": "ext4",
+                           "mountpoints": [
+                              "/"
+                           ],
+                           "rm": false,
+                           "hotplug": false
+                        }
+                     ]
+                  }
+               ]
+            }
+         ]
+      }
+   ]
+}

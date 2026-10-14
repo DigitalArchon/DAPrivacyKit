@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<!-- Everything is served from this origin; the app never reaches the network (docs/TECHNICAL.md, design rule 10). -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<title>DA Privacy Kit</title>
+<link rel="icon" href="/static/icon.svg">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header id="topbar">
+  <span class="brand" id="brand" role="button" tabindex="0" title="What this tool is and isn't">DA Privacy Kit</span>
+  <span id="scan-info" class="muted small">Not scanned yet</span>
+  <span id="priv-badge" class="badge unprivileged">Unprivileged</span>
+  <button id="drop-admin" class="small ghost hidden" title="End administrator access now: the root helper exits">Drop</button>
+  <button id="presentation-chip" class="small warn hidden" title="Notification banners and clipboard history are off for screen sharing. Click to put them back.">Presentation mode · Turn off</button>
+  <span class="spacer"></span>
+  <input id="filter" type="search" placeholder="Filter checks…" autocomplete="off">
+  <label class="check small" title="Checks whose severity is 0 on this machine"><input id="show-na" type="checkbox"> show not applicable</label>
+  <label class="check small" id="admin-label" title="Asks for your password (polkit) so checks that need root can read what they need. The scan is still read-only. Access is dropped again right after a scan that found nothing a root fix could act on; otherwise it is kept for the fixes that follow, until you drop it or a few idle minutes pass."><input id="admin" type="checkbox"> with administrator access</label>
+  <button id="helper-note" class="small ghost warn hidden" title="The administrator helper isn't installed root-owned">helper not installed</button>
+  <button id="reads-btn" class="ghost" title="Exactly what a scan looks at, and what it never does">What a scan reads…</button>
+  <button id="tools-btn" class="ghost" title="Verify a download, remove metadata, a RAM disk, drives, travel, screen sharing, and set-ups that last">Tools…</button>
+  <button id="online-btn" class="ghost" title="Tests that contact other machines: you see who each one contacts before anything runs">Online tests…</button>
+  <button id="history-btn" class="ghost" title="Fixes you've applied, and reverting them">History</button>
+  <button id="theme-btn" class="ghost" title="Switch between the dark and light theme (remembered)">Light</button>
+  <button id="export-btn" class="ghost hidden" title="Save or copy the report, plain or redacted">Export…</button>
+  <button id="scan-btn" class="primary" title="Read-only: a scan changes nothing">Scan</button>
+  <button id="quit-btn" class="ghost hidden">Quit</button>
+</header>
+
+<main id="workspace">
+  <aside id="context-pane">
+    <div class="pane-head"><span class="title">Context</span><span class="muted small">decides each check's severity</span></div>
+    <div id="context-list"><div class="empty">Scan to see this machine's context.</div></div>
+  </aside>
+  <section id="checks-pane">
+    <div class="pane-head">
+      <span class="title">Checks</span>
+      <span id="checks-count" class="muted small"></span>
+      <span id="show" class="seg small" title="Which checks to list">
+        <button data-show="findings">Findings</button><button data-show="hygiene" title="Residue of normal use: caches and histories, cleaned rather than fixed">Hygiene</button><button data-show="info" title="Inventories worth knowing about: neither pass nor fail">Info</button><button data-show="accepted" title="Findings you've accepted: hidden everywhere else, and not counted unless their severity rises">Accepted</button><button data-show="all" class="on">All</button>
+      </span>
+      <span id="source" class="seg small" title="Which results to show: the scan's, the online tests', or both">
+        <button data-source="all" class="on">All</button><button data-source="scan">Scan</button><button data-source="online">Online</button>
+      </span>
+      <span class="spacer"></span>
+      <span class="legend small muted"><span class="sev sev-critical">9</span> critical <span class="sev sev-high">7</span> high <span class="sev sev-medium">4</span> medium <span class="sev sev-low">1</span> low</span>
+    </div>
+    <div id="online-strip" class="hidden"></div>
+    <div id="checks-list"></div>
+  </section>
+</main>
+
+<div id="status" class="idle"><span class="spinner"></span><span id="status-text">Read-only: a scan never changes anything, and nothing leaves this machine (only the online tests contact other machines, when you start them).</span></div>
+<div id="toasts"></div>
+<div id="modal-root"></div>
+<script src="/static/app.js"></script>
+</body>
+</html>
