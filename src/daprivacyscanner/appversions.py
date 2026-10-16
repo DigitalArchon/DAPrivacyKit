@@ -153,6 +153,10 @@ def parse(data: Any) -> "Apps":
         parts, tol = a.get("major_parts", 1), a.get("tolerance", 0)
         if not (isinstance(parts, int) and 1 <= parts <= 3 and isinstance(tol, int) and 0 <= tol <= 12):
             raise DataError(f"{where}: major_parts is 1 to 3, tolerance 0 to 12")
+        if not any(checked[:parts]):
+            # "0.0" read as "any 0.x" until Discord's 1.0, and then told every user the checks were made for 0.0
+            raise DataError(f"{where}: checked {a['checked']} is a placeholder (its major version is 0): give the "
+                            "release the checks were made for")
         data_ = []
         for d in _strs(a.get("data"), f"{where}.data"):
             base, _, rel = d.partition(":")

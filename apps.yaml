@@ -300,16 +300,19 @@ apps:
     packages: [discord]
     flatpak: [com.discordapp.Discord]
     snap: [discord]
-    checked: "0.0"
+    checked: "1.0.161"
     basis: current
-    checked_on: 2026-10-08
+    checked_on: 2026-10-16
     checks: [app.messengers_mail, app.electron_caches]
     data: [config:discord]
     relies_on: >-
       The data folder's size; Electron caches
     upstream:
       notes: https://discord.com/blog
-    verify: "No version source upstream (Repology has no Discord project), and its versions (0.0.N) don't mark major changes: watch its blog."
+    verify: >-
+      No version source upstream (Repology has no Discord project). Its Linux versions were 0.0.N for years and are
+      1.0.N by October 2026 (1.0.161 reported by a user, 2026-10-16, its data still in ~/.config/discord): the number
+      moving says little about how it keeps its data, so watch its blog.
 
   - id: slack
     name: "Slack"

@@ -58,6 +58,8 @@ def test_the_shipped_list_names_real_checks(cat):
     ({"data": ["config:../x"]}, "relative path"),
     ({"upstream": {"notes": "http://example.com"}}, "https only"),
     ({"surprise": 1}, "unknown keys"),
+    ({"checked": "0.0"}, "placeholder"),                    # Discord's, said "made for 0.0" once it reached 1.0
+    ({"checked": "0.9", "major_parts": 1}, "placeholder"),
 ])
 def test_bad_entries_are_refused(entry, error):
     good = {"id": "x", "name": "X", "packages": ["x"], "checked": "1.0", "basis": "current",
