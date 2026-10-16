@@ -232,6 +232,8 @@ HARUNA_FLATPAK = "org.kde.haruna"
 # it restores it is another setting), and lists MaxRecentFiles (10) recent files, none at 0. 9999 minutes is the
 # most its settings page offers: about a week, so positions are never saved.
 HARUNA_NEVER = "9999"
+# the tables of haruna.db (1.8): the fix deletes the file only while it holds no other
+HARUNA_TABLES = ("recent_files", "playback_position")
 
 
 @dataclass
@@ -244,6 +246,7 @@ class Haruna:
     max_recent: str | None
     min_duration: str | None
     where: str
+    only_history: bool = False      # haruna.db holds no table but those two: deleting it loses nothing else
 
 
 def haruna(scan: Scan) -> list[Haruna]:
@@ -253,11 +256,13 @@ def haruna(scan: Scan) -> list[Haruna]:
         data = (scan.paths.flatpak_root / HARUNA_FLATPAK / "data" / "haruna") if loc.install == "flatpak" \
             else scan.paths.data_home / "haruna"
         db = data / "haruna.db"
+        others = sqlite_count(db, "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name NOT IN "
+                                  f"({', '.join(repr(t) for t in HARUNA_TABLES)}) AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\'")
         out.append(Haruna(loc.path / "haruna.conf", db, sqlite_count(db, "SELECT count(*) FROM recent_files") or 0,
                           sqlite_count(db, "SELECT count(*) FROM playback_position") or 0,
                           bool(ini.get(conf, "General", "LastPlayedFile")), ini.get(conf, "General", "MaxRecentFiles"),
                           ini.get(conf, "Playback", "MinDurationToSavePosition"),
-                          "" if loc.install == "native" else f" ({loc.install})"))
+                          "" if loc.install == "native" else f" ({loc.install})", others == 0))
     return out
 
 

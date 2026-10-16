@@ -726,7 +726,10 @@ def session_restore(check, scan, outcome):
 # ------------------------------------------------------------------ apps
 
 def _clear_vlc_recents(text: str) -> str:
-    return re.sub(r"^(list|times)=.*$", r"\1=", text, flags=re.M)
+    """VLC's recent media emptied: list= and times= of the [RecentsMRL] group only; every other setting kept."""
+    def group(m: re.Match) -> str:
+        return re.sub(r"^(list|times)=.*$", r"\1=", m.group(0), flags=re.M)
+    return re.sub(r"^\[RecentsMRL\][ \t]*\n(?:(?!\[).*(?:\n|$))*", group, text, count=1, flags=re.M)
 
 
 @fix("app.media_players")
@@ -746,8 +749,10 @@ def media_players(check, scan, outcome):
     else:
         for loc in scan.paths.config("vlc", flatpak=["org.videolan.VLC"], snap=["vlc"]):
             qt = loc.path / "vlc-qt-interface.conf"
-            if re.search(r"^list=\S", read_text(scan.host, qt) or "", re.M):
-                a.append(ClearInFile(qt, _clear_vlc_recents, "Clear VLC's recent media", scan.host.display(qt)))
+            text = read_text(scan.host, qt) or ""
+            if _clear_vlc_recents(text) != text:
+                a.append(ClearInFile(qt, _clear_vlc_recents, "Empty VLC's list of recent media", scan.host.display(qt),
+                                     settings=True))
             vlcrc = loc.path / "vlcrc"
             if isfile(vlcrc) and not re.search(r"^qt-recentplay=0", read_text(scan.host, vlcrc) or "", re.M):
                 a.append(WriteFile(vlcrc, lambda old: re.sub(r"^#?\s*qt-recentplay=.*$", "qt-recentplay=0", old or "", flags=re.M)
@@ -768,11 +773,16 @@ def media_players(check, scan, outcome):
         if running(scan, "haruna") or holders(scan, h.db.parent):
             effects.append("Skipped Haruna: close it first.")
             continue
-        if h.recent or h.positions:
-            a += delete(scan, h.db.parent, "Haruna's recent files and resume points", re.compile(r"^haruna\.db(-wal|-shm|-journal)?$"))
+        if (h.recent or h.positions) and h.only_history:
+            a += delete(scan, h.db.parent, "Haruna's database of recent files and resume points (it holds nothing "
+                        "else; Haruna makes it again)", re.compile(r"^haruna\.db(-wal|-shm|-journal)?$"))
+        elif h.recent or h.positions:
+            effects.append("Haruna's recent files and resume points are left: its database (haruna.db) now holds more "
+                           "than those, so it isn't deleted. Clear them in Haruna instead.")
         if h.last:
             a.append(ClearInFile(h.conf, lambda t: re.sub(r"^LastPlayedFile(\[\$e\])?=.*\n?", "", t, flags=re.M),
-                                 "Clear Haruna's last played file", scan.host.display(h.conf)))
+                                 "Remove the last file Haruna played from its settings", scan.host.display(h.conf),
+                                 settings=True))
         if _kwriteconfig(scan):         # or it fills again
             file = str(h.conf.relative_to(scan.paths.config_home)) if h.conf.is_relative_to(scan.paths.config_home) else None
             if file:

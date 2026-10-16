@@ -973,7 +973,7 @@ function planBody(plan, confirm) {
     plan.steps.length ? h("ul", { class: "steps" }, plan.steps.map(stepLine)) : null,
     plan.side_effects.length ? h("div", {}, h("h4", {}, "Worth knowing"), h("ul", { class: "small" }, plan.side_effects.map(x => h("li", {}, x)))) : null,
     irreversible && confirm ? h("label", { class: "check confirm" }, confirm,
-      "I understand that the items marked “can't be undone” are deleted permanently.") : null,
+      "I understand that what the items marked “can't be undone” delete, or clear from a file, is gone for good.") : null,
     plan.steps.some(st => st.reversible && st.kind !== "command")
       ? h("p", { class: "muted small" }, "Settings changes can be reverted later from History.") : null,
     plan.needs_root && !S.adminActive ? h("p", { class: "muted small" }, ROOT_NOTE) : null,
@@ -1147,7 +1147,8 @@ async function openEasy() {
       blocked ? h("p", { class: "small muted" }, "Greyed out: can't be applied now, for the reason given. "
         + "Check again once it is dealt with.") : null,
       h("label", { class: "check confirm easy-confirm hidden" }, confirm,
-        h("div", {}, "Some of the fixes you chose delete files first. I understand that these are deleted permanently:",
+        h("div", {}, "Some of the fixes you chose delete files, or clear history from a file, first. I understand that what "
+          + "they delete or clear is gone for good:",
           gone)),
       data.items.some(it => it.needs_root) && !S.adminActive ? h("p", { class: "muted small" },
         "Those marked root ask for administrator access (your password) once, when applied.") : null);
@@ -1306,7 +1307,7 @@ function guideStep(step, n, refresh, params = {}, rebuild = refresh) {
         h("ul", { class: "steps" }, plan.steps.map(stepLine)),
         plan.side_effects.length ? h("ul", { class: "small effects" }, plan.side_effects.map(x => h("li", {}, x))) : null,
         irreversible ? h("label", { class: "check confirm" }, confirm,
-          "I understand that the items marked “can't be undone” are deleted permanently.") : null,
+          "I understand that what the items marked “can't be undone” delete, or clear from a file, is gone for good.") : null,
         plan.needs_root && !S.adminActive ? h("p", { class: "muted small" }, ROOT_NOTE) : null);
       apply.className = irreversible ? "danger" : "primary";
       apply.textContent = irreversible ? "Apply and delete" : "Apply this step";

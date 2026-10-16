@@ -1335,6 +1335,23 @@ def test_editor_local_histories_of_vscode_and_jetbrains(cat, tmp_path):
     assert not (host.home / ".cache/JetBrains/PyCharm2026.2/LocalHistory/changes.storageData").exists()
 
 
+def test_editor_leftovers_say_where_they_are(cat, tmp_path):
+    """A deletion says where its files are, so the user can look first: the backup files next to documents one by
+    one, and VS Code's history folders (named by a hash) by the file whose versions they hold."""
+    host = make_host(tmp_path, home_files={
+        "Documents/report.txt~": "old", "Projects/app/.main.py.swp": "x",
+        ".config/Code/User/History/-1a2b/entries.json": '{"version":1,"resource":"file:///home/alice/Projects/app/my%20notes.md","entries":[]}',
+        ".config/Code/User/History/-1a2b/AbCd.md": "draft v1"})
+    g = build(cat, host, "app.editor_residue")
+    stray = next(s for s in g.steps if s.title == "Backup files next to your documents")
+    assert "listed with where it is" in stray.text
+    lines = stray.options[0].plan.to_dict()["steps"][0]["lines"]
+    assert lines == ["~/Documents/report.txt~", "~/Projects/app/.main.py.swp"]
+    code = next(s for s in g.steps if s.title.startswith("Code's local history"))
+    lines = next(st["lines"] for st in code.options[0].plan.to_dict()["steps"] if st["kind"] == "delete")
+    assert lines == ["~/.config/Code/User/History/-1a2b/  (2 files: earlier versions of /home/alice/Projects/app/my notes.md)"]
+
+
 def test_pkgstats_and_motd_news(cat, tmp_path, system, monkeypatch):
     """Arch's pkgstats (its timer static, linked by the package: masked or removed by hand) and Ubuntu's motd-news
     (turned off through the helper; Mint ships its script empty, so it isn't counted there)."""

@@ -1165,10 +1165,11 @@ class DeleteFiles(Action):
     phase = 2
 
     def __init__(self, root: Path, files: list[Path], label: str, display_root: str, prune: bool = True,
-                 remove_root: bool = False):
+                 remove_root: bool = False, about: dict[Path, str] | None = None):
         self.root, self.files, self.label, self.display_root = root, files, label, display_root
         self.prune = prune              # remove subfolders the deletion leaves empty
         self.remove_root = remove_root  # and the root itself (an uninstalled app's folder)
+        self.about = about or {}        # what a folder's files are, for the dry run (VS Code's: the file they copy)
 
     @property
     def size(self) -> int:
@@ -1184,6 +1185,32 @@ class DeleteFiles(Action):
         from .checks._util import human_size
         n = len(self.files)
         return f"Delete {n} file{'s' if n != 1 else ''} ({human_size(self.size)}) of {self.label} in {self.display_root}"
+
+    LISTED = 25                         # files named one by one up to this many; beyond it, their folders
+
+    def preview(self) -> list[str]:
+        """Where the files are, for the dry run, so the user can look before deleting: each file when there are
+        few, else each folder with how many are in it, the fullest first. Shown on this machine only: the undo log
+        keeps the count and the folder the plan named, never these."""
+        root = self.display_root.rstrip("/")
+        def shown(p: Path) -> str:
+            try:
+                rel = p.relative_to(self.root)
+            except ValueError:
+                return str(p)
+            return root + "/" + str(rel) if str(rel) != "." else root
+        if len(self.files) <= self.LISTED and not self.about:
+            return [shown(f) for f in sorted(self.files)]
+        counts: dict[Path, int] = {}
+        for f in self.files:
+            counts[f.parent] = counts.get(f.parent, 0) + 1
+        folders = sorted(counts.items(), key=lambda kv: (-kv[1], str(kv[0])))
+        out = [f"{shown(d)}/  ({n} file{'s' if n != 1 else ''}" + (f": {self.about[d]}" if d in self.about else "") + ")"
+               for d, n in folders[:self.LISTED]]
+        if len(folders) > self.LISTED:
+            rest = sum(n for _, n in folders[self.LISTED:])
+            out.append(f"… and {rest} more files in {len(folders) - self.LISTED} more folders")
+        return out
 
     def apply(self, ctx: FixContext) -> dict:
         root = self.root.resolve()
@@ -1407,16 +1434,42 @@ class ClearInFile(Action):
     destructive = True
     phase = 2
 
-    def __init__(self, path: Path, edit: Callable[[str], str], text: str, display: str):
+    def __init__(self, path: Path, edit: Callable[[str], str], text: str, display: str, settings: bool = False):
         self.path, self.edit, self.text, self.display = path, edit, text, display
+        # a settings file (key=value lines): the dry run shows which keys change, never their values. Off for
+        # anything else, such as a shell history, whose lines can hold what is being removed.
+        self.settings = settings
 
     def describe(self) -> str:
+        what = f"{self.text}, in {self.display}"
         if self.path.is_symlink():
             real = str(self.path.resolve())
             home = os.path.expanduser("~")
             real = "~" + real[len(home):] if real.startswith(home + "/") else real
-            return f"{self.text} ({self.display}, a link: the file it points to, {real}, is the one changed)"
-        return f"{self.text} ({self.display})"
+            what += f" (a link: the file it points to, {real}, is the one changed)"
+        return what + ": only these lines change, the file and the rest of it stay"
+
+    def preview(self) -> list[str]:
+        """The keys whose lines change, values hidden ("- list=…", "+ list="): the history being cleared isn't shown.
+        Lines that aren't a plain key=value are counted, never shown."""
+        if not self.settings:
+            return []
+        old = _read_bytes(self.path)
+        if old is None:
+            return []
+        text = old.decode("utf-8", errors="surrogateescape")
+        out, other = [], 0
+        for ln in changed_lines(text, self.edit(text)):
+            m = re.match(r"([+-]) ([A-Za-z0-9_.\-\[\]\$/\\]+)=(.*)$", ln)
+            if m:
+                out.append(f"{m.group(1)} {m.group(2)}=" + ("…" if m.group(3) else ""))
+            elif ln.startswith(("+ ", "- ")):
+                other += 1
+            else:
+                out.append(ln)
+        if other:
+            out.append(f"… and {other} other line{'s' if other != 1 else ''}")
+        return out
 
     def apply(self, ctx: FixContext) -> dict:
         old = _read_bytes(self.path)

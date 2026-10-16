@@ -467,6 +467,73 @@ def test_media_players_haruna_and_celluloid(cat, tmp_path):
     assert "MaxRecentFiles" not in conf and "MinDurationToSavePosition" not in conf and "secret" not in conf
 
 
+def test_media_players_say_they_clear_lines_not_delete_settings(cat, tmp_path):
+    """VLC's and Haruna's history is in their settings files: the dry run says only those lines change, names the
+    keys, never their values (the history), and VLC's edit stays inside [RecentsMRL]."""
+    import sqlite3
+    qt = ("[General]\nlist=keep-me\n[RecentsMRL]\nlist=file:///secret.mkv, file:///other.mkv\ntimes=10, 20\n"
+          "[OpenDialog]\ntimes=keep\n")
+    host = make_host(tmp_path, home_files={".config/vlc/vlc-qt-interface.conf": qt,
+                                           ".config/haruna/haruna.conf": "[General]\nLastPlayedFile=file:///secret.mp4\n"})
+    (host.home / ".local/share/haruna").mkdir(parents=True)
+    db = sqlite3.connect(host.home / ".local/share/haruna/haruna.db")
+    db.executescript("CREATE TABLE recent_files (url TEXT); CREATE TABLE playback_position (path TEXT, position REAL);"
+                     "INSERT INTO recent_files VALUES ('file:///secret.mp4');")
+    db.commit()
+    db.close()
+    plan = FIXES["app.media_players"].plan(cat["app.media_players"], make_scan(host), None)
+    steps = {st["text"]: st["lines"] for st in plan.to_dict()["steps"]}
+    vlc = next(t for t in steps if "VLC" in t)
+    assert "only these lines change, the file and the rest of it stay" in vlc
+    assert steps[vlc] == ["- list=…", "- times=…", "+ list=", "+ times="]
+    assert "secret" not in " ".join(sum(steps.values(), []))
+    haruna = next(t for t in steps if "Haruna's database" in t)
+    assert steps[haruna] == ["~/.local/share/haruna/haruna.db"]
+    from daprivacyscanner.checks.fixes import _clear_vlc_recents
+    assert _clear_vlc_recents(qt) == ("[General]\nlist=keep-me\n[RecentsMRL]\nlist=\ntimes=\n"
+                                      "[OpenDialog]\ntimes=keep\n")
+
+
+def test_haruna_s_database_is_kept_when_it_holds_more_than_history(cat, tmp_path):
+    """Deleting haruna.db is right only while it holds the two history tables (1.8): a later Haruna that keeps
+    anything else there keeps its database, and the plan says so."""
+    import sqlite3
+    host = make_host(tmp_path)
+    (host.home / ".config/haruna").mkdir(parents=True)
+    (host.home / ".local/share/haruna").mkdir(parents=True)
+    db = sqlite3.connect(host.home / ".local/share/haruna/haruna.db")
+    db.executescript("CREATE TABLE recent_files (url TEXT); CREATE TABLE playback_position (path TEXT, position REAL);"
+                     "CREATE TABLE playlists (name TEXT); INSERT INTO recent_files VALUES ('file:///x.mp4');")
+    db.commit()
+    db.close()
+    plan = FIXES["app.media_players"].plan(cat["app.media_players"], make_scan(host), None)
+    assert not any("haruna.db" in a.describe() or "Haruna's database" in a.describe() for a in plan.actions)
+    assert any("isn't deleted" in e for e in plan.side_effects)
+
+
+def test_a_shell_history_s_lines_are_never_previewed(tmp_path):
+    """ClearInFile shows changed keys only for settings files: a history's lines can hold the secret being removed."""
+    from daprivacyscanner.fix import ClearInFile
+    f = tmp_path / "history"
+    f.write_text("ls\nmysql -psecret --host=db\n")
+    a = ClearInFile(f, lambda t: "ls\n", "Remove 1 line", "~/history")
+    assert a.preview() == []
+    b = ClearInFile(f, lambda t: "ls\n", "Remove 1 line", "~/history", settings=True)
+    assert b.preview() == ["… and 1 other line"]
+
+
+def test_a_deletion_lists_where_its_files_are(tmp_path):
+    """The dry run shows where the files are, so the user can look first: each one when few, else each folder."""
+    from daprivacyscanner.fix import DeleteFiles
+    home = tmp_path / "home"
+    few = [home / "Documents" / "a.txt~", home / "Projects" / "x" / ".b.py.swp"]
+    assert DeleteFiles(home, few, "editor backup files", "~").preview() == ["~/Documents/a.txt~", "~/Projects/x/.b.py.swp"]
+    many = [home / "cache" / f"d{i % 3}" / f"{i:040x}" for i in range(60)] + [home / "cache" / "top"]
+    lines = DeleteFiles(home / "cache", many, "a cache", "~/.cache/x").preview()
+    assert lines == ["~/.cache/x/d0/  (20 files)", "~/.cache/x/d1/  (20 files)", "~/.cache/x/d2/  (20 files)",
+                     "~/.cache/x/  (1 file)"]
+
+
 def test_pdf_readers_blocked_while_okular_runs(cat, tmp_path):
     host = make_host(tmp_path, files={"/proc/5/comm": "okular\n"},
                      home_files={".local/share/okular/docdata/1.x.pdf.xml": "x"})

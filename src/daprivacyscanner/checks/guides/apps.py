@@ -87,8 +87,9 @@ def editor_residue(check, scan, outcome):
                   done=not acts and not skipped)]
     if stray:
         steps.append(Step("Backup files next to your documents",
-                          f"{len(stray)} files named like name~, #name# or .name.swp, in your folders. Some may be "
-                          "backups you want; they are deleted for good.",
+                          f"{len(stray)} files named like name~, #name# or .name.swp, in your folders: each is listed "
+                          "with where it is, so you can look at any first. Some may be backups you want; they are "
+                          "deleted for good.",
                           options=[option(check, f"Delete {len(stray)} backup files",
                                           [DeleteFiles(host.home, stray, "editor backup files", "~", prune=False)])]))
     from ..apps import VSCODE_PROCESSES, editor_histories
@@ -97,7 +98,8 @@ def editor_residue(check, scan, outcome):
         files = files_under(h.folder)[0]
         settings = h.settings and (read_text(host, h.settings) or "")
         off = h.settings is not None and '"workbench.localHistory.enabled": false' not in (settings or "")
-        acts = ([DeleteFiles(h.folder, files, h.label, host.display(h.folder), prune=False)] if files else []) + (
+        acts = ([DeleteFiles(h.folder, files, h.label, host.display(h.folder), prune=False,
+                             about=_history_sources(host, h.folder))] if files else []) + (
             [WriteFile(h.settings, lambda old: set_jsonc_key(old, "workbench.localHistory.enabled", "false"),
                        'Set "workbench.localHistory.enabled": false', host.display(h.settings))] if off else [])
         if not acts:
@@ -121,6 +123,25 @@ def editor_residue(check, scan, outcome):
                       "Vim: set viminfo= turns off its history of commands, searches and registers; Neovim: set "
                       "shadafile=NONE. Emacs: (setq make-backup-files nil auto-save-default nil)."))
     return Guide(check.id, "Clean up editor leftovers", "", steps)
+
+
+def _history_sources(host, folder: Path) -> dict[Path, str]:
+    """VS Code's Local History keeps each file's versions in a folder named by a hash, with an entries.json naming
+    the file ("resource", a file:// address): for the dry run, so the user sees whose versions go."""
+    import json
+    from urllib.parse import unquote, urlparse
+    out = {}
+    for d in children(folder):
+        try:
+            raw = json.loads(read_text(host, d / "entries.json") or "null")
+        except ValueError:
+            continue
+        uri = raw.get("resource") if isinstance(raw, dict) else None
+        if isinstance(uri, str):
+            u = urlparse(uri)        # file://, or vscode-userdata: for its own settings
+            local = u.scheme in ("file", "vscode-userdata") and u.path.startswith("/")
+            out[d] = f"earlier versions of {host.display(Path(unquote(u.path))) if local else uri}"
+    return out
 
 
 VIM_MARK = '" DA Privacy Kit: swap and undo files in memory'
@@ -485,7 +506,7 @@ def kde_recent_files(check, scan, outcome):
             return []
         if x.kind == "kconfig":
             return [ClearInFile(x.path, clear_kconfig_group(x.group), f"Clear {x.label}'s recent files ({x.entries})",
-                                host.display(x.path))]
+                                host.display(x.path), settings=True)]
         if x.kind == "folder":
             return [DeleteFiles(x.path, [f for f in children(x.path) if f.is_file()], f"{x.label}'s recent folders",
                                 host.display(x.path), prune=False)]
