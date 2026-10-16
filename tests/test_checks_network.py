@@ -392,3 +392,64 @@ def test_exposed_services_severity_follows_the_firewall(cat, tmp_path):
     host.runner.outputs[("ss", "-tulpnH")] = CommandResult((), 0, sample("ss/mint-22.txt"))
     r = Runner(cat, host).scan(only=["net.exposed_services"]).results["net.exposed_services"]
     assert (r.status.value, r.effective_severity) == ("warn", 2)    # 4 behind the firewall, a risk 2 lower
+
+
+MULLVAD_RESOLVECTL = RESOLVECTL_LEAK.replace("Link 5 (wg0)", "Link 5 (wg0-mullvad)")
+
+
+def mullvad_host(tmp_path, *, daemon=True, lockdown="off", resolvectl=MULLVAD_RESOLVECTL):
+    files = {"/sys/class/net/wg0-mullvad/uevent": "DEVTYPE=wireguard\n", "/sys/class/net/wlp0s20f3/uevent": "DEVTYPE=wlan\n"}
+    if daemon:
+        files["/proc/321/comm"] = "mullvad-daemon\n"
+    return make_host(tmp_path, files=files, commands={
+        "resolvectl status": resolvectl,
+        "ip -4 route get 1.1.1.1": "1.1.1.1 dev wg0-mullvad table 1836018789 src 10.64.0.2 uid 1000\n",
+        "mullvad status": "Connected\n    Relay:    se-got-wg-001\n",
+        "mullvad lockdown-mode get": f"Block traffic when the VPN is disconnected: {lockdown}\n"})
+
+
+def test_mullvad_s_own_leak_protection_is_recognised(cat, tmp_path):
+    """Mullvad VPN's app has no DNS leak protection or kill switch to turn on: while connected its firewall rejects
+    every lookup but to the servers it set. Whatever systemd-resolved would ask, it is a pass, and the notes say so
+    rather than telling the user to check a kill switch setting that isn't there."""
+    o = detect(cat, "net.vpn_leaks", make_scan(mullvad_host(tmp_path)))
+    assert o.status is Status.PASS and "Mullvad VPN is connected" in o.summary
+    titles = [n.title for n in o.notes]
+    assert "Kill switches aren't checked" not in titles
+    assert titles[:3] == ["Mullvad VPN blocks leaks itself", "Mullvad VPN rejects lookups that would leave outside it",
+                          "Lockdown mode is off here"]
+    on = detect(cat, "net.vpn_leaks", make_scan(mullvad_host(tmp_path / "on", lockdown="on")))
+    assert "Lockdown mode is on here" in [n.title for n in on.notes]
+
+
+def test_a_mullvad_tunnel_without_its_app_gets_the_usual_check(cat, tmp_path):
+    """The firewall is the daemon's: a tunnel made from Mullvad's configuration files has none of it."""
+    o = detect(cat, "net.vpn_leaks", make_scan(mullvad_host(tmp_path, daemon=False)))
+    assert o.status is Status.FAIL and "wlp0s20f3" in o.summary
+
+
+def test_mullvad_disconnected_says_what_its_app_does(cat, tmp_path):
+    host = make_host(tmp_path, files={"/proc/321/comm": "mullvad-daemon\n"},
+                     commands={"mullvad status": "Disconnected\n",
+                               "mullvad lockdown-mode get": "Block traffic when the VPN is disconnected: off\n"})
+    o = detect(cat, "net.vpn_leaks", make_scan(host))
+    assert o.status is Status.NOT_APPLICABLE
+    assert [n.title for n in o.notes] == ["Mullvad VPN blocks leaks itself", "Lockdown mode is off here"]
+
+
+@pytest.mark.parametrize("server, via, status", [
+    ("192.168.1.1", "wlp0s20f3", Status.FAIL),
+    ("10.2.0.1", "wg0", Status.PASS),
+])
+def test_without_systemd_resolved_the_nameservers_are_judged(cat, tmp_path, server, via, status):
+    """systemd-resolved can run with its links set up while programs ask the servers in /etc/resolv.conf
+    directly: then its settings say nothing about where lookups go."""
+    host = make_host(tmp_path, files={"/sys/class/net/wg0/uevent": "DEVTYPE=wireguard\n",
+                                      "/sys/class/net/wlp0s20f3/uevent": "DEVTYPE=wlan\n", "/proc/net/route": ROUTE,
+                                      "/etc/resolv.conf": f"nameserver {server}\n",
+                                      "/etc/nsswitch.conf": "hosts: files mdns4_minimal [NOTFOUND=return] dns\n"},
+                     commands={"resolvectl status": RESOLVECTL_LEAK if status is Status.PASS else RESOLVECTL_ROUTED,
+                               "ip -4 route get 1.1.1.1": "1.1.1.1 dev wg0 table 51820 src 10.2.0.2 uid 1000\n",
+                               f"ip route get {server}": f"{server} dev {via} src 10.2.0.2 uid 1000\n"})
+    o = detect(cat, "net.vpn_leaks", make_scan(host))
+    assert o.status is status and ev(o)["Nameservers in /etc/resolv.conf"] == server

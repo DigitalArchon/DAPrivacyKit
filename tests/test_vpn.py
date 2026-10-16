@@ -265,3 +265,16 @@ def test_no_vpn_extensions(cat, tmp_path):
     (host.home / ".config/google-chrome/Default/Preferences").write_text("{}")
     assert detect(cat, "br.vpn_extensions", make_scan(host)).status is Status.PASS
     assert detect(cat, "br.vpn_extensions", make_scan(make_host(tmp_path / "b"))).status is Status.NOT_APPLICABLE
+
+
+@pytest.mark.parametrize("mangle, said", [
+    (lambda d: d["providers"][0]["leak_protection"].pop("if_leaking"), "needs text, source, verified and if_leaking"),
+    (lambda d: d["providers"][0]["leak_protection"].update(source="http://github.com"), "https://"),
+    (lambda d: d["providers"][0]["leak_protection"]["lockdown"].pop("cost"), "needs exactly"),
+])
+def test_leak_protection_is_checked(mangle, said):
+    d = copy.deepcopy(raw())
+    assert d["providers"][0]["id"] == "mullvad"
+    mangle(d)
+    with pytest.raises(vpn.DataError, match=said):
+        vpn.parse(d)

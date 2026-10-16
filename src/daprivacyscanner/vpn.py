@@ -70,6 +70,29 @@ class BrowserProxy:
 
 
 @dataclass(frozen=True)
+class Lockdown:
+    """The app's setting that also blocks the internet while the VPN is disconnected or the app has quit
+    (vpn-providers.yaml `leak_protection.lockdown`)."""
+    status: tuple[str, ...]             # argv of a command asking only the local daemon
+    on: str                             # text in its output when the setting is on
+    where: str                          # where it is in the app
+    command: str                        # the command that turns it on
+    cost: str                           # what turning it on costs the user
+
+
+@dataclass(frozen=True)
+class LeakProtection:
+    """What the provider's own app does, always and with no setting, to keep traffic and lookups inside the tunnel
+    while it is connected (vpn-providers.yaml `leak_protection`). Present only where the app has no switch for it:
+    the app then never tells the user to turn on what isn't there."""
+    text: str
+    source: str
+    verified: dt.date
+    if_leaking: str                     # what to look at when a test still finds traffic outside the tunnel
+    lockdown: Lockdown | None = None
+
+
+@dataclass(frozen=True)
 class Provider:
     id: str
     name: str
@@ -91,6 +114,7 @@ class Provider:
     why: str = ""                       # rating.why: the app's reasoning, shown as such
     extensions: tuple[str, ...] = ()
     browser_proxy: BrowserProxy | None = None
+    leak_protection: LeakProtection | None = None
 
     def supporting(self, what: str) -> list[Fact]:
         return [f for f in self.all_facts() if what in f.supports]
@@ -198,7 +222,36 @@ def _facts(raw: Any, where: str, topics: tuple[str, ...] = TOPICS) -> tuple[Fact
 
 
 _PROVIDER_KEYS = {"id", "name", "group", "facts", "rating", "detect", "exit_networks", "exit_check", "leak_test",
-                  "verify", "browser_proxy"}
+                  "verify", "browser_proxy", "leak_protection"}
+_PROTECTION_KEYS = {"text", "source", "verified", "if_leaking", "lockdown"}
+_LOCKDOWN_KEYS = {"status", "shows_on", "where", "command", "cost"}
+
+
+def _text(v: Any, where: str) -> str:
+    if not isinstance(v, str) or not v.strip():
+        raise DataError(f"{where}: needs text")
+    return " ".join(v.split())
+
+
+def _leak_protection(raw: Any, where: str) -> LeakProtection | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict) or not {"text", "source", "verified", "if_leaking"} <= set(raw) \
+            or set(raw) - _PROTECTION_KEYS:
+        raise DataError(f"{where}: needs text, source, verified and if_leaking (and optionally lockdown)")
+    if not str(raw["source"]).startswith("https://"):
+        raise DataError(f"{where}.source: an https:// page")
+    lock = raw.get("lockdown")
+    if lock is not None:
+        if not isinstance(lock, dict) or set(lock) != _LOCKDOWN_KEYS:
+            raise DataError(f"{where}.lockdown: needs exactly {', '.join(sorted(_LOCKDOWN_KEYS))}")
+        status = _strs(lock["status"], f"{where}.lockdown.status")
+        if not status:
+            raise DataError(f"{where}.lockdown.status: the command that asks the local daemon")
+        lock = Lockdown(status, _text(lock["shows_on"], f"{where}.lockdown.shows_on"), _text(lock["where"], f"{where}.lockdown.where"),
+                        _text(lock["command"], f"{where}.lockdown.command"), _text(lock["cost"], f"{where}.lockdown.cost"))
+    return LeakProtection(_text(raw["text"], f"{where}.text"), raw["source"], _date(raw["verified"], where),
+                          _text(raw["if_leaking"], f"{where}.if_leaking"), lock)
 _PROXY_KEYS = {"hostname", "address", "port", "city", "country", "country_code", "source", "verified"}
 
 
@@ -281,7 +334,8 @@ def parse(data: Any) -> ProviderData:
             leak_test=leak["url"] if leak else None,
             leak_test_verified=_date(leak.get("verified"), f"{where}.leak_test") if leak else None,
             verify=" ".join(str(p.get("verify") or "").split()),
-            browser_proxy=_browser_proxy(p.get("browser_proxy"), f"{where}.browser_proxy"))
+            browser_proxy=_browser_proxy(p.get("browser_proxy"), f"{where}.browser_proxy"),
+            leak_protection=_leak_protection(p.get("leak_protection"), f"{where}.leak_protection"))
     if not providers:
         raise DataError(f"{DATA_NAME}: no providers")
     for p in providers.values():
@@ -424,6 +478,27 @@ def identify(host: Host, data: ProviderData, processes: set[str] | None = None) 
             m.relay = relay.group(1) if relay else None
         found.append(m)
     return sorted(found, key=lambda m: (m.strength, m.provider.name))
+
+
+def protecting(host: Host, data: ProviderData, processes: set[str] | None = None) -> Match | None:
+    """The provider whose own app keeps traffic and lookups inside its tunnel (`leak_protection`) and whose daemon
+    runs here, the most certain first. Its daemon is what blocks: a tunnel made from the provider's configuration
+    files with wg-quick or NetworkManager has none of that."""
+    for m in identify(host, data, processes):
+        if m.provider.leak_protection and any(k == "process" for k, _ in m.signs):
+            return m
+    return None
+
+
+def lockdown_on(host: Host, p: Provider) -> bool | None:
+    """Whether the app's lockdown setting is on, asked of its local daemon; None when it can't be told."""
+    lock = p.leak_protection.lockdown if p.leak_protection else None
+    if lock is None or not host.runner.which(lock.status[0]):
+        return None
+    r = host.run(*lock.status, timeout=5)
+    if not r.ok or not r.stdout.strip():
+        return None
+    return lock.on.lower() in r.stdout.lower()
 
 
 def stale(p: Provider, today: dt.date | None = None) -> dt.date | None:

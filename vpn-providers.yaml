@@ -50,6 +50,13 @@
 #     exit_check   Optional: the provider's own service that says whether an address is one of its
 #                  exits. Online tests use it only when this provider is the one in use.
 #     leak_test    Optional {url, verified}: the provider's own page for checking the connection.
+#     leak_protection  Optional: only for a provider whose own app keeps traffic and lookups inside the
+#                  tunnel while connected, always, with no setting for it (the app then never tells the
+#                  user to turn on a "leak protection" or "kill switch" the app doesn't have).
+#                  {text, source, verified, if_leaking, lockdown}: text says what the app does; if_leaking
+#                  what to look at when a test still finds traffic outside the tunnel; lockdown (optional)
+#                  the setting that also blocks while disconnected: {status (argv asking only the local
+#                  daemon), shows_on (text in its output when on), where (in the app), command, cost}.
 #     verify       Optional developer note: what must be confirmed on a real system. Shown in
 #                  developer mode only.
 #     browser_proxy  Optional: the SOCKS5 proxy inside its tunnel that Mullvad Browser's extension is set
@@ -180,6 +187,26 @@ providers:
     exit_networks: ["31173 Services", "Mullvad"]
     exit_check: mullvad
     leak_test: {url: "https://mullvad.net/check", verified: 2026-10-03}
+    leak_protection:
+      text: >-
+        While it is connected, Mullvad VPN's app blocks all traffic outside the tunnel, and every DNS lookup
+        except to the servers it set (Mullvad's own in the tunnel, or a custom server you chose), with local
+        network sharing on or off. It is always on: the app has no setting for it, nor for a kill switch.
+      source: https://github.com/mullvad/mullvadvpn-app/blob/main/talpid-core/src/firewall/linux.rs
+      verified: 2026-10-16
+      if_leaking: >-
+        If a test still finds lookups or traffic outside the tunnel: run it again while the app says Connected;
+        make sure the program isn't excluded under Settings → Split tunneling (excluded apps go around the tunnel
+        on purpose); and in Settings → VPN settings, see whether a custom DNS server is set (one on your local
+        network is asked outside the tunnel, as you chose).
+      lockdown:
+        status: [mullvad, lockdown-mode, get]
+        shows_on: "disconnected: on"
+        where: Settings → VPN settings → Lockdown mode
+        command: mullvad lockdown-mode set on
+        cost: >-
+          Nothing reaches the internet while Mullvad VPN is disconnected or quit, until you turn it off again
+          (apps excluded with split tunnelling still do).
     browser_proxy:
       hostname: ch-zrh-wg-socks5-001.relays.mullvad.net
       address: 10.124.0.241
@@ -191,7 +218,9 @@ providers:
       verified: 2026-10-11
     verify: >-
       `mullvad status` output across versions (the relay name, e.g. se-got-wg-001); the network
-      names of Mullvad-owned exits in RIPEstat.
+      names of Mullvad-owned exits in RIPEstat. `mullvad lockdown-mode get` printed "Block traffic when the
+      VPN is disconnected: off" on 2026.5; its "on" wording, and the app's menu path for Lockdown mode, are
+      from the help page, not tested.
 
   - id: ivpn
     name: IVPN

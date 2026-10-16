@@ -1294,10 +1294,18 @@ checks:
     detect:
       - 'While a VPN is up: resolvectl status. A "~." routing domain on the VPN link (or globally) keeps every
         query off the other links (systemd-resolved(8)); without one, links with DefaultRoute are asked too'
-    fix: Configure DNS routing to the VPN link and a kill switch where the VPN client supports it.
+      - 'Only when lookups go through systemd-resolved (its stub in /etc/resolv.conf, or resolve in nsswitch.conf''s
+        hosts line); otherwise the nameservers in /etc/resolv.conf, by the interface `ip route get` sends each through'
+      - 'A VPN app that blocks leaks itself, always, with no setting (vpn-providers.yaml leak_protection: Mullvad VPN,
+        whose firewall rejects every lookup but to the servers it set), with its daemon running and its tunnel carrying
+        the traffic: a pass, and its lockdown setting read from the daemon (mullvad lockdown-mode get)'
+    fix: >
+      Configure DNS routing to the VPN link and a kill switch where the VPN client supports it. Never tell the user to
+      turn on a protection their app has always on with no setting (vpn-providers.yaml leak_protection).
     remedy: >
       While the VPN is on, some lookups can go around it. Turn on your VPN app's DNS leak protection
-      and kill switch; How to… explains for this computer.
+      and kill switch where it has them as settings (some apps, Mullvad VPN's among them, have them
+      always on); How to… explains for this computer.
 
   - id: net.vpn_provider
     title: Which VPN this computer uses, and who runs it

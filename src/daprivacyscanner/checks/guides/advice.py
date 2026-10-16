@@ -587,14 +587,20 @@ def vpn_leaks(check, scan, outcome):
     except vpn.DataError:
         found = []
     p = found[0].provider if found else None
-    app = (f"In {p.name}'s app, turn on its DNS leak protection and kill switch (\"block connections without VPN\")."
-           if p else "Turn on its DNS leak protection and kill switch (\"block connections without VPN\"). Most "
-           "commercial VPN apps have both.")
     check_text = "With the VPN on, run the online tests net.dns_leak and net.vpn_exit."
     commands = []
     if p and p.leak_test:
         check_text += f" {p.name} also has a page of its own that says whether it sees your traffic as its own."
         commands = [f"xdg-open {p.leak_test}"]
+    if p and p.leak_protection:
+        # its app has no switch for it: say what it does, and the one setting there is
+        return Guide(check.id, "Keep DNS inside the VPN", "", [
+            _protection_step(p, f"In {p.name}"),
+            Step("Check", check_text, commands=commands),
+        ])
+    app = (f"In {p.name}'s app, turn on its DNS leak protection and kill switch (\"block connections without VPN\")."
+           if p else "Turn on its DNS leak protection and kill switch (\"block connections without VPN\"). Most "
+           "commercial VPN apps have both.")
     return Guide(check.id, "Keep DNS inside the VPN", "", [
         Step(f"In {p.name}" if p else "In your VPN app", app),
         Step("For a VPN set up in NetworkManager (WireGuard, OpenVPN)",
@@ -604,6 +610,19 @@ def vpn_leaks(check, scan, outcome):
                        "nmcli connection up VPN"]),
         Step("Check", check_text, commands=commands),
     ])
+
+
+def _protection_step(p, title: str, leaking: bool = False) -> Step:
+    """For a VPN app that keeps traffic and lookups in its tunnel with no setting for it (vpn-providers.yaml
+    `leak_protection`): what it does, what to look at when a test found a leak anyway, and its lockdown setting."""
+    lp = p.leak_protection
+    text = "There is nothing to turn on for this. " + lp.text + (" " + lp.if_leaking if leaking else "")
+    commands = []
+    if lp.lockdown:
+        text += (f" Lockdown mode ({lp.lockdown.where}) also blocks the internet after you disconnect or quit the "
+                 f"app; the command below turns it on. What it costs: {lp.lockdown.cost}")
+        commands = [lp.lockdown.command]
+    return Step(title, text, commands=commands)
 
 
 @guide("tel.http_repos")
@@ -891,6 +910,11 @@ def _vpn_provider(scan):
     return found[0].provider if found else None
 
 
+def _protected(p) -> bool:
+    """Its app keeps traffic and lookups inside the tunnel with no setting for it (vpn-providers.yaml)."""
+    return bool(p and p.leak_protection)
+
+
 def _router_step(scan, title: str, text: str) -> Step:
     gw = _gateway_v4(scan)
     where = (f" Your router's settings page is usually at its address, http://{gw}/." if gw
@@ -1012,10 +1036,13 @@ def dns_leak(check, scan, outcome):
     seen = [str(v) for v in evidence(outcome, "Resolver")]
     intro = ("Lookups go to a resolver outside the VPN" + (f": {'; '.join(seen[:3])}" if seen else "") + ". Whoever "
              "runs it sees every site you look up, VPN or not. Make every lookup go through the tunnel.")
-    steps = [Step(f"In {p.name}'s app" if p else "In your VPN app",
-                  "Turn on its DNS leak protection (\"use the VPN's DNS servers\", \"block DNS outside the tunnel\") and "
-                  "its kill switch, then reconnect. Most VPN apps have both; without them the app leaves the "
-                  "network's own DNS servers in place.")]
+    if _protected(p):
+        steps = [_protection_step(p, f"In {p.name}'s app", leaking=True)]
+    else:
+        steps = [Step(f"In {p.name}'s app" if p else "In your VPN app",
+                      "Turn on its DNS leak protection (\"use the VPN's DNS servers\", \"block DNS outside the tunnel\") "
+                      "and its kill switch, then reconnect. Most VPN apps have both; without them the app leaves the "
+                      "network's own DNS servers in place.")]
     vpns = [(n, t) for n, t, _ in _nm_active(scan) if t in ("vpn", "wireguard")]
     if vpns:
         cmds = []
@@ -1030,7 +1057,7 @@ def dns_leak(check, scan, outcome):
                           "the second command reconnects it with the new setting.", commands=cmds,
                           side_effects=["Names only your home network knows (printer.lan, a NAS) may stop resolving "
                                         "while the VPN is on."]))
-    elif _resolved_in_use(scan) and (tunnels := net.carrying_vpn_links(scan.host)):
+    elif not _protected(p) and _resolved_in_use(scan) and (tunnels := net.carrying_vpn_links(scan.host)):
         steps.append(Step("Route every lookup into the tunnel (systemd-resolved)",
                           f"The tunnel {', '.join(tunnels)} isn't a NetworkManager connection. systemd-resolved can "
                           "be told to send every lookup through it, until it is reconnected (then the VPN's own "
@@ -1043,7 +1070,8 @@ def dns_leak(check, scan, outcome):
 @guide("net.vpn_ipv6_leak")
 def vpn_ipv6_leak(check, scan, outcome):
     p = _vpn_provider(scan)
-    steps = [Step(f"In {p.name}'s app" if p else "In your VPN app",
+    steps = [_protection_step(p, f"In {p.name}'s app", leaking=True) if _protected(p) else
+             Step(f"In {p.name}'s app" if p else "In your VPN app",
                   "Turn on its IPv6 support, or its leak protection (\"block IPv6\", \"disable IPv6 while connected\"), "
                   "then reconnect. A VPN that carries no IPv6 should block it; one that does should route it.")]
     steps += _ipv6_outside_steps(scan)
@@ -1062,7 +1090,9 @@ def vpn_exit(check, scan, outcome):
              + ".")
     steps = []
     on_this = bool(net.carrying_vpn_links(scan.host))
-    if on_this or p:
+    if _protected(p):
+        steps.append(_protection_step(p, f"In {p.name}'s app", leaking=True))
+    elif on_this or p:
         steps.append(Step(f"In {p.name}'s app" if p else "In your VPN app",
                           "Reconnect it, and turn on its leak protection and kill switch (\"block connections outside "
                           "the VPN\"). If the provider's own check says traffic doesn't leave through it, the app "

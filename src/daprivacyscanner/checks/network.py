@@ -524,26 +524,110 @@ def resolved_links(host: Host) -> dict[str, dict]:
     return out
 
 
+def resolved_answers(host: Host) -> bool | None:
+    """Whether programs' lookups go through systemd-resolved: /etc/resolv.conf names its stub (127.0.0.53, or
+    127.0.0.54), or nsswitch.conf's hosts line asks it (nss-resolve); None when resolv.conf can't be read."""
+    conf = host.read_sys("/etc/resolv.conf")
+    if conf is None:
+        return None
+    servers = re.findall(r"^\s*nameserver\s+(\S+)", conf, re.M)
+    if any(s.startswith(("127.0.0.53", "127.0.0.54")) for s in servers):
+        return True
+    hosts = re.search(r"^\s*hosts:(.*)$", host.read_sys("/etc/nsswitch.conf") or "", re.M)
+    return bool(hosts and re.search(r"\bresolve\b", hosts.group(1)))
+
+
+def route_link(host: Host, address: str) -> str | None:
+    """The interface the kernel would send a packet to `address` through (`ip route get`, which follows policy
+    routing; it sends nothing), or None."""
+    r = host.run("ip", "route", "get", address)
+    first = r.stdout.strip().splitlines()[0] if r.ok and r.stdout.strip() else ""
+    m = re.search(r"\bdev (\S+)", first)
+    return m.group(1) if m else None
+
+
+def _protection_notes(host: Host, prov) -> list[Note]:
+    """What the VPN app in use does about leaks on its own, and its lockdown setting, in place of the general note
+    that kill switches can't be seen."""
+    from ..vpn import lockdown_on
+    lp = prov.leak_protection
+    notes = [Note("info", f"{prov.name} blocks leaks itself",
+                  f"{lp.text} (Source: {lp.source}, checked {lp.verified.isoformat()}.)")]
+    if lp.lockdown:
+        on = lockdown_on(host, prov)
+        state = {True: "on here", False: "off here", None: "its state couldn't be read"}[on]
+        notes.append(Note("info", f"Lockdown mode is {state}" if on is not None else "Lockdown mode",
+                          f"Lockdown mode ({lp.lockdown.where}) also blocks the internet after you disconnect or quit "
+                          f"the app; without it, traffic goes out directly then. Turning it on: {lp.lockdown.where}, or "
+                          f"the command {lp.lockdown.command}. What it costs: {lp.lockdown.cost}"))
+    return notes
+
+
 @register
 class VpnLeaks(Check):
     id = "net.vpn_leaks"
 
     def detect(self, scan: Scan) -> Outcome:
+        from ..vpn import DataError, load, protecting
         host = scan.host
         vpns = vpn_links(host)
+        try:
+            match = protecting(host, load(), processes(host))
+        except DataError:
+            match = None
+        prov = match.provider if match else None
         limit = Note("limitation", "Kill switches aren't checked",
                      "Whether traffic stops when the VPN drops depends on the VPN app and can't be seen from its "
                      "configuration. Check your VPN client's kill switch setting.")
+        notes = _protection_notes(host, prov) if prov else [limit]
         if not vpns:
-            return absent("No VPN is connected now. Connect it and scan again to check for DNS leaks.", notes=[limit])
+            return absent("No VPN is connected now. Connect it and scan again to check for DNS leaks.", notes=notes)
         full = carrying_vpn_links(host, vpns)
         ev = [Evidence.val("VPN interfaces", ", ".join(vpns)), Evidence.val("Carrying all traffic", ", ".join(full) or "none")]
         if not full:
             return passed("The VPN only carries traffic for some networks (split tunnel), so DNS leaks don't apply.",
-                          *ev, notes=[limit])
+                          *ev, notes=notes)
+        mine = prov is not None and any(prov.matches_interface(t) for t in full)
+        if mine:
+            ev.append(Evidence.val("VPN app", prov.name))
+        leaking = self._leaking(host, vpns, full, ev)
+        if leaking is None and not mine:
+            return unknown("Couldn't tell where DNS lookups go: neither systemd-resolved's settings nor the servers in "
+                           "/etc/resolv.conf could be read.", *ev, notes=notes)
+        if mine:
+            # its daemon's firewall rejects every lookup but to the servers it set, whatever the resolver would ask
+            if leaking:
+                notes.insert(1, Note("info", f"{prov.name} rejects lookups that would leave outside it",
+                                     f"Left to itself, this computer's resolver would also ask {', '.join(leaking)}: "
+                                     f"{prov.name}'s app rejects those lookups while it is connected, so they never "
+                                     "leave. The online DNS leak test confirms it."))
+            return passed(f"{prov.name} is connected, and its app keeps DNS lookups inside the tunnel.", *ev, notes=notes)
+        if leaking:
+            return failed(f"DNS queries can go out via {', '.join(leaking)} instead of the VPN.", *ev, notes=notes)
+        return passed("DNS queries go through the VPN.", *ev, notes=notes)
+
+    @staticmethod
+    def _leaking(host: Host, vpns: list[str], full: list[str], ev: list) -> list[str] | None:
+        """The links (or the servers, by the link they are reached through) lookups can go out by, other than the
+        VPN's; None when that can't be told."""
+        if resolved_answers(host) is False:
+            # lookups go to the servers in /etc/resolv.conf, not through systemd-resolved, whatever its settings say
+            servers = re.findall(r"^\s*nameserver\s+(\S+)", host.read_sys("/etc/resolv.conf") or "", re.M)
+            if not servers:
+                return None
+            ev.append(Evidence.val("Nameservers in /etc/resolv.conf", ", ".join(servers[:4])))
+            out, unknown_route = [], False
+            for a in servers:
+                link = route_link(host, a.split("%")[0])
+                if link is None:
+                    unknown_route = True
+                elif link not in vpns and link != "lo":
+                    out.append(f"{a} (through {link})")
+            ev.append(Evidence.val("Nameservers reached outside the VPN", ", ".join(out) or "none"))
+            return None if unknown_route and not out else out
         links = resolved_links(host)
         if not links:
-            return unknown("Couldn't read DNS routing (systemd-resolved isn't in use).", *ev, notes=[limit])
+            return None
         # A "~." routing domain on the VPN's link (or the global settings) sends every query there and keeps the
         # other links out, unless they carry "~." too (systemd-resolved(8)); without one, every link with
         # DefaultRoute is asked as well.
@@ -554,9 +638,7 @@ class VpnLeaks(Check):
             ev.append(Evidence.val("Every lookup routed to", ", ".join("the global DNS settings" if n == "Global" else n
                                                                       for n in captured) + " (~.)"))
         ev.append(Evidence.val("Other links answering any DNS query", ", ".join(leaking) or "none"))
-        if leaking:
-            return failed(f"DNS queries can go out via {', '.join(leaking)} instead of the VPN.", *ev, notes=[limit])
-        return passed("DNS queries go through the VPN.", *ev, notes=[limit])
+        return leaking
 
 
 # local resolvers that always encrypt what they send out, and ones that may not (unbound resolves

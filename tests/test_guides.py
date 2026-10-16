@@ -1418,3 +1418,18 @@ def test_release_unsupported_how_to_is_for_this_distribution(cat, tmp_path, monk
     pro = [s for s in g.steps if "Ubuntu Pro" in s.title]
     assert bool(pro) == os_release.startswith("ID=ubuntu") and all("sudo pro attach" in s.commands for s in pro)
 
+
+
+def test_vpn_guides_never_ask_for_a_switch_mullvad_s_app_doesn_t_have(cat, tmp_path):
+    """Mullvad VPN's app keeps lookups and traffic in the tunnel with no setting for it: its guides say so, and
+    offer the one setting there is, lockdown mode, instead of "turn on its DNS leak protection"."""
+    host = make_host(tmp_path, files={"/sys/class/net/wg0-mullvad/uevent": "DEVTYPE=wireguard\n",
+                                      "/proc/321/comm": "mullvad-daemon\n"})
+    for cid in ("net.vpn_leaks", "net.dns_leak", "net.vpn_ipv6_leak", "net.vpn_exit"):
+        g = _advice(cat, host, cid)
+        text = " ".join(s.text for s in g.steps)
+        assert "Turn on its" not in text and "turn on its leak protection" not in text, cid
+        assert "There is nothing to turn on" in text and "mullvad lockdown-mode set on" in [c for s in g.steps
+                                                                                             for c in s.commands], cid
+    leak = _advice(cat, host, "net.dns_leak")
+    assert "Split tunneling" in leak.steps[0].text
