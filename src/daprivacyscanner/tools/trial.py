@@ -732,8 +732,8 @@ def native_overlay(host: Host) -> bool:
 
 APPARMOR_BWRAP = ("AppArmor here takes every capability from the programs bubblewrap starts (the bwrap-userns-restrict "
                   "profile, as Ubuntu ships it), and laying the package's files over /usr needs one in the sandbox's own "
-                  "namespace. A bubblewrap of version 0.10 or later lays them itself, which that profile allows "
-                  "(Ubuntu 26.04's does): with this one, a package can't be tried here.")
+                  "namespace. A bubblewrap of version 0.10 or later lays them itself, which that profile allows (as "
+                  "Ubuntu 26.04's does).")
 
 
 def probe_overlay(host: Host) -> str | None:

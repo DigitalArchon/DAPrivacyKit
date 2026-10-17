@@ -106,6 +106,24 @@ def test_errors_nothing_caught_are_said_by_their_kind_off_a_terminal(monkeypatch
     assert "FileNotFoundError" in err and "secret" not in err and "Traceback" not in err
 
 
+def test_an_error_said_to_a_closed_stderr_is_no_new_error(monkeypatch):
+    """Seen live: with its stderr a pipe whose reader had gone, --box's message raised BrokenPipeError, which the Box
+    then reported as "The Box couldn't be started: Broken pipe." in a second dialog."""
+    from daprivacyscanner import app
+
+    class Closed:
+        def isatty(self):
+            return True
+
+        def write(self, s):
+            raise BrokenPipeError(32, "Broken pipe")
+
+        def flush(self):
+            pass
+    monkeypatch.setattr(sys, "stderr", Closed())
+    assert app.show_error("There is no Box named x here.") == 2
+
+
 def test_the_scheduled_scan_prints_nothing(cat, tmp_path, monkeypatch, capsys):
     """`--scan --notify --quiet` is what the timer runs: no report, no titles, in its journal."""
     from daprivacyscanner import app

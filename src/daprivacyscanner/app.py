@@ -107,9 +107,15 @@ def show_error(text: str) -> int:
     import subprocess
 
     from .hostenv import as_host
-    if sys.stderr.isatty() or not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
-        print(text, file=sys.stderr)
+
+    def to_stderr() -> int:
+        try:
+            print(text, file=sys.stderr)
+        except OSError:                             # closed (a pipe whose reader has gone): nothing more to do
+            pass
         return 2
+    if sys.stderr.isatty() or not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+        return to_stderr()
     dialogs = [["zenity", "--error", "--title=DA Privacy Kit", "--no-markup", "--width=520", f"--text={text}"],
                ["kdialog", "--title", "DA Privacy Kit", "--error", text]]
     if "kde" in os.environ.get("XDG_CURRENT_DESKTOP", "").lower():
@@ -122,8 +128,7 @@ def show_error(text: str) -> int:
             # (seen on CachyOS: a zenity that couldn't load its libraries, exit status 127): try the other one
             if shown in (0, 1):
                 return 2
-    print(text, file=sys.stderr)                    # no dialog could show it: stderr is all there is
-    return 2
+    return to_stderr()                              # no dialog could show it: stderr is all there is
 
 
 def dry_run(cat, check_id: str, host=None) -> int:
