@@ -5,12 +5,17 @@ tried on the lab machines; here, its parts."""
 from __future__ import annotations
 
 import struct
+import time
 import zlib
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
 
 from daprivacyscanner.host import FakeRunner, Host
+from daprivacyscanner.privileged import HelperError, Privileged
+from daprivacyscanner.server import create_app
 from daprivacyscanner.tools import activity as A
 from daprivacyscanner.tools import appwatch, menu
 
@@ -251,3 +256,73 @@ def test_the_scope_has_a_description_that_doesnt_name_the_app():
     sep = argv.index("--")
     assert "--description=An app watched by DA Privacy Kit" in argv[:sep]
     assert not any("xed" in a.lower() for a in argv[:sep]) and argv[sep + 1:] == ["/usr/bin/xed", "--new-window"]
+
+
+# ------------------------------------------------------------------ the tool's API
+
+H = {"X-Token": "t0ken"}
+
+
+class FakeWatch(Privileged):
+    """The helper's watch actions, canned; `poll` can be made to fail."""
+
+    def __init__(self):
+        self.calls, self.open = [], True
+
+    def call(self, action, args, timeout=None):
+        self.calls.append(action)
+        if action == "watch_begin":
+            return {"watched": ["/"], "skipped": [], "units": args["units"]}
+        if action == "watch_poll":
+            return {"events": 1, "files": 1, "others": 0, "overflow": 0, "seconds": 1.0}
+        if action == "watch_end":
+            return {"files": [], "folded": {}, "system": {}, "gone": {}, "events": 1, "foreign": 0, "overflow": 0,
+                    "unresolved": 0, "others_left": 0, "seconds": 5.0}
+        raise HelperError("unknown action")
+
+    def alive(self):
+        return self.open
+
+    def close(self):
+        self.open = False
+
+
+@pytest.fixture
+def menu_host(tmp_path):
+    root = tmp_path / "root"
+    home = root / "home/alice"
+    (root / "usr/share/applications").mkdir(parents=True)
+    (home / ".local/share/applications").mkdir(parents=True)
+    (root / "usr/share/applications/foo.desktop").write_text("[Desktop Entry]\nType=Application\nName=Foo\nExec=foo\n")
+    (root / "run/user/1000/systemd").mkdir(parents=True)
+    return Host(home=home, environ={"HOME": str(home), "XDG_DATA_DIRS": "/usr/share", "XDG_RUNTIME_DIR": "/run/user/1000"},
+                runner=FakeRunner(installed=["systemd-run"]), root=root, uid=1000)
+
+
+def _wait(c, until, seconds=5.0):
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        job = c.get("/api/tools/keeps", headers=H).json()["job"]
+        if until(job):
+            return job
+        time.sleep(0.02)
+    raise AssertionError(f"the job didn't get there: {job}")
+
+
+def test_two_starts_at_once_make_one_watch(cat, menu_host, monkeypatch):
+    """Both passed the check before either had made its job: the first went on watching with administrator access
+    held, and End reached only the second (D10, live on Mint)."""
+    from daprivacyscanner import server
+    monkeypatch.setattr(server, "KEEPS_EVERY", 0.05)
+    monkeypatch.setattr(appwatch, "running", lambda h, a: time.sleep(0.3) or False)    # a slow look at /proc
+    fake = FakeWatch()
+    with TestClient(create_app("t0ken", cat, make_host=lambda: menu_host, start_helper=lambda: fake,
+                               spawn_app=lambda argv, **kw: None)) as c:
+        with ThreadPoolExecutor(2) as pool:
+            codes = sorted(f.result().status_code for f in [pool.submit(c.post, "/api/tools/keeps/start", headers=H,
+                                                                        json={"app": "foo.desktop"}) for _ in range(2)])
+        assert codes == [200, 409]
+        _wait(c, lambda j: j["state"] == "running")
+        c.post("/api/tools/keeps/stop", headers=H)
+        _wait(c, lambda j: j["state"] == "done")
+        assert fake.calls.count("watch_begin") == 1 and fake.calls.count("watch_end") == 1

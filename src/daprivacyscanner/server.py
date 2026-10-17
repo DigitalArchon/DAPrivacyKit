@@ -1816,6 +1816,8 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
     # as long as the user leaves it on. The result is held here, in memory, until it is dismissed or the app quits:
     # never in History, a report or an export.
 
+    keeps_starting = asyncio.Lock()
+
     def keeps_running() -> bool:
         job = app.state.keeps_job
         return job is not None and job["state"] in ("asking", "running", "ending")
@@ -1912,22 +1914,25 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
         from .tools import appwatch, menu
         body = await body_of(request)
         host = make_host()
-        if keeps_running():
+        # checked and claimed with no await between: two starts at once both passed the check before either had
+        # made its job, and the first went on watching, administrator access held, out of the page's reach
+        if keeps_running() or keeps_starting.locked():
             return JSONResponse({"error": "An app is already being watched: end that first."}, status_code=409)
-        why = await asyncio.to_thread(appwatch.available, host)
-        if why:
-            return JSONResponse({"error": why}, status_code=400)
-        entry = await asyncio.to_thread(menu.app, host, body.get("app"))
-        if entry is None or entry.terminal:
-            return JSONResponse({"error": "Choose an app from the list."}, status_code=400)
-        if await asyncio.to_thread(appwatch.running, host, entry):
-            return JSONResponse({"error": f"Close {entry.name} first: started while it runs, it would only hand "
-                                          "over to the copy that is open, which isn't watched."}, status_code=409)
-        job = app.state.keeps_job = {"id": uuid.uuid4().hex, "state": "asking", "app": entry.name, "started": None,
-                                     "finished": None, "counts": None, "alive": None, "closed": False, "absent": False,
-                                     "quiet": False,
-                                     "watched": [], "not_watched": [], "result": None, "error": "", "cancel": False}
-        app.state.keeps_task = asyncio.create_task(run_keeps_job(job, entry))
+        async with keeps_starting:
+            why = await asyncio.to_thread(appwatch.available, host)
+            if why:
+                return JSONResponse({"error": why}, status_code=400)
+            entry = await asyncio.to_thread(menu.app, host, body.get("app"))
+            if entry is None or entry.terminal:
+                return JSONResponse({"error": "Choose an app from the list."}, status_code=400)
+            if await asyncio.to_thread(appwatch.running, host, entry):
+                return JSONResponse({"error": f"Close {entry.name} first: started while it runs, it would only hand "
+                                              "over to the copy that is open, which isn't watched."}, status_code=409)
+            job = app.state.keeps_job = {"id": uuid.uuid4().hex, "state": "asking", "app": entry.name,
+                                         "started": None, "finished": None, "counts": None, "alive": None,
+                                         "closed": False, "absent": False, "quiet": False, "watched": [],
+                                         "not_watched": [], "result": None, "error": "", "cancel": False}
+            app.state.keeps_task = asyncio.create_task(run_keeps_job(job, entry))
         return {"job": keeps_view(job)}
 
     @app.post("/api/tools/keeps/stop", dependencies=[Depends(auth)])
