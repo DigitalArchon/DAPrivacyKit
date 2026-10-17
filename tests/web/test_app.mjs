@@ -315,7 +315,8 @@ const trialCalls = [];
 const trialStatus = { available: true, why: "", apparmor: false, python: true, display: "x11", wayland_context: null, wayland_risky: null,
   pasta: { available: false, why: "pasta isn't installed", install: "sudo apt install passt", lan_blocked: false },
   xephyr: { available: true, install: "" }, sound: true, gpu: true, flatpak: true,
-  places: [{ id: "memory", words: "In memory", folder: "/run/user/1000/daprivacyscanner-trial", free: 3e9, noexec: false },
+  places: [{ id: "memory", words: "In memory", folder: "/run/user/1000/daprivacyscanner-trial", free: 3e9, noexec: false,
+             swap: ["/swapfile"], hibernation: false },
            { id: "disk", words: "On the disk", folder: "/home/a/.cache/daprivacyscanner-trial", free: 4e11, noexec: false }] };
 const trialResultData = { seconds: 95, failed: false, output: [], missed: 0, network: "observed", decoys_planted: 34,
   decoys: [{ path: "~/.ssh/id_ed25519", what: "an SSH private key", listed: 0, opened: 2, changed: 0, first: 1 },
@@ -1427,6 +1428,8 @@ while ($$(".modal").length) { $$(".modal .buttons button").at(-1).click(); await
 await window.openTrial(); await tick();
 check(text(".modal .trial").includes("A sandbox isn't a guarantee") && $$(".modal .trial input[name=trial-where]").length === 2
       && text(".modal .trial").includes("which doesn't erase it"), "it starts by saying what a sandbox is and isn't, and where the trial can live");
+check(text(".modal .trial").includes("swap on a disk (/swapfile)") && !text(".modal .trial").includes("nothing of the trial touches the disk"),
+      "in memory isn't said to keep it off the disk when swap reaches one (the 2026-10-17 review)");
 { const prep = $$(".modal .trial button").find(b => b.textContent === "Prepare it");
   prep.click(); await tick();
   check(!trialCalls.length && $$("#toasts .toast").some(t => t.textContent.includes("Choose a file first")), "nothing is prepared without a file");
@@ -1458,7 +1461,8 @@ $$(".modal .trial button").find(b => b.textContent === "End the trial").click();
   check(out.includes("telemetry.example.net") && out.includes("Looked up and not connected to: unused.example.org"),
         "the hosts it contacted are listed, and names it only looked up");
   check(out.includes("~/.config/Tool/id.json") && out.includes("3 files (5 kB) are there now"), "what it wrote is named: the home is made up");
-  check(out.includes("bwrap --die-with-parent") && out.includes("discarding overwrites and removes it"),
+  check(out.includes("bwrap --die-with-parent") && out.includes("discarding overwrites and removes it")
+        && out.includes("What swap took of it meanwhile can stay on the disk"),
         "the command that ran it can be seen, and what discarding does is said"); }
 $$(".modal .trial button").find(b => b.textContent === "Discard the trial").click(); await tick(); await tick();
 check(trialCalls.at(-1) === "discard" && $$(".modal .trial input[name=trial-where]").length === 2, "discarded, the start is back");
@@ -1480,7 +1484,7 @@ while ($$(".modal").length) { $$(".modal .buttons button").at(-1).click(); await
   check(cards.length === 2 && cards[0].textContent.includes("its own network, observed") && cards[0].textContent.includes("~/Boxes/chat-app/Exchange"),
         "each Box says what it gets and where files go in and out");
   check(cards[0].textContent.includes("Its last 1 run, in numbers") && $$(".modal .box-card table.places tbody td").map(t => t.textContent).slice(1, 6).join("|")
-        === "21 min|14|5|1|52 kB" && cards[0].textContent.includes("no names of sites or files are kept"),
+        === "21 min|14|5|1|52 kB" && cards[0].textContent.includes("could check whether it contacted a site they have in mind"),
         "its runs are numbers: " + $$(".modal .box-card table.places tbody td").map(t => t.textContent).join("|"));
   check(cards[1].textContent.includes("It can't start: its program is missing from the Box") && cards[1].textContent.includes("menu entry is missing")
         && cards[1].querySelector("button.primary").disabled, "a Box that can't start says why, and can't be started");

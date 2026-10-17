@@ -3703,9 +3703,19 @@ async function openTrial(reloadTools) {
     if (!t) fill(body, trialChoose(data, call));
     else if (t.state === "ready") fill(body, trialReady(data, t, call));
     else if (t.state === "running") { fill(body, trialRunning(t, call)); follow(); }
-    else fill(body, trialResult(t, call));
+    else fill(body, trialResult(t, call, data.status));
   };
   render();
+}
+
+// what "in memory" means for a trial here: the runtime folder isn't kept out of swap, and hibernating writes all of
+// memory to the disk (trial.status: the memory place's swap and hibernation)
+function trialMemoryWords(p) {
+  const swap = p.swap?.length ? ` This computer has swap on a disk (${p.swap.join(", ")}): when memory runs short, parts `
+    + "of the trial can be written there, and stay after it is discarded." : "";
+  const hib = p.hibernation === true ? " Hibernating would write it to the disk with the rest of memory." : "";
+  return swap || hib ? `kept in memory and overwritten when discarded.${swap}${hib}`
+    : "nothing of the trial touches the disk; overwritten when discarded";
 }
 
 function trialChoose(data, call) {
@@ -3714,7 +3724,7 @@ function trialChoose(data, call) {
   const places = st.places.map(p => h("label", { class: "check" },
     h("input", { type: "radio", name: "trial-where", checked: p.id === where, onchange: () => { where = p.id; } }),
     h("span", {}, `${p.words} (${fmtSize(p.free)} free)`),
-    h("span", { class: "small muted" }, p.id === "memory" ? " nothing of the trial touches the disk; overwritten when discarded"
+    h("span", { class: "small muted" }, p.id === "memory" ? ` ${trialMemoryWords(p)}`
       : " for something large; deleted when discarded, which doesn't erase it from the disk")));
   const picker = pathPicker(data, { label: "File", onPick: (paths) => { file = paths[0]; } });
   const tryFile = h("button", { class: "primary", disabled: !st.available }, "Prepare it");
@@ -3844,7 +3854,7 @@ function trialRunning(t, call) {
     h("div", { class: "orow" }, stop)];
 }
 
-function trialResult(t, call) {
+function trialResult(t, call, st = {}) {
   const r = t.result, s = r.summary, opened = r.decoys.filter(d => d.opened || d.changed), listed = r.decoys.filter(d => !d.opened && !d.changed);
   const discard = h("button", { class: "primary" }, "Discard the trial");
   discard.addEventListener("click", () => call("/api/tools/trial/discard", {}, discard, "Discarding…"));
@@ -3880,6 +3890,7 @@ function trialResult(t, call) {
     h("details", { class: "small" }, h("summary", {}, "The command that ran it"), commandBlock([t.how.whole])),
     h("div", { class: "orow" }, discard, keepAsBox(t), h("span", { class: "small muted" }, t.where === "memory"
       ? "Its folder is in memory: discarding overwrites and removes it."
+        + ((st.places || []).find(p => p.id === "memory")?.swap?.length ? " What swap took of it meanwhile can stay on the disk." : "")
       : "Its folder is on the disk: discarding deletes it, which doesn't erase it. Disk encryption is what protects deleted data."))];
 }
 

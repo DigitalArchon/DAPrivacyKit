@@ -956,10 +956,17 @@ def status(host: Host) -> dict:
     from . import browser
     sb = browser.sandbox_status(host)
     flat = ENGINES["flatpak"].probe(host)
+    where = places(host)
+    for p in where:
+        if p["id"] == "memory":
+            # the runtime folder is a tmpfs without noswap: swap on a disk can take its pages, and hibernating writes
+            # all of memory there (the page said nothing of the trial touched the disk: the 2026-10-17 review)
+            p["swap"] = [s["name"] for s in browser._swaps(host)]
+            p["hibernation"] = ramdisk.hibernation_possible(host)
     return {"available": sb["available"], "why": sb["why"], "apparmor": sb["apparmor"], "python": sb["python"],
             "pasta": sb["pasta"], "display": sb["display"], "wayland_context": sb["wayland_context"],
             "wayland_risky": sb["wayland_risky"], "xephyr": sb["xephyr"], "sound": sb["sound"], "gpu": sb["gpu"],
-            "flatpak": flat is None, "places": places(host),
+            "flatpak": flat is None, "places": where,
             "engines": [{"id": e.id, "name": e.name} for e in ENGINES.values()]}
 
 

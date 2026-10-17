@@ -1522,7 +1522,10 @@ OACS, FNA and SANICAP via the helper's ioctl), read on request and kept for the 
     the disk (`$XDG_CACHE_HOME/...`) for something large, 0700, holding `home` (the throwaway home), `app` (the
     copy or the unpacked tree) and `private` (the sandbox's own files, which it is never given). Discarding
     overwrites it in place and deletes it in memory, and only deletes it on the disk (rule 8; the page says that
-    doesn't erase it). Quitting the app discards it (the window's Quit as well as `--browser` mode's); folders left
+    doesn't erase it). The runtime folder isn't kept out of swap: where swap reaches a disk (any but zram without
+    a writeback device) or the computer can hibernate, the page says so beside "In memory" and in the result, in
+    place of saying nothing of the trial touches the disk (`status`'s `swap` and `hibernation`; found in the
+    2026-10-17 review). Quitting the app discards it (the window's Quit as well as `--browser` mode's); folders left
     by a copy of the app that has ended are removed at the next start. Each trial's folder is locked (`flock` on
     the folder) by the copy that made it, so another copy (a right-click entry's) never takes a running trial
     for a leftover.

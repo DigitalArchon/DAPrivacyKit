@@ -276,6 +276,25 @@ def test_a_box_whose_program_fails_at_once_says_so_in_a_dialog(tmp_path, monkeyp
     assert app.box_cli("chat-app") == 0 and said == []
 
 
+# ------------------------------------------------------------------ E9: in memory isn't off the disk where swap is
+
+def test_the_memory_place_says_when_swap_or_hibernation_can_reach_a_disk(tmp_path, monkeypatch):
+    """The page said nothing of a trial in memory touched the disk, but the runtime folder isn't kept out of swap."""
+    from daprivacyscanner.host import CommandResult, FakeRunner, Host
+    from daprivacyscanner.tools import ramdisk
+    root = tmp_path / "root"
+    (root / "run/user/1000").mkdir(parents=True)
+    (root / "proc").mkdir()
+    (root / "proc/swaps").write_text("Filename\tType\tSize\tUsed\tPriority\n/swapfile file 2097148 0 -2\n"
+                                     "/dev/zram0 partition 4000000 0 100\n")
+    ok = lambda argv: CommandResult(argv, 0, "")                                         # noqa: E731
+    host = Host(home=root / "home/a", environ={"XDG_RUNTIME_DIR": "/run/user/1000", "DISPLAY": ":0"},
+                runner=FakeRunner(handlers={"bwrap": ok, "pasta": ok, "ip": ok}), root=root, uid=1000)
+    monkeypatch.setattr(ramdisk, "hibernation_possible", lambda h: True)
+    memory = next(p for p in trial.status(host)["places"] if p["id"] == "memory")
+    assert memory["swap"] == ["/swapfile"] and memory["hibernation"] is True, "zram without a writeback device isn't a disk"
+
+
 # ------------------------------------------------------------------ E8: unpacking stops at the room there is
 
 def _unpack(src, dst, limit, most=1000):
