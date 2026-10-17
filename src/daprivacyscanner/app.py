@@ -743,8 +743,8 @@ def main(argv: list[str] | None = None) -> None:
         time.sleep(0.05)
 
     url = f"http://127.0.0.1:{port}/?t={launch}"
-    # SIGTERM or SIGHUP: the session is ending (logging out, shutting down), so closing ~/TempBrowser asks for no
-    # password: a polkit prompt would come up in the middle of the logout (close_browser_disk)
+    # SIGTERM or SIGHUP: the session is ending (logging out, shutting down): the app closes what it must as on Quit
+    # (close_browser_disk asks for the password then too, its files overwritten while it asks)
     ended = {"by_signal": False}
 
     def told_to_end(*_):
@@ -779,8 +779,6 @@ def main(argv: list[str] | None = None) -> None:
 
             def on_started():
                 def close(sig=None):
-                    if sig in (signal.SIGTERM, signal.SIGHUP):
-                        ended["by_signal"] = True
                     window.destroy()
                     return False
 
@@ -802,8 +800,7 @@ def main(argv: list[str] | None = None) -> None:
     except KeyboardInterrupt:
         pass
     finally:
-        # the browser's RAM disk is for while the app runs (this copy's, owner.py); no password asked at a logout
-        app.state.close_browser_disk(prompt=not ended["by_signal"])
+        app.state.close_browser_disk()  # the browser's RAM disk is for while the app runs (this copy's, owner.py)
         app.state.discard_trial()       # and so is a trial: its folder, overwritten first when in memory
         app.state.admin.drop()          # the root helper ends with the app
         _presentation_off()             # and so does Presentation mode

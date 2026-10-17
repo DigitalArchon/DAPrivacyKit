@@ -59,7 +59,8 @@ def test_quitting_says_what_happened_on_a_terminal_only(cat, host, monkeypatch, 
     assert capsys.readouterr().err == ""
 
 
-def test_quitting_at_a_logout_asks_for_no_password(cat, host, monkeypatch):  # noqa: F811
+def test_quitting_at_a_logout_asks_for_the_password_as_quit_does(cat, host, monkeypatch):  # noqa: F811
+    """The owner's decision of 2026-10-17: unmounted properly at a logout too, not left mounted and empty."""
     asked = []
 
     def close_disk(host, helper):
@@ -67,19 +68,49 @@ def test_quitting_at_a_logout_asks_for_no_password(cat, host, monkeypatch):  # n
         return ""
     monkeypatch.setattr(B, "close_disk", close_disk)
     app = create_app("t0ken", cat, make_host=lambda: host, start_helper=lambda: asked.append(True))
-    app.state.close_browser_disk(prompt=False)
-    assert asked == []
+    app.state.close_browser_disk()
+    assert asked == [True]
     src = inspect.getsource(app_module.main)
-    assert 'close_browser_disk(prompt=not ended["by_signal"])' in src[src.index("finally:"):]
+    assert "app.state.close_browser_disk()" in src[src.index("finally:"):]
     assert "signal.SIGTERM, told_to_end" in src                       # --browser mode: Python would end at once
 
 
-def test_at_a_logout_the_files_are_overwritten_and_the_disk_stays_mounted(host, monkeypatch):  # noqa: F811
+def test_the_files_are_overwritten_while_the_password_is_asked_for(host, monkeypatch):  # noqa: F811
+    """Not after it: at a logout the prompt can stay up, or be declined, and the files go all the same."""
+    import threading
     disk = open_ramdisk(host)
     quiet(monkeypatch)
     assert owner.claim(host, "TempBrowser", disk)
     (disk / "page.html").write_text("visited")
-    msg = B.close_disk(host, lambda: None)                              # no access, and none asked for
+    gone = threading.Event()
+    real = B.wipe_disk
+
+    def wipe(path):
+        w = real(path)
+        gone.set()
+        return w
+    monkeypatch.setattr(B, "wipe_disk", wipe)
+
+    class Helper:
+        calls = []
+
+        def call(self, action, args, timeout=None):
+            self.calls.append(action)
+            return {}
+
+    def helper():                                       # the prompt: still waiting while the files go
+        assert gone.wait(10), "the overwrite waited on the password"
+        return Helper()
+    msg = B.close_disk(host, helper)
+    assert "1 file overwritten" in msg and Helper.calls == ["ramdisk_close"] and not (disk / "page.html").exists()
+
+
+def test_declined_the_files_are_overwritten_and_the_disk_stays_mounted(host, monkeypatch):  # noqa: F811
+    disk = open_ramdisk(host)
+    quiet(monkeypatch)
+    assert owner.claim(host, "TempBrowser", disk)
+    (disk / "page.html").write_text("visited")
+    msg = B.close_disk(host, lambda: None)                              # the password declined
     assert "couldn't be unmounted" in msg and not (disk / "page.html").exists()
     # its mark went with the wipe, and so does the lock's file (it stayed in the runtime folder: seen on p330)
     assert "TempBrowser" not in owner._HELD and not list(owner._locks(host).glob("*.lock"))

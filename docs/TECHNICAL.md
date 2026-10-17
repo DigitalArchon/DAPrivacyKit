@@ -1191,10 +1191,14 @@ When the app quits with the browser still running, `~/TempBrowser` stays open un
 app later or the computer restarts. What quitting did is printed only to a terminal: it names programs ("Tor
 Browser still uses it"), and off a terminal stderr is a log on the disk (`~/.xsession-errors`, the journal; found in
 the review of 2026-10-17). When the app is told to end by a signal (SIGTERM or SIGHUP: logging out, shutting down;
-`--browser` mode handles them too, where Python would otherwise end without closing anything), the files are
-overwritten and deleted all the same, but no password is asked for: a polkit prompt would come up in the middle of
-the logout. Unless administrator access is still active, the RAM disk then stays mounted, empty, until it is
-closed or the computer restarts.
+`--browser` mode handles them too, where Python would otherwise end without closing anything), it closes the RAM disk
+as on Quit, asking for the password if it has to (the owner's decision of 2026-10-17): the files are overwritten in a
+thread of their own while administrator access is asked for, never after the password, and it is unmounted once both
+are done. At a logout on KDE Plasma 6 the prompt can't come up: systemd stops Plasma's polkit agent
+(`plasma-polkit-agent.service`) as the logout begins, and a menu-started app, in a scope of its own, gets its SIGTERM
+only when the user's manager stops, about 10 seconds after the last session (tested on CachyOS: the files were gone
+0.3 s after the SIGTERM, pkexec found no agent). Unless administrator access is still active, the RAM disk then stays
+mounted, empty, until it is closed or the computer restarts.
 
 **Which copy closes it** (`tools/owner.py`, the owner's decision of 2026-10-17). Every right-click entry starts a
 copy of the app of its own, and quitting one closed `~/TempBrowser` under another, with a download not saved yet

@@ -1836,9 +1836,10 @@ def hold_all(host: Host, quitting: bool = False) -> tuple[list[int], str]:
 
 
 def close_disk(host: Host, helper: Callable[[], object]) -> str:
-    """When the app quits: ~/TempBrowser closed like the RAM disk tool's (every file overwritten and
-    deleted as the user, then the helper unmounts it, asking for administrator access if it has to), by the
-    copy of the app that opened it or took it over (owner.py), never by another copy quitting.
+    """When the app quits, or the session ends: ~/TempBrowser closed like the RAM disk tool's (every file overwritten
+    and deleted as the user, then the helper unmounts it, asking for administrator access if it has to: the overwrite
+    runs while it asks), by the copy of the app that opened it or took it over (owner.py), never by another copy
+    quitting.
     Returns what happened, for the terminal: "" when it wasn't open or isn't this copy's."""
     rd = ramdisk.status(host, DISK)
     if not rd.open or not owner.owns(host, DISK, rd.path):
@@ -1852,9 +1853,25 @@ def close_disk(host: Host, helper: Callable[[], object]) -> str:
         if users:
             return (f"~/{DISK} stays open: {', '.join(users)} still uses it. Close it in the app's "
                     "Tools panel later, or restart the computer.")
-        w = wipe_disk(rd.path)
-        owner.release(host, DISK)                       # its mark went with the wipe: the lock's file goes too
-        h = helper()
+        # overwritten while administrator access is asked for, not after the password (the owner's decision of
+        # 2026-10-17, for a logout above all: the files go however long the prompt stays up, or if it is declined)
+        wiped: dict = {}
+
+        def overwrite() -> None:
+            try:
+                wiped["w"] = wipe_disk(rd.path)
+            except BaseException as e:  # noqa: BLE001 - raised again below, in the caller's thread
+                wiped["error"] = e
+        t = threading.Thread(target=overwrite, name="tempbrowser-wipe")
+        t.start()
+        try:
+            h = helper()
+        finally:
+            t.join()                                    # never unmounted under the overwrite
+            owner.release(host, DISK)                   # its mark went with the wipe: the lock's file goes too
+        if "error" in wiped:
+            raise wiped["error"]
+        w = wiped["w"]
         if h is None:
             return (f"~/{DISK}'s files were overwritten and deleted, but it couldn't be unmounted without administrator "
                     "access.")
