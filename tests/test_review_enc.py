@@ -396,6 +396,49 @@ def test_syslog_files_are_named_as_this_machine_has_them(cat, tmp_path):
     assert "/var/log/messages or /var/log/secure" in " ".join(opt.plan.side_effects)
 
 
+# ------------------------------------------------------------------ the trash
+
+def test_clean_deletes_trashed_folders_and_links_whole(cat, tmp_path):
+    """Clean… deleted regular files only: empty folders, folders of empty folders and links stayed in Trash/files while
+    their records went, the check kept failing, and with only those left it said "no fix here"."""
+    import os
+    from daprivacyscanner.checks import load_all
+    from daprivacyscanner.fix import apply_plan
+    from daprivacyscanner.undo import UndoLog
+    host = make_host(tmp_path, home_files={".local/share/Trash/files/report.pdf": "x",
+                                           ".local/share/Trash/files/project/src/main.c": "int",
+                                           ".local/share/Trash/info/report.pdf.trashinfo": "[Trash Info]",
+                                           ".local/share/Trash/info/project.trashinfo": "[Trash Info]",
+                                           ".local/share/Trash/info/empty.trashinfo": "[Trash Info]",
+                                           ".local/share/Trash/info/link.trashinfo": "[Trash Info]",
+                                           "Documents/keep.txt": "mine"})
+    files = host.home / ".local/share/Trash/files"
+    (files / "empty" / "inner").mkdir(parents=True)                       # a folder of empty folders
+    os.symlink(host.home / "Documents", files / "link")                   # a link to a folder of the user's
+    check = load_all()["enc.trash"](cat["enc.trash"])
+    scan = make_scan(host, desktop=("kde",))
+    o = check.detect(scan)
+    assert o.status is Status.FAIL and o.summary.startswith("4 items")
+    plan = check.plan_fix(scan, o)
+    shown = plan.dry_run()
+    assert "Delete 4 items" in shown and "(a link: the link only)" in shown and "project/  (a folder" in shown
+    res = apply_plan(plan, host, UndoLog(host.home / ".local/state/daprivacyscanner"), confirmed_irreversible=True)
+    assert res.ok, res.error
+    assert list(files.iterdir()) == [] and list((host.home / ".local/share/Trash/info").iterdir()) == []
+    assert (host.home / "Documents/keep.txt").read_text() == "mine"           # never through the link
+    assert check.detect(make_scan(host, desktop=("kde",))).status is Status.PASS
+
+
+def test_trash_only_folders_left_can_still_be_cleaned(cat, tmp_path):
+    from daprivacyscanner.checks import load_all
+    host = make_host(tmp_path)
+    (host.home / ".local/share/Trash/files/old").mkdir(parents=True)
+    check = load_all()["enc.trash"](cat["enc.trash"])
+    scan = make_scan(host, desktop=("kde",))
+    plan = check.plan_fix(scan, check.detect(scan))
+    assert not plan.empty and plan.actions[0].whole
+
+
 def test_the_panels_say_what_the_scan_says(tmp_path):
     """The RAM disk and browser panels said "this computer can hibernate" where the scan said it can't."""
     from daprivacyscanner.tools import ramdisk as R

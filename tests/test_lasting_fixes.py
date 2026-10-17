@@ -652,7 +652,10 @@ def test_trash_expires_on_cinnamon_and_kde(cat, tmp_path):
     check = load_all()["enc.trash"](cat["enc.trash"])
     scan = make_scan(host, desktop=("x-cinnamon",))
     plan = check.plan_fix(scan, check.detect(scan))
-    assert any(getattr(a, "schema", "") == "org.cinnamon.desktop.privacy" for a in plan.actions)
+    # nothing in Cinnamon 6.6 reads org.cinnamon.desktop.privacy remove-old-trash-files (the review of 2026-10-17):
+    # it is no longer set, nor said to empty old trash
+    assert not any(getattr(a, "schema", "") == "org.cinnamon.desktop.privacy" for a in plan.actions)
+    assert not plan.side_effects
     host = make_host(tmp_path / "k", installed=("kwriteconfig6",),
                      home_files={".local/share/Trash/files/a": "x", ".local/share/Trash/info/a.trashinfo": "x"})
     host.runner.handlers["kwriteconfig6"] = FakeKwriteconfig(host.home / ".config")

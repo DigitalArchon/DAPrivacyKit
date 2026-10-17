@@ -1327,18 +1327,23 @@ class WriteFile(Action):
 @action
 class DeleteFiles(Action):
     """Deletes exactly the files listed in the plan (as shown in the dry run), each of which
-    must be a regular file inside `root`. Irreversible by design."""
+    must be a regular file inside `root`. Irreversible by design.
+
+    With `whole`, each listed path is an entry inside `root` deleted whole, whatever it is: a file, a link (unlinked,
+    never followed), or a folder with everything in it (links in it unlinked, never followed; refused when something
+    is mounted in it). For the trash, whose items are files, folders and links alike."""
     kind = "delete"
     reversible = False
     destructive = True
     phase = 2
 
     def __init__(self, root: Path, files: list[Path], label: str, display_root: str, prune: bool = True,
-                 remove_root: bool = False, about: dict[Path, str] | None = None):
+                 remove_root: bool = False, about: dict[Path, str] | None = None, whole: bool = False):
         self.root, self.files, self.label, self.display_root = root, files, label, display_root
         self.prune = prune              # remove subfolders the deletion leaves empty
         self.remove_root = remove_root  # and the root itself (an uninstalled app's folder)
         self.about = about or {}        # what a folder's files are, for the dry run (VS Code's: the file they copy)
+        self.whole = whole              # entries deleted whole: files, links and folders
 
     @property
     def size(self) -> int:
@@ -1346,6 +1351,9 @@ class DeleteFiles(Action):
         for f in self.files:
             try:
                 total += f.lstat().st_size
+                if self.whole and f.is_dir() and not f.is_symlink():
+                    for d, dirs, names in os.walk(f, followlinks=False):
+                        total += sum(os.lstat(os.path.join(d, n)).st_size for n in names)
             except OSError:
                 pass
         return total
@@ -1353,7 +1361,8 @@ class DeleteFiles(Action):
     def describe(self) -> str:
         from .checks._util import human_size
         n = len(self.files)
-        return f"Delete {n} file{'s' if n != 1 else ''} ({human_size(self.size)}) of {self.label} in {self.display_root}"
+        what = ("item" if self.whole else "file") + ("s" if n != 1 else "")
+        return f"Delete {n} {what} ({human_size(self.size)}) of {self.label} in {self.display_root}"
 
     LISTED = 25                         # files named one by one up to this many; beyond it, their folders
 
@@ -1368,6 +1377,17 @@ class DeleteFiles(Action):
             except ValueError:
                 return str(p)
             return root + "/" + str(rel) if str(rel) != "." else root
+        if self.whole:
+            def entry(p: Path) -> str:
+                if p.is_symlink():
+                    return shown(p) + "  (a link: the link only)"
+                if p.is_dir():
+                    n = sum(len(names) for _, _, names in os.walk(p, followlinks=False))
+                    return shown(p) + f"/  (a folder, with everything in it: {n} file{'s' if n != 1 else ''})"
+                return shown(p)
+            items = sorted(self.files)
+            return [entry(p) for p in items[:self.LISTED]] + (
+                [f"… and {len(items) - self.LISTED} more"] if len(items) > self.LISTED else [])
         if len(self.files) <= self.LISTED and not self.about:
             return [shown(f) for f in sorted(self.files)]
         counts: dict[Path, int] = {}
@@ -1381,12 +1401,47 @@ class DeleteFiles(Action):
             out.append(f"… and {rest} more files in {len(folders) - self.LISTED} more folders")
         return out
 
+    @staticmethod
+    def _mounted_under(path: Path) -> bool:
+        """Something is mounted at or below `path` (a folder deleted whole must not reach into another filesystem)."""
+        try:
+            text = Path("/proc/self/mounts").read_text()
+        except OSError:
+            return True
+        p = str(path).rstrip("/")
+        targets = (ln.split()[1].replace("\\040", " ") for ln in text.splitlines() if len(ln.split()) >= 2)
+        return any(t == p or t.startswith(p + "/") for t in targets)
+
+    def _delete_whole(self, f: Path, root: Path) -> bool:
+        """One entry inside `root`, whole: a link unlinked, a folder removed with everything in it (shutil.rmtree, which
+        never follows a link and works through folder descriptors), a file unlinked."""
+        import shutil
+        parent = f.parent.resolve()
+        if not (parent == root or parent.is_relative_to(root)) or (parent / f.name) == root:
+            return False
+        f = parent / f.name                                    # the entry itself, never what it links to
+        if f.is_symlink() or f.is_file():
+            f.unlink()
+            return True
+        if f.is_dir():
+            if self._mounted_under(f):
+                return False
+            shutil.rmtree(f)
+            return True
+        return False
+
     def apply(self, ctx: FixContext) -> dict:
         root = self.root.resolve()
         deleted = skipped = 0
         dirs = set()
         for f in self.files:
             try:
+                if self.whole:
+                    if self._delete_whole(f, root):
+                        deleted += 1
+                    else:
+                        skipped += 1
+                    continue
                 parent = f.parent.resolve()
                 if not (parent == root or parent.is_relative_to(root)) or f.is_symlink() or not f.is_file():
                     skipped += 1
@@ -1421,7 +1476,7 @@ class DeleteFiles(Action):
                     break
                 d = d.parent
         return {"kind": self.kind, "label": self.label, "root": self.display_root, "deleted": deleted, "skipped": skipped,
-                "text": f"Deleted {deleted} file{'s' if deleted != 1 else ''} of {self.label} in {self.display_root}"
+                "text": f"Deleted {deleted} {'item' if self.whole else 'file'}{'s' if deleted != 1 else ''} of {self.label} in {self.display_root}"
                         + (f" ({skipped} skipped)" if skipped else "")}
 
     @staticmethod

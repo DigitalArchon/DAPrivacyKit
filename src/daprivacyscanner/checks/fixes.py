@@ -142,11 +142,17 @@ def trash(check, scan, outcome):
     for r in roots:
         if isdir(r / "files") and r.resolve() not in seen:
             seen.add(r.resolve())
-            actions += delete(scan, r / "files", "trashed files") + delete(scan, r / "info", "trash records")
+            # each trashed item whole: a folder with what is in it (empty ones too), a link as a link, with its record
+            items = children(r / "files")
+            if items:
+                actions.append(DeleteFiles(r / "files", items, "trashed files", scan.host.display(r / "files"),
+                                           whole=True))
+            actions += delete(scan, r / "info", "trash records")
     effects = []
-    family = _gnome_family(scan)
-    if family in ("gnome", "cinnamon"):
-        schema = "org.cinnamon.desktop.privacy" if family == "cinnamon" else "org.gnome.desktop.privacy"
+    # GNOME empties old trash itself (gsd-housekeeping). Cinnamon's schema has the same keys, but nothing in Cinnamon
+    # 6.6 reads them (only the schema names them, grep on Mint 22.3): not offered there
+    if _gnome_family(scan) == "gnome":
+        schema = "org.gnome.desktop.privacy"
         auto = gset(scan, schema, "remove-old-trash-files", "true")
         if auto:
             age = scan.gnome.gsettings(schema, "old-files-age") or 30

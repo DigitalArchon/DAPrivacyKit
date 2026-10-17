@@ -479,13 +479,16 @@ checks:
       - '$XDG_DATA_HOME/Trash/{files,info}'
       - 'For each mount: <mount>/.Trash-$UID and <mount>/.Trash/$UID'
       - 'GNOME: gsettings get org.gnome.desktop.privacy remove-old-trash-files / old-files-age'
-      - 'Cinnamon: the same keys in org.cinnamon.desktop.privacy'
       - 'KDE: ~/.config/ktrashrc, group named after the trash folder: UseTimeLimit, Days'
     fix: >
-      Empty on confirmation; turn on automatic removal of old trash (GNOME and Cinnamon after 30 days, the
-      desktop's own setting; KDE: ktrashrc's time limit of 30 days for the home trash).
+      Empty on confirmation: each item in files/ whole (a folder with what is in it, empty ones too; a link as a link,
+      never followed; DeleteFiles(whole=True)) and the records in info/. Turn on automatic removal of old trash where
+      the desktop does it: GNOME after 30 days (its own setting); KDE: ktrashrc's time limit of 30 days for the home
+      trash. Cinnamon's schema has the same keys as GNOME's, but nothing in Cinnamon 6.6 reads them (grep on Mint 22.3):
+      not set there.
     remedy: >
-      Clean… empties the trash and has items older than 30 days removed automatically from now on.
+      Clean… empties the trash and, on GNOME and KDE Plasma, has items older than 30 days removed automatically from
+      now on.
     verify: ktrashrc's group and key names (UseTimeLimit, Days) and that Plasma applies the limit by itself.
 
   - id: enc.boot_no_secureboot
