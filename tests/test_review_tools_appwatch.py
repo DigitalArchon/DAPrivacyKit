@@ -397,3 +397,55 @@ def test_a_folder_renamed_makes_the_remembered_paths_go():
     finally:
         os.close(r)
         os.close(wr)
+
+
+class FakeLibc:
+    def __init__(self, mount=0):
+        self.calls, self._mount = [], mount
+
+    def mount(self, *args):
+        self.calls.append(("mount", args[1]))
+        return self._mount
+
+    def umount2(self, path, flags):
+        self.calls.append(("umount2", path, flags))
+        return 0
+
+    def fanotify_init(self, *args):
+        return -1
+
+
+def test_a_watched_filesystem_closes_and_removes_the_folder_it_mounted(tmp_path, monkeypatch):
+    """/run/daprivacyscanner-watch/N was left on CachyOS (btrfs) after the access was dropped or the app quit (D11)."""
+    import os
+    monkeypatch.setattr(helper, "WATCH_MOUNT_DIR", str(tmp_path / "w"))
+    libc = FakeLibc(mount=-1)                                    # the top level can't be mounted: nothing left
+    with pytest.raises(OSError):
+        helper._Watched(libc, {"mount": "/", "top": True, "source": "/dev/sda3", "fstype": "btrfs"}, 0)
+    assert not (tmp_path / "w/0").exists()
+    w = helper._Watched.__new__(helper._Watched)
+    (tmp_path / "w/1").mkdir(parents=True)
+    fds = [os.open(os.devnull, os.O_RDONLY) for _ in range(3)]
+    w.libc, w.fan, w.dirs, w.mfd = FakeLibc(), *fds
+    w.made = w.strip = str(tmp_path / "w/1")
+    w.close()
+    assert w.libc.calls == [("umount2", str(tmp_path / "w/1").encode(), 2)] and not (tmp_path / "w/1").exists()
+    for fd in fds:
+        with pytest.raises(OSError):
+            os.fstat(fd)
+    w.close()                                                    # twice is nothing
+
+
+def test_the_helper_ends_a_watch_when_its_input_ends(monkeypatch):
+    """Dropping the access (or the app going) closes the helper's input: the watch ends through its clean-up."""
+    import io
+    import sys
+    ended = []
+    monkeypatch.setattr(helper, "_no_dumps", lambda: None)
+    monkeypatch.setattr(helper, "own_source", lambda: None)
+    monkeypatch.setattr(helper, "_watch_forget", lambda: ended.append(True))
+    monkeypatch.setattr(helper, "_WATCH", {"proc": object(), "uid": 1000})
+    monkeypatch.setattr(sys, "argv", ["helper.py"])
+    monkeypatch.setattr(sys, "stdin", io.StringIO(""))
+    helper.main()
+    assert ended == [True]

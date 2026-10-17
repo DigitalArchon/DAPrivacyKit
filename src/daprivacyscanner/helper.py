@@ -4987,14 +4987,23 @@ class _Watched:
 
     def __init__(self, libc, fs: dict, index: int):
         self.libc, self.fs, self.paths = libc, fs, {}
-        at = fs["mount"]
-        self.strip = ""
+        self.fan = self.dirs = self.mfd = -1
+        self.strip = self.made = ""
+        try:
+            self._start(fs, index)
+        except OSError:
+            self.close()
+            raise
+
+    def _start(self, fs: dict, index: int) -> None:
+        libc, at = self.libc, fs["mount"]
         if fs["top"]:
-            at = self.strip = f"{WATCH_MOUNT_DIR}/{index}"
+            at = self.made = f"{WATCH_MOUNT_DIR}/{index}"
             os.makedirs(at, mode=0o700, exist_ok=True)
             # nosuid, nodev, noexec, noatime: it is only looked through
             if libc.mount(fs["source"].encode(), at.encode(), fs["fstype"].encode(), 2 | 4 | 8 | 1024, b"subvolid=5"):
                 raise OSError(ctypes.get_errno(), "its top level couldn't be mounted")
+            self.strip = at
         # the kernel's own queue limit (fs.fanotify.max_queued_events), never FAN_UNLIMITED_QUEUE: with it, a
         # reader that fell behind under six busy programs let the kernel's queue grow from 470 MB to 1.7 GB in 25
         # seconds, never said so, and by the time the events were read their processes had ended (tested on
@@ -5004,9 +5013,7 @@ class _Watched:
         if self.fan < 0:
             raise OSError(ctypes.get_errno(), "fanotify isn't available")
         if libc.fanotify_mark(self.fan, FAN_MARK_ADD | FAN_MARK_FILESYSTEM, FAN_WATCHED, -100, at.encode()):
-            e = ctypes.get_errno()
-            os.close(self.fan)
-            raise OSError(e, "this kind of filesystem can't be watched")
+            raise OSError(ctypes.get_errno(), "this kind of filesystem can't be watched")
         # folders renamed, moved or removed, by anyone: the paths remembered for folders' handles are out of date
         # then (files made in ~/d2 were reported under ~/d1, its name before: tested on Mint). In a group of its
         # own, since FAN_ONDIR on the main one would also report every folder opened to be listed. Without it, what
@@ -5017,6 +5024,25 @@ class _Watched:
             os.close(self.dirs)
             self.dirs = -1
         self.mfd = os.open(at, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+
+    def close(self) -> None:
+        """Its descriptors closed, and a top level it mounted unmounted and its folder removed (it was left in /run
+        after the access was dropped or the app quit: tested on CachyOS)."""
+        for fd in (self.fan, self.dirs, self.mfd):
+            if fd >= 0:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+        self.fan = self.dirs = self.mfd = -1
+        if self.made:
+            if self.strip:
+                self.libc.umount2(self.made.encode(), 2)        # MNT_DETACH: nothing of it is in use any more
+            try:
+                os.rmdir(self.made)
+            except OSError:
+                pass
+            self.made = self.strip = ""
 
     def moved(self) -> None:
         """Reads what the folders' group has: a folder renamed, moved or removed makes every remembered path of
@@ -5094,6 +5120,10 @@ def _watch_child() -> None:
         libc = ctypes.CDLL(None, use_errno=True)
         libc.fanotify_mark.argtypes = [ctypes.c_int, ctypes.c_uint, ctypes.c_uint64, ctypes.c_int, ctypes.c_char_p]
         libc.mount.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_ulong, ctypes.c_char_p]
+        libc.umount2.argtypes = [ctypes.c_char_p, ctypes.c_int]
+        # SIGTERM (the helper ended: PR_SET_PDEATHSIG below) ends it through its clean-up, as the end of its input does
+        import signal
+        signal.signal(signal.SIGTERM, lambda _sig, _frame: sys.exit(0))
         libc.prctl(1, 15, 0, 0, 0)                  # PR_SET_PDEATHSIG, SIGTERM: never outlives the helper
         if any(fs["top"] for fs in plan):
             # a mount namespace of its own: the top-level mounts are seen by nothing else and end with this process
@@ -5111,10 +5141,23 @@ def _watch_child() -> None:
         out.write(json.dumps({"error": str(e)}) + "\n")
         out.flush()
         return
-    out.write(json.dumps({"watched": [w.fs["mount"] for w in watched], "skipped": skipped}) + "\n")
-    out.flush()
+    try:
+        out.write(json.dumps({"watched": [w.fs["mount"] for w in watched], "skipped": skipped}) + "\n")
+        out.flush()
+        _watch_loop(watched, _Tally(uid, home, units), out, pending)
+    finally:
+        for w in watched:
+            w.close()
+        try:
+            os.rmdir(WATCH_MOUNT_DIR)
+        except OSError:
+            pass
+
+
+def _watch_loop(watched: list, tally: _Tally, out, pending: bytes) -> None:
+    """Reads the filesystems' events into the tally and answers the helper's words, until "end" or the end of
+    its input."""
     import select
-    tally = _Tally(uid, home, units)
     started = time.monotonic()
     by_fd = {w.fan: w for w in watched}
     while True:
@@ -5196,9 +5239,18 @@ def _watch_forget() -> None:
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait()
-    try:                                            # the folders its private mounts were made on (never the mounts,
-        for name in os.listdir(WATCH_MOUNT_DIR):    # which ended with it): empty, or left as they are
+    # the folders its private mounts were made on (never the mounts, which ended with it): empty ones removed, one
+    # still mounted (another copy's watch, in its own mount namespace: rmdir refuses a mount point) left as it is
+    try:
+        names = os.listdir(WATCH_MOUNT_DIR)
+    except OSError:
+        return
+    for name in names:
+        try:
             os.rmdir(os.path.join(WATCH_MOUNT_DIR, name))
+        except OSError:
+            pass
+    try:
         os.rmdir(WATCH_MOUNT_DIR)
     except OSError:
         pass
@@ -5231,9 +5283,9 @@ def watch_begin(args: dict) -> dict:
     if _WATCH:
         if _WATCH["proc"].poll() is None:
             raise Refused("a watch is already running")
-        _watch_forget()
     if ROOT:
         raise Refused("the watch runs on the real system only")
+    _watch_forget()                                 # and the folders an earlier one left, if it was killed
     proc = subprocess.Popen([sys.executable, "-I", os.path.abspath(__file__), "--watch"], stdin=subprocess.PIPE,
                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, close_fds=True)
     _WATCH.update({"proc": proc, "uid": uid})
@@ -5317,10 +5369,14 @@ def main() -> None:
         own_source()                                   # now, before any request: what install_self installs
     except OSError:
         pass
-    for line in sys.stdin:
-        if line.strip():
-            sys.stdout.write(json.dumps(handle(line)) + "\n")
-            sys.stdout.flush()
+    try:
+        for line in sys.stdin:
+            if line.strip():
+                sys.stdout.write(json.dumps(handle(line)) + "\n")
+                sys.stdout.flush()
+    finally:
+        if _WATCH:                                     # the access dropped, or the app gone, with a watch on
+            _watch_forget()
 
 
 def _no_dumps() -> None:

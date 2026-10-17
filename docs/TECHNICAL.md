@@ -1446,7 +1446,9 @@ OACS, FNA and SANICAP via the helper's ioctl), read on request and kept for the 
     path of this namespace with `open_by_handle_at`. The kernel refuses a filesystem mark made through a btrfs
     subvolume (EXDEV, on Linux 7.2 too), so the child takes a mount namespace of its own and mounts the top level
     (`subvolid=5`) there, seen by nothing else, then maps each path back through where the subvolumes are
-    mounted; a subvolume mounted nowhere gives no path. Opens, executions, changes, creations, deletions and
+    mounted; a subvolume mounted nowhere gives no path. However the watch ends (`watch_end`, the access dropped,
+    the app quitting: the helper's input ends, or the helper is gone and the child gets SIGTERM), the child
+    unmounts what it mounted and removes its folders in `/run/daprivacyscanner-watch` (they were left behind). Opens, executions, changes, creations, deletions and
     renames are watched; not each read (an open is the read), nor folders being listed. The kernel's queue keeps
     its own limit (never `FAN_UNLIMITED_QUEUE`, with which a reader behind six busy programs let it grow from 470 MB
     to 1.7 GB of kernel memory in 25 seconds, the events' processes long gone by the time they were read): when it
