@@ -1086,15 +1086,37 @@ default`, then its `.desktop` file's `Exec`), with **no network at all**:
   `wireguard`, `cups` replaced by empty tmpfs), an empty home in memory with only that file read-only in
   it, and the display (a compositor-marked Wayland socket where possible). No sound, no D-Bus, no other
   file. No `/proc` masks (glycin-based viewers start sandboxes of their own);
-- a Flatpak app runs with `flatpak run --unshare=network` and `--nofilesystem` for home, host and every
-  folder its permissions grant (`flatpak info --show-permissions`; taking away home alone left
-  `~/Downloads` readable, tested). A link clicked in it can still open in the default browser through a
-  portal, and the page says so;
+- a Flatpak app runs in Flatpak's own sandbox with what it declares for itself dropped (`flatpak run --sandbox`)
+  and only this given back (`viewer.FLATPAK_RUN`): the display (`--socket=wayland`, or `x11` with `ipc`), the
+  filtered session bus with its own name (`--own-name`: Text Editor 51 won't start without it), `--unshare=network`,
+  `--no-talk-name=org.gtk.vfs.*`, `--nosocket=pulseaudio`, and the copy's folder read-only (`--filesystem=…:ro`, in
+  place of the document portal). Of the launcher's own options only the branch, architecture and command are kept.
+  The review of 2026-10-17 found the launcher's permissions with only the network and folders taken away too much:
+  GVFS's daemons, outside the sandbox, fetched a web address for it and read the trash, and the sound server's socket
+  let it load a module that connected out; and its per-app `/tmp` kept what it remembered after `~/TempBrowser` had
+  closed. Under `--sandbox` (tested with Flatpak 1.14.6 on Mint 22.3: Evince 48 and Text Editor 51 open the file)
+  none of those reach it, and it has no `~/.var/app/<id>`: its home and `/tmp` are the sandbox's own, in memory.
+  It isn't started while `flatpak ps` lists it (already open, it is handed the file over the session bus and opens
+  it itself, with its network and history: Text Editor recorded it, Flatpak Firefox fetched the page's pictures),
+  and a web browser from Flatpak (by `browsers.yaml`'s menu entries, or its entry's `WebBrowser` category) isn't
+  used: the page says to choose a document viewer, or a browser from the distribution's packages, which runs in
+  the app's own sandbox. A link clicked in it can still open in the default browser through a portal, and the page
+  says so; a screen reader can't read it;
 - a Snap, or a program in the home folder, isn't started.
 
-The viewer's own files live in `.<folder>-app/view`, never over the browser's. Earlier views' copies that
-no program holds open or has mapped (matched by inode, since a sandbox sees another path) are removed at
-the next view. Live-tested: xreader showed a PDF from its sandbox.
+Either runs under a keeper (`viewer.KEEPER`, the computer's python3, which waits for it) and with
+`--die-with-parent`: the whole sandbox ends when the keeper does, so ending any part of it ends all of it (a
+SIGTERM to bubblewrap left its init, the sandbox's PID 1, which ignores one from outside, and the viewer running
+under no process the app knew), while quitting the app leaves an open viewer open. A viewer that ends within the
+2-second watch has shown nothing (it can't go on in the background: its sandbox ends with it), and the page says
+so: xreader did with one already open from an earlier view; a Flatpak viewer may have handed the file to a copy
+opened meanwhile.
+
+The viewer's own files live in `.<folder>-app/view`, never over the browser's. An earlier view's copy stays while
+its viewer runs (it may have read the file and closed it), while a program holds it open or has it mapped (matched
+by inode, since a sandbox sees another path), and for a minute when neither can be told (a viewer still starting,
+or another copy of the app's view); otherwise it is removed at the next view. Live-tested: xreader showed a PDF from
+its sandbox.
 
 The two folders are also ordinary folders on the user's side (the panel's buttons open them in the file
 manager); using the buttons adds the checks above.

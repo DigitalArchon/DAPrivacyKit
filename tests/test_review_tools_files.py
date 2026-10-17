@@ -370,3 +370,256 @@ def test_the_page_shows_partial_copies_apart():
     assert "transfer.STOP.set()" in _inspect.getsource(B.wipe_disk)
     js = (Path(__file__).resolve().parents[1] / "src/daprivacyscanner/web/app.js").read_text()
     assert "o.partial ?" in js and "b.outbox.partial" in js
+
+
+# ------------------------------------------------------------------ C1, C3, C7, C9: View offline… with a Flatpak
+
+PAPERS = ("org.gnome.Papers.desktop", "/usr/bin/flatpak run --branch=stable --arch=x86_64 --command=papers "
+          "--file-forwarding org.gnome.Papers @@u %U @@", "X-Flatpak=org.gnome.Papers\n")
+
+
+def private_of(host) -> Path:
+    private = host.home / "TempBrowser/.tor-browser-app"
+    private.mkdir(parents=True, exist_ok=True)
+    return private
+
+
+def flatpak_ps(host, running: str = "", ok: bool = True):
+    from daprivacyscanner.host import CommandResult
+    host.runner.handlers["flatpak"] = lambda argv: CommandResult(
+        tuple(argv), 0 if ok or argv[1] != "ps" else 1, running if argv[1] == "ps" else "")
+
+
+def listed(host) -> str:
+    return T.downloads(host, "tor-browser")[0][0].check
+
+
+def test_a_flatpak_viewer_already_open_isn_t_handed_the_file(host):
+    """Live on Mint: with Text Editor (or Firefox) from Flatpak already open, `flatpak run --unshare=network` handed the
+    file over the session bus to that copy, which has its network and keeps what it opens (Text Editor recorded it in
+    its recently-used.xbel and session; Firefox fetched the page's pictures and wrote it into places.sqlite)."""
+    from test_viewer import set_up
+    from test_browser_sandbox import Proc
+    from daprivacyscanner.tools import viewer as V
+    set_up(host, *PAPERS)
+    flatpak_ps(host, "123\torg.gnome.Papers\n")
+    calls = []
+    with pytest.raises(V.ViewError, match="Document Viewer is already open: .*with its network.*Close Document Viewer first"):
+        V.view(host, "tor-browser", "report.pdf", private_of(host), lambda argv, **kw: calls.append(argv) or Proc(),
+               listed(host))
+    assert calls == [] and not list((host.home / "TempBrowser").glob(".view-*/*"))         # nothing copied stays
+    flatpak_ps(host, "", ok=False)
+    with pytest.raises(V.ViewError, match="couldn't be told"):
+        V.view(host, "tor-browser", "report.pdf", private_of(host), lambda argv, **kw: calls.append(argv) or Proc(),
+               listed(host))
+    flatpak_ps(host, "77\torg.mozilla.firefox\n")                                         # another app: fine
+    V.view(host, "tor-browser", "report.pdf", private_of(host), lambda argv, **kw: calls.append(argv) or Proc(),
+           listed(host))
+    assert len(calls) == 1
+
+
+def test_one_view_offline_opened_is_named_as_such(host, monkeypatch):
+    from test_viewer import set_up
+    from daprivacyscanner.tools import viewer as V
+    set_up(host, *PAPERS)
+    monkeypatch.setitem(V._LAUNCHED, os.getpid(), "Document Viewer")    # a pid that runs: this process, standing in
+    flatpak_ps(host, f"{os.getpid()}\torg.gnome.Papers\n")
+    with pytest.raises(V.ViewError, match=r"already open from an earlier View offline…: .*Close it first"):
+        V.view(host, "tor-browser", "report.pdf", private_of(host), lambda argv, **kw: None, listed(host))
+
+
+@pytest.mark.parametrize("desktop_id, exec_, extra", [
+    ("org.mozilla.firefox.desktop", "/usr/bin/flatpak run --branch=stable --arch=x86_64 --command=firefox "
+     "--file-forwarding org.mozilla.firefox @@u %u @@", "X-Flatpak=org.mozilla.firefox\nCategories=Network;\n"),
+    ("org.example.Surf.desktop", "/usr/bin/flatpak run org.example.Surf %u",
+     "X-Flatpak=org.example.Surf\nCategories=Network;WebBrowser;\n"),
+])
+def test_a_browser_from_flatpak_isn_t_used_as_a_viewer(host, desktop_id, exec_, extra):
+    """Firefox-family and Chromium-family browsers hand what they open to a copy already running and keep their
+    state where the app can't keep it in memory: say what to choose instead."""
+    from test_viewer import set_up
+    from daprivacyscanner.tools import viewer as V
+    set_up(host, desktop_id, exec_, extra)
+    flatpak_ps(host)
+    with pytest.raises(V.ViewError, match="is a web browser.*Choose a document viewer"):
+        V.plan(host, "tor-browser", "report.pdf")
+
+
+def test_a_native_browser_is_still_fine(host):
+    """From the distribution's packages it runs in the app's own sandbox, with an empty home in memory."""
+    from test_viewer import set_up
+    from daprivacyscanner.tools import viewer as V
+    set_up(host, "firefox.desktop", "xreader %u", "Categories=Network;WebBrowser;\n")
+    assert V.plan(host, "tor-browser", "report.pdf").argv == ["/usr/bin/xreader", "/home/user/report.pdf"]
+
+
+def test_the_plan_shows_where_a_flatpak_viewer_will_find_the_copy(host):
+    """The confirmation showed `@@u /home/user/report.pdf @@` while the run passed ~/TempBrowser/.view-…/report.pdf."""
+    from test_viewer import set_up
+    from daprivacyscanner.tools import viewer as V
+    set_up(host, *PAPERS)
+    flatpak_ps(host)
+    shown = V.plan(host, "tor-browser", "report.pdf").to_dict()["command"]
+    where = f"{host.home}/TempBrowser/.view-<random>"
+    assert f"'--filesystem={where}:ro'" in shown and shown.endswith(f"'{where}/report.pdf'")
+    assert "@@" not in shown and "/home/user/report.pdf" not in shown
+
+
+def test_without_a_display_a_flatpak_viewer_isn_t_started(host):
+    from test_viewer import set_up
+    from daprivacyscanner.tools import viewer as V
+    set_up(host, *PAPERS)
+    flatpak_ps(host)
+    host.environ.pop("WAYLAND_DISPLAY", None)
+    host.environ.pop("DISPLAY", None)
+    with pytest.raises(V.ViewError, match="no display"):
+        V.plan(host, "tor-browser", "report.pdf")
+    host.environ["DISPLAY"] = ":0"
+    argv = V.plan(host, "tor-browser", "report.pdf").argv
+    assert "--socket=x11" in argv and "--share=ipc" in argv and "--socket=wayland" not in argv
+
+
+# ------------------------------------------------------------------ suspicions: copies, the keeper
+
+def test_an_earlier_view_s_copy_stays_while_its_viewer_runs_or_is_new(host, monkeypatch):
+    """A viewer may read its copy and close it (and read it again later), and one starting a second ago hasn't opened
+    it yet: the next view removed both. Copies stay while their viewer runs, and for a minute when nothing says."""
+    import time
+    from test_viewer import set_up
+    from daprivacyscanner.tools import viewer as V
+    set_up(host)
+    base = host.home / "TempBrowser"
+    for name in (".view-running", ".view-ended", ".view-fresh", ".view-stale"):
+        (base / name).mkdir()
+        (base / name / "x.pdf").write_bytes(b"x")
+    t = time.time() - 120
+    for name in (".view-running", ".view-ended", ".view-stale"):
+        os.utime(base / name, (t, t))
+    monkeypatch.setitem(V._VIEWS, ".view-running", os.getpid())
+    monkeypatch.setitem(V._VIEWS, ".view-ended", 4_194_400)
+    monkeypatch.setitem(V._LAUNCHED, os.getpid(), "Document Viewer")
+    path, fd = V._staging(host)
+    os.close(fd)
+    assert sorted(x.name for x in base.glob(".view-*")) == sorted([".view-running", ".view-fresh", path.name])
+
+
+@pytest.fixture
+def bwrap_here():
+    import shutil
+    import subprocess
+    b = shutil.which("bwrap")
+    if not b or not os.path.exists("/usr/bin/python3") or subprocess.run(
+            [b, "--unshare-all", "--die-with-parent", "--ro-bind", "/", "/", "--", "true"]).returncode:
+        pytest.skip("bubblewrap can't run here")
+    return b
+
+
+def _descendants(pid: int) -> set[int]:
+    kids: dict[int, list[int]] = {}
+    for p in os.listdir("/proc"):
+        if p.isdigit():
+            try:
+                with open(f"/proc/{p}/stat") as f:
+                    ppid = int(f.read().rsplit(")", 1)[1].split()[1])
+            except (OSError, ValueError, IndexError):
+                continue
+            kids.setdefault(ppid, []).append(int(p))
+    out, todo = set(), [pid]
+    while todo:
+        for c in kids.get(todo.pop(), []):
+            if c not in out:
+                out.add(c)
+                todo.append(c)
+    return out
+
+
+def _alive(pid: int) -> bool:
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            return f.read().rsplit(")", 1)[1].split()[0] != "Z"
+    except OSError:
+        return False
+
+
+def _wait(cond, timeout=5.0) -> bool:
+    import time
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        if cond():
+            return True
+        time.sleep(0.05)
+    return False
+
+
+@pytest.mark.parametrize("victim", ["keeper", "bubblewrap"])
+def test_ending_any_part_of_a_viewer_s_sandbox_ends_all_of_it(bwrap_here, victim):
+    """A SIGTERM to bubblewrap left its init (the sandbox's PID 1, which ignores one from outside) and the viewer
+    running, out of the app's sight. Under the keeper, with --die-with-parent, ending either ends the viewer."""
+    import signal
+    import subprocess
+    from daprivacyscanner.tools import viewer as V
+    p = subprocess.Popen(["/usr/bin/python3", "-I", "-c", V.KEEPER, bwrap_here, "--unshare-all", "--die-with-parent",
+                          "--ro-bind", "/", "/", "--", "sleep", "60"], start_new_session=True)
+    try:
+        assert _wait(lambda: len(_descendants(p.pid)) >= 3)                # bubblewrap, its init, the viewer
+        tree = _descendants(p.pid)
+        outer = min(tree, key=lambda x: len(_descendants(x)) * -1)         # the one with the most below it
+        os.kill(p.pid if victim == "keeper" else outer, signal.SIGTERM)
+        assert _wait(lambda: not any(_alive(x) for x in tree))
+    finally:
+        p.kill()
+        p.wait()
+
+
+def test_quitting_the_app_leaves_an_open_viewer_open(bwrap_here):
+    """The keeper, not the app, is bubblewrap's parent: the app ending doesn't end the viewer."""
+    import signal
+    import subprocess
+    import time
+    from daprivacyscanner.tools import viewer as V
+    app = ("import subprocess, sys; p = subprocess.Popen(sys.argv[1:], start_new_session=True, stdin=subprocess.DEVNULL, "
+           "stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); print(p.pid, flush=True)")
+    out = subprocess.run(["/usr/bin/python3", "-c", app, "/usr/bin/python3", "-I", "-c", V.KEEPER, bwrap_here,
+                          "--unshare-all", "--die-with-parent", "--ro-bind", "/", "/", "--", "sleep", "60"],
+                         capture_output=True, text=True, timeout=10)
+    keeper = int(out.stdout.split()[0])
+    try:
+        assert _wait(lambda: len(_descendants(keeper)) >= 3)
+        time.sleep(0.3)
+        assert _alive(keeper) and len(_descendants(keeper)) >= 3           # the "app" has ended: still there
+    finally:
+        tree = _descendants(keeper)
+        os.kill(keeper, signal.SIGTERM)
+        _wait(lambda: not any(_alive(x) for x in tree | {keeper}))
+
+
+def test_a_native_viewer_runs_under_the_keeper_where_there_is_python3(host):
+    from test_viewer import set_up
+    from test_browser_sandbox import Proc
+    from daprivacyscanner.tools import viewer as V
+    set_up(host)
+    (host.root / "usr/bin/python3").write_text("")
+    calls = []
+    got = V.view(host, "tor-browser", "report.pdf", private_of(host), lambda argv, **kw: calls.append(argv) or Proc(),
+                 listed(host))
+    [argv] = calls
+    k = argv.index(V.KEEPER)
+    assert argv[k - 3:k] == ["/usr/bin/python3", "-I", "-c"]
+    assert argv[k + 1] == "bwrap" and argv[k + 2] == "--args"
+    assert "--die-with-parent" in got["whole"] and "os.fork()" in got["whole"]
+
+
+@pytest.mark.parametrize("flatpak, says", [(False, "closed at once without showing it.*close that one first"),
+                                            (True, "closed at once. If it was opened meanwhile.*with its network")])
+def test_a_viewer_that_ends_at_once_says_so(host, monkeypatch, flatpak, says):
+    """xreader with one already open from an earlier view ended at once, showing nothing, while the page said it was
+    opening (tested on Mint 22.3); a Flatpak viewer that ends at once may have handed the file to a copy opened
+    meanwhile."""
+    from test_viewer import set_up
+    from test_browser_sandbox import Proc
+    from daprivacyscanner.tools import viewer as V
+    monkeypatch.setattr(V, "WATCH", 0.05)
+    set_up(host, *(PAPERS if flatpak else ()))
+    flatpak_ps(host)
+    with pytest.raises(V.ViewError, match=says):
+        V.view(host, "tor-browser", "report.pdf", private_of(host), lambda argv, **kw: Proc(rc=0), listed(host))

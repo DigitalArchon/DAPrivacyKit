@@ -3299,14 +3299,16 @@ async function viewOffline(b, f, btn) {
   const x11 = (await api("GET", "/api/tools/browser").catch(() => ({})))?.sandbox?.display === "x11";
   const ok = await confirmModal(`Open ${f.name} with no network?`, [
     h("p", {}, `It opens in ${plan.app}, your usual app for this kind of file, `
-      + (plan.flatpak ? "in its Flatpak sandbox with the network and your folders taken away" : "inside a sandbox with no network")
+      + (plan.flatpak ? "in Flatpak's own sandbox with what it usually asks for taken away (the network, your folders, "
+        + "sound, your other programs)" : "inside a sandbox with no network")
       + ": the file can't fetch anything, so opening it can't reveal your address. It gets a copy of this one file, "
       + "read-only, and nothing else of yours; what it saves is gone when it closes."),
     ...(plan.notes || []).map(n => h("p", { class: "small" }, n)),
     f.warnings.filter(w => !w.startsWith("can fetch things")).length
       ? h("ul", { class: "small" }, f.warnings.filter(w => !w.startsWith("can fetch things")).map(w => h("li", {}, w))) : null,
     x11 ? h("p", { class: "small muted" }, "This is an X11 session: the app can still see and type into other windows.") : null,
-    h("div", { class: "small muted" }, plan.flatpak ? "It runs:" : "It runs, inside bubblewrap with no network (bwrap --unshare-all …):"),
+    h("div", { class: "small muted" }, plan.flatpak ? "It runs (the copy's folder gets a random name in place of <random>):"
+      : "It runs, inside bubblewrap with no network (bwrap --unshare-all …):"),
     commandBlock([plan.command]),
   ], "Open it");
   if (!ok) return;

@@ -392,7 +392,9 @@ lower it with the shield button in the browser's toolbar. Mullvad Browser starts
 - Finished downloads are listed in the panel. The app says what each really is, whatever its name (a
   program disguised as a PDF is named as a program). **Save…** copies one out to a folder you choose.
   **View offline…** opens a document or picture in your usual viewer with no network, so the document
-  can't contact anyone.
+  can't contact anyone. A viewer from Flatpak must be closed first (if it is open, it would be given the file
+  with its network), and a web browser from Flatpak isn't used: choose a document viewer as the default for that
+  kind of file instead.
 
 **Before you start, the panel may warn about:**
 

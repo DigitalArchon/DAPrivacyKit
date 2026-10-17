@@ -61,7 +61,9 @@ def test_it_opens_a_copy_with_no_network(host):
     def spawn(argv, **kw):
         assert argv[1:3] == ["--args", str(kw["pass_fds"][-1])] and kw["env"] == V.sandbox.SPAWN_ENV
         calls.append((unseal(argv), kw))
-        return Proc()
+        p = Proc()
+        p.pid = 4_194_400                       # above any pid_max: a viewer that has ended
+        return p
     private = host.home / "TempBrowser/.tor-browser-app"
     private.mkdir(parents=True, exist_ok=True)
     got = V.view(host, "tor-browser", "report.pdf", private, spawn, check(host, "report.pdf"))
@@ -84,24 +86,34 @@ def test_it_opens_a_copy_with_no_network(host):
 
 
 def test_a_flatpak_viewer_loses_its_network(host):
+    """In Flatpak's own sandbox with what it declares dropped (--sandbox), and only the display, the filtered session
+    bus with its own name, and the copy's folder, read-only, put back: no GVFS, no sound (the 2026-10-17 review)."""
     set_up(host, "org.gnome.Papers.desktop",
-           "/usr/bin/flatpak run --branch=stable --arch=x86_64 --command=papers --file-forwarding org.gnome.Papers @@u %U @@",
-           "X-Flatpak=org.gnome.Papers\n")
-    host.runner.handlers["flatpak"] = lambda argv: CommandResult(tuple(argv), 0, "[Context]\nshared=network;ipc;\n"
-        "filesystems=xdg-run/gvfsd;xdg-download:ro;home;!xdg-config/kdeglobals;\n")
+           "/usr/bin/flatpak run --branch=stable --arch=x86_64 --command=papers --file-forwarding "
+           "--filesystem=home org.gnome.Papers @@u %U @@", "X-Flatpak=org.gnome.Papers\n")
+    asked = []
+    host.runner.handlers["flatpak"] = lambda argv: asked.append(argv) or CommandResult(tuple(argv), 0, "")
     calls = []
     private = host.home / "TempBrowser/.tor-browser-app"
     private.mkdir(parents=True, exist_ok=True)
     got = V.view(host, "tor-browser", "report.pdf", private, lambda argv, **kw: calls.append(argv) or Proc(),
                  check(host, "report.pdf"))
     [argv] = calls
-    assert argv[:3] == ["/usr/bin/flatpak", "run", "--unshare=network"] and argv[-3] == "@@u"
-    assert "--nofilesystem=home" in argv and "--nofilesystem=xdg-download" in argv and "--nofilesystem=xdg-run/gvfsd" in argv
-    assert not any(a.startswith("--nofilesystem=!") for a in argv)
-    assert "/TempBrowser/.view-" in argv[-2] and got["flatpak"] == "org.gnome.Papers"
-    assert "usual browser" in got["notes"][0] and "kept in memory" in got["notes"][0]
-    # what it would remember goes to its own /tmp, in memory, not ~/.var/app (Evince wrote the file's name there)
+    assert ("flatpak", "ps", "--columns=pid,application") in asked          # not already open (it would be handed it)
     app = argv.index("org.gnome.Papers")
+    opts = argv[2:app]
+    assert argv[:2] == ["flatpak", "run"] and opts[:len(V.FLATPAK_RUN)] == list(V.FLATPAK_RUN)
+    assert {"--sandbox", "--unshare=network", "--no-talk-name=org.gtk.vfs.*", "--nosocket=pulseaudio"} <= set(opts)
+    assert "--own-name=org.gnome.Papers" in opts and "--socket=wayland" in opts and "--socket=x11" not in opts
+    [folder] = [o for o in opts if o.startswith("--filesystem=")]
+    assert folder.startswith(f"--filesystem={host.home}/TempBrowser/.view-") and folder.endswith(":ro")
+    assert "--branch=stable" in opts and "--arch=x86_64" in opts                # the launcher's own: only these
+    assert not any(a in argv for a in ("--filesystem=home", "--file-forwarding", "@@u", "@@"))
+    copy = argv[-1]
+    assert copy == folder[len("--filesystem="):-len(":ro")] + "/report.pdf" and open(copy, "rb").read() == PDF
+    assert got["flatpak"] == "org.gnome.Papers"
+    assert "usual browser" in got["notes"][0] and "in memory" in got["notes"][0] and "screen reader" in got["notes"][0]
+    # what it would remember goes to its own /tmp, in memory, as well
     assert "--command=env" in argv[:app] and not any(a == "--command=papers" for a in argv)
     assert argv[app + 1:app + 1 + len(V.FLATPAK_MEMORY)] == list(V.FLATPAK_MEMORY)
     assert argv[app + 1 + len(V.FLATPAK_MEMORY)] == "papers"
