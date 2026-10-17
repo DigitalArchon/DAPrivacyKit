@@ -1142,6 +1142,9 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
         name = disk_of(await body_of(request))
         host = make_host()
         st = await asyncio.to_thread(ramdisk.status, host, name)
+        if not st.open:
+            # nothing to close: a folder of that name that isn't the RAM disk is the user's own, and is left alone
+            return JSONResponse({"error": f"~/{name} isn't open, so there is nothing to close."}, status_code=409)
         if scan_lock.locked():
             return busy()
         async with scan_lock:

@@ -117,3 +117,59 @@ def test_the_scheduled_scan_prints_nothing(cat, tmp_path, monkeypatch, capsys):
     app.scan_cli(cat, as_json=False, notify=True, admin=False, quiet=True, redact=False)
     out = capsys.readouterr()
     assert out.out == "" and out.err == ""
+
+
+# ------------------------------------------------------------------ 2. the RAM disk
+
+def ramdisk_host(tmp_path):
+    root = tmp_path / "root"
+    home = root / "home/alice"
+    home.mkdir(parents=True)
+    (root / "proc/self").mkdir(parents=True)
+    (root / "proc/self/mounts").write_text("/dev/sda2 / ext4 rw 0 0\n")
+    os.symlink("self/mounts", root / "proc/mounts")
+    (root / "proc/meminfo").write_text("MemTotal: 8000000 kB\n")
+    return Host(home=home, environ={"HOME": str(home)}, runner=FakeRunner(), root=root, uid=os.getuid())
+
+
+def test_closing_a_ram_disk_that_isnt_open_is_refused_and_touches_nothing(cat, tmp_path):
+    """Before, the helper took the user's own empty ~/RAMDisk for its own and removed it."""
+    host = ramdisk_host(tmp_path)
+    mine = host.home / "RAMDisk"
+    mine.mkdir(mode=0o755)
+
+    def no_helper():
+        raise AssertionError("nothing to close: the helper isn't asked")
+    c = TestClient(create_app("t0ken", cat, make_host=lambda: host, start_helper=no_helper))
+    r = c.post("/api/tools/ramdisk/close", headers=H, json={})
+    assert r.status_code == 409 and "isn't open" in r.json()["error"] and mine.is_dir()
+
+
+def test_the_helper_never_removes_a_folder_nothing_records_it_made(system_root):
+    r, _ = system_root
+    (r / "proc/self").mkdir(parents=True)
+    (r / "proc/self/mounts").write_text("/dev/sda2 / ext4 rw 0 0\n")
+    os.symlink("self/mounts", r / "proc/mounts")
+    mine = r / "home/alice/RAMDisk"
+    mine.mkdir(mode=0o755)
+    mine.chmod(0o755)
+    res = helper_call("ramdisk_close")
+    assert res == {"closed": True, "was_open": False} and mine.is_dir() and stat.S_IMODE(mine.stat().st_mode) == 0o755
+
+
+def test_a_leftover_is_only_a_folder_an_open_left(tmp_path):
+    """"An empty, read-only ~/RAMDisk folder is left from before a restart" was said of the user's own 0755 folder."""
+    from daprivacyscanner.tools import ramdisk as R
+    host = ramdisk_host(tmp_path)
+    folder = host.home / "RAMDisk"
+    folder.mkdir()
+    folder.chmod(0o755)
+    assert R.status(host).leftover is False                              # an empty folder of the user's own
+    folder.chmod(0o500)                                                  # as an open leaves it
+    assert R.status(host).leftover is True
+    folder.chmod(0o755)
+    try:
+        os.setxattr(folder, helper.RAMDISK_XATTR, b'{"created": true, "folder_mode": null}')
+    except OSError:
+        pytest.skip("no user extended attributes on this filesystem")
+    assert R.status(host).leftover is True                               # the helper's record of an open

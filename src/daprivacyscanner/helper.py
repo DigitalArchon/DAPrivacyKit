@@ -2016,9 +2016,15 @@ def ramdisk_close(args: dict) -> dict:
             raise Refused(f"unmounting failed: {os.strerror(err)}")
         _did(["umount", path])
     if state is None:                            # after a reboot /run is empty: the folder itself says what to put back
-        state = _remembered_folder(home, parts, uid) or {}
+        state = _remembered_folder(home, parts, uid)
+    if state is None:
+        # nothing records that the helper opened a RAM disk here: the folder is the user's own (an empty ~/RAMDisk they
+        # made), never removed or changed on a guess
+        _write(state_file, None)
+        _rmdir_empty(RAMDISK_STATE, os.path.dirname(RAMDISK_STATE))
+        return {"closed": True, "was_open": was_open}
     try:
-        if state.get("created", True):
+        if state.get("created") is True:
             hfd = os.open(_p(home), os.O_RDONLY | os.O_DIRECTORY)
             try:
                 os.rmdir(parts[-1], dir_fd=hfd)

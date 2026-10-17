@@ -139,11 +139,27 @@ def status(host: Host, name: str = NAME) -> Status:
         st.files = sum(len(fs) for _, _, fs in os.walk(path))
     else:
         try:
-            st.leftover = path.is_dir() and not path.is_symlink() and not any(path.iterdir())
+            st.leftover = path.is_dir() and not path.is_symlink() and not any(path.iterdir()) and left_by_app(path)
         except OSError:
             st.leftover = False
     st.notes = memory_notes(host, st)
     return st
+
+
+def left_by_app(path: Path) -> bool:
+    """Whether a closed RAM disk's folder is the one an open left behind (a restart ended the mount): it carries the
+    helper's record of the open (helper.RAMDISK_XATTR), or, on a filesystem without extended attributes, the mode
+    0500 the open gives it. An empty folder of the user's own is neither."""
+    from ..helper import RAMDISK_XATTR
+    try:
+        os.getxattr(path, RAMDISK_XATTR, follow_symlinks=False)
+        return True
+    except OSError:
+        pass
+    try:
+        return stat.S_IMODE(os.lstat(path).st_mode) == 0o500
+    except OSError:
+        return False
 
 
 def hibernation_possible(host: Host) -> bool:

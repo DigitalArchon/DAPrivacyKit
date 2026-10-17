@@ -151,10 +151,11 @@ def test_after_a_reboot_the_folder_itself_says_what_to_put_back(root):
     state.unlink()
     (r / "proc/self/mounts").write_text("/dev/sda2 / ext4 rw 0 0\n")
     assert call("ramdisk_close")["ran"] == ["rmdir /home/alice/RAMDisk"] and not folder.exists()
-    # an attribute that isn't the helper's (the user can write one) is ignored: the old guess, an empty folder removed
+    # an attribute that isn't the helper's (the user can write one) is ignored, and with nothing else recording an open,
+    # the folder is the user's own: left as it is (before, the guess removed an empty folder of theirs)
     folder.mkdir(mode=0o700)
     os.setxattr(folder, helper.RAMDISK_XATTR, b'{"created": "yes", "folder_mode": 99999}')
-    assert call("ramdisk_close")["ran"] == ["rmdir /home/alice/RAMDisk"] and not folder.exists()
+    assert "ran" not in call("ramdisk_close") and folder.is_dir() and stat.S_IMODE(folder.stat().st_mode) == 0o700
 
 
 def test_refusals(root):
