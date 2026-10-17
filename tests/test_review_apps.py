@@ -124,9 +124,9 @@ def test_choosing_a_browser_without_flatpak_installs_it_first(cat, tmp_path):
                           "/etc/os-release": "ID=arch\n"})
     g = _how_to(cat, host, "br.default_browser")
     step = _step(g, "Install one built for privacy")
-    assert step.commands[:2] == ["sudo pacman -S flatpak",
+    assert step.commands[:2] == ["sudo pacman -Syu flatpak",
                                  "flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo"]
-    assert "sudo pacman -S torbrowser-launcher" in step.text
+    assert "sudo pacman -Syu torbrowser-launcher" in step.text
 
 
 # ------------------------------------------------------------------ texts

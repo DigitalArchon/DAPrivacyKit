@@ -232,7 +232,7 @@ def _install_command(host: Host, package: str) -> str:
     if ids & {"fedora", "rhel", "centos"}:
         return f"sudo dnf install {names[1]}"
     if "arch" in ids:
-        return f"sudo pacman -S {names[2]}"
+        return f"sudo pacman -Syu {names[2]}"      # never -S alone: a stale database (fresh Omarchy) fails
     if ids & {"suse", "opensuse", "opensuse-tumbleweed", "opensuse-leap"}:
         return f"sudo zypper install {names[3]}"
     return ""

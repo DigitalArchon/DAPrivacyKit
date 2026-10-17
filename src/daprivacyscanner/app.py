@@ -25,7 +25,7 @@ from .launch import scan_command, systemd_exec  # noqa: F401 - the timer, units 
 from .server import create_app
 
 WEBKIT_INSTALL = ("Ubuntu, Mint, Debian: sudo apt install gir1.2-webkit2-4.1 · Fedora: sudo dnf install webkit2gtk4.1 · "
-                  "Arch: sudo pacman -S webkit2gtk-4.1 · openSUSE: sudo zypper install typelib-1_0-WebKit2-4_1")
+                  "Arch: sudo pacman -Syu webkit2gtk-4.1 · openSUSE: sudo zypper install typelib-1_0-WebKit2-4_1")
 HELPER_NOTE = ("The administrator helper isn't installed root-owned, so the password prompt names /usr/bin/python3 "
                "rather than DA Privacy Kit. Install it from the app, or with: daprivacyscanner --install-helper")
 TIMER_UNIT = "daprivacyscanner-scan"
