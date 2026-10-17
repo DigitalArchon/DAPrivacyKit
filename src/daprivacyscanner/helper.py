@@ -1133,6 +1133,17 @@ def set_service(args: dict) -> dict:
     had = _unit_dirs()
     try:
         _set_units({u: (enable, start) for u in units}, before)
+        # what systemctl answered isn't what happened: stopped alone, avahi-daemon.socket was started again at once
+        # by D-Bus activation and systemctl still answered 0 (Mint 22.3, systemd 255). The states decide.
+        now = {u: _unit_state(u) for u in units}
+        for u in units:
+            if start is False and now[u][1] == "active":
+                raise Refused(f"{u} was started again at once, by something that asked for it")
+            if start is True and now[u][1] != "active":
+                raise Refused(f"{u} didn't stay running (systemctl status {u} says why)")
+            if enable is not None and before[u][0] in ("enabled", "disabled") and \
+                    now[u][0] != ("enabled" if enable else "disabled"):
+                raise Refused(f"{u} is {now[u][0]} now, not {'enabled' if enable else 'disabled'}")
     except Refused as e:
         try:
             after = {u: _unit_state(u) for u in units}
@@ -1629,10 +1640,16 @@ def revert(args: dict) -> dict:
     problems += _hooks(change.get("hooks", []), reverting=True)
     if mount_unit:
         _do_code(["systemctl", "daemon-reload"])
+        # a stop that failed (busy) leaves the unit listed as failed, and the system "degraded", after its file is gone
+        _, failed, _ = RUN(["systemctl", "is-failed", mount_unit["name"]])
+        if failed.strip() == "failed":
+            _do_code(["systemctl", "reset-failed", mount_unit["name"]])
     _write(f"{CHANGES_DIR}/{change['id']}.json", None)
     _rmdir_empty(CHANGES_DIR, os.path.dirname(CHANGES_DIR))     # the journal's own folders, once nothing is in them
     message = "; ".join(said) or "Put back as it was"
-    message = message[:1].upper() + message[1:] + (f". {'; '.join(problems)}" if problems else "")
+    if message.startswith("the "):                 # a sentence; a unit's or a file's name keeps its own case
+        message = "The" + message[3:]
+    message += f". {'; '.join(problems)}" if problems else ""
     return {"ok": True, "conflict": False, "message": message,
             "warnings": problems, "files": [f["path"] for f in change.get("files", [])]}
 
@@ -1922,7 +1939,7 @@ def _remove_mount_unit(mu: dict) -> tuple[bool, list[str]]:
         code, out, err = _do_code(["systemctl", "stop", mu["name"]])
     if _mounted_at(mu["path"]):
         why = (err or out).strip()[:120]
-        return True, [f"a program still has a file in {mu['path']} open, so it couldn't be unmounted now"
+        return True, [f"A program still has a file in {mu['path']} open, so it couldn't be unmounted now"
                       + (f" ({why})" if why else "")]
     if target not in IN_MEMORY or "home" not in mu:
         return False, []

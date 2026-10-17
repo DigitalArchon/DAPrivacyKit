@@ -359,7 +359,7 @@ def test_mount_tmpfs_writes_its_own_mount_unit_mounts_and_reverts(root, caller):
     rv = call("revert", change_id=r["change_id"])
     assert rv["ok"] and not (root / UNIT).exists() and name not in helper.RUN.mounted
     assert not folder.exists() and "rmdir /home/alice/.cache/thumbnails" in rv["ran"]   # the helper made it: it goes
-    calls = helper.RUN.calls
+    calls = [c for c in helper.RUN.calls if c[1:2] != ["is-failed"]]                 # reads aside
     assert calls.index(["systemctl", "disable", "--now", name]) < len(calls) - 1 and calls[-1] == ["systemctl", "daemon-reload"]
 
 
@@ -387,7 +387,7 @@ def test_mount_tmpfs_busy_at_revert_is_a_warning(root, caller):
     write(root, "/proc/mounts", "tmpfs /home/alice/.cache/thumbnails tmpfs rw 0 0\n")       # still mounted
     rv = call("revert", change_id=r["change_id"])
     assert rv["ok"] and "stays in memory until the next restart" in rv["message"] and not (root / UNIT).exists()
-    assert "Put back" not in rv["message"] and "a program still has a file" in rv["message"]
+    assert "Put back" not in rv["message"] and "A program still has a file" in rv["message"]
 
 
 @pytest.mark.parametrize("size", [10, 5000, "200", True])

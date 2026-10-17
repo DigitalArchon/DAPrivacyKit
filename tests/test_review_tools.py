@@ -454,6 +454,8 @@ def gvfs_root(system_root, monkeypatch):
         calls.append(list(argv))
         if argv[0] in ("pkill", "pgrep"):
             return (0 if argv[0] == "pkill" else 1), "", ""
+        if argv[1:2] == ["is-failed"]:                  # its stop failed: systemd lists it as failed
+            return 0, "failed\n", ""
         if argv[:3] == ["systemctl", "disable", "--now"] or argv[:2] == ["systemctl", "stop"]:
             system(argv)
             return 0, "", ""                        # systemd 255: 0, though the stop job failed (target is busy)
@@ -473,6 +475,8 @@ def test_reverting_an_in_memory_folder_still_held_says_it_stays_in_memory(system
     assert rv["message"].startswith(f"{path} stays in memory until the next restart, with its mount unit removed")
     assert ["pkill", "-TERM", "-x", "-u", str(ME[0]), "gvfsd-metadata"] in calls     # stopped first, as applying does
     assert any(c[:2] == ["systemctl", "stop"] for c in calls)                        # and tried once more
+    # its failed state is cleared, so the system isn't left "degraded" by a unit whose file is gone
+    assert ["systemctl", "reset-failed", "home-alice-.local-share-gvfs\\x2dmetadata.mount"] in calls
     # unmounted: said so
     (r / "proc/mounts").write_text("")                                 # after the restart
     res = helper_call("mount_tmpfs", target="gvfs-metadata", size_mb=50)
@@ -492,7 +496,7 @@ def test_a_socket_and_its_service_go_off_in_one_call_and_come_back_in_one(system
                                           "start": False}) == res["ran"]
     rv = helper_call("revert", change_id=res["change_id"])
     assert rv["ran"] == ["systemctl enable --now avahi-daemon.socket avahi-daemon.service"]
-    assert rv["message"] == "Avahi-daemon.socket and avahi-daemon.service enabled and running again"
+    assert rv["message"] == "avahi-daemon.socket and avahi-daemon.service enabled and running again"
     assert system.units["avahi-daemon.service"] == ["enabled", "active"]
 
 
@@ -549,6 +553,25 @@ def test_a_failure_part_way_is_journalled_recorded_and_put_back(system_root, mon
     entry = log.get(res.entry_id)
     assert entry["state"] == "failed" and entry["records"][0]["kind"] == "root" and entry["records"][0]["reverted"]
     assert system.units == {"avahi-daemon.socket": ["enabled", "active"], "avahi-daemon.service": ["enabled", "active"]}
+
+
+def test_a_unit_started_again_at_once_is_a_failure_not_a_success(system_root, monkeypatch):
+    """Live on Mint 22.3 (systemd 255): avahi-daemon.socket stopped alone was started again at once over D-Bus, and
+    systemctl answered 0. The states decide: it is recorded, and the error says what happened."""
+    _, system = system_root
+    system.units = {"avahi-daemon.socket": ["enabled", "active"]}
+
+    def run(argv):
+        if list(argv[:3]) == ["systemctl", "disable", "--now"]:
+            system.units["avahi-daemon.socket"][0] = "disabled"       # disabled, but running again
+            return 0, "", ""
+        return system(argv)
+    monkeypatch.setattr(helper, "RUN", run)
+    with pytest.raises(helper.Refused) as e:
+        helper_call("set_service", unit="avahi-daemon.socket", enable=False, start=False)
+    assert "started again at once" in e.value.reply["error"] and e.value.reply["change_id"]
+    helper_call("revert", change_id=e.value.reply["change_id"])
+    assert system.units["avahi-daemon.socket"] == ["enabled", "active"]
 
 
 @pytest.mark.parametrize("state, said", [("masked", "masked"), ("static", "static"), ("generated", "generated")])
