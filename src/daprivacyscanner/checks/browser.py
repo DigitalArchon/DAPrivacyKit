@@ -949,7 +949,7 @@ def installed_browsers(scan: Scan) -> list[FoundBrowser]:
         appimage = e.appimage
         if appimage and b is None:
             b = data.by_appimage(Path(appimage).name)
-        if b is None and not e.is_browser:
+        if b is None and (not e.is_browser or e.no_display):        # a hidden helper entry isn't a browser to list
             return
         add(b, e.name, "AppImage" if appimage else how, e.id, path)
 

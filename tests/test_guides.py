@@ -537,14 +537,26 @@ def test_root_step_without_the_helper_fails_cleanly(cat, tmp_path):
 
 
 def test_journal_retention_and_vacuum(cat, tmp_path, system, monkeypatch):
-    host = rooted(make_host(tmp_path, files={"/var/log/journal/x/system.journal": "j"}), system, monkeypatch)
+    """journald applies a time limit as it restarts, deleting the files older than it at once (live on Mint: 42 files
+    became 19): the option says so and deletes them as a step of its own, irreversible and confirmed apart."""
+    host = rooted(make_host(tmp_path, files={"/var/log/journal/x/system.journal": "j",
+                                             "/var/log/journal/x/system@0001-0002.journal": "old"}), system, monkeypatch)
+    old = host.root / "var/log/journal/x/system@0001-0002.journal"
+    os.utime(old, (old.stat().st_atime, old.stat().st_mtime - 40 * 86400))
     g = build(cat, host, "enc.journal_persistent")
-    log, res = apply(host, options(g)["Keep two weeks"])
+    plan = options(g)["Keep two weeks"]
+    assert [a.kind for a in plan.actions] == ["root", "root-clear"] and plan.irreversible
+    assert "1 file" in plan.actions[1].describe() and "at once" in plan.actions[1].describe()
+    assert "Delete journal files older than two weeks" in options(g)
+    log, res = apply(host, plan)
+    assert "120.0M freed" in log.get(res.entry_id)["records"][1]["text"]
     assert build_status(cat, host, "enc.journal_persistent") is Status.PASS
-    log2, res2 = apply(host, options(g)["Delete journal entries older than two weeks"])
-    assert "120.0M freed" in log2.get(res2.entry_id)["records"][0]["text"]
     revert(host, log, res)
     assert build_status(cat, host, "enc.journal_persistent") is Status.FAIL
+    old.unlink()                                                    # nothing that old: nothing deleted, none offered
+    g = build(cat, host, "enc.journal_persistent")
+    assert [a.kind for a in options(g)["Keep two weeks"].actions] == ["root"]
+    assert not any(k.startswith("Delete journal files older") for k in options(g))
 
 
 def test_journal_guide_turns_rsyslog_off_and_deletes_its_logs(cat, tmp_path, system, monkeypatch):

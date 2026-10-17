@@ -8,6 +8,7 @@ import os
 import posixpath
 import re
 import stat
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -420,7 +421,9 @@ class TpmNoPin(Check):
             return failed("A volume unlocks from the TPM without a PIN.", *tpm.evidence)
         if tpm.value is False:
             return passed(tpm.note, *tpm.evidence)
-        return unknown(f"Couldn't check: {tpm.note}", *tpm.evidence, notes=tpm.notes)
+        o = unknown(f"Couldn't check: {tpm.note}", *tpm.evidence, notes=tpm.notes)
+        o.needs_admin = scan.privileged is None and "administrator access" in (tpm.note or "")   # "Scan with …" offers it
+        return o
 
 
 # ------------------------------------------------------------------ backups
@@ -1109,15 +1112,21 @@ def plain_span(seconds: float) -> str:
     return _days(seconds)
 
 
-def journal_usage(path: Path, pattern: re.Pattern = re.compile(r"\.journal~?$")) -> tuple[int, int]:
+def journal_usage(path: Path, pattern: re.Pattern = re.compile(r"\.journal~?$"),
+                  older_than: float | None = None) -> tuple[int, int]:
     """(journal files, bytes they take on the disk) under `path`, links not followed: a journal file's size is mostly holes,
-    so its length says more than it holds (352 MB long, 219 MB on the disk, seen on Mint)."""
+    so its length says more than it holds (352 MB long, 219 MB on the disk, seen on Mint). `older_than` (seconds):
+    only the files last written longer ago, which a time limit that long deletes whole (journald deletes a file once
+    its newest entry is older than the limit)."""
     files = used = 0
+    cutoff = time.time() - older_than if older_than is not None else None
     for d, _, names in os.walk(path, followlinks=False):
         for n in names:
             try:
                 st = os.lstat(os.path.join(d, n))
             except OSError:
+                continue
+            if cutoff is not None and st.st_mtime >= cutoff:
                 continue
             if stat.S_ISREG(st.st_mode) and pattern.search(n):
                 files += 1

@@ -1123,6 +1123,7 @@ async function openEasy() {
     return h("li", { class: `eitem${it.blockers.length ? " blocked" : ""}` },
       h("label", { class: "check" }, box, h("b", {}, it.title)),
       h("ul", { class: "small does" }, it.plans.map(p => h("li", {}, p.title))),
+      it.covered_by ? h("p", { class: "small muted" }, `The same change as “${it.covered_by}”: applying that one deals with this too.`) : null,
       it.cost ? h("div", { class: "small cost" }, h("span", { class: "muted" }, "What it costs you: "), it.cost) : null,
       it.blockers.length ? h("div", { class: "warnbox bad small" }, it.blockers.join(" ")) : null,
       h("div", { class: "tags" },

@@ -59,18 +59,22 @@ def unit_exists(scan: Scan, unit: str, user: bool = False) -> bool:
     return r.ok and r.stdout.strip() not in ("", "not-found")
 
 
-def service_off(scan: Scan, *units: str) -> list[RootChange]:
+def service_off(scan: Scan, *units: str, mask: bool = False) -> list[RootChange]:
     """Stop and disable the units that exist and are enabled or running, together in one step and one systemctl call:
     stopped one at a time, a socket's service could be started again on demand in between (Avahi on Mint, by
     cups-browsed over D-Bus, cancelled the socket's stop), and disabling the service too removes the name it is
-    started by. One unit keeps the request's earlier form."""
+    started by. `mask`: masked too, for a unit another one wants (cups-browsed's Wants=avahi-daemon.service started a
+    disabled Avahi at every boot). One unit without masking keeps the request's earlier form."""
     on = [u for u in units if unit_exists(scan, u) and (systemctl_state(scan.host, "is-enabled", u) == "enabled"
                                                        or systemctl_state(scan.host, "is-active", u) == "active")]
     if not on:
         return []
-    return [RootChange("set_service", {**({"unit": on[0]} if len(on) == 1 else {"units": on}), "enable": False,
-                                       "start": False},
-                       f"Stop and disable {' and '.join(on)} (systemctl disable --now {' '.join(on)})")]
+    args = {**({"unit": on[0]} if len(on) == 1 and not mask else {"units": on}), "enable": False, "start": False,
+            **({"mask": True} if mask else {})}
+    return [RootChange("set_service", args,
+                       f"Stop and disable {' and '.join(on)} (systemctl disable --now {' '.join(on)})"
+                       + (f", and mask {'them' if len(on) > 1 else 'it'} so that nothing starts "
+                          f"{'them' if len(on) > 1 else 'it'} again (systemctl mask {' '.join(on)})" if mask else ""))]
 
 
 def dropin(name: str, settings: dict[str, str], path: str) -> RootChange:
@@ -169,6 +173,25 @@ def ff_prefs(check: Check, scan: Scan, label: str, prefs: dict | Callable, side_
 
 POLICY_KEYS = {"Google Chrome": "chrome", "Chromium": "chromium", "Brave": "brave", "Microsoft Edge": "edge",
                "Vivaldi": "vivaldi"}
+
+
+# Flathub is added where it isn't (Fedora without third-party repositories has only its own Flatpak remotes);
+# --if-not-exists makes it a no-op where it is
+FLATHUB_ADD = "flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo"
+
+
+def flathub_install(app: str) -> str:
+    """The command that installs a Flathub app, adding Flathub first where it isn't there."""
+    return f"{FLATHUB_ADD} && flatpak install flathub {app}"
+
+
+def chromium_step(scan: Scan, how: str, options: list, done: bool, policy: str = "Or, for every user:") -> Step:
+    """A guide's step for Chromium-based browsers: `how` (the settings page), then `policy` when policy options follow.
+    "None is installed." where there is none: a done step shows no instructions, and a text ending "Or, for every
+    user:" with nothing after it read as broken (seen on Fedora and Ubuntu, where only Firefox is installed)."""
+    if not chromium_dirs(scan.paths):
+        return Step("Chromium-based browsers", "None is installed.", done=True)
+    return Step("Chromium-based browsers", how + (f" {policy}" if options else ""), options=options, done=done)
 
 
 def chromium_policy_options(check: Check, scan: Scan, settings: dict, label: str, skip=None,

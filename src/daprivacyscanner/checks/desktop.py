@@ -424,7 +424,9 @@ class Indexers(Check):
         cmd = scan.gnome.indexer_command()
         if cmd:
             name = "LocalSearch" if cmd == "localsearch" else "Tracker"
-            r = host.run(cmd, "status")
+            # asked over the session bus: from a terminal or over SSH, without a session, it can't be reached (and
+            # waited 15 s on Ubuntu): judged by its settings then, never as "off"
+            r = host.run(cmd, "status", timeout=5)
             m = re.search(r"Currently indexed:\s*([\d,]+)\s*files", r.stdout) if r.ok else None
             store = Tally()
             for sub in ("tracker3/files", "localsearch"):
@@ -436,10 +438,12 @@ class Indexers(Check):
             # its count went to 0, and neither the words nor the file names were left in its database files)
             no_folders = recursive == [] and single == [] and not removable
             indexed = int(m.group(1).replace(",", "")) if m else None
+            unreachable = not r.ok and not no_folders and recursive is not None
             ev.append(Evidence.val("GNOME LocalSearch" if cmd == "localsearch" else "Tracker",
                                    ("no folders" if no_folders else f"{m.group(1)} files indexed" if m else
-                                    "running" if r.ok else "installed") + f", database {human_size(store.bytes)}"))
-            if r.ok and not no_folders:
+                                    "running" if r.ok else "set to index folders (it couldn't be asked)" if unreachable
+                                    else "installed") + f", database {human_size(store.bytes)}"))
+            if (r.ok or unreachable) and not no_folders:
                 content.append(name)
                 if removable:
                     outside.append("removable drives")
@@ -679,10 +683,36 @@ class GvfsMetadata(Check):
         if mm.in_memory:
             return passed("GVFS metadata is kept in memory and forgotten at every boot.",
                           Evidence.val("Metadata", t.describe()), Evidence.val("Kept in", "memory (tmpfs)"))
-        if not t.files:
-            return passed("GVFS metadata is empty.", notes=[note] if note else [])
+        # gvfsd-metadata writes an empty database and journal as it starts: files, but nothing about any file (seen on
+        # Mint after it restarted): counted by what they hold
+        if not t.files or all(gvfs_entries(f) == 0 for f in children(d) if f.is_file()):
+            return passed("GVFS metadata is empty.", *([Evidence.val("Metadata", t.describe() + ", no entries")]
+                                                        if t.files else []), notes=[note] if note else [])
         return failed("GVFS keeps per-file metadata (such as where you stopped reading a PDF) for the files you open.",
                       Evidence.val("Metadata", t.describe()), notes=[note] if note else [])
+
+
+def gvfs_entries(path: Path) -> int | None:
+    """What a GVFS metadata file holds, in gvfs's format (big-endian, metabuilder.c): a journal ("\\xda\\x1ajour") its
+    count of changes not yet written to the database (bytes 16-19); a database ("\\xda\\x1ameta") the files its root
+    names and the keys it holds, at the offsets its root entry gives (an empty one: a root "/" with neither, seen on
+    Mint). None for anything else, which counts as holding something."""
+    try:
+        with open(path, "rb") as fh:
+            data = fh.read(1 << 20)
+    except OSError:
+        return None
+    be = lambda at: int.from_bytes(data[at:at + 4], "big") if 0 <= at and at + 4 <= len(data) else None  # noqa: E731
+    if data[:6] == b"\xda\x1ajour":
+        return be(16)
+    if data[:6] == b"\xda\x1ameta":
+        root = be(16)
+        kids, meta = (be(root + 4), be(root + 8)) if root is not None else (None, None)
+        if kids is None or meta is None:
+            return None
+        n_kids, n_keys = (be(kids) if kids else 0), (be(meta) if meta else 0)
+        return None if n_kids is None or n_keys is None else n_kids + n_keys
+    return None
 
 
 IMAGE = re.compile(r"\.(png|jpe?g|webp|avif|webm|mp4|mkv|gif)$", re.I)       # screenshots and screen recordings

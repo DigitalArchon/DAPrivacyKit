@@ -305,7 +305,8 @@ def _repo_files(scan: Scan) -> list[tuple[str, str]]:
         for f in children(host.sys_path(d)):
             if f.suffix in suffixes:
                 out.append((f"{d}/{f.name}", read_text(host, f) or ""))
-    for f in ("/etc/apt/sources.list", "/etc/pacman.d/mirrorlist"):
+    # pacman.conf too: a repository can name its Server = there, without a mirrorlist
+    for f in ("/etc/apt/sources.list", "/etc/pacman.d/mirrorlist", "/etc/pacman.conf"):
         try:
             text = host.read_sys(f)
         except Unreadable:
@@ -325,12 +326,20 @@ _HTTP_HOST = re.compile(r"\bhttp://([^\s/]+)", re.I)
 NO_HTTPS = frozenset({"packages.linuxmint.com"})
 
 
+_OFF = r"(?:0|no|false|off|without|disable)"         # what apt's StringToBool and dnf read as off
+
+
 def _parts_in_use(text: str) -> list[str]:
-    """The parts of a repository file in use: a deb822 stanza with "Enabled: no", or a dnf or zypper section with
-    enabled=0, is never contacted, and is left out."""
+    """The parts of a repository file in use: a deb822 stanza with "Enabled: no" (or false, off), or a dnf or zypper
+    section with enabled=0 (or false, no), is never contacted, and is left out. A deb822 field folded onto the lines
+    after it (each starting with a space) is joined back, so its second address is found too."""
     if re.search(r"^\s*\[", text, re.M):                     # sections: dnf's and zypper's .repo, pacman.conf
-        return [p for p in re.split(r"(?m)^(?=\s*\[)", text) if not re.search(r"^\s*enabled\s*=\s*0\s*$", p, re.M | re.I)]
-    return [p for p in re.split(r"\n[ \t]*\n", text) if not re.search(r"^Enabled:[ \t]*no[ \t]*$", p, re.M | re.I)]
+        return [p for p in re.split(r"(?m)^(?=\s*\[)", text)
+                if not re.search(rf"^\s*enabled\s*=\s*{_OFF}\s*$", p, re.M | re.I)]
+    stanzas = re.split(r"\n[ \t]*\n", text)
+    if re.search(r"^[A-Za-z-]+:", text, re.M):                # deb822: continuation lines joined to their field
+        stanzas = [re.sub(r"\n[ \t]+(?=\S)", " ", st) for st in stanzas]
+    return [st for st in stanzas if not re.search(rf"^Enabled:[ \t]*{_OFF}[ \t]*$", st, re.M | re.I)]
 
 
 def http_hosts(text: str) -> list[str]:

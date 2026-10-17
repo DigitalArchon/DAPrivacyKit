@@ -9,7 +9,7 @@ import shlex
 
 from ...guide import Guide, Step
 from .._util import isfile, read_text
-from . import evidence, family, guide, install, os_release
+from . import FLATHUB_ADD, evidence, family, guide, install, os_release
 
 
 # ------------------------------------------------------------------ kernel boot options
@@ -839,15 +839,16 @@ def default_browser_guide(check, scan, outcome):
     else:
         from .._util import installed
         flatpak = installed(scan.host, "flatpak")
-        setup = [] if flatpak else [c for c in [install(scan, debian="flatpak", fedora="flatpak", arch="flatpak",
-                                                         suse="flatpak")] if c] + [
-            "flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo"]
+        # Flathub added also where Flatpak is installed: Fedora without third-party repositories has only its own
+        setup = ([] if flatpak else [c for c in [install(scan, debian="flatpak", fedora="flatpak", arch="flatpak",
+                                                          suse="flatpak")] if c]) + [FLATHUB_ADD]
         tor = install(scan, debian="torbrowser-launcher", fedora="torbrowser-launcher", arch="torbrowser-launcher",
                       suse="torbrowser-launcher")
         steps.append(Step("Install one built for privacy",
                           "None is installed yet. Brave Origin is free on Linux: brave.com/origin explains how to install "
                           "it for your distribution. These are on Flathub"
-                          + ("" if flatpak else ", which needs Flatpak: the first lines install it and add Flathub")
+                          + (": the first line adds Flathub where it isn't there yet" if flatpak else
+                             ", which needs Flatpak: the first lines install it and add Flathub")
                           + (f". Tor Browser's launcher is also a package of your distribution's own ({tor})." if tor
                              else ":"),
                           commands=setup + [f"flatpak install flathub {fid}    # {name}" for name, fid in FLATHUB]))

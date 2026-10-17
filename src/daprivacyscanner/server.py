@@ -726,7 +726,7 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
             log = undo_log(host)
             res = await asyncio.to_thread(apply_plan, plan, host, log, bool(body.get("confirm_irreversible")))
             again = await asyncio.to_thread(refresh, host, plan.check_id)
-            if res.ok:                                # what the check said right after: undone later if it comes back
+            if res.ok and res.entry_id:               # what the check said right after: undone later if it comes back
                 await asyncio.to_thread(log.set_outcome, res.entry_id, again.get("result"))
             undone = await asyncio.to_thread(recheck_undone, host)
             await asyncio.to_thread(persist, host)
@@ -742,9 +742,10 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
     # The catalogue's `easy` fixes of the checks that fail or warn now, applied together after one dry
     # run and one confirmation: each plan applied on its own, as its own entry in History.
 
-    def easy_view(result, plans: list[FixPlan]) -> dict:
+    def easy_view(result, plans: list[FixPlan], covered_by: str | None = None) -> dict:
         spec = catalogue[result.id]
         return {"check_id": result.id, "title": spec.title, "cost": spec.easy.cost, "kind": spec.kind,
+                "covered_by": covered_by,
                 "severity": result.effective_severity, "status": result.status.value,
                 "needs_root": any(p.needs_root for p in plans),
                 "blockers": [b for p in plans for b in p.blockers],
@@ -761,17 +762,34 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
             host = await asyncio.to_thread(host_now)
             items = await asyncio.to_thread(Runner(catalogue, host).plan_easy)
         accepted = await asyncio.to_thread(Accepted(paths_of(host)).all)
-        out = []
+        visible = []
         for result, item_plans in items:
             d = result.to_dict()
             if app.state.report is not None:
                 app.state.report["results"][result.id] = d
-            if hidden(accepted, result.id, d):
-                continue
+            if not hidden(accepted, result.id, d):
+                visible.append((result, item_plans))
+        # one change that two checks offer (Ubuntu's apport off, for crash dumps and for crash reporting) is applied once:
+        # twice, it would be two History entries, and reverting one would have the other reported undone. The second
+        # check stays listed, saying which fix covers it, so the dialog lists what the count counts
+        first: dict[tuple, tuple] = {}
+        covered: dict[str, str] = {}
+        for result, item_plans in visible:
+            for p in list(item_plans):
+                same = tuple((a.kind, a.describe()) for a in p.actions)
+                if p.actions and same in first:
+                    by_result, by_plan = first[same]
+                    by_plan.side_effects.append(f"This also deals with “{catalogue[result.id].title}”.")
+                    item_plans.remove(p)
+                    covered[result.id] = catalogue[by_result.id].title
+                elif p.actions:
+                    first[same] = (result, p)
+        out = []
+        for result, item_plans in visible:
             for p in item_plans:
                 keep(p, host)
                 easy_ids.add(p.id)
-            out.append(easy_view(result, item_plans))
+            out.append(easy_view(result, item_plans, covered.get(result.id)))
         easy_ids.intersection_update(plans)        # forget the ones that have expired
         return {"items": out, "admin_active": admin.active()}
 

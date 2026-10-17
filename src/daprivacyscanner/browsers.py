@@ -148,6 +148,7 @@ class DesktopEntry:
     exec: str
     categories: tuple[str, ...]
     mimetypes: tuple[str, ...]
+    no_display: bool = False  # NoDisplay=true: not in the menu (a helper, such as Fedora's installer's "Browser External")
 
     @property
     def is_browser(self) -> bool:
@@ -167,7 +168,7 @@ def read_desktop_entry(path: Path, text: str) -> DesktopEntry | None:
         return None
     split = lambda v: tuple(x for x in (v or "").split(";") if x)  # noqa: E731
     return DesktopEntry(path.name, path, e.get("Name", path.stem), e.get("Exec", ""), split(e.get("Categories")),
-                        split(e.get("MimeType")))
+                        split(e.get("MimeType")), e.get("NoDisplay", "").lower() == "true")
 
 
 def mimeapps_default(text: str) -> str | None:

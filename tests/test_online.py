@@ -390,13 +390,15 @@ def test_updates_refreshed_apt_uses_its_own_lists(cat, tmp_path):
         if argv[1] == "list":
             return CommandResult(argv, 0, "Listing...\nopenssl/noble-security 3.0.13-0ubuntu3.5 amd64 [upgradable from: 3.0.13-0ubuntu3.4]\n")
         return CommandResult(argv, 0, "")
-    host = make_host(tmp_path)
+    (tmp_path / "run").mkdir()
+    host = make_host(tmp_path, env={"XDG_RUNTIME_DIR": str(tmp_path / "run")})
     host.runner.handlers["apt-get"] = apt
     host.runner.handlers["apt"] = apt
     o = run(cat, "kern.updates_refreshed", host, FakeNet())
     assert o.status is Status.FAIL and val(o, "Security updates") == 1
-    lists = f"Dir::State::Lists={host.home}/.cache/daprivacyscanner/apt/lists"
-    assert all(lists in a for a in calls)                     # never the system's lists
+    lists = f"Dir::State::Lists={tmp_path}/run/daprivacyscanner-apt."
+    assert all(any(x.startswith(lists) for x in a) for a in calls)     # never the system's lists, nor ~/.cache (269 MB)
+    assert list((tmp_path / "run").iterdir()) == [] and not (host.home / ".cache").exists()      # removed at once
 
 
 def test_updates_refreshed_pacman_needs_checkupdates(cat, tmp_path):

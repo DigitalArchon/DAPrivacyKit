@@ -6,7 +6,7 @@ from ...fix import RootChange
 from ...guide import Guide, Step
 from .._util import mozilla_profiles
 from ..fixes import gset
-from . import guide, option, service_off, ff_prefs, chromium_policy_options
+from . import guide, option, service_off, ff_prefs, chromium_policy_options, chromium_step
 
 
 @guide("tel.crash_reporters", keys=("turn_off",))
@@ -82,8 +82,7 @@ def browser_telemetry(check, scan, outcome):
     chromium = chromium_policy_options(check, scan, {"MetricsReportingEnabled": False, "BraveP3AEnabled": False,
                                                       "BraveStatsPingEnabled": False}, "Turn off usage statistics",
                                        skip=lambda d: d.label not in flagged)
-    steps.append(Step("Chromium-based browsers",
-                      "Per profile: Settings → Privacy → \"Help improve…\" / \"Send usage statistics\" off (in Brave also "
-                      "\"Privacy-preserving product analytics\" and \"Automatically send daily usage ping\").",
-                      options=chromium, done=not flagged))
+    steps.append(chromium_step(scan, "Per profile: Settings → Privacy → \"Help improve…\" / \"Send usage statistics\" "
+                               "off (in Brave also \"Privacy-preserving product analytics\" and \"Automatically send "
+                               "daily usage ping\").", chromium, not flagged))
     return Guide(check.id, "Turn off browser telemetry", "", steps)

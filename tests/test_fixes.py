@@ -236,7 +236,8 @@ def test_clipboard_klipper_turned_off_and_its_history_deleted(cat, tmp_path):
     plan, res, log = run_fix(cat, host, "desk.clipboard_history", desktop=("kde",), plasma_major=6)
     assert [a.kind for a in plan.actions] == ["kconfig", "clear-command", "plasmatray"]     # cleared while it still runs
     assert plan.actions[1].destructive and not plan.blockers
-    assert any("Install CopyQ (flatpak install flathub com.github.hluk.copyq)" in e for e in plan.side_effects)
+    assert any("Install CopyQ (flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo "
+               "&& flatpak install flathub com.github.hluk.copyq)" in e for e in plan.side_effects)
     assert res.ok and shell.cleared == 1 and not tray_applet(appletsrc.read_text(), "org.kde.plasma.clipboard").on
     assert not (host.home / ".local/share/klipper/data/ab/ab").exists()
     # its emptied database is left (Plasma may hold it until logout): still a finding, and a second Fix… deletes it

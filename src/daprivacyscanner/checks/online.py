@@ -6,12 +6,14 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import os
 import re
 import secrets
 import urllib.parse
 import xml.etree.ElementTree as ET
 from contextlib import nullcontext
 from dataclasses import dataclass
+from pathlib import Path
 
 from .. import network as net
 from .. import vpn
@@ -810,14 +812,25 @@ class UpdatesRefreshed(OnlineCheck):
         return ["your distribution's package mirrors", "Flathub / the Snap Store, if used"]
 
     def _apt(self, scan: Scan) -> tuple[list[str] | None, int, str]:
-        d = scan.paths.cache_home / "daprivacyscanner" / "apt"
-        for sub in ("lists/partial", "cache/archives/partial"):
-            (d / sub).mkdir(parents=True, exist_ok=True)
-        opts = ["-o", f"Dir::State::Lists={d / 'lists'}", "-o", f"Dir::Cache={d / 'cache'}", "-o", "Debug::NoLocking=1"]
-        r = scan.host.run("apt-get", "update", "-q", *opts, timeout=600)
-        if not r.ok:
-            return None, 0, f"apt-get update failed: {(r.stderr or r.stdout).strip()[-150:]}"
-        r = scan.host.run("apt", "list", "--upgradable", *opts, timeout=120)
+        """apt's lists downloaded afresh into a folder of the test's own, never the system's (no root), and not kept:
+        in the runtime folder, in memory, removed at once (they took 269 MB in ~/.cache on Ubuntu 26.04, for good)."""
+        import shutil
+        import tempfile
+        runtime = scan.host.environ.get("XDG_RUNTIME_DIR") or ""
+        if not runtime or not os.path.isdir(runtime):
+            return None, 0, ("apt needs a folder of its own to download the package lists into, and there is no "
+                             "runtime folder ($XDG_RUNTIME_DIR) to keep it in memory")
+        d = Path(tempfile.mkdtemp(prefix="daprivacyscanner-apt.", dir=runtime))
+        try:
+            for sub in ("lists/partial", "cache/archives/partial"):
+                (d / sub).mkdir(parents=True, exist_ok=True)
+            opts = ["-o", f"Dir::State::Lists={d / 'lists'}", "-o", f"Dir::Cache={d / 'cache'}", "-o", "Debug::NoLocking=1"]
+            r = scan.host.run("apt-get", "update", "-q", *opts, timeout=600)
+            if not r.ok:
+                return None, 0, f"apt-get update failed: {(r.stderr or r.stdout).strip()[-150:]}"
+            r = scan.host.run("apt", "list", "--upgradable", *opts, timeout=120)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
         lines = [ln for ln in r.stdout.splitlines() if "/" in ln and "[upgradable" in ln]
         return package_names("apt", r.stdout), sum(1 for ln in lines if "-security" in ln), ""
 
@@ -859,7 +872,7 @@ class UpdatesRefreshed(OnlineCheck):
             return unknown("No supported package manager (apt, dnf, pacman, zypper) was found.")
         extra = 0
         if installed(host, "flatpak"):
-            r = host.run("flatpak", "remote-ls", "--updates", "--columns=application", timeout=300)
+            r = host.run_flatpak("remote-ls", "--updates", "--columns=application", timeout=300)
             if r.ok:
                 n = len([ln for ln in r.stdout.splitlines() if ln.strip()])
                 extra += n

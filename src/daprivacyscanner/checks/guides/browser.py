@@ -6,7 +6,7 @@ from ...fix import DeleteFiles
 from ...guide import Guide, Step
 from .._util import chromium_dirs, files_under, mozilla_cache, mozilla_profiles
 from ...helper import CLEAR_ON_EXIT
-from . import guide, option, evidence, ff_prefs, chromium_policy_options, mozilla_open
+from . import guide, option, evidence, ff_prefs, chromium_policy_options, chromium_step, mozilla_open
 
 
 SESSION_LOST = "Firefox no longer reopens the tabs you had open: restoring them needs the history it clears."
@@ -45,11 +45,10 @@ def history_retention(check, scan, outcome):
     skip = lambda d: d.label not in keeping  # noqa: E731
     return Guide(check.id, "Clear browsing data when the browser closes", "", [
         Step("Firefox", options=opts, done=not opts),
-        Step("Chromium-based browsers",
+        chromium_step(scan,
              "Settings → Privacy and security → Site settings → On-device site data → \"Delete data sites have saved "
-             "to your device when you close all windows\" (Brave: Settings → Privacy → Clear browsing data → On exit). "
-             "Or, for every user:",
-             options=chromium_policy_options(check, scan, {"DefaultCookiesSetting": 4},
+             "to your device when you close all windows\" (Brave: Settings → Privacy → Clear browsing data → On exit).",
+             chromium_policy_options(check, scan, {"DefaultCookiesSetting": 4},
                                              "Keep site data only until the browser closes", skip=skip, side_effects=[
                                                  "Every site, your Google or Microsoft account included, signs you out "
                                                  "each time the browser closes."])
@@ -58,7 +57,7 @@ def history_retention(check, scan, outcome):
                                        skip=skip,
                                        side_effects=["Sync stops for every profile (bookmarks, passwords, history): "
                                                      "Chromium only clears data at exit with sync off."]),
-             done=not keeping),
+             not keeping),
         Step("About the cache", "Cleared at exit, cached pages are deleted, not wiped: they can still be recovered "
              "from the disk for a while (see enc.deleted_data_recoverable). Private windows never write their cache "
              "to the disk; for normal browsing, keeping the cache in memory (Firefox's option in the disk cache "
@@ -80,9 +79,8 @@ def tracking_protection(check, scan, outcome):
                                        skip=lambda d: d.browser.startswith("Brave") or d.label not in flagged)
     return Guide(check.id, "Strengthen tracking protection", "", [
         Step("Firefox", options=opts, done=not opts),
-        Step("Chromium-based browsers", "Settings → Privacy and security → Third-party cookies → Block third-party "
-             "cookies." + (f" Allowed now in: {'; '.join(weak)}." if weak else ""), options=chromium,
-             done=not weak),
+        chromium_step(scan, "Settings → Privacy and security → Third-party cookies → Block third-party cookies."
+                      + (f" Allowed now in: {'; '.join(weak)}." if weak else ""), chromium, not weak),
     ])
 
 
@@ -162,9 +160,9 @@ def webrtc(check, scan, outcome):
     return Guide(check.id, "Stop WebRTC revealing local addresses",
                  "Mostly matters with a split-tunnel VPN, where WebRTC could show your real address.", [
                      Step("Firefox", options=opts, done=not opts),
-                     Step("Chromium-based browsers", "Brave: Settings → Privacy → WebRTC IP handling policy → Default "
-                          "public interface only. Others: the WebRTC Network Limiter extension, or a policy:",
-                          options=chromium, done=not flagged),
+                     chromium_step(scan, "Brave: Settings → Privacy → WebRTC IP handling policy → Default public "
+                                   "interface only. Others: the WebRTC Network Limiter extension.", chromium,
+                                   not flagged, policy="Or a policy, for every user:"),
                  ])
 
 

@@ -346,10 +346,21 @@ def ipv6_privacy(check, scan, outcome):
             value = v["ipv6.ip6-privacy"].strip().lower()
             if value in PRIVACY_ON or (value in NM_DEFAULT and reaches.get(kind)):
                 continue                                              # takes the default, which is (or becomes) 2
-            a.append(NmSet(uuid, v["connection.id"] or uuid, "ipv6.ip6-privacy", "2"))
+            name = v["connection.id"] or uuid
+            if name.startswith("netplan-"):
+                # netplan writes it (Ubuntu): an nmcli change is merged into netplan's own files, beside the
+                # installer's definition of the same interface, and reverting leaves that file. netplan's way instead
+                iface = name.removeprefix("netplan-").split("-")[0]
+                section = "wifis" if kind == "wifi" else "ethernets"
+                effects.append(f"{name} is set up by netplan, which writes ip6-privacy=0 unless told otherwise: change "
+                               f"it there, with sudo netplan set {section}.{iface}.ipv6-privacy=true && sudo netplan "
+                               "apply (the connection drops for a moment).")
+                continue
+            a.append(NmSet(uuid, name, "ipv6.ip6-privacy", "2"))
     if not a:
-        effects = ["The settings are in place already: a network connected before they were uses privacy addresses "
-                   "from the next time it connects (turn Wi-Fi off and on, or unplug the cable and plug it in)."]
+        effects = [e for e in effects if "netplan" in e] or [
+            "The settings are in place already: a network connected before they were uses privacy addresses from the "
+            "next time it connects (turn Wi-Fi off and on, or unplug the cable and plug it in)."]
     return FixPlan(check.id, "Prefer temporary IPv6 addresses", a, side_effects=effects)
 
 
@@ -752,8 +763,8 @@ def clipboard(check, scan, outcome):
         effects.append("Pano runs inside GNOME Shell, so its history can't be deleted from outside: clear it from "
                        "Pano's own menu, and turn off its history in its settings (Extensions → Pano).")
     if any(isinstance(x, PlasmaTraySet) for x in a) and not copyq(scan):
-        from .guides import install
-        cmd = install(scan, **COPYQ_PACKAGES) or f"flatpak install flathub {COPYQ_FLATPAK}"
+        from .guides import flathub_install, install
+        cmd = install(scan, **COPYQ_PACKAGES) or flathub_install(COPYQ_FLATPAK)
         effects.append(f"Want a clipboard history that never reaches the disk, and what you copied kept when its app "
                        f"closes, as Klipper did? Install CopyQ ({cmd}) and start it: the next scan finds it, and Fix… "
                        "sets it up that way.")
@@ -1015,7 +1026,7 @@ def electron_caches(check, scan, outcome):
 
 
 def _flatpak_running(scan: Scan) -> set[str]:
-    r = scan.host.run("flatpak", "ps", "--columns=application")
+    r = scan.host.run_flatpak("ps", "--columns=application")
     return {ln.strip() for ln in r.stdout.splitlines() if ln.strip()} if r.ok else set()
 
 

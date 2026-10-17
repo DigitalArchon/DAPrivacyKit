@@ -9,7 +9,7 @@ from ...guide import Guide, Step
 from .. import Scan
 from .._util import children, files_under, installed, isdir, isfile, read_text
 from ..fixes import gset, in_use
-from . import guide, option, install, ff_prefs
+from . import evidence, guide, option, install, ff_prefs
 
 
 @guide("app.photo_dbs")
@@ -497,18 +497,30 @@ def boxes(check, scan, outcome):
 def cups_spool(check, scan, outcome):
     # cupsd works out each finished job's expiry from the limits when it loads it (load_job_cache,
     # cupsdLoadJob), so jobs kept under the old ones expire at the restart (cupsdCleanJobs)
+    from ..apps import cups_seconds
     effects = ["CUPS restarts to apply it; a job printing at that moment may be interrupted."]
+    # what is set now (the check's evidence: "No", "1d", "86400 (default: one day)"): an option already in place, or
+    # one that would keep more than now, isn't offered (applied again, it was an empty History entry: live on Mint)
+    now = {k: cups_seconds(str(v).split()[0]) for k in ("PreserveJobFiles", "PreserveJobHistory")
+           for v in evidence(outcome, k)[:1]}
+    files, history = now.get("PreserveJobFiles", -1), now.get("PreserveJobHistory", -1)
+    opts = []
+    if not (files == 0 and history == 0):
+        opts.append(option(check, "Keep neither documents nor job history", [RootChange(
+            "edit_config", {"target": "cups", "values": {"PreserveJobFiles": "No", "PreserveJobHistory": "No"}},
+            "Set PreserveJobFiles No and PreserveJobHistory No in /etc/cups/cupsd.conf")],
+            side_effects=effects, recommended=True))
+    day = files == 0 and history is not None and 0 <= history <= 86400
+    if not day:
+        opts.append(option(check, "Keep the job list for a day, not the documents", [RootChange(
+            "edit_config", {"target": "cups", "values": {"PreserveJobFiles": "No", "PreserveJobHistory": "1d"}},
+            "Set PreserveJobFiles No and PreserveJobHistory 1d in /etc/cups/cupsd.conf")], side_effects=effects))
     return Guide(check.id, "Stop CUPS keeping printed documents", "", [
-        Step("Choose what CUPS keeps", options=[
-            option(check, "Keep neither documents nor job history", [RootChange(
-                "edit_config", {"target": "cups", "values": {"PreserveJobFiles": "No", "PreserveJobHistory": "No"}},
-                "Set PreserveJobFiles No and PreserveJobHistory No in /etc/cups/cupsd.conf")],
-                side_effects=effects, recommended=True),
-            option(check, "Keep the job list for a day, not the documents", [RootChange(
-                "edit_config", {"target": "cups", "values": {"PreserveJobFiles": "No", "PreserveJobHistory": "1d"}},
-                "Set PreserveJobFiles No and PreserveJobHistory 1d in /etc/cups/cupsd.conf")], side_effects=effects),
-        ], text="When CUPS restarts, it applies the new limits to the jobs it already keeps: the documents of "
-                "finished jobs are deleted, and with the first option their history too."),
+        Step("Choose what CUPS keeps", options=opts, done=day,
+             text="When CUPS restarts, it applies the new limits to the jobs it already keeps: the documents of "
+                  "finished jobs are deleted, and with the first option their history too."
+                  + (" It keeps no documents now, and the job list for a day at most." if day and history else
+                     " It keeps neither now." if day else "")),
     ])
 
 

@@ -31,6 +31,7 @@ done
 CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}"
 DATA="${XDG_DATA_HOME:-$HOME/.local/share}"
 STATE="${XDG_STATE_HOME:-$HOME/.local/state}"
+CACHE="${XDG_CACHE_HOME:-$HOME/.cache}"
 UNITS="$CONFIG/systemd/user"
 MARK="Written by DA Privacy Kit."
 HELPER_DIR=/usr/libexec/daprivacyscanner
@@ -146,7 +147,9 @@ fi
 # ------------------------------------------------------------------ the app's own data
 say "The app's data (History and its backups, the last report, accepted findings) and settings:"
 data=()
-for d in "$STATE/daprivacyscanner" "$CONFIG/daprivacyscanner" "${XDG_RUNTIME_DIR:-/nonexistent}/daprivacyscanner"; do
+# the cache: package lists an older version's online update test kept there, and trials kept on the disk
+for d in "$STATE/daprivacyscanner" "$CONFIG/daprivacyscanner" "$CACHE/daprivacyscanner" "$CACHE/daprivacyscanner-trial" \
+         "${XDG_RUNTIME_DIR:-/nonexistent}/daprivacyscanner"; do
     [ -e "$d" ] && data+=("$d")
 done
 if [ "$keep" -eq 1 ]; then

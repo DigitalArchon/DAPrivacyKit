@@ -294,15 +294,22 @@ def run_to_end(host: Host, box: Box, spawn=None, wait: float = 1.0) -> trial.Tri
         raise trial.TrialError(f"{box.name} is already running in its Box.")
     try:
         trial.start(host, t, options(box), spawn or subprocess.Popen)
-        while t.state == "running":
-            time.sleep(wait)
-            trial.poll(host, t)
-            if not hasattr(t.proc, "poll"):
-                trial.stop(host, t)                     # a test's stand-in: it never ends by itself
+        told_to_end = None
+        try:
+            while t.state == "running":
+                time.sleep(wait)
+                trial.poll(host, t)
+                if not hasattr(t.proc, "poll"):
+                    trial.stop(host, t)                 # a test's stand-in: it never ends by itself
+        except (SystemExit, KeyboardInterrupt) as e:   # the launcher told to end (logout, shutdown: box_cli's signals)
+            told_to_end = e
+            trial.stop(host, t)                         # the app with it, and the run recorded as it ended
         try:
             record_run(host, box, t)
         except OSError:                                 # the Box was removed while it ran: nothing to add to
             pass
+        if told_to_end is not None:
+            raise told_to_end
     finally:
         import shutil
         shutil.rmtree(t.private, ignore_errors=True)    # the sandbox's own files for this run: nothing to keep

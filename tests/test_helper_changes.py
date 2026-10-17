@@ -212,8 +212,11 @@ def test_service_off_and_back(root):
 def test_service_revert_conflict(root):
     helper.RUN.units = {"ssh.service": ["enabled", "active"]}
     r = call("set_service", unit="ssh.service", enable=False, start=False)
-    helper.RUN.units["ssh.service"] = ["enabled", "active"]                     # turned back on by hand
+    helper.RUN.units["ssh.service"] = ["disabled", "active"]                    # started again by hand, not enabled
     assert call("revert", change_id=r["change_id"])["conflict"]
+    helper.RUN.units["ssh.service"] = ["enabled", "active"]                     # put back as before by hand: no conflict
+    back = call("revert", change_id=r["change_id"])
+    assert back["ok"] and not back.get("conflict")
 
 
 @pytest.mark.parametrize("unit", ["dbus.service", "sshd.service; reboot", "../ssh.service"])

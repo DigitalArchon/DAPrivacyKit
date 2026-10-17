@@ -166,6 +166,13 @@ class FakeSystem:
             if verb == "show":
                 return 0, "loaded\n" if unit in self.units else "not-found\n", ""
             names = [x for x in a[2:] if not x.startswith("--")]      # systemctl takes several units in one call
+            if verb in ("mask", "unmask"):
+                # masked: a link to /dev/null that nothing can start; unmasked, what its install links say (disabled,
+                # as the helper disables before it masks)
+                for n in names:
+                    if n in self.units:
+                        self.units[n][0] = "masked" if verb == "mask" else "disabled"
+                return 0, "", ""
             if verb in ("enable", "disable", "start", "stop") and len(names) > 1 or "--now" in a:
                 missing = [n for n in names if n not in self.units]
                 if missing:

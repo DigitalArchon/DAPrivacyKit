@@ -9,7 +9,7 @@ from ... import network as net
 from ...fix import BluetoothSet, Command, GSettingsSet, NmSet, RootChange, WriteFile, bus_reload, shell
 from ...guide import Guide, Option, Step
 from .._util import human_size, installed, isfile, processes, read_text, removed_while_running, systemctl_state
-from . import guide, option, evidence, unit_exists, service_off, dropin, install, remove, remote_session
+from . import guide, option, evidence, unit_exists, service_off, dropin, flathub_install, install, remove, remote_session
 
 
 LLMNR_DROPIN = "/etc/systemd/resolved.conf.d/60-daprivacyscanner-llmnr.conf"
@@ -185,6 +185,41 @@ SSHD_DROPIN = "/etc/ssh/sshd_config.d/10-daprivacyscanner.conf"
 SSHD_KEYS = {"PasswordAuthentication": "no", "KbdInteractiveAuthentication": "no", "PermitRootLogin": "no"}
 
 
+def _firewall_step(scan, listeners) -> Step:
+    """What the firewall in use does about these ports. With none, net.firewall_off's guide; with one that lets them in
+    (Fedora Workstation's own zone opens every port from 1025 to 65535, and SSH), that, with the commands."""
+    from ..network import firewall_rules
+    tool, rules, why = firewall_rules(scan)
+    if tool is None:
+        return Step("Firewall", "A host firewall blocks what you didn't mean to expose; see net.firewall_off.")
+    if rules is None:
+        return Step("Firewall", f"{tool} is on, but what it lets in couldn't be read ({why}).")
+    let_in = sorted({f"{s.port}/{s.proto}" for s in listeners if rules.allows(s.port, s.proto) is not False},
+                    key=lambda x: (int(x.split("/")[0]), x))
+    if not let_in:
+        return Step("Firewall", f"{tool} keeps these ports closed to other machines.", done=True)
+    text, cmds = f"{tool} is on, but lets in {', '.join(let_in)}.", []
+    if tool == "firewalld":
+        r = scan.host.run("firewall-cmd", "--get-active-zones")
+        zones = [ln.split()[0] for ln in r.stdout.splitlines() if ln.strip() and not ln[0].isspace()] if r.ok else []
+        if "FedoraWorkstation" in zones:
+            text += (" Fedora Workstation's own zone, FedoraWorkstation, lets in every port from 1025 to 65535, and SSH. "
+                     "The public zone lets in only SSH and DHCPv6 (what this computer needs to get an address): make it "
+                     "the default, or take the range out of FedoraWorkstation. A program you want to reach from "
+                     "other machines then needs its port opened (sudo firewall-cmd --permanent --add-port=PORT/tcp).")
+            cmds = ["sudo firewall-cmd --set-default-zone=public",
+                    "# or keep the zone, without the range:",
+                    "sudo firewall-cmd --permanent --zone=FedoraWorkstation --remove-port=1025-65535/tcp "
+                    "--remove-port=1025-65535/udp && sudo firewall-cmd --reload"]
+        else:
+            text += " Remove the ports or services you don't need from its zone."
+            cmds = ["firewall-cmd --get-active-zones", "sudo firewall-cmd --zone=ZONE --list-all"]
+    elif tool == "ufw":
+        text += " Remove the rules you don't need."
+        cmds = ["sudo ufw status numbered", "sudo ufw delete NUMBER"]
+    return Step("Firewall", text, commands=cmds)
+
+
 @guide("net.exposed_services")
 def exposed_services(check, scan, outcome):
     listeners = net.exposed(scan.context.listeners or [], net.ephemeral_range(scan.host))
@@ -242,7 +277,8 @@ def exposed_services(check, scan, outcome):
             ("Avahi (mDNS)", procs("avahi-daemon"), ("avahi-daemon.socket", "avahi-daemon.service"),
              "Printers and shares on the local network are no longer found automatically.")):
         if match:
-            acts = service_off(scan, *units)
+            # Avahi masked: cups-browsed (on by default on Mint) wants it, and started it again at every boot
+            acts = service_off(scan, *units, mask=units[0] == "avahi-daemon.socket")
             steps.append(Step(label, options=[option(check, f"Turn off {label.split(' (')[0]}", acts,
                                                      side_effects=[effect] if effect else [],
                                                      blockers=xrdp_blockers if "xrdp" in units[0] else [])]
@@ -272,7 +308,7 @@ def exposed_services(check, scan, outcome):
                        and s.process not in ("sshd", "xrdp", "smbd", "nmbd", "rpcbind", "avahi-daemon", "cupsd")]
     for s in other_listeners:
         steps.append(_other_service(scan, s))
-    steps.append(Step("Firewall", "A host firewall blocks what you didn't mean to expose; see net.firewall_off."))
+    steps.append(_firewall_step(scan, listeners))
     return Guide(check.id, "Close services other machines can reach", "", steps)
 
 
@@ -437,10 +473,14 @@ def hostname_broadcast(check, scan, outcome):
                           "Comment out the hostname line in /etc/dhcpcd.conf (put # in front of it), then restart dhcpcd.",
                           commands=["sudoedit /etc/dhcpcd.conf", "sudo systemctl restart dhcpcd"]))
     if systemctl_state(host, "is-active", "avahi-daemon") == "active":
-        acts = service_off(scan, "avahi-daemon.socket", "avahi-daemon.service")
+        # masked: cups-browsed (on by default on Mint) wants it, and started it again at every boot and restart
+        acts = service_off(scan, "avahi-daemon.socket", "avahi-daemon.service", mask=True)
         steps.append(Step("Stop announcing it with mDNS (Avahi)", options=[option(check, "Turn off Avahi", acts,
                           side_effects=["Printers and shares on the local network are no longer found "
-                                        "automatically."])] if acts else []))
+                                        "automatically.",
+                                        "It is masked, so that nothing starts it again (printer discovery, "
+                                        "cups-browsed, would at every start). Revert from History to have it back."])]
+                          if acts else []))
     links = resolved_links(host)
     if resolved_announces(links, "mdns"):
         steps.append(Step("Stop announcing it with mDNS (systemd-resolved)",
@@ -705,7 +745,7 @@ def _os_browser(scan) -> tuple[str, str | None, str | None]:
     if installed(scan.host, "flatpak"):
         app = "io.github.ungoogled_software.ungoogled_chromium"
         return ("Ungoogled Chromium (Chromium without Google's services, from Flathub)",
-                f"flatpak install flathub {app}", f"flatpak uninstall {app}")
+                flathub_install(app), f"flatpak uninstall {app}")
     if os_release(scan)[0] == "ubuntu":
         return "Chromium", "sudo snap install chromium", "sudo snap remove chromium"
     return ("Chromium", install(scan, debian="chromium", arch="chromium", fedora="chromium", suse="chromium"),
@@ -774,8 +814,9 @@ def outgoing_firewall(check, scan, outcome):
         if cmd:
             text += "Install them in a terminal (the app never runs your package manager), then press Check again."
             if fam == "debian":
-                text += (" Ubuntu 24.04 and Linux Mint 22 install version 1.5.8, older but fine for everything here. The "
-                         "package starts the daemon at once; nothing is asked until its window runs.")
+                text += (" The distribution's version may be older than upstream's (1.5.8 on Ubuntu 24.04 and Linux "
+                         "Mint 22, 1.6.9 on Ubuntu 26.04), but it is fine for everything here. The package starts the "
+                         "daemon at once; nothing is asked until its window runs.")
         else:
             text += (f"This distribution's repositories don't carry it: download the packages for it from the project's "
                      f"releases page, {OPENSNITCH_RELEASES} (check them with Verify a download), and install both, "

@@ -72,13 +72,22 @@ MESSENGERS = (
 EVOLUTION_FLATPAK = "org.gnome.Evolution"
 
 
+def _evolution_kept_mail(path: Path) -> bool:
+    """Whether Evolution kept mail in this folder: anything in mail/ but the empty trash/ folder evolution-data-server
+    makes on its own (seen on Fedora 44 and Ubuntu 26.04 without Evolution: mail/trash, empty)."""
+    for entry in children(path / "mail"):
+        if entry.name != "trash" or not isdir(entry) or children(entry):
+            return True
+    return False
+
+
 def evolution_locations(scan: Scan) -> list:
     """Evolution's data folders: the Flatpak's, and ~/.local/share/evolution when Evolution itself is installed or has
-    kept mail there. evolution-data-server alone, which Mint ships for the calendar and contacts, makes that folder too,
-    with its address book and calendars and no mail: that isn't Evolution."""
+    kept mail there. evolution-data-server alone, which Mint, Fedora and Ubuntu ship for the calendar and contacts,
+    makes that folder too, with its address book and calendars and an empty mail/trash: that isn't Evolution."""
     native = installed(scan.host, "evolution")
     return [loc for loc in scan.paths.data("evolution", flatpak=[EVOLUTION_FLATPAK])
-            if loc.install != "native" or native or isdir(loc.path / "mail")]
+            if loc.install != "native" or native or _evolution_kept_mail(loc.path)]
 
 
 @register

@@ -847,7 +847,8 @@ def test_turning_off_zram_writeback_is_a_step(cat, tmp_path):
 def test_the_vault_step_gives_the_install_command_only_where_it_helps(tmp_path):
     from daprivacyscanner.checks.guides.desktop import CRYPTOMATOR_FLATPAK, cryptomator_step
     st = cryptomator_step(make_scan(make_host(tmp_path / "a", installed=("flatpak",))))
-    assert st.commands == [f"flatpak install flathub {CRYPTOMATOR_FLATPAK}"]
+    assert st.commands == ["flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo",
+                           f"flatpak install flathub {CRYPTOMATOR_FLATPAK}"]                # Flathub added where it isn't
     st = cryptomator_step(make_scan(make_host(tmp_path / "b")))
     assert not st.commands and "cryptomator.org" in st.text
     host = make_host(tmp_path / "c", installed=("flatpak",))

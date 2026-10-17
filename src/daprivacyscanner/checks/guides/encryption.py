@@ -196,14 +196,26 @@ def journal(check, scan, outcome):
                       "time limit has nothing to add.", done=True)]
     else:
         weaker = lambda limit: span is not None and span <= limit          # noqa: E731 - already as short, or shorter
-        opts = ([] if weaker(14 * 86400) else [option(
-                    check, "Keep two weeks", [dropin("journald", {"MaxRetentionSec": "2week"}, path)],
-                    detail="Roughly: journald deletes a whole file at a time, when it starts a new one (monthly by "
-                           "default), so some entries stay a while longer. The next step deletes the older ones now.",
-                    recommended=True, key="two_weeks")]) + \
-               ([] if weaker(7 * 86400) else [option(
-                    check, "Keep one week", [dropin("journald", {"MaxRetentionSec": "1week"}, path)],
-                    detail="Roughly, as above: entries older than a week go when their file is rotated.")]) + [memory]
+
+        def keep(label: str, value: str, days: int, **kw):
+            # journald applies the limit as it restarts: the files whose newest entry is older are deleted at once
+            # (live on Mint: 42 files, 218 MB, went to 19, 116 MB). Said, and deleted as a step of its own, which
+            # can't be undone and is confirmed apart, never as a side effect of a setting that looks reversible
+            old, size = journal_usage(host.sys_path("/var/log/journal"), older_than=days * 86400)
+            acts = [dropin("journald", {"MaxRetentionSec": value}, path)]
+            if old:
+                acts.append(RootClear("vacuum_journal", {"time": f"{days // 7}weeks"},
+                                      f"Delete the journal files older than {plain_span(days * 86400)} now "
+                                      f"({old} file{'s' if old != 1 else ''}, {human_size(size)}): journald would at "
+                                      f"once as it restarts (journalctl --vacuum-time={days // 7}weeks)"))
+            return option(check, label, acts, detail=(
+                "journald deletes a whole file at a time, once its newest entry is older than the limit: "
+                + (f"{old} file{'s' if old != 1 else ''} ({human_size(size)}) at once, the rest as they age. "
+                   if old else "nothing is that old now; files go as they age. ")
+                + "A file holds about a month of entries by default, so some entries stay a while longer."), **kw)
+        opts = ([] if weaker(14 * 86400) else [keep("Keep two weeks", "2week", 14, recommended=True,
+                                                    key="two_weeks")]) + \
+               ([] if weaker(7 * 86400) else [keep("Keep one week", "1week", 7)]) + [memory]
         done = span is not None and span <= JOURNAL_LIMIT
         steps = [Step("Choose how long to keep it",
                       f"It is kept for at most {plain_span(span)} now; keeping it in memory only goes further." if done
@@ -221,12 +233,16 @@ def journal(check, scan, outcome):
                           options=[option(check, "Delete the journal files in /var/log/journal", [RootClear(
                               "clear_journal_files", {}, "Delete the journal files in /var/log/journal")])]))
     elif not in_memory:
-        steps.append(Step("Delete older entries now", "Without this, old journal files stay until journald rotates "
-                          "them, which the time limit above only applies at.",
-                          options=[option(check, "Delete journal entries older than two weeks", [RootClear(
-                              "vacuum_journal", {"time": "2weeks"}, "journalctl --vacuum-time=2weeks")]),
-                                   option(check, "Delete journal entries older than one week", [RootClear(
-                                       "vacuum_journal", {"time": "1weeks"}, "journalctl --vacuum-time=1weeks")])]))
+        # only where something is that old: each apply is an irreversible History entry ("0B freed" otherwise)
+        olds = [(days, *journal_usage(host.sys_path("/var/log/journal"), older_than=days * 86400)) for days in (14, 7)]
+        vacuum = [option(check, f"Delete journal files older than {plain_span(days * 86400)}", [RootClear(
+                      "vacuum_journal", {"time": f"{days // 7}weeks"},
+                      f"journalctl --vacuum-time={days // 7}weeks ({n} file{'s' if n != 1 else ''}, {human_size(size)})")])
+                  for days, n, size in olds if n]
+        if vacuum:
+            steps.append(Step("Delete older entries now", "Without a time limit, old journal files stay for as long as "
+                              "journald's size limit allows (months, often). These delete them now, a whole file at a "
+                              "time, whatever limit you choose above.", options=vacuum))
     daemon, unit, logs = syslog_daemon(host)
     names = syslog_names(host)
     clear = RootClear("clear_syslog", {}, f"Delete the text logs in /var/log the syslog daemon wrote "

@@ -235,7 +235,7 @@ def _packages(host: "Host", names: list[str]) -> dict[str, str]:
 def _flatpaks(host: "Host") -> dict[str, str]:
     if not host.runner.which("flatpak"):
         return {}
-    r = host.run("flatpak", "list", "--app", "--columns=application,version")
+    r = host.run_flatpak("list", "--app", "--columns=application,version")
     return {f[0]: f[1] for f in (ln.split("\t") for ln in r.stdout.splitlines()) if len(f) == 2 and f[1].strip()}
 
 

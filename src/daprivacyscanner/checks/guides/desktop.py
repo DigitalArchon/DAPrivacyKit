@@ -11,7 +11,7 @@ from ...guide import Guide, Input, Step
 from .._util import (files_under, isdir, isfile, processes, read_text, recent_files, recent_hrefs,
                      systemctl_state)
 from ..fixes import _gnome_family, gset, kset, thumbnail_deletions
-from . import evidence, guide, option, expire_actions, tmpfiles_available, tmpfiles_path, unit_exists
+from . import FLATHUB_ADD, evidence, guide, option, expire_actions, tmpfiles_available, tmpfiles_path, unit_exists
 
 
 THUMBNAILS_IN_MEMORY_MB = 200
@@ -114,7 +114,9 @@ def indexers(check, scan, outcome):
                            "Elisa, KDE's music player, may show no music until it is set to scan your music folders "
                            "itself, in its settings.",
                            "Turned back on (System Settings → Search → File Search), it reads every document again "
-                           "to rebuild the index, which takes a while."])]
+                           "to rebuild the index, which takes a while.",
+                           f"Reverting from History turns the setting back on; Baloo starts again at your next login "
+                           f"(or now: {tool} enable)."])]
         if state.startswith("file contents"):
             names = kset(scan, "baloofilerc", "General", "only basic indexing", "true", default="false")
             # what it has indexed stays in the index until it is rebuilt, without contents this time. Stopped without
@@ -137,7 +139,11 @@ def indexers(check, scan, outcome):
             opts.append(option(check, "Index file names only, and rebuild the index without contents", names + rebuild,
                                side_effects=["Searching inside documents stops working; KRunner and Dolphin still find "
                                              "files by name. The index still lists every file name in your home folder.",
-                                             "Takes full effect at your next login."]))
+                                             # rebuilt now when there is an index (live: 12.6 MB to 330 KB in seconds)
+                                             "The index is rebuilt now, with names only." if rebuild else
+                                             "Takes effect when Baloo next starts (at your next login).",
+                                             "Reverting from History turns the setting back; Baloo indexes contents "
+                                             "again from your next login."]))
         steps.append(Step("Baloo (KDE): stop keeping what's inside your files",
                           "Baloo reads every document in your home folder and keeps its words in "
                           f"{host.display(baloo)}. Turning it off stops that; the index it made has to be deleted too. "
@@ -160,10 +166,15 @@ def indexers(check, scan, outcome):
             if was_running:
                 acts.append(Command(["systemctl", "--user", "start", unit], "start it again, with nothing to index",
                                     after=True, check_ok=False))
+        recursive = scan.gnome.gsettings(INDEXER_SCHEMA, "index-recursive-directories")
+        # its default is '$HOME' on Fedora 44 and Ubuntu 26.04 (LocalSearch 3.11), the special folders elsewhere
+        whole = isinstance(recursive, list) and any(d in ("$HOME", "~", str(host.home)) for d in recursive)
         steps.append(Step(f"{name} (GNOME): stop keeping what's inside your files",
-                          f"{name} reads the documents in your main folders (Desktop, Documents, Music, Pictures, "
-                          "Videos, Downloads) and keeps their words in a database. Giving it no folders stops that; "
-                          "the database has to be deleted too.",
+                          f"{name} reads the documents in "
+                          + ("your whole home folder" if whole else
+                             "your main folders (Desktop, Documents, Music, Pictures, Videos, Downloads)")
+                          + " and keeps their words in a database. Giving it no folders stops that; the database has to "
+                          "be deleted too.",
                           options=[option(check, "Index no folders and delete its database", acts, recommended=True,
                                           side_effects=[
                                               "Files still finds files by name, more slowly, but no longer by what's "
@@ -332,7 +343,8 @@ def gvfs_metadata(check, scan, outcome):
                                           f"The mount is a systemd unit of its own ({mm.unit_file}); /etc/fstab isn't "
                                           "touched. At every boot it is skipped, never redirected, if a folder on the "
                                           "way has become a link or is missing.",
-                                          "Reverting stops and deletes the unit."])],
+                                          "Reverting stops and deletes the unit, or leaves the folder in memory until "
+                                          "the next reboot if a program is using it (gvfsd-metadata is stopped first)."])],
                       done=mm.in_memory))
     return Guide(check.id, "Stop file metadata piling up",
                  "GVFS keeps notes about the files you open, such as the page each document was left on.", steps)
@@ -499,7 +511,7 @@ def cryptomator_step(scan) -> Step:
         "encryption, where only you hold the key, doesn't need it."
         + (" Cryptomator is installed here." if have else
            "" if flatpak else " Download it from cryptomator.org (an AppImage), or install it with your package manager."),
-        commands=[] if have or not flatpak else [f"flatpak install flathub {CRYPTOMATOR_FLATPAK}"])
+        commands=[] if have or not flatpak else [FLATHUB_ADD, f"flatpak install flathub {CRYPTOMATOR_FLATPAK}"])
 
 
 @guide("desk.ephemeral_folder")
@@ -568,7 +580,11 @@ def ephemeral(check, scan, outcome):
     # only the indexers that are here: KDE's steps on Cinnamon, with none installed, were noise
     indexers = []
     if installed(host, "balooctl", "balooctl6") or isfile(scan.paths.config_home / "baloofilerc"):
-        indexers.append("Baloo: System Settings → Search → File Search → exclude ~/Ephemeral")
+        # an exclusion added once Baloo has read a folder isn't trusted (its index kept it across a restart, tested on
+        # Plasma 6.7): before anything goes in, or indexing off (the indexer check's guide)
+        indexers.append("Baloo: System Settings → Search → File Search → exclude ~/Ephemeral before you put anything in "
+                        "it; Baloo isn't trusted to forget what it has read, so if it has, turn indexing off (the file "
+                        "indexing check's guide)")
     if scan.gnome.indexer_command():
         indexers.append("GNOME's search: Settings → Search → Search Locations, ~/Ephemeral off")
     if installed(host, "recoll", "recollindex") or isdir(recoll_dir(scan)):

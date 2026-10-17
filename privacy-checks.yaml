@@ -1754,8 +1754,9 @@ checks:
       /etc/geoclue/conf.d/90-daprivacyscanner.conf ([wifi] enable=false) where GeoClue reads conf.d, else
       enable=false in geoclue.conf's [wifi] section (a fixed rule). GeoClue picks it up when it next starts.
     remedy: >
-      Your computer can work out where you are by sending the Wi-Fi networks around you to an online
-      service. Fix… turns that off; apps that need your location then can't find it by themselves.
+      Your computer can work out where you are by asking an online service: with the Wi-Fi networks around
+      you where it has Wi-Fi, which places it to the street. Fix… turns that off; apps that need your
+      location then find only a rough one, from your internet address, or none.
     verify: >
       That GeoClue 2.7 reads conf.d after geoclue.conf with later files winning (2.7.0 on Ubuntu 24.04 has the
       folder), and that with [wifi] enable=false it makes no network lookups at all (GeoIP included).

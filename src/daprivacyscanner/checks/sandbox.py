@@ -12,7 +12,7 @@ BROAD_FS = ("host", "host-os", "host-etc", "home")
 
 
 def flatpak_apps(host: Host) -> list[str] | None:
-    r = host.run("flatpak", "list", "--app", "--columns=application")
+    r = host.run_flatpak("list", "--app", "--columns=application")
     if r.missing or not r.ok:
         return None
     return [ln.strip() for ln in r.stdout.splitlines() if ln.strip() and ln.strip() != "Application ID"]
@@ -30,7 +30,7 @@ def _merge_list(base: str, override: str) -> list[str]:
 
 def flatpak_permissions(scan: Scan, app: str) -> dict:
     """The app's permissions with user and system overrides applied."""
-    r = scan.host.run("flatpak", "info", "--show-permissions", app)
+    r = scan.host.run_flatpak("info", "--show-permissions", app)
     perms = ini.parse(r.stdout) if r.ok else {}
     for f in (scan.host.sys_path(f"/var/lib/flatpak/overrides/{app}"), scan.paths.data_home / "flatpak" / "overrides" / app):
         over = ini.parse(read_text(scan.host, f) or "")
@@ -170,7 +170,7 @@ class PortalPermissions(Check):
     id = "sbx.portal_permissions"
 
     def detect(self, scan: Scan) -> Outcome:
-        r = scan.host.run("flatpak", "permissions")
+        r = scan.host.run_flatpak("permissions")
         if r.missing:
             return absent("Flatpak isn't installed.")
         if not r.ok:

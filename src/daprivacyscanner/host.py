@@ -200,3 +200,20 @@ class Host:
             env: Mapping[str, str] | None = None) -> CommandResult:
         extra = {**({"stdin": stdin} if stdin is not None else {}), **({"env": env} if env else {})}
         return self.runner.run(argv, timeout=timeout, **extra)
+
+    def run_flatpak(self, *args: str, timeout: float = DEFAULT_TIMEOUT) -> CommandResult:
+        """flatpak, run as a user who has no Flatpak installation of their own, makes one: an empty repository in
+        ~/.local/share/flatpak and a cache in ~/.cache/flatpak (seen on Fedora 44 with an empty home folder). A scan
+        never writes (rule 4), and there is nothing of the user's to list then: flatpak gets data and cache folders of
+        its own for the call, in the runtime folder where there is one, removed at once."""
+        data = Path(self.environ.get("XDG_DATA_HOME") or self.home / ".local" / "share")
+        if (data / "flatpak").is_dir():
+            return self.run("flatpak", *args, timeout=timeout)
+        import tempfile
+        runtime = self.environ.get("XDG_RUNTIME_DIR") or ""
+        tmp = tempfile.mkdtemp(prefix="daprivacyscanner-flatpak.", dir=runtime if os.path.isdir(runtime) else None)
+        try:
+            return self.run("flatpak", *args, timeout=timeout,
+                            env={"XDG_DATA_HOME": f"{tmp}/data", "XDG_CACHE_HOME": f"{tmp}/cache"})
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)

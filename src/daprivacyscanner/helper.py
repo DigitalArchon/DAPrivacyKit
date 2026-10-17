@@ -1126,10 +1126,14 @@ def set_service(args: dict) -> dict:
     it is recorded and can be put back."""
     _must_be_root()
     units, enable, start = args.get("units", [args.get("unit")]), args.get("enable"), args.get("start")
+    # mask: turned off for good, so that nothing starts them again (cups-browsed's Wants=avahi-daemon.service started
+    # a disabled Avahi at every boot, and at every restart of cups-browsed: Mint 22.3)
+    mask = args.get("mask", False)
     if not isinstance(units, list) or not 1 <= len(units) <= 4 or len(set(units)) != len(units) or \
             any(u not in SERVICES for u in units):
         raise Refused("that unit isn't on the helper's list")
-    if enable not in (True, False, None) or start not in (True, False, None) or (enable is None and start is None):
+    if enable not in (True, False, None) or start not in (True, False, None) or (enable is None and start is None) or \
+            mask not in (True, False) or (mask and (enable is not False or start is not False)):
         raise Refused("bad request")
     before = {u: _unit_state(u) for u in units}
     for u in units:
@@ -1140,6 +1144,8 @@ def set_service(args: dict) -> dict:
     had = _unit_dirs()
     try:
         _set_units({u: (enable, start) for u in units}, before)
+        if mask:
+            _do(["systemctl", "mask", *[u for u in units if not before[u][0].startswith("masked")]])
         # what systemctl answered isn't what happened: stopped alone, avahi-daemon.socket was started again at once
         # by D-Bus activation and systemctl still answered 0 (Mint 22.3, systemd 255). The states decide.
         now = {u: _unit_state(u) for u in units}
@@ -1148,9 +1154,9 @@ def set_service(args: dict) -> dict:
                 raise Refused(f"{u} was started again at once, by something that asked for it")
             if start is True and now[u][1] != "active":
                 raise Refused(f"{u} didn't stay running (systemctl status {u} says why)")
-            if enable is not None and before[u][0] in ("enabled", "disabled") and \
-                    now[u][0] != ("enabled" if enable else "disabled"):
-                raise Refused(f"{u} is {now[u][0]} now, not {'enabled' if enable else 'disabled'}")
+            want = "masked" if mask else "enabled" if enable else "disabled"
+            if enable is not None and (before[u][0] in ("enabled", "disabled") or mask) and now[u][0] != want:
+                raise Refused(f"{u} is {now[u][0]} now, not {want}")
     except Refused as e:
         try:
             after = {u: _unit_state(u) for u in units}
@@ -1583,19 +1589,22 @@ def revert(args: dict) -> dict:
     _must_be_root()
     change = _load_change(args.get("change_id"))
     force = args.get("force") is True
+    # what was put back by hand already (a file deleted, a setting changed back) is no conflict: as before is the aim
     conflicts = []
     for f in change.get("files", []):
-        if _sha(_read(f["path"])) != f["after_sha"]:
+        before = None if f["before"] is None else base64.b64decode(f["before"])
+        f["_back"] = _read(f["path"]) == before
+        if not f["_back"] and _sha(_read(f["path"])) != f["after_sha"]:
             conflicts.append(f"{f['path']} has been edited since")
     # one unit (journals before protocol 28) or several turned on or off together
     services = change.get("services") or ([change["service"]] if change.get("service") else [])
     for svc in services:
-        if tuple(_unit_state(svc["unit"])) != tuple(svc["after"]):
+        if tuple(_unit_state(svc["unit"])) not in (tuple(svc["after"]), tuple(svc["before"])):
             conflicts.append(f"{svc['unit']} has been changed since")
     sc = change.get("sysctl")
     if sc:
         with open(_check_path(_sysctl_path(sc["key"]))) as fh:
-            if fh.read().strip() != sc["after"]:
+            if fh.read().strip() not in (sc["after"], sc["before"]):
                 conflicts.append(f"{sc['key']} has been changed since")
     mount_unit, linked = change.get("mount_unit"), change.get("linked_unit")
     if mount_unit and mount_unit.get("target") == "ephemeral" and _ephemeral_has_files(mount_unit):
@@ -1614,6 +1623,10 @@ def revert(args: dict) -> dict:
         said.append(f"{mount_unit['path']} stays in memory until the next restart, with its mount unit removed" if still
                     else f"{mount_unit['path']} is no longer kept in memory (its mount unit removed)")
     for f in change.get("files", []):
+        if f.get("_back"):              # as it was already: nothing to write
+            if not mount_unit:
+                said.append(f"{f['path']} was already as it was before")
+            continue
         _write(f["path"], None if f["before"] is None else base64.b64decode(f["before"]))
         if f["before"] is None:
             _did(["rm", f["path"]])
@@ -1622,6 +1635,10 @@ def revert(args: dict) -> dict:
         if not mount_unit:              # the mount unit's own file is said above
             said.append(f"{f['path']} removed" if f["before"] is None else f"{f['path']} put back as it was")
     if services:
+        masked = [s["unit"] for s in services if str(s["after"][0]).startswith("masked")
+                  and not str(s["before"][0]).startswith("masked") and _unit_state(s["unit"])[0].startswith("masked")]
+        if masked:                      # unmasked first: a masked unit can't be enabled or started
+            _do(["systemctl", "unmask", *masked])
         now = {s["unit"]: _unit_state(s["unit"]) for s in services}
         _set_units({s["unit"]: (s["before"][0] == "enabled" if s["before"][0] in ("enabled", "disabled") else None,
                                 s["before"][1] == "active") for s in services}, now)
@@ -1946,10 +1963,8 @@ def _remove_mount_unit(mu: dict) -> tuple[bool, list[str]]:
     if _mounted_at(mu["path"]) and target == "gvfs-metadata":
         _stop_metadata_daemon(mu.get("uid"))        # started again meanwhile (a file manager asked): once more
         code, out, err = _do_code(["systemctl", "stop", mu["name"]])
-    if _mounted_at(mu["path"]):
-        why = (err or out).strip()[:120]
-        return True, [f"A program still has a file in {mu['path']} open, so it couldn't be unmounted now"
-                      + (f" ({why})" if why else "")]
+    if _mounted_at(mu["path"]):                     # systemctl's own words ("Job failed. See journalctl -xe") say less
+        return True, [f"A program still has a file in {mu['path']} open, so it couldn't be unmounted now"]
     if target not in IN_MEMORY or "home" not in mu:
         return False, []
     ephemeral = target == "ephemeral"
@@ -4571,6 +4586,8 @@ def planned(request: str, args: dict, home: str | None = None) -> list[str]:
                               *units]))
             if start is not None and start is not enable:
                 out.append(q(["systemctl", "start" if start else "stop", *units]))
+            if args.get("mask"):
+                out.append(q(["systemctl", "mask", *units]))
         elif request == "set_sysctl":
             out.append(q(["sysctl", "-w", f"{args['key']}={args['value']}"]))
         elif request == "ufw_enable":

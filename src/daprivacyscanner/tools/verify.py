@@ -436,9 +436,12 @@ def check_minisign(host: Host, keyset: KeySet, sig: Path, data: Path) -> Signatu
     keyid = _minisign_keyid(sig)
     pubs = keyset.minisign_keys()
     if not pubs:
+        missing = not host.runner.which("minisign")          # both needed: said together, not one after the other
         return Signature(sig, data, "minisign", "no_key", issuer=keyid,
                          detail="A minisign signature: choose the project's minisign public key (a .pub file, or "
-                                "the key from its site saved to a file) as the key file.")
+                                "the key from its site saved to a file) as the key file."
+                                + (" Checking it also needs minisign, which isn't installed." if missing else ""),
+                         install=install_command(host, "minisign") if missing else "")
     if not host.runner.which("minisign"):
         return Signature(sig, data, "minisign", "no_tool", issuer=keyid,
                          detail="Checking it needs minisign, which isn't installed.", install=install_command(host, "minisign"))

@@ -5,7 +5,7 @@ from __future__ import annotations
 from ...fix import Command, DeleteFiles, FileCommand
 from ...guide import Guide, Step
 from .._util import files_under
-from . import guide, option, evidence
+from . import FLATHUB_ADD, guide, option, evidence
 
 
 @guide("sbx.flatpak_broad_perms")
@@ -31,7 +31,7 @@ def flatpak_broad(check, scan, outcome):
     steps.append(Step("Other broad permissions",
                       "Access to all devices or the whole session bus can be narrowed too, but often breaks apps; "
                       "Flatseal shows every permission with a switch.",
-                      commands=["flatpak install flathub com.github.tchx84.Flatseal"]))
+                      commands=[FLATHUB_ADD, "flatpak install flathub com.github.tchx84.Flatseal"]))
     return Guide(check.id, "Narrow Flatpak apps' permissions", "", steps)
 
 
@@ -60,7 +60,7 @@ def leftover_data(check, scan, outcome):
 @guide("sbx.portal_permissions")
 def portal_permissions(check, scan, outcome):
     from ..sandbox import PORTAL_TABLES, portal_grants
-    r = scan.host.run("flatpak", "permissions")
+    r = scan.host.run_flatpak("permissions")
     grants = portal_grants(r.stdout) if r.ok else []
     opts = [option(check, f"{app}: forget {PORTAL_TABLES[t] if t != 'devices' else i}", [Command(
         ["flatpak", "permission-remove", t, i, app], "the app asks again the next time it needs it")])

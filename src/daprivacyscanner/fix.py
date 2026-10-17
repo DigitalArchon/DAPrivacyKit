@@ -1661,6 +1661,10 @@ def apply_plan(plan: FixPlan, host: Host, log: "UndoLog", confirmed_irreversible
                            "failed_step": failed_at.describe() if failed_at is not None else ""})
             return ApplyResult(False, entry_id, [], error, rolled)
         return ApplyResult(False, None, [], error, rolled)
+    if records and all(r.get("noop") for r in records):
+        # nothing needed changing (the helper found it already so): no History entry, which would be one with
+        # nothing to revert (live on Mint: CUPS's option applied again)
+        return ApplyResult(True, None, [r["text"] for r in records])
     log.add(entry_id, plan.check_id, plan.title, records, extra={"via": dict(plan.via) or {"fix": True}})
     return ApplyResult(True, entry_id, [r["text"] for r in records])
 
@@ -2194,7 +2198,7 @@ class RootChange(Action):
             raise
         warn = "; ".join(r.get("warnings") or [])
         if not r.get("changed"):
-            return {"kind": self.kind, "change_id": None, "text": f"{self.text} (already so)"}
+            return {"kind": self.kind, "change_id": None, "text": f"{self.text} (already so)", "noop": True}
         return {"kind": self.kind, "change_id": r["change_id"],
                 "text": self.text + (f" (warning: {warn})" if warn else ""),
                 "ran": list(r.get("ran") or []), "files": list(r.get("files") or []), "lines": lines,
