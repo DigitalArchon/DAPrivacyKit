@@ -4733,6 +4733,7 @@ FAN_MODIFY, FAN_OPEN, FAN_MOVED_FROM, FAN_MOVED_TO = 0x2, 0x20, 0x40, 0x80
 FAN_CREATE, FAN_DELETE, FAN_OPEN_EXEC, FAN_Q_OVERFLOW, FAN_ONDIR = 0x100, 0x200, 0x1000, 0x4000, 0x40000000
 FAN_WATCHED = FAN_MODIFY | FAN_OPEN | FAN_MOVED_FROM | FAN_MOVED_TO | FAN_CREATE | FAN_DELETE | FAN_OPEN_EXEC
 WATCH_INIT_FLAGS = FAN_CLOEXEC | FAN_NONBLOCK | FAN_UNLIMITED_MARKS | FAN_REPORT_DIR_FID | FAN_REPORT_NAME
+FAN_FOLDERS_MOVED = FAN_MOVED_FROM | FAN_MOVED_TO | FAN_DELETE | FAN_ONDIR
 FAN_INFO_DFID_NAME, FAN_INFO_DFID, FAN_INFO_OLD_DFID_NAME, FAN_INFO_NEW_DFID_NAME = 2, 3, 10, 12
 _WATCH: dict = {}                              # the running watch: its child process and who asked
 
@@ -5006,7 +5007,32 @@ class _Watched:
             e = ctypes.get_errno()
             os.close(self.fan)
             raise OSError(e, "this kind of filesystem can't be watched")
+        # folders renamed, moved or removed, by anyone: the paths remembered for folders' handles are out of date
+        # then (files made in ~/d2 were reported under ~/d1, its name before: tested on Mint). In a group of its
+        # own, since FAN_ONDIR on the main one would also report every folder opened to be listed. Without it, what
+        # is remembered is forgotten at every poll instead.
+        self.dirs = libc.fanotify_init(WATCH_INIT_FLAGS, os.O_RDONLY | os.O_CLOEXEC)
+        if self.dirs >= 0 and libc.fanotify_mark(self.dirs, FAN_MARK_ADD | FAN_MARK_FILESYSTEM, FAN_FOLDERS_MOVED,
+                                                 -100, at.encode()):
+            os.close(self.dirs)
+            self.dirs = -1
         self.mfd = os.open(at, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+
+    def moved(self) -> None:
+        """Reads what the folders' group has: a folder renamed, moved or removed makes every remembered path of
+        this filesystem's suspect, so they are forgotten (looked up again as they come)."""
+        while self.dirs >= 0:
+            try:
+                buf = os.read(self.dirs, 1 << 16)
+            except BlockingIOError:
+                return
+            except OSError:
+                os.close(self.dirs)
+                self.dirs = -1
+                self.paths.clear()
+                return
+            if any(mask & (FAN_ONDIR | FAN_Q_OVERFLOW) for mask, _pid, _infos in _fan_events(buf)):
+                self.paths.clear()
 
     def folder(self, htype: int, handle: bytes) -> str | None:
         """The folder a handle names, as a path of the caller's, or None (gone, or not mounted anywhere)."""
@@ -5092,14 +5118,19 @@ def _watch_child() -> None:
     started = time.monotonic()
     by_fd = {w.fan: w for w in watched}
     while True:
+        dirs = {w.dirs: w for w in by_fd.values() if w.dirs >= 0}
         try:
-            ready = select.select([0, *by_fd], [], [], 1.0)[0]
+            ready = select.select([0, *by_fd, *dirs], [], [], 1.0)[0]
         except InterruptedError:
             continue
         for fd in ready:
-            if fd == 0:
+            if fd in dirs:
+                dirs[fd].moved()
+                continue
+            if fd not in by_fd:
                 continue
             w = by_fd[fd]
+            w.moved()                                   # a folder renamed before these events: its old path forgotten
             try:
                 buf = os.read(fd, 1 << 20)
             except BlockingIOError:
@@ -5131,6 +5162,9 @@ def _watch_child() -> None:
                 line, pending = pending.split(b"\n", 1)
                 word = line.strip()
                 if word == b"poll":
+                    for w in by_fd.values():
+                        if w.dirs < 0:                  # no word of folders renamed: what is remembered may be old
+                            w.paths.clear()
                     out.write(json.dumps({**tally.counts(), "seconds": time.monotonic() - started}) + "\n")
                     out.flush()
                 elif word == b"end":

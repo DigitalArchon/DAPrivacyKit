@@ -367,3 +367,33 @@ def test_the_kernels_queue_is_bounded_and_an_overflow_is_counted():
     assert "FAN_UNLIMITED_QUEUE |" not in src and "| FAN_UNLIMITED_QUEUE" not in src
     events = list(helper._fan_events(struct.pack("=IBBHQii", 24, 3, 0, 24, helper.FAN_Q_OVERFLOW, -1, 0)))
     assert events == [(helper.FAN_Q_OVERFLOW, 0, [])]
+
+
+def _event(mask, pid=7, handle=b"\x01" * 8, name=b"d1"):
+    info = struct.pack("=BBH", helper.FAN_INFO_DFID_NAME, 0, 0) + b"\0" * 8 + struct.pack("=Ii", len(handle), 1)
+    info += handle + name + b"\0"
+    info += b"\0" * (-len(info) % 4)
+    info = struct.pack("=BBH", helper.FAN_INFO_DFID_NAME, 0, len(info)) + info[4:]
+    return struct.pack("=IBBHQii", 24 + len(info), 3, 0, 24, mask, -1, pid) + info
+
+
+def test_a_folder_renamed_makes_the_remembered_paths_go():
+    """Files made in ~/aw-ren/d2 were reported under ~/aw-ren/d1, its name before (D9, live on Mint): folders' handles
+    were remembered as paths for good. A group of its own reports folders renamed, moved or removed."""
+    import os
+    assert helper.FAN_FOLDERS_MOVED & helper.FAN_ONDIR and not helper.FAN_WATCHED & helper.FAN_ONDIR
+    assert helper.FAN_FOLDERS_MOVED & helper.FAN_MOVED_FROM and helper.FAN_FOLDERS_MOVED & helper.FAN_DELETE
+    w = helper._Watched.__new__(helper._Watched)
+    r, wr = os.pipe()
+    os.set_blocking(r, False)
+    w.dirs, w.paths = r, {(1, b"\x01" * 8): "/home/alice/aw-ren/d1"}
+    try:
+        os.write(wr, _event(helper.FAN_MOVED_FROM, name=b"file.txt"))           # a file renamed: nothing to forget
+        w.moved()
+        assert w.paths
+        os.write(wr, _event(helper.FAN_MOVED_FROM | helper.FAN_ONDIR) + _event(helper.FAN_MOVED_TO | helper.FAN_ONDIR))
+        w.moved()
+        assert w.paths == {} and w.dirs == r
+    finally:
+        os.close(r)
+        os.close(wr)

@@ -1451,7 +1451,10 @@ OACS, FNA and SANICAP via the helper's ioctl), read on request and kept for the 
     its own limit (never `FAN_UNLIMITED_QUEUE`, with which a reader behind six busy programs let it grow from 470 MB
     to 1.7 GB of kernel memory in 25 seconds, the events' processes long gone by the time they were read): when it
     is full the kernel drops what comes next and says so, which is counted, and the page says that some of what
-    happened is missing.
+    happened is missing. Folders' handles are remembered as paths, so a second group per filesystem reports
+    folders renamed, moved or removed (`FAN_ONDIR`, in a group of its own since on the main one it would also
+    report every folder listed), and what is remembered is forgotten then: files made in `~/d2` were reported
+    under `~/d1`, its name before (tested on Mint, before and after).
   - **Whose event it is**: the process's cgroup when the event is read, which must be one of the request's
     units under the caller's own `user-UID.slice`; the request can't name another account's. A process is looked
     up again when it runs a program (systemd-run and `flatpak run` move themselves into the scope first, then
