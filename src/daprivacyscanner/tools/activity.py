@@ -9,7 +9,8 @@ written to; `who`: "" for the app watched, else the name of another program of t
 
 The summary works in counts per folder (rule 2's spirit: the list of files a person opened is itself a
 recent-files record, so it is never shown, saved or exported). Named are only: the folders; a file or database the
-app writes to regularly (`regular`: the user needs to see what it is); and the files, written during the session
+app writes to regularly (`regular`: the user needs to see what it is; a document of the user's own, saved often, is
+only counted, `regular_yours`); and the files, written during the session
 by the app or by any other program of the user's, that hold the names of the user's own files the app opened
 (`find_records`: the thumbnail with the file's path in it, the recent-files list), which are the leak this looks
 for. Nothing here is kept: the caller holds the result in memory for as long as the tool is open."""
@@ -212,7 +213,7 @@ def summarise(records: Iterable[list], w: Where, seconds: float, names: bool = F
     `names`: also name each place's files (a trial's made-up home; never for the real one)."""
     places: dict[tuple[str, str], dict] = {}
     totals = {"opened": 0, "written": 0, "created": 0, "deleted": 0, "ran": 0}
-    regular, touched, seen = [], {}, 0
+    regular, touched, seen, regular_yours = [], {}, 0, 0
     short = seconds < REGULAR_MINUTES * 60 + 60
     for rec in records:
         path, flags, opens, writes, minutes, who = rec[:6]
@@ -253,7 +254,10 @@ def summarise(records: Iterable[list], w: Where, seconds: float, names: bool = F
             t["written" if flags & (WRITTEN | CREATED | DELETED | MOVED) else "opened"] += 1
         if kind != "system" and not flags & DELETED and (
                 minutes >= REGULAR_MINUTES or (short and writes >= REGULAR_WRITES)):
-            regular.append({"path": tilde(path, w), "real": path, "writes": writes, "minutes": minutes})
+            if kind in ("yours", "media") and not names:
+                regular_yours += 1                     # the user's own document, saved often: counted, never named
+            else:
+                regular.append({"path": tilde(path, w), "real": path, "writes": writes, "minutes": minutes})
     regular.sort(key=lambda r: (-r["minutes"], -r["writes"], r["path"]))
     regular = regular[:REGULAR_MAX]
     for r in regular:
@@ -268,7 +272,7 @@ def summarise(records: Iterable[list], w: Where, seconds: float, names: bool = F
             del p["files"]
     yours = [p for p in shown if p["kind"] == "yours"]
     return {"seconds": round(seconds), "files": seen, "totals": totals, "places": shown[:PLACES_MAX],
-            "places_left_out": max(0, len(shown) - PLACES_MAX), "regular": regular,
+            "places_left_out": max(0, len(shown) - PLACES_MAX), "regular": regular, "regular_yours": regular_yours,
             "sensitive": sorted(touched.values(), key=lambda t: t["what"]),
             "yours": {"opened": sum(p["opened"] for p in yours),
                       "changed": sum(p["written"] + p["created"] + p["deleted"] for p in yours)},

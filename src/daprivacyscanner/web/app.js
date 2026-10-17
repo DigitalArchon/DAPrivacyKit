@@ -3952,9 +3952,12 @@ function keepsResult(job, reload) {
         + "yours it opened, as plain text. A compressed or encrypted store could still hold them."),
     rec.skipped ? h("div", { class: "small muted" }, `${plural(rec.skipped, "file")} too large or too many to read `
       + `${rec.skipped > 1 ? "were" : "was"} not searched.`) : null,
-    r.regular.length ? [h("h4", {}, "Files it writes to all the time"),
-      h("ul", { class: "named" }, r.regular.map(f => h("li", {}, h("code", {}, f.path), ` — ${f.type}, ${fmtSize(f.size)}, `
-        + `written in ${plural(f.minutes, "different minute")} (${plural(f.writes, "write")})`)))] : null,
+    r.regular.length || r.regular_yours ? [h("h4", {}, "Files it writes to all the time"),
+      r.regular.length ? h("ul", { class: "named" }, r.regular.map(f => h("li", {}, h("code", {}, f.path), ` — ${f.type}, `
+        + `${fmtSize(f.size)}, written in ${plural(f.minutes, "different minute")} (${plural(f.writes, "write")})`))) : null,
+      r.regular_yours ? h("p", { class: "small muted" }, `${r.regular.length ? "Besides these, " : ""}`
+        + `${plural(r.regular_yours, "file")} of your own, saved again and again: counted, not named, since they are `
+        + "your documents.") : null] : null,
     r.sensitive.length ? [h("h4", {}, "Sensitive places it opened"),
       h("p", { class: "small muted" }, "An app opening its own profile is expected; anything else here deserves a second look."),
       h("ul", { class: "named" }, r.sensitive.map(x => h("li", {}, `${x.what}: ${plural(x.opened, "file")} read`

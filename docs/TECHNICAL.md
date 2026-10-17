@@ -1447,7 +1447,8 @@ OACS, FNA and SANICAP via the helper's ioctl), read on request and kept for the 
     other programs wrote meanwhile. `watch_end` hands it over once and the child ends.
   - **The summary** (`activity.summarise`): totals; folders with counts, each as deep as says whose it is
     (`~/.config/Foo/Cache`, `~/.var/app/<id>/data/x`, `~/Documents/Work`); the files written to regularly (in three
-    or more different minutes), named with what kind of file they are; the sensitive places it opened
+    or more different minutes), named with what kind of file they are, programs' files only (a document of the
+    user's own or on another disk, saved as often, is counted, never named); the sensitive places it opened
     (`activity.SENSITIVE`: SSH and GnuPG keys, keyrings, browsers' and mail profiles, wallets, shell histories),
     by kind; and how many of the user's own files it opened. The user's own files are never listed: that list
     would itself be a recent-files record.
