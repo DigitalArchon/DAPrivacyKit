@@ -70,11 +70,14 @@ def _zram_writeback_step(scan) -> list[Step]:
 
 @guide("enc.swap_persistent")
 def swap_persistent(check, scan, outcome):
-    steps = _zram_writeback_step(scan) + _swap_steps(check, scan)
+    swap = _swap_steps(check, scan)
+    steps = _zram_writeback_step(scan) + swap
+    both = sum(1 for s in swap if s.title.startswith(("Use compressed memory", "Or: encrypt the swap"))) > 1
     return Guide(check.id, "Make swap forget its contents at shutdown",
                  "Swap on disk keeps old memory pages after a reboot (even if encrypted, under a key that is "
                  "unlocked every boot). zram without writeback, or a random-key swap, leaves nothing behind.", steps
-                 + [Step("Hibernation", "Both options rule out hibernation, which needs swap that survives a reboot.")])
+                 + [Step("Hibernation", ("Both options rule out" if both else "Keeping swap in memory rules out")
+                         + " hibernation, which needs swap that survives a reboot.")])
 
 
 @guide("enc.tpm_no_pin")

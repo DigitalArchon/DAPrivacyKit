@@ -254,14 +254,32 @@ def _zram_commands(scan: Scan) -> list[str]:
     return cmds
 
 
+ZRAM_CONFIG_FILES = ("/etc/systemd/zram-generator.conf", "/run/systemd/zram-generator.conf",
+                     "/usr/local/lib/systemd/zram-generator.conf", "/usr/lib/systemd/zram-generator.conf")
+
+
+def _zram_state(scan: Scan) -> tuple[str, list[str]]:
+    """("active" | "configured" | "installed" | "missing", the zram swaps in use or the configuration files): zram
+    already swapping (Omarchy: /dev/zram0 at priority 100), zram-generator set up but no zram in use yet, installed
+    with no configuration, or not installed. Writing a configuration over one in use, or someone else's, is never
+    offered."""
+    host = scan.host
+    active = [n for n, _, _ in read_swaps(host) if n.startswith("/dev/zram")]
+    if active:
+        return "active", active
+    if not host.sys_path(ZRAM_GENERATOR).exists():
+        return "missing", []
+    conf = [f for f in ZRAM_CONFIG_FILES if host.sys_path(f).exists()]
+    conf += [f"{d}/{c.name}" for d in (f + ".d" for f in ZRAM_CONFIG_FILES)
+             for c in sorted(host.sys_path(d).glob("*.conf")) if host.sys_path(d).is_dir()]
+    return ("configured", conf) if conf else ("installed", [])
+
+
 def _zram_option(check: Check, scan: Scan) -> list[Option]:
     """zram-generator's configuration, written by the helper: only when zram-generator is installed,
     no zram is in use, and there is no configuration already (someone else's). Never with a
     writeback device."""
-    host = scan.host
-    if not host.sys_path(ZRAM_GENERATOR).exists() or any(n.startswith("/dev/zram") for n, _, _ in read_swaps(host)):
-        return []
-    if any(host.sys_path(f).exists() for f in ("/etc/systemd/zram-generator.conf", "/usr/lib/systemd/zram-generator.conf")):
+    if _zram_state(scan)[0] != "installed":
         return []
     return [option(check, "Turn on zram (half of the memory, at most 8 GB)", [dropin(
         "zram", {"zram-size": "min(ram / 2, 8192)"}, "/etc/systemd/zram-generator.conf")],
@@ -272,35 +290,122 @@ def _zram_option(check: Check, scan: Scan) -> list[Option]:
         recommended=True)]
 
 
+@dataclass
+class DiskSwap:
+    """A swap on a disk, as the guides name it: its device node (/dev/mapper/NAME for a logical volume or an
+    encrypted one, never /dev/dm-N, whose number can change between boots) or its file."""
+    shown: str                              # what swapoff and the user see
+    kind: str                               # "file" or "partition" (as /proc/swaps says)
+    device: object = None                   # the lsblk device under it (blockdev.Device), when found
+
+
+def disk_swaps(scan: Scan) -> list[DiskSwap]:
+    from ... import blockdev
+    out = []
+    for name, kind, _ in read_swaps(scan.host):
+        if name.startswith("/dev/zram"):
+            continue
+        if kind == "partition":
+            d = blockdev.find(scan.context.devices or [], scan.host, name)
+            out.append(DiskSwap(d.path if d is not None else name, kind, d))
+        else:
+            out.append(DiskSwap(name, kind, blockdev.holding(scan.context.devices or [], name)))
+    return out
+
+
+def _swap_removal(scan: Scan, swaps: list[DiskSwap]) -> tuple[list[str], list[str]]:
+    """The commands that take the disk swap away for good once it is off and out of /etc/fstab, and what they do and
+    don't do (rule 8): a swap file is deleted; a partition keeps the old pages until it is reused."""
+    import shlex
+    cmds, notes = [], []
+    files = [s for s in swaps if s.kind == "file"]
+    for s in files:
+        cmds.append(f"sudo rm {shlex.quote(s.shown)}     # once it is off and out of /etc/fstab")
+    if files:
+        notes.append("A swap file keeps the pages that were swapped out in it until it is deleted, and deleting it "
+                     "doesn't erase them: they stay on the disk until the space is reused or trimmed. Disk encryption "
+                     "is what keeps them unreadable to someone who has the disk.")
+    if any(s.kind == "partition" for s in swaps):
+        notes.append("A swap partition or volume keeps the old pages until something else is written there. Format "
+                     "it with a password (LUKS), or reuse it for something else; with disk encryption under it, they "
+                     "stay unreadable to someone who has the disk.")
+    return cmds, notes
+
+
 def _swap_steps(check: Check, scan: Scan) -> list[Step]:
-    swaps = [(n, k) for n, k, _ in read_swaps(scan.host) if not n.startswith("/dev/zram")]
+    import shlex
+    swaps = disk_swaps(scan)
     if not swaps:
         return []
     zram = _zram_option(check, scan)
-    steps = [Step("Use compressed memory (zram) instead of swap on disk",
-                  "zram keeps swapped-out pages compressed in RAM, so nothing is written to the disk. Then turn "
-                  "the disk swap off and take it out of /etc/fstab so it isn't used again at the next boot.",
-                  options=zram,
-                  commands=(_zram_commands(scan) if not zram else []) + [f"sudo swapoff {n}" for n, _ in swaps]
-                  + ["sudoedit /etc/fstab     # put a # in front of the swap line"],
-                  side_effects=[SWAP_SIZE_NOTE, "Memory-hungry workloads have less room than with a large swap "
-                                "partition.", "Never configure zram with a writeback device (writeback-device=): it "
-                                "writes pages back to a disk, which is what this avoids."])]
-    parts = [(n, k) for n, k in swaps if k == "partition"]
-    if parts:
-        cmds = []
-        for n, _ in parts:
-            r = scan.host.run("lsblk", "-no", "PARTUUID", n)
-            partuuid = r.stdout.strip() if r.ok and r.stdout.strip() else "<PARTUUID of " + n + ">"
-            cmds += [f"sudo swapoff {n}",
-                     f"echo 'cryptswap PARTUUID={partuuid} /dev/urandom swap,cipher=aes-xts-plain64,size=512,"
-                     "sector-size=4096' | sudo tee -a /etc/crypttab",
+    state, where = _zram_state(scan)
+    off = [f"sudo swapoff {shlex.quote(s.shown)}" for s in swaps] + \
+          ["sudoedit /etc/fstab     # put a # in front of the swap line"]
+    remove, removal_notes = _swap_removal(scan, swaps)
+    delete = ", and delete it" if remove else ""
+    effects = [SWAP_SIZE_NOTE, "Memory-hungry workloads have less room than with a large swap partition.",
+               "Never configure zram with a writeback device (writeback-device=): it writes pages back to a disk, "
+               "which is what this avoids.", *removal_notes]
+    if state == "active":
+        text = (f"zram is on already ({', '.join(where)}), and used before the disk swap. What is left is the swap on "
+                "the disk: turn it off and take it out of /etc/fstab, so it isn't used again at the next boot"
+                f"{delete}.")
+        cmds = off + remove
+    elif state == "configured":
+        text = (f"zram-generator is installed and set up ({', '.join(where)}), but no zram swap is in use: start it "
+                "(or restart). Then turn the disk swap off and take it out of /etc/fstab, so it isn't used again at "
+                f"the next boot{delete}.")
+        cmds = ["sudo systemctl daemon-reload", "sudo systemctl start /dev/zram0"] + off + remove
+    else:
+        text = ("zram keeps swapped-out pages compressed in RAM, so nothing is written to the disk. Then turn the disk "
+                f"swap off and take it out of /etc/fstab, so it isn't used again at the next boot{delete}.")
+        cmds = (_zram_commands(scan) if not zram else []) + off + remove
+    steps = [Step("Use compressed memory (zram) instead of swap on disk", text, options=zram, commands=cmds,
+                  side_effects=effects)]
+    random_key = [s for s in swaps if s.kind == "partition" and s.device is not None]
+    if random_key:
+        cmds, texts = [], []
+        debian = family(scan) == "debian" and scan.host.runner.which("update-initramfs")
+        for s in random_key:
+            d = s.device
+            if d.type == "part":
+                r = scan.host.run("lsblk", "-no", "PARTUUID", s.shown)
+                if not (r.ok and r.stdout.strip()):
+                    continue
+                source = f"PARTUUID={r.stdout.strip()}"
+                texts.append(f"Check that PARTUUID={r.stdout.strip()} really is the swap partition ({s.shown}): it is "
+                             "overwritten at every boot.")
+            elif d.type == "crypt" and d.parent is not None and d.parent.type == "part":
+                r = scan.host.run("lsblk", "-no", "PARTUUID", d.parent.path)
+                if not (r.ok and r.stdout.strip()):
+                    continue
+                source = f"PARTUUID={r.stdout.strip()}"
+                texts.append(f"This swap is the encrypted volume {d.name}, unlocked with the same key at every boot: "
+                             f"replace its line in /etc/crypttab with the one below (its LUKS header on {d.parent.path} "
+                             "is overwritten at the next boot).")
+            elif d.type == "lvm":
+                source = s.shown
+                texts.append(f"This swap is a logical volume ({s.shown})"
+                             + (" inside the encrypted disk, so it is encrypted while the computer is off already. "
+                                "What is left is that it keeps earlier sessions' pages, readable whenever the disk is "
+                                "unlocked: a second layer with a new random key at every boot makes them unreadable "
+                                "after a restart." if d.encrypted else ". A logical volume has no PARTUUID: crypttab "
+                                "names it by its /dev/mapper path, which stays the same."))
+            else:
+                continue
+            line = f"cryptswap {source} /dev/urandom swap,cipher=aes-xts-plain64,size=512,sector-size=4096"
+            cmds += [f"sudo swapoff {shlex.quote(s.shown)}",
+                     f"sudoedit /etc/crypttab     # replace {d.name}'s line with: {line}" if d.type == "crypt" else
+                     f"echo '{line}' | sudo tee -a /etc/crypttab",
                      "sudoedit /etc/fstab     # replace the swap line with: /dev/mapper/cryptswap none swap defaults 0 0"]
-        steps.append(Step("Or: encrypt the swap partition with a new random key at each boot",
-                          "The partition is set up afresh with a random key every time the machine starts, so "
-                          "what was swapped out before a reboot can never be read again. Check the PARTUUID "
-                          "really is the swap partition: it is overwritten at every boot.",
-                          commands=cmds, side_effects=[SWAP_SIZE_NOTE]))
+        if cmds:
+            effects = [SWAP_SIZE_NOTE]
+            if debian:
+                cmds.append("sudo update-initramfs -u     # it stops looking for a hibernation image there")
+            steps.append(Step("Or: encrypt the swap with a new random key at each boot",
+                              "The swap is set up afresh with a random key every time the machine starts, so what was "
+                              "swapped out before a reboot can never be read again. " + " ".join(texts),
+                              commands=cmds, side_effects=effects))
     return steps
 
 

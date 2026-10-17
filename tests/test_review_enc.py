@@ -439,6 +439,74 @@ def test_trash_only_folders_left_can_still_be_cleaned(cat, tmp_path):
     assert not plan.empty and plan.actions[0].whole
 
 
+# ------------------------------------------------------------------ swap
+
+MINT_LVM = {"blockdevices": [{"name": "nvme0n1", "type": "disk", "fstype": None, "mountpoints": [None], "children": [
+    {"name": "nvme0n1p2", "type": "part", "fstype": "ext4", "mountpoints": ["/boot"]},
+    {"name": "nvme0n1p3", "type": "part", "fstype": "crypto_LUKS", "mountpoints": [None], "children": [
+        {"name": "nvme0n1p3_crypt", "type": "crypt", "fstype": "LVM2_member", "mountpoints": [None], "children": [
+            {"name": "vgmint-root", "type": "lvm", "fstype": "ext4", "mountpoints": ["/"]},
+            {"name": "vgmint-swap_1", "type": "lvm", "fstype": "swap", "mountpoints": ["[SWAP]"]}]}]}]}]}
+OMARCHY = {"blockdevices": [{"name": "vda", "type": "disk", "fstype": None, "mountpoints": [None], "children": [
+    {"name": "vda1", "type": "part", "fstype": "vfat", "mountpoints": ["/boot"]},
+    {"name": "vda2", "type": "part", "fstype": "btrfs", "mountpoints": ["/", "/home", "/swap"]}]},
+    {"name": "zram0", "type": "disk", "fstype": "swap", "mountpoints": ["[SWAP]"]}]}
+
+
+def _guide(cat, check_id, host, devices, **ctx):
+    from daprivacyscanner.checks import load_all
+    check = load_all()[check_id](cat[check_id])
+    return check.plan_guide(make_scan(host, devices=devices, **ctx), Outcome(Status.FAIL, "x"))
+
+
+def test_random_key_swap_on_lvm_inside_luks_names_the_volume(cat, tmp_path):
+    """The P330: swap on a logical volume inside LUKS. The step printed "cryptswap PARTUUID=<PARTUUID of /dev/dm-2>":
+    a logical volume has no PARTUUID."""
+    import json
+    from daprivacyscanner import blockdev
+    host = make_host(tmp_path, files={"/proc/swaps": "Filename Type Size Used Priority\n/dev/dm-2 partition 2002940 0 -1\n",
+                                      "/sys/block/dm-2/dm/name": "vgmint-swap_1\n", "/etc/os-release": "ID=linuxmint\n"})
+    g = _guide(cat, "enc.swap_persistent", host, blockdev.parse_lsblk(json.dumps(MINT_LVM)), hibernation=False)
+    step = next(s for s in g.steps if s.title.startswith("Or: encrypt the swap"))
+    joined = "\n".join(step.commands)
+    assert "PARTUUID" not in joined and "/dev/dm-2" not in joined
+    assert step.commands[0] == "sudo swapoff /dev/mapper/vgmint-swap_1"
+    assert "cryptswap /dev/mapper/vgmint-swap_1 /dev/urandom" in joined
+    assert "inside the encrypted disk" in step.text and "encrypted while the computer is off already" in step.text
+    zram = g.steps[0]
+    assert "sudo swapoff /dev/mapper/vgmint-swap_1" in zram.commands
+    assert g.steps[-1].text.startswith("Both options rule out")
+
+
+def test_zram_already_on_isnt_set_up_again(cat, tmp_path):
+    """Omarchy: /dev/zram0 in use beside /swap/swapfile. The guide printed zram-generator's install and a config that
+    would overwrite its configuration; and the swap file stayed on the disk with old memory pages."""
+    import json
+    from daprivacyscanner import blockdev
+    host = make_host(tmp_path, files={"/proc/swaps": "Filename Type Size Used Priority\n/swap/swapfile file 6052928 0 0\n"
+                                                     "/dev/zram0 partition 6052860 0 100\n",
+                                      "/usr/lib/systemd/system-generators/zram-generator": "",
+                                      "/etc/os-release": "ID=omarchy\nID_LIKE=arch\n"})
+    g = _guide(cat, "enc.swap_persistent", host, blockdev.parse_lsblk(json.dumps(OMARCHY)), hibernation=False)
+    step = g.steps[0]
+    assert "zram is on already (/dev/zram0)" in step.text and not step.options
+    assert not any("zram-generator" in c or "pacman" in c for c in step.commands)
+    assert step.commands == ["sudo swapoff /swap/swapfile", "sudoedit /etc/fstab     # put a # in front of the swap line",
+                             "sudo rm /swap/swapfile     # once it is off and out of /etc/fstab"]
+    assert any("deleting it doesn't erase them" in e for e in step.side_effects)
+    assert g.steps[-1].text.startswith("Keeping swap in memory rules out")     # only zram is offered
+
+
+def test_zram_generator_configured_but_not_running_is_started_not_rewritten(cat, tmp_path):
+    host = make_host(tmp_path, files={"/proc/swaps": "Filename Type Size Used Priority\n/swap.img file 4194300 0 -1\n",
+                                      "/usr/lib/systemd/system-generators/zram-generator": "",
+                                      "/usr/lib/systemd/zram-generator.conf": "[zram0]\n", "/etc/os-release": "ID=fedora\n"})
+    g = _guide(cat, "enc.swap_persistent", host, UBUNTU, hibernation=False)
+    step = g.steps[0]
+    assert not step.options and "sudo systemctl start /dev/zram0" in step.commands
+    assert not any("tee /etc/systemd/zram-generator.conf" in c for c in step.commands)
+
+
 def test_the_panels_say_what_the_scan_says(tmp_path):
     """The RAM disk and browser panels said "this computer can hibernate" where the scan said it can't."""
     from daprivacyscanner.tools import ramdisk as R

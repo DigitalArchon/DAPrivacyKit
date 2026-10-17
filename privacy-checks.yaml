@@ -283,8 +283,12 @@ checks:
       - 'Note: zswap (/sys/module/zswap/parameters/enabled) still writes to disk swap; it is not zram'
     fix: >
       Offer zram-generator (the helper writes /etc/systemd/zram-generator.conf, without writeback, when
-      zram-generator is installed), or crypttab swap with a random key. Warn that both rule out hibernation.
-      Taking the disk swap out of /etc/fstab stays a command for the user. zram writeback: commands to delete the
+      zram-generator is installed, no zram is in use and there is no configuration; zram already on (Omarchy):
+      only the disk swap's removal; configured but not running: started), or crypttab swap with a random key (a
+      partition by PARTUUID, a logical volume by /dev/mapper/NAME, saying when it is inside LUKS already, an encrypted
+      swap volume's crypttab line replaced). Warn that they rule out hibernation. Taking the disk swap out of
+      /etc/fstab, and deleting a swap file afterwards (with what deleting doesn't do), stay commands for the user.
+      Devices are named /dev/mapper/NAME, never /dev/dm-N. zram writeback: commands to delete the
       writeback-device line (copying the distribution's file to /etc first) and reboot, or encrypt the writeback
       device with a random key. A note explains who can read earlier sessions' swap.
     remedy: >
