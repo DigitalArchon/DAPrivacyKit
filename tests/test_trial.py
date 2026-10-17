@@ -181,6 +181,17 @@ def test_a_flatpak_runs_with_its_own_permissions_dropped(host, tmp_path):
     assert "--share=network" in b and "--device=dri" in b and "--socket=pulseaudio" in b
 
 
+def test_the_wrapper_is_the_sandboxs_pid_1_where_there_is_python3(host, tmp_path):
+    """bubblewrap's own process out of the program's sight (its environment and command line name the user and the
+    computer: the tools review of 2026-10-17)."""
+    t = a_trial(tmp_path, argv=["/app/tool"])
+    (host.root / "usr/bin").mkdir(parents=True, exist_ok=True)
+    (host.root / "usr/bin/python3").write_text("")
+    a = trial.ENGINES["bubblewrap"].command(host, t, parts(host, tmp_path))
+    end = a.index("--")
+    assert "--as-pid-1" in a[:end] and a[end + 1:end + 4] == [sandbox.PYTHON, "-I", "-c"] and a[end + 4] == trial.STAY
+
+
 def test_the_wrapper_is_python_and_names_the_helpers_it_doesnt_wait_for():
     compile(trial.STAY, "stay", "exec")
     assert "dbus-daemon" in trial.STAY and all(len(n) <= 15 for n in trial.HELPERS)
@@ -377,7 +388,7 @@ def test_a_trial_through_the_api(cat, host):
         assert t["state"] == "running" and t["how"]["network"] == "off" and t["how"]["decoys"] == 34 and t["how"]["display"] == "x11"
         argv, kw = spawned[0]
         assert argv[argv.index("--") + 1:] == ["/app/tool.sh", "--verbose", "two words"] and kw["start_new_session"] is True
-        assert "HOME" in kw["env"] and kw["cwd"] == "/"
+        assert kw["env"] == sandbox.SPAWN_ENV and kw["cwd"] == "/"      # nothing of the app's environment (bubblewrap's)
         folder = host.root / "run/user/1000/daprivacyscanner-trial" / t["id"]
         (folder / "home/.config").mkdir(exist_ok=True)
         (folder / "home/.config/made").write_text("x")                            # as the program would

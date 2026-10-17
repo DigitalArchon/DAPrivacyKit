@@ -424,7 +424,7 @@ out, and the kernel itself (a kernel exploit escapes any namespace sandbox).
     ├── tor/                           torrc, status.json, socks, control, tor-control, control_auth_cookie
     ├── Xauthority, x11/, xauth-*      X11 only
     ├── wayland-0                      the compositor-marked Wayland socket
-    ├── start.log, xephyr.log          the sandbox's own errors (not the browser's output)
+    ├── xephyr.log                     Xephyr's own errors (the sandbox's start log is a memory file)
     ├── release.json                   version, signature time, set-up time, security level, checks
     ├── bridges.json                   the bridges chosen in the panel
     ├── sandboxed                      mark: this copy has run in the sandbox
@@ -670,8 +670,18 @@ before `exec`. It is applied to Mullvad Browser's sandbox and to Tor Browser's o
 Browser's inner sandbox has its own network namespace, which already separates abstract sockets.
 
 **Output.** The browser's own stdin, stdout and stderr go to `/dev/null` (`sh -c 'exec "$0" "$@"
-</dev/null >/dev/null 2>&1'`); only the sandbox's set-up errors reach `start.log`. The start script runs
+</dev/null >/dev/null 2>&1'`); only the sandbox's set-up errors reach the start log, a memory file
+(`sandbox.log_file`: what the sandbox can see of its descriptor names no path). The start script runs
 in the foreground, never with `--detach`: bubblewrap returns when its command does.
+
+**PID 1.** bubblewrap's own init was the sandbox's PID 1, and everything in the sandbox could read its
+environment (the user, the home folder, `SESSION_MANAGER` with the computer's name, anything exported in the
+session), its command line (every folder it binds, in the user's home) and its open files (found in the review of
+2026-10-17, tested on Mint and CachyOS). So bubblewrap, pasta and the wrappers before them start with
+`sandbox.SPAWN_ENV` (a `PATH` and nothing else); where the command is `STAY`, which reaps, it is the sandbox's
+PID 1 (`--as-pid-1`), and bubblewrap's own processes are outside the sandbox's PID namespace, out of its sight;
+the viewer's bubblewrap, whose command can't be PID 1, reads its options from a memory file (`--args`,
+`sandbox.sealed`; bubblewrap closes it once read), so its command line names only paths inside.
 
 **A browser that restarts itself.** Firefox restarts as a new process (about:profiles' *Restart normally…*,
 an add-on or a language that asks for it, the Troubleshoot Mode question after crashes): the old process
@@ -811,8 +821,8 @@ may be unmounted by the time the browser closes) and imports nothing of the app'
 5. listens on the browser's control socket and filters every connection (below);
 6. runs the inner sandbox and waits for it; on exit (or SIGTERM) it closes the filter, stops tor
    (SIGTERM, then SIGKILL after 10 seconds), and removes the sockets. The inner sandbox's command lasts as
-   long as any browser process does (`sandbox.STAY`, above), and the inner sandbox is started with
-   `--die-with-parent`: when its command is over, or the gate is gone, its init is killed and everything
+   long as any browser process does (`sandbox.STAY`, above, its PID 1), and the inner sandbox is started with
+   `--die-with-parent`: when its command is over, or the gate is gone, it is killed and everything
    in it with it. A browser is never left running with tor gone.
 
 **The control-port filter.** Each browser connection gets its own upstream connection to tor,
@@ -904,15 +914,19 @@ A failed probe is retried after 15 seconds, so installing passt shows when the p
 
 ### 7.14 Starting and watching
 
-The final command is spawned with `cwd=/` (never the RAM disk), the host environment, stdin and stdout
-`/dev/null`, stderr to `start.log`, `start_new_session=True`, and the Wayland pipe passed if there is one.
+The final command is spawned with `cwd=/` (never the RAM disk), `sandbox.SPAWN_ENV` (none of the app's
+environment), stdin and stdout `/dev/null`, stderr to the start log (a memory file), `start_new_session=True`, and
+the Wayland pipe passed if there is one. One start at a time per browser, in every copy of the app (a lock in the
+runtime folder, `owner.hold`): another copy's start would empty the session folder this one's browser runs in.
 Then:
 
 - the `sandboxed` mark is written;
 - the start is watched for 3 seconds: if it exits with an error, the log's last lines (pasta's notices
   left out) are shown, Xephyr is killed, and the mark is removed if this was the copy's first start (no
   website ever reached it);
-- a later failure is reported once by the panel (`launch_problem`, which also reaps the process).
+- a later failure is reported once by the panel (`launch_problem`, which also reaps the process), by its exit
+  status alone: once the browser has run, the log could hold anything a website that took it over wrote into
+  it (the sandbox can reach the log's descriptor), which the page would show as the app's own words.
 
 **Is it running?** A process of the user's is the browser when `/proc/PID/exe` points into its folder on
 the RAM disk, or (seen from outside, a sandboxed program's path is the one it sees) to
@@ -1027,6 +1041,14 @@ user's is named as itself.
 
 When the app quits with the browser still running, `~/TempBrowser` stays open until it is closed from the
 app later or the computer restarts.
+
+**Which copy closes it** (`tools/owner.py`, the owner's decision of 2026-10-17). Every right-click entry starts a
+copy of the app of its own, and quitting one closed `~/TempBrowser` under another, with a download not saved yet
+(seen on the lab). The copy that opened it owns it: a token at the RAM disk's top (`.daprivacyscanner-owner`, which
+no sandbox is given) and an `flock` on a file of that token's name in the runtime folder, which the kernel releases
+however the copy ends. Only the owner closes it when it quits and empties its TempOutboxes; Close and overwrite…
+works from any copy, and its mark goes first, so a disk opened there later is nobody's until claimed. A disk whose
+owner has ended is taken over by the next copy that shows the browser panel, never by a copy that only quits.
 
 ### 7.18 What the sandbox doesn't hide
 
@@ -1322,8 +1344,10 @@ OACS, FNA and SANICAP via the helper's ioctl), read on request and kept for the 
     the disk (`$XDG_CACHE_HOME/...`) for something large, 0700, holding `home` (the throwaway home), `app` (the
     copy or the unpacked tree) and `private` (the sandbox's own files, which it is never given). Discarding
     overwrites it in place and deletes it in memory, and only deletes it on the disk (rule 8; the page says that
-    doesn't erase it). Quitting the app discards it; folders left by a run that was killed are removed at the
-    next start.
+    doesn't erase it). Quitting the app discards it (the window's Quit as well as `--browser` mode's); folders left
+    by a copy of the app that has ended are removed at the next start. Each trial's folder is locked (`flock` on
+    the folder) by the copy that made it, so another copy (a right-click entry's) never takes a running trial
+    for a leftover.
   - **The sandbox** (the `bubblewrap` engine; engines sit behind `ENGINES`): every namespace, `--die-with-parent`
     (Stop ends bubblewrap, and its sandbox, in a session of its own, must go with it: without it KWrite ran on
     after Stop, tested), no capabilities, a new session, an environment built from scratch, `/usr` read-only, the

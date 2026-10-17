@@ -190,8 +190,8 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
     `open_tool` ({"tool", "paths"}, from --tool) opens the page on a tool, once. `spawn_browser`
     starts the browser from the RAM disk (subprocess.Popen; a fake in tests). `open_url` opens one of
     about.LINKS in the user's default browser (xdg-open, detached; a fake in tests). `watch_outbox` starts
-    the watcher that empties the browsers' TempOutboxes into their To upload while the app runs (off in
-    tests, which call it themselves). `spawn_app` starts an app for "What does this app keep?" and "Try an app"
+    the watcher that empties the browsers' TempOutboxes into their To upload while the app runs, and removes trial
+    folders an ended copy of the app left (both off in tests, which call them themselves). `spawn_app` starts an app for "What does this app keep?" and "Try an app"
     (subprocess.Popen; a fake in tests)."""
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, default_response_class=JSONResponse)
     app.state.report = None
@@ -1137,6 +1137,9 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
                                         {"size_mb": size, "noexec": bool(noexec), "name": name})
             except HelperError as e:
                 return JSONResponse({"error": f"It couldn't be opened: {e}"}, status_code=400)
+            if name == ramdisk.BROWSER:                 # this copy opened it: this copy closes it when it quits
+                from .tools import owner
+                await asyncio.to_thread(owner.claim, host, name, ramdisk.folder(host, name))
         return {"ramdisk": await asyncio.to_thread(ramdisk_view, host, name), "admin_active": admin.active()}
 
     @app.post("/api/tools/ramdisk/close", dependencies=[Depends(auth)])
@@ -1174,6 +1177,8 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
                 await asyncio.to_thread(host.privileged.call, "ramdisk_close", {"name": name})
             except HelperError as e:
                 return JSONResponse({"error": f"It couldn't be closed: {e}", "wiped": wiped}, status_code=400)
+            from .tools import owner
+            owner.release(host, name)
         return {"ramdisk": await asyncio.to_thread(ramdisk_view, host, name), "wiped": wiped,
                 "admin_active": admin.active()}
 
@@ -1191,8 +1196,8 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
         j = app.state.browser_job
         return j is not None and j["state"] == "running"
 
-    async def run_browser_job(job: dict, b, archive: Path | None) -> None:
-        from .tools import browser as B
+    async def run_browser_job(job: dict, b, archive: Path | None, held: int | None = None) -> None:
+        from .tools import browser as B, owner
         host = make_host()
         state, error, unchecked = "failed", "", ""
         try:
@@ -1231,7 +1236,18 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
         finally:
             # what was downloaded gives its memory back, whatever happened; a file of the user's stays
             await asyncio.to_thread(B.tidy, host, archive) if archive is not None else None
+            owner.let_go(held)
             job.update(state=state, error=error, finished=time.time(), phase=None)
+
+    def adopt_browser_disk(host: Host) -> None:
+        """~/TempBrowser open with no copy of the app running that owns it (the one that opened it ended): the copy
+        showing the browser panel takes it over, and closes it when it quits (owner.py)."""
+        from .tools import owner, ramdisk
+        if ramdisk.mounted(host, ramdisk.BROWSER):
+            try:
+                owner.claim(host, ramdisk.BROWSER, ramdisk.folder(host, ramdisk.BROWSER))
+            except OSError:
+                pass
 
     @app.get("/api/tools/browser", dependencies=[Depends(auth)])
     async def tools_browser():
@@ -1239,6 +1255,7 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
         from .tools.pick import dialog
         host = make_host()
         chooser = "window" if pick is not None else getattr(dialog(host), "__name__", None)
+        await asyncio.to_thread(adopt_browser_disk, host)
         return {**await asyncio.to_thread(B.status, host), "job": browser_view(app.state.browser_job),
                 "can_pick": chooser is not None, "picker": chooser, "admin_active": admin.active()}
 
@@ -1270,12 +1287,17 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
         problem = await asyncio.to_thread(B.ready, host)
         if problem:
             return JSONResponse({"error": problem}, status_code=409)
+        from .tools import owner
+        held = await asyncio.to_thread(owner.hold, host, f"browser-{b.id}")
+        if held is None:
+            return JSONResponse({"error": f"{b.name} is being set up or started in another window of this app."},
+                                status_code=409)
         job = app.state.browser_job = {"id": uuid.uuid4().hex, "state": "running", "browser": b.id, "name": b.name,
                                        "source": "file" if archive else "download", "hosts": [B.index_host(b)] if archive else list(b.hosts),
                                        "phase": "Starting", "done": 0, "total": 0, "version": "", "verdict": None,
                                        "error": "", "cancel": False, "created": time.time(), "finished": None,
                                        "vpn": b.id == "mullvad" and body.get("vpn", True) is not False}
-        app.state.browser_task = asyncio.create_task(run_browser_job(job, b, archive))
+        app.state.browser_task = asyncio.create_task(run_browser_job(job, b, archive, held))
         return {"job": browser_view(job)}
 
     @app.post("/api/tools/browser/stop", dependencies=[Depends(auth)])
@@ -2304,6 +2326,17 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
                     print(f"The TempOutbox couldn't be emptied: {type(e).__name__}", file=sys.stderr)
         _transfer.WATCHED["on"] = True
         threading.Thread(target=watch, name="tempoutbox", daemon=True).start()
+
+        def clear_trials() -> None:
+            """Trial folders a copy of the app that has ended left behind go at the start (a running copy's are
+            locked: trial.leftovers)."""
+            from .tools import trial
+            app.state.trial_cleaned = True
+            try:
+                trial.clear_leftovers(make_host())
+            except OSError as e:
+                print(f"Trial folders left from before couldn't be removed: {type(e).__name__}", file=sys.stderr)
+        threading.Thread(target=clear_trials, name="trial-leftovers", daemon=True).start()
 
     if on_quit is not None:
         @app.post("/api/quit", dependencies=[Depends(auth)])

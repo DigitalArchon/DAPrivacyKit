@@ -36,6 +36,7 @@ doesn't erase it, and the page says so). One trial at a time; quitting the app e
 
 from __future__ import annotations
 
+import fcntl
 import os
 import re
 import shlex
@@ -212,6 +213,31 @@ class Trial:
                 "now": time.time()}
 
 
+# Each trial's folder is locked (flock on the folder itself) by the copy of the app that made it, for as long as that
+# copy runs: every right-click entry starts a copy of its own, and one clearing leftovers removed a trial another was
+# running. A folder no running copy holds is a leftover; the kernel lets go of the lock however the copy ended.
+_HELD: dict[str, int] = {}
+
+
+def _hold(folder: Path) -> int | None:
+    try:
+        fd = os.open(folder, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError:
+        return None
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        os.close(fd)
+        return None
+    return fd
+
+
+def _let_go(folder: Path) -> None:
+    fd = _HELD.pop(str(folder), None)
+    if fd is not None:
+        os.close(fd)
+
+
 def _make(host: Host, where: str) -> tuple[str, Path]:
     place = _place(host, where)
     base = Path(place["folder"])
@@ -222,20 +248,29 @@ def _make(host: Host, where: str) -> tuple[str, Path]:
     tid = os.urandom(6).hex()
     folder = base / tid
     folder.mkdir(mode=0o700)
+    fd = _hold(folder)
+    if fd is not None:
+        _HELD[str(folder)] = fd
     for sub in ("home", "app", "private"):
         (folder / sub).mkdir(mode=0o700)
     return tid, folder
 
 
 def leftovers(host: Host) -> list[str]:
-    """Trial folders an earlier run of the app left (it was killed): removed at the next start."""
+    """Trial folders a copy of the app left that has ended (killed, crashed): removed at the next start. A folder
+    a running copy holds (_HELD, this one's included) is that copy's trial, never a leftover."""
     out = []
     for place in places(host):
         base = Path(place["folder"])
         try:
-            out += [str(base / n) for n in os.listdir(base) if re.fullmatch(r"[0-9a-f]{12}", n)]
+            names = [n for n in os.listdir(base) if re.fullmatch(r"[0-9a-f]{12}", n)]
         except OSError:
             continue
+        for n in names:
+            fd = _hold(base / n)
+            if fd is not None:
+                os.close(fd)
+                out.append(str(base / n))
     return out
 
 
@@ -489,6 +524,7 @@ def prepare_file(host: Host, path: Path, where: str, run: Callable = subprocess.
                     t.argv = [sandbox.PYTHON if dest.suffix == ".py" else "/bin/sh", t.argv[0]]
     except BaseException:
         _remove(folder, where == "memory")
+        _let_go(folder)
         raise
     return t
 
@@ -670,7 +706,9 @@ class Bubblewrap(Engine):
         if parts.sync_fd is not None:
             a += ["--sync-fd", str(0 if parts.pasta else parts.sync_fd)]
         stay = [sandbox.PYTHON, "-I", "-c", STAY] if host.sys_path(sandbox.PYTHON).exists() else []
-        a += ["--chdir", sandbox.HOME_IN, "--", *stay, *t.argv]
+        # STAY reaps, so it can be the sandbox's PID 1: bubblewrap's own process, whose environment and command line
+        # name the user and the computer, is then out of the program's sight (sandbox.SPAWN_ENV)
+        a += [*(["--as-pid-1"] if stay else []), "--chdir", sandbox.HOME_IN, "--", *stay, *t.argv]
         if deb_usr and not native:
             # an older bubblewrap (0.9, Mint 22.3's) has no overlay of its own: a first bubblewrap, root of its own user
             # namespace, lays the package's /usr over the computer's; the sandbox proper then starts inside that view
@@ -928,8 +966,9 @@ def start(host: Host, t: Trial, options: dict, spawn: Callable = subprocess.Pope
         devices = tuple(sandbox.gpu(host)) if t.options["gpu"] and t.xephyr is None and eng.id == "bubblewrap" else ()
         parts = Parts(disp, etc, pasta_path, t.private / "packets" if pasta_path else None, sync, devices, t.options["sound"])
         cmd = sandbox.fresh_keyring(host, eng.command(host, t, parts))
-        env = host_env(host.environ)
+        env = dict(sandbox.SPAWN_ENV)                   # none of the app's: the program could read it (bubblewrap's)
         if eng.id == "flatpak":
+            env = host_env(host.environ)
             real = host.home / ".local/share/flatpak"
             env = {**env, "HOME": str(t.home), **({"FLATPAK_USER_DIR": str(real)} if real.is_dir() else {})}
         t.how = {"engine": eng.id, "engine_name": eng.name, "network": network, "lan_blocked": network == "observed",
@@ -1098,4 +1137,5 @@ def discard(host: Host, t: Trial) -> None:
     if t.state == "running":
         stop(host, t)
     _remove(t.folder, t.where == "memory")
+    _let_go(t.folder)
     t.state = "discarded"

@@ -332,7 +332,9 @@ def test_closing_the_ramdisk_names_the_browser(cat, host, monkeypatch):  # noqa:
 
 
 def test_quitting_closes_the_browsers_ramdisk_unless_the_browser_runs(host, monkeypatch):  # noqa: F811
+    from daprivacyscanner.tools import owner
     disk = open_ramdisk(host)
+    assert owner.claim(host, "TempBrowser", disk)       # this copy opened it
     (disk / "tor-browser").mkdir()
     (disk / "tor-browser/page.html").write_text("visited")
     calls = []

@@ -45,7 +45,7 @@ from typing import Callable
 
 from ..host import Host
 from ..hostenv import host_env
-from . import ramdisk, sandbox, transfer, wayland
+from . import owner, ramdisk, sandbox, transfer, wayland
 
 PROJECT = "torbrowser"                  # signing-keys.yaml: the Tor Browser Developers key, which signs both
 MAX_ARCHIVE = 600 * 1024 * 1024
@@ -1229,7 +1229,7 @@ def tor_status(host: Host, b: Browser) -> dict | None:
 
 # ------------------------------------------------------------------ running it
 
-_LAUNCHED: dict[str, tuple[object, Path]] = {}       # browser id -> (its process, its start log)
+_LAUNCHED: dict[str, object] = {}                    # browser id -> its process, once it has started
 _STARTING: set[str] = set()                           # browser ids a start is under way for
 _LOCK = threading.Lock()
 
@@ -1240,42 +1240,50 @@ NEVER_RAN = ("bwrap: ", "Landlock could not be applied", "A keyring of its own c
              "tor couldn't be started", "tor didn't start", "pasta: ")
 
 
-def _log_reason(log: Path, rc: int) -> str:
+def _file_text(log: Path) -> str:
     try:
-        text = log.read_bytes()[-4000:].decode("utf-8", "replace")
+        return log.read_bytes()[-4000:].decode("utf-8", "replace")
     except OSError:
-        text = ""
+        return ""
+
+
+def _log_reason(text: str, rc: int) -> str:
     lines = [ln.strip() for ln in text.splitlines() if ln.strip() and not sandbox.quiet_line(ln)]
     return "; ".join(lines[-3:])[:500] if lines else f"it stopped at once (exit status {rc})"
 
 
+def _ended(rc: int) -> str:
+    """How a browser that had started ended, by its exit status alone."""
+    if rc in (137, -9):
+        return f"it was killed (exit status {rc}), as happens when the computer runs out of memory"
+    return f"it stopped (exit status {rc})"
+
+
 def launch_problem(b: Browser) -> str | None:
     """Why the browser started last stopped with an error, once (then forgotten); None while it runs
-    or after a clean exit. Collects its exit status, so nothing is left behind."""
+    or after a clean exit. Collects its exit status, so nothing is left behind. By the exit status alone: once it
+    has run, the start log could hold anything a website that took the browser over wrote into it (the sandbox's
+    descriptor of it is in its reach), which the page would then show as the app's own words."""
     with _LOCK:
-        got = _LAUNCHED.get(b.id)
-        if got is None:
+        proc = _LAUNCHED.get(b.id)
+        if proc is None:
             return None
-        proc, log = got
         rc = proc.poll()
         if rc is None:
             return None
         del _LAUNCHED[b.id]
-    return None if rc == 0 else f"{b.name} stopped with an error: {_log_reason(log, rc)}"
+    return None if rc == 0 else f"{b.name} stopped with an error: {_ended(rc)}"
 
 
-def _never_ran(log: Path) -> bool:
+def _never_ran(text: str) -> bool:
     """Whether the start log says the sandbox stopped before the browser ran (NEVER_RAN)."""
-    try:
-        text = log.read_bytes()[-4000:].decode("utf-8", "replace")
-    except OSError:
-        return False
     return any(any(mark in ln for mark in NEVER_RAN) for ln in text.splitlines() if not sandbox.quiet_line(ln))
 
 
-def _watch(b: Browser, proc, log: Path) -> None:
+def _watch(b: Browser, proc, log: int) -> None:
     """A start is watched for START_WAIT seconds: a sandbox that couldn't be set up, tor that
-    couldn't start, Landlock refused, say why at once; after that, status() says it."""
+    couldn't start, Landlock refused, say why at once, from the start log (`log`, a memory file); after that,
+    status() says it, by the exit status."""
     if not hasattr(proc, "poll"):
         return                                           # a test's stand-in
     deadline = time.monotonic() + START_WAIT
@@ -1283,10 +1291,10 @@ def _watch(b: Browser, proc, log: Path) -> None:
         time.sleep(0.1)
     rc = proc.poll()
     if rc not in (None, 0):
-        raise BrowserError(f"{b.name} couldn't start: {_log_reason(log, rc)}")
+        raise BrowserError(f"{b.name} couldn't start: {_log_reason(sandbox.read_log(log), rc)}")
     if rc is None:
         with _LOCK:
-            _LAUNCHED[b.id] = (proc, log)
+            _LAUNCHED[b.id] = proc
 
 
 EXPECTED = ("network", "lan_blocked", "wayland_context")   # what the panel showed that a start must not fall short of
@@ -1321,9 +1329,15 @@ def start(host: Host, b: Browser, spawn: Callable = subprocess.Popen, sandboxed:
         if b.id in _STARTING:
             raise BrowserError(f"{b.name} is already starting.")
         _STARTING.add(b.id)
+    busy = owner.hold(host, f"browser-{b.id}")          # and in no other copy of the app: its start would empty
+    if busy is None:                                    # the session folder this one's browser runs in
+        with _LOCK:
+            _STARTING.discard(b.id)
+        raise BrowserError(f"{b.name} is being set up or started in another window of this app.")
     try:
         return _start(host, b, spawn, sandboxed, with_sound, net, nested, expect, gpu)
     finally:
+        owner.let_go(busy)
         with _LOCK:
             _STARTING.discard(b.id)
 
@@ -1349,7 +1363,6 @@ def _start(host: Host, b: Browser, spawn: Callable, sandboxed: bool, with_sound:
                            f"~/{DISK} (that overwrites it) and set {b.name} up again.")
     folder, session, private = prepare(host, b)
     through_stdin = False                               # the Wayland sync pipe as stdin (under pasta)
-    log = private / "start.log"
     if sandboxed:
         sb = sandbox_status(host)
         if not sb["available"]:
@@ -1412,7 +1425,8 @@ def _start(host: Host, b: Browser, spawn: Callable, sandboxed: bool, with_sound:
                                    "would have. Open the panel again to see what changed, then start it from there.")
             marked_before = sandboxed_before(host, b)
             (private / "sandboxed").touch()
-            cmd, cwd, env = argv, "/", host_env(host.environ)    # the app's own directory, never the RAM disk
+            # the app's own directory, never the RAM disk; none of the app's environment (sandbox.SPAWN_ENV)
+            cmd, cwd, env = argv, "/", dict(sandbox.SPAWN_ENV)
         except BaseException:
             _abort(xephyr, sync)
             raise
@@ -1422,32 +1436,35 @@ def _start(host: Host, b: Browser, spawn: Callable, sandboxed: bool, with_sound:
         how = {"sandboxed": False, "display": session_display(host), "landlock": False, "network": "shared",
                "lan_blocked": False, "gpu": True}
     cmd = sandbox.fresh_keyring(host, cmd)              # nothing it starts reaches the session's kernel keyring
-    fd = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+    log = sandbox.log_file("start-log")                 # the sandbox's own errors: a memory file, not a path
     try:
-        if through_stdin:
-            proc = spawn(cmd, cwd=cwd, env=env, stdin=sync, stdout=subprocess.DEVNULL, stderr=fd, start_new_session=True)
-        else:
-            proc = spawn(cmd, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=fd,
-                         start_new_session=True, pass_fds=(sync,) if sync is not None else ())
-    except OSError:
-        _abort(xephyr, sync)
-        sync = None
-        if sandboxed and not marked_before:             # it never started: no website ever reached this copy
-            (private / "sandboxed").unlink(missing_ok=True)
-        raise
+        try:
+            if through_stdin:
+                proc = spawn(cmd, cwd=cwd, env=env, stdin=sync, stdout=subprocess.DEVNULL, stderr=log,
+                             start_new_session=True)
+            else:
+                proc = spawn(cmd, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=log,
+                             start_new_session=True, pass_fds=(sync,) if sync is not None else ())
+        except OSError:
+            _abort(xephyr, sync)
+            sync = None
+            if sandboxed and not marked_before:         # it never started: no website ever reached this copy
+                (private / "sandboxed").unlink(missing_ok=True)
+            raise
+        finally:
+            if sync is not None:
+                os.close(sync)                          # bubblewrap holds it now, for as long as the sandbox runs
+        try:
+            _watch(b, proc, log)
+        except BrowserError:
+            _abort(xephyr, None)                        # it would wait for a browser that never comes
+            # the mark stays unless the log says the sandbox stopped before the browser ran: a browser that ran, even
+            # briefly, could have been reached (or, taken over, stopped itself with an error to shed the mark)
+            if sandboxed and not marked_before and _never_ran(sandbox.read_log(log)):
+                (private / "sandboxed").unlink(missing_ok=True)
+            raise
     finally:
-        os.close(fd)
-        if sync is not None:
-            os.close(sync)                              # bubblewrap holds it now, for as long as the sandbox runs
-    try:
-        _watch(b, proc, log)
-    except BrowserError:
-        _abort(xephyr, None)                            # it would wait for a browser that never comes
-        # the mark stays unless the log says the sandbox stopped before the browser ran: a browser that ran, even
-        # briefly, could have been reached (or, taken over, stopped itself with an error to shed the mark)
-        if sandboxed and not marked_before and _never_ran(log):
-            (private / "sandboxed").unlink(missing_ok=True)
-        raise
+        os.close(log)                                   # read only during the start's watch (launch_problem)
     return how
 
 
@@ -1494,7 +1511,7 @@ def _start_nested(host: Host, b: Browser, private: Path, disp, spawn: Callable):
         time.sleep(0.1)
     if proc.poll() is None:
         proc.kill()
-    raise BrowserError(f"Xephyr didn't open its display: {_log_reason(log, proc.poll() or 0)}")
+    raise BrowserError(f"Xephyr didn't open its display: {_log_reason(_file_text(log), proc.poll() or 0)}")
 
 
 # what a browser's sandbox runs around it, by process name (comm, at most 15 characters): its ancestors up to the
@@ -1580,8 +1597,9 @@ def default_outbox(host: Host, b: Browser) -> bool:
 
 def run_outboxes(host: Host) -> None:
     """What the app's watcher does every few seconds: each set-up browser's TempOutbox emptied into its
-    To upload, while ~/TempBrowser is open."""
-    if not ramdisk.mounted(host, DISK):
+    To upload, while ~/TempBrowser is open, by the copy of the app that owns it (owner.py): two copies' watchers
+    would clean one file twice."""
+    if not ramdisk.mounted(host, DISK) or not owner.owns(host, DISK, root(host)):
         return
     with transfer.OUTBOX_LOCK:
         for b in BROWSERS.values():
@@ -1590,7 +1608,9 @@ def run_outboxes(host: Host) -> None:
 
 
 def wipe_disk(path: Path) -> "ramdisk.Wipe":
-    """~/TempBrowser's files overwritten and deleted, once the TempOutboxes aren't being emptied."""
+    """~/TempBrowser's files overwritten and deleted, once the TempOutboxes aren't being emptied. Whoever owned it
+    owns nothing from here on (its mark goes first, so it isn't counted among the user's files)."""
+    owner.unmark(path)
     with transfer.OUTBOX_LOCK:
         w = ramdisk.wipe(path)
     transfer.forget_recent()
@@ -1599,10 +1619,11 @@ def wipe_disk(path: Path) -> "ramdisk.Wipe":
 
 def close_disk(host: Host, helper: Callable[[], object]) -> str:
     """When the app quits: ~/TempBrowser closed like the RAM disk tool's (every file overwritten and
-    deleted as the user, then the helper unmounts it, asking for administrator access if it has to).
-    Returns what happened, for the terminal: "" when it wasn't open."""
+    deleted as the user, then the helper unmounts it, asking for administrator access if it has to), by the
+    copy of the app that opened it or took it over (owner.py), never by another copy quitting.
+    Returns what happened, for the terminal: "" when it wasn't open or isn't this copy's."""
     rd = ramdisk.status(host, DISK)
-    if not rd.open:
+    if not rd.open or not owner.owns(host, DISK, rd.path):
         return ""
     users = disk_users(host, rd.path)
     if users:
@@ -1613,4 +1634,5 @@ def close_disk(host: Host, helper: Callable[[], object]) -> str:
     if h is None:
         return f"~/{DISK}'s files were overwritten and deleted, but it couldn't be unmounted without administrator access."
     h.call("ramdisk_close", {"name": DISK})
+    owner.release(host, DISK)
     return f"~/{DISK} was closed: {w.files} file{'' if w.files == 1 else 's'} overwritten and deleted."

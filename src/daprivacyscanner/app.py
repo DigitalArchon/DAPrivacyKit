@@ -779,7 +779,8 @@ def main(argv: list[str] | None = None) -> None:
     except KeyboardInterrupt:
         pass
     finally:
-        app.state.close_browser_disk()  # the browser's RAM disk is for while the app runs
+        app.state.close_browser_disk()  # the browser's RAM disk is for while the app runs (this copy's, owner.py)
+        app.state.discard_trial()       # and so is a trial: its folder, overwritten first when in memory
         app.state.admin.drop()          # the root helper ends with the app
         _presentation_off()             # and so does Presentation mode
         server.should_exit = True

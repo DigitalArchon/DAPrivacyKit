@@ -407,7 +407,9 @@ hours after setting it up, it first checks for a newer version and won't start i
 you need, close `~/TempBrowser`, and set it up again.
 
 **Finishing:** quit the browser, then **Close and overwrite…** (or just quit the app, which closes
-`~/TempBrowser` too). Closing is refused while the browser runs.
+`~/TempBrowser` too). Closing is refused while the browser runs. Only the window that opened `~/TempBrowser`
+closes it when you quit: a window the right-click entries opened (Verify download…, Remove metadata…) leaves it
+as it is.
 
 ### Try an app
 

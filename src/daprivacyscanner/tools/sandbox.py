@@ -256,6 +256,42 @@ os.execv(sys.argv[1], sys.argv[1:])
 """
 
 
+# What bubblewrap (and pasta, and the wrappers before them) are started with: nothing of the app's environment. A
+# process outside the sandbox's own PID namespace is out of its sight, but bubblewrap's init is the sandbox's PID 1,
+# whose environment (the user, the home folder, SESSION_MANAGER with the computer's name, any token exported in the
+# session), command line (every folder it binds, in the user's home) and open files (the start log's path) every
+# program in it could read (found in the 2026-10-17 review, tested on p330 and CachyOS). So: this environment, the
+# sandbox's own command as PID 1 where it is a reaper (--as-pid-1: STAY), bubblewrap's options read from a descriptor
+# where it can't be (--args, sealed()), and logs that are memory files, not paths (log_file()).
+SPAWN_ENV = {"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"}
+
+
+def sealed(argv: list[str]) -> tuple[list[str], int]:
+    """bubblewrap's options (everything before `--`) read from a memory file (--args N), so its init's command line,
+    which the sandbox can read as /proc/1/cmdline, is `bwrap --args N -- COMMAND`: bubblewrap closes the descriptor
+    once it has read it (tested with 0.9), and the command names only paths inside the sandbox. Returns the
+    command and the descriptor to pass to it (the caller closes its own copy)."""
+    end = argv.index("--")
+    fd = os.memfd_create("bwrap-args")
+    os.write(fd, b"".join(a.encode() + b"\0" for a in argv[1:end]))
+    os.lseek(fd, 0, os.SEEK_SET)
+    return [argv[0], "--args", str(fd), *argv[end:]], fd
+
+
+def log_file(name: str) -> int:
+    """A log a sandbox's processes write their errors to: a memory file, so what the sandbox can see of it (the
+    descriptor's link in /proc) names no path, and nothing of it is on a disk."""
+    return os.memfd_create(name)
+
+
+def read_log(fd: int, limit: int = 4000) -> str:
+    try:
+        size = os.fstat(fd).st_size
+        return os.pread(fd, limit, max(0, size - limit)).decode("utf-8", "replace")
+    except OSError:
+        return ""
+
+
 def fresh_keyring(host: Host, argv: list[str]) -> list[str]:
     """`argv` started with a new, empty session keyring and its memory left out of crash dumps (KEYRING),
     by the computer's python3. Where there is no python3: only the core size limit, through prlimit
@@ -899,6 +935,7 @@ def browser_argv(host: Host, lay: Layout, disp: Display, with_sound: bool, landl
     a += _desktop(disp, sound(host) if with_sound else None, inside=False)
     a += _env(host, disp, with_sound, dict(lay.env), gpu=bool(gpu))
     a += ["--sync-fd", str(sync_fd)] if sync_fd is not None else []
+    a += ["--as-pid-1"] if stay else []                 # STAY reaps: bubblewrap's own process stays out of sight
     a += ["--chdir", f"{lay.inside}/{Path(lay.script).parent}", "--", *_program(lay, landlock, stay)]
     if not pasta:
         return a
@@ -942,7 +979,7 @@ def tor_argv(host: Host, lay: Layout, tor_dir: Path, disp: Display, with_sound: 
               "--ro-bind", SOCKS_IN, SOCKS_IN, "--ro-bind", CONTROL_IN, CONTROL_IN]
     inner += _desktop(disp, snd, inside=True)
     inner += _env(host, disp, with_sound, TOR_ENV, gpu=bool(gpu))
-    inner += ["--chdir", f"{lay.inside}/{Path(lay.script).parent}", "--", *_program(lay, False)]
+    inner += ["--as-pid-1", "--chdir", f"{lay.inside}/{Path(lay.script).parent}", "--", *_program(lay, False)]
     config = {"landlock": landlock, "tor": tor, "cwd": f"{lay.inside}/Browser",
               "tor_env": {"HOME": HOME_IN, "PATH": "/usr/bin:/bin",
                           "LD_LIBRARY_PATH": f"{lay.inside}/Browser/TorBrowser/Tor"},

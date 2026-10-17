@@ -45,12 +45,22 @@ def test_the_plan_names_the_viewer_and_its_command(host):
     assert v.app == "Document Viewer" and v.argv == ["/usr/bin/xreader", "/home/user/report.pdf"] and not v.flatpak
 
 
+def unseal(argv: list[str]) -> list[str]:
+    """bubblewrap's command with its options written out again (sandbox.sealed passes them through a descriptor,
+    read here while the spawn is under way)."""
+    i = argv.index("--args")
+    fd = int(argv[i + 1])
+    data = os.pread(fd, 1 << 20, 0)
+    return [*argv[:i], *(a.decode() for a in data.split(b"\0")[:-1]), *argv[i + 2:]]
+
+
 def test_it_opens_a_copy_with_no_network(host):
     set_up(host)
     calls = []
 
     def spawn(argv, **kw):
-        calls.append((argv, kw))
+        assert argv[1:3] == ["--args", str(kw["pass_fds"][-1])] and kw["env"] == V.sandbox.SPAWN_ENV
+        calls.append((unseal(argv), kw))
         return Proc()
     private = host.home / "TempBrowser/.tor-browser-app"
     private.mkdir(parents=True, exist_ok=True)
@@ -198,7 +208,7 @@ def test_a_view_leaves_the_browser_s_own_files_alone(host):
     V.view(host, "tor-browser", "report.pdf", private, lambda argv, **kw: calls.append(argv) or Proc(), check(host, "report.pdf"))
     assert (private / "etc/boot_id").read_text() == "the browser's\n" and (private / "Xauthority").read_bytes() == b"the browser's"
     own = private / "view"
-    assert (own / "view.log").exists() and (own / "etc/boot_id").exists()
+    assert (own / "etc/boot_id").exists() and not (own / "view.log").exists()     # the log is a memory file
 
 
 def test_on_wayland_the_viewer_gets_a_socket_marked_as_a_sandbox_s(host, monkeypatch):
@@ -215,13 +225,13 @@ def test_on_wayland_the_viewer_gets_a_socket_marked_as_a_sandbox_s(host, monkeyp
     private = host.home / "TempBrowser/.tor-browser-app"
     private.mkdir(parents=True, exist_ok=True)
     calls = []
-    V.view(host, "tor-browser", "report.pdf", private, lambda argv, **kw: calls.append((argv, kw)) or Proc(),
+    V.view(host, "tor-browser", "report.pdf", private, lambda argv, **kw: calls.append((unseal(argv), kw)) or Proc(),
            check(host, "report.pdf"))
     [(argv, kw)] = calls
     w = made["write"]
     assert made["compositor"] == "/run/compositor-0" and made["path"].parent == private / "view"
     assert (str(made["path"]), "/run/user/1000/wayland-0") in pairs(argv, "--ro-bind")
-    assert argv[argv.index("--sync-fd") + 1] == str(w) and kw["pass_fds"] == (w,)
+    assert argv[argv.index("--sync-fd") + 1] == str(w) and kw["pass_fds"][0] == w and len(kw["pass_fds"]) == 2   # and --args
     with pytest.raises(OSError):
         os.fstat(w)                                                     # the app's copy is closed
     os.close(made["read"])
