@@ -300,7 +300,9 @@ def ssh_keys(check, scan, outcome):
                           "still works for anyone with an ssh that loads it. Make "
                           "a new key, put its .pub file on the servers that trusted the old one, then delete the old "
                           "key and its .pub file.",
-                          commands=["ssh-keygen -t ed25519"] + [f"rm ~/.ssh/{k} ~/.ssh/{k}.pub     # once the new key "
+                          commands=["ssh-keygen -t ed25519     # a new key: if it asks to overwrite one you use, "
+                                    "say no and give another file name"]
+                          + [f"rm ~/.ssh/{k} ~/.ssh/{k}.pub     # once the new key "
                                                                 f"works everywhere" for k in dropped]))
     steps.append(Step("Type it once per session",
                       "An agent remembers the unlocked key: GNOME Keyring and KDE's ssh-agent do it at login, or "
