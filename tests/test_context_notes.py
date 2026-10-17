@@ -101,7 +101,10 @@ def test_hibernation_one_step_away_when_resume_is_missing(tmp_path):
 
 @pytest.mark.parametrize("swaps, cmdline", [(SWAP_16G, "ro resume=UUID=x"), (SWAP_2G, "ro quiet")])
 def test_no_hibernation_note_when_it_is_possible_or_far_off(tmp_path, swaps, cmdline):
-    assert detect_hibernation(make_host(tmp_path, files=hib_files(swaps, cmdline))).notes == []
+    from daprivacyscanner.host import CommandResult
+    host = make_host(tmp_path, files=hib_files(swaps, cmdline))
+    host.runner.handlers["busctl"] = lambda argv: CommandResult(argv, 0, 's "yes"\n')     # logind lets this user
+    assert detect_hibernation(host).notes == []
 
 
 # ------------------------------------------------------------------ LLMNR and port names

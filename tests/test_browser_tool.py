@@ -726,6 +726,12 @@ def test_hibernation_and_opensnitch_are_named_before_a_start(host, monkeypatch):
     assert not R.hibernation_possible(host)                             # zram alone: nowhere to write the image
     (host.root / "proc/swaps").write_text("Filename Type Size Used Priority\n/dev/zram0 partition 1 0 100\n"
                                           "/dev/dm-1 partition 2000000 0 -2\n")
+    assert R.hibernation_possible(host) is False                        # no resume device: the scan says it can't
+    (host.root / "proc/cmdline").write_text("ro quiet resume=/dev/dm-1\n")
+    (sys_ / "image_size").write_text(str(2**30))
+    assert R.hibernation_possible(host) is None                         # logind couldn't be asked: never a guess
+    from daprivacyscanner.host import CommandResult
+    host.runner.handlers["busctl"] = lambda argv: CommandResult(argv, 0, 's "yes"\n')
     assert R.hibernation_possible(host)
     (sys_ / "disk").write_text("[disabled]\n")
     assert not R.hibernation_possible(host)

@@ -65,7 +65,10 @@
 #                                                         unknown in a VM: the host's form factor can't be seen)
 #   multi_user          bool   (more than one human account: UID >= 1000 with a login shell)
 #   session             'wayland' | 'x11'                ($XDG_SESSION_TYPE)
-#   hibernation         bool   (resume= configured and swap large enough)
+#   hibernation         bool   (the kernel can, disk swap large enough, a resume device configured, systemd's sleep.conf
+#                               and drop-ins allow hibernate, suspend-then-hibernate or hybrid sleep, and logind lets this
+#                               user: CanHibernate yes or challenge; "no", Ubuntu's policy, is false with a one-step-away
+#                               note; unknown when logind can't be asked)
 #   tpm_unlock_no_pin   bool   (from enc.tpm_no_pin; needs root to read LUKS headers)
 #   autologin           bool   (from auth.autologin)
 #   exposed_services    bool   (from net.exposed_services)
@@ -250,8 +253,13 @@ checks:
       included, is written to the disk at once.
     detect:
       - 'grep -o "resume=[^ ]*" /proc/cmdline; cat /sys/power/resume'
+      - 'systemd''s sleep.conf and sleep.conf.d (AllowHibernation, AllowSuspendThenHibernate, AllowHybridSleep, merged as
+        systemd does): all off, no hibernation'
+      - 'logind: busctl call org.freedesktop.login1 /org/freedesktop/login1 org.freedesktop.login1.Manager CanHibernate
+        (gdbus or dbus-send where busctl is missing): "no" is the system''s policy (Ubuntu''s com.ubuntu.desktop.rules,
+        seen on 26.04), "na" not available'
       - 'Check the resume device (and resume_offset swap file) has a crypt ancestor'
-    fix: Put swap on LUKS or disable hibernation.
+    fix: Put swap on LUKS or disable hibernation (a sleep.conf.d drop-in turning off all three modes).
     remedy: >
       Hibernating writes everything in memory, disk keys included, to an unencrypted disk. Guide…
       turns hibernation off, or puts swap on encrypted storage.
@@ -3440,6 +3448,11 @@ checks:
     why: A stolen sleeping laptop has its keys in memory, exposed to DMA or cold-boot attacks.
     detect:
       - 'Informational for laptops with FDE'
+      - 'What takes the keys out of memory, as set up: cryptsetup-suspend (its systemd-suspend.service.d drop-in); what
+        closing the lid does: Plasma''s powerdevilrc [Battery][SuspendAndShutdown] LidAction and SleepMode (standby, then
+        hibernate), Cinnamon''s lid-close-battery-action (hibernate; it holds logind''s lid inhibitor, inhibit-lid-switch),
+        else logind.conf''s HandleLidSwitch (hibernate, suspend-then-hibernate); with hibernation working and its image
+        encrypted, a pass. Set up but hibernation not working: a fail that says so'
       - 'Memory encryption: /proc/cpuinfo flags sme (AMD; active with mem_encrypt=on or
         CONFIG_AMD_MEM_ENCRYPT_ACTIVE_BY_DEFAULT) or tme (Intel; turned on in firmware, the kernel
         log says "x86/tme: enabled by BIOS")'
@@ -3453,8 +3466,10 @@ checks:
       Asleep, the computer keeps the disk unlocked in memory. Shut down when you travel; Guide… offers
       hibernating after a while asleep, where that is safe.
     verify: >
-      That GNOME and Cinnamon leave the lid switch to logind (or which of their settings to use instead), and
-      that cryptsetup-suspend is packaged for the targeted Ubuntu releases.
+      PowerDevil's SleepMode numbers (1 standby, 2 hybrid sleep, 3 standby then hibernate) and LidAction's (1 sleep,
+      2 hibernate) on a laptop with Plasma 6; that GNOME leaves the lid to logind. Seen on Mint 22.3: Cinnamon's
+      settings daemon holds the lid (inhibit-lid-switch true, lid-close-*-action suspend) and its media-keys daemon the
+      suspend and power keys; cryptsetup-suspend is packaged on Ubuntu 26.04 (2.8.4).
 
   - id: kern.usb_trusted
     title: USB devices are trusted on sight

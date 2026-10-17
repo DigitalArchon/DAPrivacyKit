@@ -72,15 +72,47 @@ def suspend_keys(check, scan, outcome):
     from ... import blockdev
     from .._util import read_text
     from ..encryption import hibernation_encrypted
+    from ..kernel import sleep_setup
     steps = [Step("Shut down when you travel",
                   "A machine that is off has no keys in memory. Asleep, it keeps the disk unlocked in RAM, where "
                   "someone holding it can try to read them (DMA through a port, or chilling and moving the memory).")]
     off = read_text(scan.host, scan.host.sys_path("/etc/systemd/sleep.conf.d/60-daprivacyscanner.conf")) or ""
     ok = hibernation_encrypted(scan)
-    if ok and "AllowSuspendThenHibernate=no" in off:
+    how, where, _ = sleep_setup(scan)
+    desk = scan.context.desktop
+    cinnamon = bool(set(desk.names) & {"x-cinnamon", "cinnamon"})
+    later = ("If hibernation later stops working (the swap made smaller or removed, the swap file moved, Secure Boot's "
+             "kernel lockdown turned on), closing the lid quietly goes back to plain suspend, keys in memory and all: "
+             "only a line in the system log says so. This check shows it at the next scan.")
+    if how in ("hibernate", "suspend-then-hibernate") and ok:
+        steps.append(Step("Hibernate after a while asleep", f"Set up in {where}: closing the lid "
+                          + ("hibernates the computer." if how == "hibernate" else "suspends it, then hibernates it."),
+                          done=True))
+    elif "AllowHibernation=no" in off:
         steps.append(Step("Hibernate after a while asleep",
                           "Hibernation was turned off by this app (enc.hibernate_unencrypted): revert that from History "
                           "first, if you want this.", done=False))
+    elif ok and desk.is_kde:
+        # PowerDevil handles the lid itself (it holds logind's lid inhibitor): logind's HandleLidSwitch doesn't apply
+        steps.append(Step("Hibernate after a while asleep",
+                          "Hibernation works here and writes to encrypted storage, so a sleeping laptop can go on to "
+                          "hibernate, which leaves nothing readable in memory. Plasma decides what closing the lid does: "
+                          "in System Settings → Power Management, on the On Battery tab (and On AC Power, if you like), "
+                          "set When laptop lid closed to Sleep, and When sleeping, enter to Standby, then hibernate. "
+                          "How long it stays asleep first is systemd's setting, below.",
+                          options=[option(check, f"Hibernate {label} asleep", [
+                              dropin("sleep-delay", {"HibernateDelaySec": delay}, SLEEP_DELAY_DROPIN)],
+                              recommended=rec, side_effects=["Waking from hibernation takes longer and asks for the "
+                                                             "disk passphrase again.", later])
+                              for delay, label, rec in (("1h", "after 1 hour", True), ("3h", "after 3 hours", False))]))
+    elif ok and cinnamon:
+        # Cinnamon's settings daemon handles the lid itself and has no suspend-then-hibernate: hibernate on the lid
+        steps.append(Step("Hibernate when the lid is closed",
+                          "Hibernation works here and writes to encrypted storage. Cinnamon decides what closing the lid "
+                          "does, and has no \"suspend, then hibernate\": in System Settings → Power Management, set When "
+                          "the lid is closed to Hibernate (on battery, and on AC power if you like). The keys then leave "
+                          "memory as soon as the lid closes.",
+                          side_effects=["Waking takes longer and asks for the disk passphrase again.", later]))
     elif ok:
         opts = []
         for delay, label, rec in (("1h", "after 1 hour", True), ("3h", "after 3 hours", False)):
@@ -92,12 +124,8 @@ def suspend_keys(check, scan, outcome):
                     "Closing the lid or pressing the suspend key suspends as before; if the machine is still asleep "
                     f"{label}, it hibernates and powers off, and the keys leave memory.",
                     "Waking from hibernation takes longer and asks for the disk passphrase again.",
-                    "Suspend from the power menu still only suspends. Some desktops handle the lid themselves: check "
-                    "their power settings if closing the lid doesn't follow this.",
-                    "If hibernation later stops working (the swap made smaller or removed, the swap file moved, "
-                    "Secure Boot's kernel lockdown turned on), closing the lid quietly goes back to plain suspend, "
-                    "keys in memory and all: only a line in the system log says so. This check shows it at the "
-                    "next scan."]))
+                    "Suspend from the power menu still only suspends. A desktop that handles the lid itself (KDE "
+                    "Plasma, Cinnamon) has its own setting for it, in its power settings.", later]))
         steps.append(Step("Hibernate after a while asleep",
                           "Hibernation works here and writes to encrypted storage, so a sleeping machine can go on to "
                           "hibernate, which leaves nothing readable in memory.", options=opts))
@@ -109,10 +137,13 @@ def suspend_keys(check, scan, outcome):
     root = blockdev.holding(scan.context.devices or [], "/")
     if family(scan) == "debian" and root is not None and root.encrypted:
         cmd = install(scan, debian="cryptsetup-suspend")
+        installed = how == "cryptsetup-suspend"
         steps.append(Step("Or: lock the disk while asleep (cryptsetup-suspend)",
+                          "It is installed: on suspend it locks the encrypted disk and wipes its key from memory." if
+                          installed else
                           "Debian and Ubuntu package it: on suspend it locks the encrypted disk and wipes its key from "
                           "memory, and on resume it asks for the passphrase before the desktop comes back.",
-                          commands=[cmd] if cmd else [], side_effects=[
+                          done=installed, commands=[cmd] if cmd and not installed else [], side_effects=[
                               "You type the disk passphrase at every resume.",
                               "It needs the root filesystem on LUKS unlocked by passphrase (not by TPM), and "
                               "initramfs-tools."]))

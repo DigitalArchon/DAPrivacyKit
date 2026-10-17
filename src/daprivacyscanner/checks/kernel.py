@@ -662,21 +662,108 @@ def memory_encryption_note(scan: Scan, for_dma: bool = False) -> Note | None:
                 f"Whether it is on couldn't be seen (the kernel log isn't readable). If it isn't, {how}.")
 
 
+# Debian's and Ubuntu's cryptsetup-suspend: a drop-in that has systemd-suspend run its wrapper, which locks the LUKS
+# volumes and wipes their keys before the computer sleeps (the package's file list, Ubuntu 26.04)
+CRYPTSETUP_SUSPEND = ("/usr/lib/systemd/system/systemd-suspend.service.d/cryptsetup-suspend.conf",
+                      "/lib/systemd/system/systemd-suspend.service.d/cryptsetup-suspend.conf")
+# Plasma 6's PowerDevil: "When sleeping, enter" (powerdevilrc [Battery|AC][SuspendAndShutdown] SleepMode; its
+# SleepMode enum: 1 standby, 2 hybrid sleep, 3 standby then hibernate) and the lid's action (LidAction: 1 sleep,
+# 2 hibernate, 4 hybrid sleep, 0 nothing...). VERIFY: the enum's numbers, on a laptop with Plasma 6.
+PLASMA_SLEEP_THEN_HIBERNATE, PLASMA_SLEEP, PLASMA_HIBERNATE = "3", "1", "2"
+
+
+def sleep_setup(scan: Scan) -> tuple[str | None, str, list[Evidence]]:
+    """What takes the disk keys out of memory when this computer sleeps, as set up: "cryptsetup-suspend" (locks the
+    disk while asleep), "hibernate" (closing the lid hibernates), "suspend-then-hibernate", or None; where that is set,
+    in words, and the evidence. The desktop handles the lid itself where it can: Plasma's PowerDevil and Cinnamon's
+    settings daemon hold logind's lid inhibitor (seen on Mint 22.3: inhibit-lid-switch), so logind's HandleLidSwitch
+    counts only elsewhere."""
+    from ..context import systemd_config
+    host = scan.host
+    ev = []
+    if any(host.sys_path(p).is_file() for p in CRYPTSETUP_SUSPEND):
+        return "cryptsetup-suspend", "cryptsetup-suspend", [Evidence.val("cryptsetup-suspend", "installed")]
+    desk = scan.context.desktop
+    names = set(desk.names)
+    if desk.is_kde:
+        mode = scan.kde.get("powerdevilrc", ("Battery", "SuspendAndShutdown"), "SleepMode") or PLASMA_SLEEP
+        lid = scan.kde.get("powerdevilrc", ("Battery", "SuspendAndShutdown"), "LidAction") or PLASMA_SLEEP
+        ev.append(Evidence.val("Plasma, on battery", f"lid action {lid}, sleep mode {mode}"))
+        if lid == PLASMA_HIBERNATE:
+            return "hibernate", "Plasma's power settings", ev
+        if lid == PLASMA_SLEEP and mode == PLASMA_SLEEP_THEN_HIBERNATE:
+            return "suspend-then-hibernate", "Plasma's power settings", ev
+        return None, "Plasma's power settings", ev
+    if names & {"x-cinnamon", "cinnamon"}:
+        schema = "org.cinnamon.settings-daemon.plugins.power"
+        lid = scan.gnome.gsettings(schema, "lid-close-battery-action")
+        inhibit = scan.gnome.gsettings(schema, "inhibit-lid-switch")
+        if lid is not None:
+            ev.append(Evidence.val("Cinnamon, lid closed on battery", str(lid)))
+        if lid == "hibernate":
+            return "hibernate", "Cinnamon's power settings", ev
+        if inhibit is not False:
+            return None, "Cinnamon's power settings", ev
+    cfg, _ = systemd_config(host, "logind.conf")
+    action = (ini.get(cfg, "Login", "HandleLidSwitch") or "suspend").strip()
+    ev.append(Evidence.val("logind HandleLidSwitch", action))
+    if action in ("hibernate", "suspend-then-hibernate"):
+        return action, "logind's settings", ev
+    return None, "logind's settings", ev
+
+
+def hibernate_delay(scan: Scan) -> str:
+    """How long suspend-then-hibernate sleeps first, in words: sleep.conf's HibernateDelaySec, or systemd's own
+    estimate from the battery (sleep.conf(5), systemd 252 and later)."""
+    from ..context import systemd_config
+    from .encryption import timespan
+    cfg, _ = systemd_config(scan.host, "sleep.conf")
+    delay = (ini.get(cfg, "Sleep", "HibernateDelaySec") or "").strip()
+    seconds = timespan(delay) if delay else None
+    if not seconds:
+        return "when the battery runs low"
+    if seconds >= 3600 and seconds % 3600 == 0:
+        n, unit = int(seconds // 3600), "hour"
+    else:
+        n, unit = round(seconds / 60), "minute"
+    return f"after {n} {unit}{'s' if n != 1 else ''}"
+
+
 @register
 class SuspendKeysInRam(Check):
     id = "kern.suspend_keys_in_ram"
 
     def detect(self, scan: Scan) -> Outcome:
+        from .encryption import hibernation_encrypted
         state = (scan.host.read_sys("/sys/power/state") or "").split()
         if "mem" not in state:
             return passed("This machine can't suspend to RAM.")
         me = memory_encryption_note(scan)
-        return failed("While suspended, disk encryption keys stay in memory.",
-                      Evidence.val("Sleep states", " ".join(state)),
-                      notes=[Note("info", "Shut down when travelling",
-                                  "A stolen laptop that is asleep can have its keys read from memory by DMA or "
-                                  "cold-boot attacks. Shutting down (or hibernating to encrypted swap) clears them.",
-                                  ("kern.dma",))] + ([me] if me else []))
+        travel = Note("info", "Shut down when travelling",
+                      "A stolen laptop that is asleep can have its keys read from memory by DMA or cold-boot attacks. "
+                      "Shutting down (or hibernating to encrypted swap) clears them.", ("kern.dma",))
+        how, where, ev = sleep_setup(scan)
+        ev = [Evidence.val("Sleep states", " ".join(state)), *ev]
+        if how == "cryptsetup-suspend":
+            return passed("While asleep, the disk is locked and its key wiped from memory (cryptsetup-suspend).", *ev)
+        if how in ("hibernate", "suspend-then-hibernate"):
+            does = ("closing the lid hibernates the computer" if how == "hibernate" else
+                    f"closing the lid suspends, then hibernates {hibernate_delay(scan)}")
+            ok = hibernation_encrypted(scan)
+            ev.append(Evidence.val("Closing the lid", f"{how} ({where})"))
+            if ok:
+                return passed(f"In {where}, {does}: the keys leave memory, and the hibernation image is encrypted.", *ev,
+                              notes=[Note("info", "Suspend from the menu still keeps them",
+                                          "Choosing Suspend (Sleep) in the power menu, or the suspend key, suspends as "
+                                          "before, keys in memory." + (" Until the computer hibernates, they are in "
+                                                                       "memory too." if how != "hibernate" else ""))])
+            why = ("the hibernation image would go to unencrypted storage" if ok is False and scan.context["hibernation"]
+                   else "hibernation doesn't work here" if scan.context["hibernation"] is False
+                   else "whether hibernation works here couldn't be told")
+            return failed(f"In {where}, {does}, but {why}: asleep, the disk encryption keys stay in memory.", *ev,
+                          notes=[travel] + ([me] if me else []))
+        return failed("While suspended, disk encryption keys stay in memory.", *ev,
+                      notes=[travel] + ([me] if me else []))
 
 
 @register

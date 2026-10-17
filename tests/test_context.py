@@ -187,15 +187,24 @@ def power(state="freeze mem disk", disk="[platform] shutdown reboot suspend test
     return {k: v for k, v in f.items() if v is not None}
 
 
+# logind's answer for this user (busctl call ... CanHibernate): asked where everything else allows hibernating, since
+# Ubuntu's policy refuses it to users; True without it was a guess (the review of 2026-10-17)
+LOGIND_YES = {("busctl", "--system", "call", "org.freedesktop.login1", "/org/freedesktop/login1",
+               "org.freedesktop.login1.Manager", m): 's "yes"\n'
+              for m in ("CanHibernate", "CanSuspendThenHibernate", "CanHybridSleep")}
+
+
 @pytest.mark.parametrize("files, commands, expected", [
-    (power(), {}, True),
+    (power(), LOGIND_YES, True),
+    (power(), {}, None),                                                      # logind couldn't be asked
     (power(swaps=SWAPS_ZRAM), {}, False),                                     # zram can't hold an image
     (power(image_size=str(32 * 2**30)), {}, False),                           # swap too small
     (power(disk="[disabled]"), {}, False),                                    # lockdown
     (power(state="freeze mem"), {}, False),
-    (power(cmdline="ro quiet", resume="259:3"), {}, True),
+    (power(cmdline="ro quiet", resume="259:3"), LOGIND_YES, True),
     (power(cmdline="ro quiet"), {}, False),
-    ({**power(cmdline="ro quiet"), "/sys/firmware/efi/x": ""}, {"systemctl --version": "systemd 255 (255.4)\n"}, True),
+    ({**power(cmdline="ro quiet"), "/sys/firmware/efi/x": ""},
+     {"systemctl --version": "systemd 255 (255.4)\n", **LOGIND_YES}, True),
     ({**power(cmdline="ro quiet"), "/sys/firmware/efi/x": ""}, {"systemctl --version": "systemd 254 (254.1)\n"}, False),
     ({}, {}, None),
 ])

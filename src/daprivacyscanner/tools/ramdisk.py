@@ -17,6 +17,7 @@ import os
 import re
 import shutil
 import stat
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -162,17 +163,24 @@ def left_by_app(path: Path) -> bool:
         return False
 
 
-def hibernation_possible(host: Host) -> bool:
-    """The kernel can hibernate (disk in /sys/power/state, not disabled) and has swap on a disk to write the image to:
-    all of memory, a RAM disk with noswap included, would go there."""
+def hibernation_possible(host: Host) -> bool | None:
+    """Whether this computer can hibernate, as the scan's context says (context.detect_hibernation: the kernel, swap on
+    a disk, systemd's sleep settings, the resume device and logind, which refuses it to users on Ubuntu): all of memory,
+    a RAM disk with noswap included, would then be written to the disk. None when that couldn't be told."""
+    from ..context import detect_hibernation
+    live = host.root == Path("/")
+    if live and _HIBERNATION and time.monotonic() - _HIBERNATION[0] < 30:   # panels ask every few seconds
+        return _HIBERNATION[1]
     try:
-        state = host.read_sys("/sys/power/state") or ""
-        disk = host.read_sys("/sys/power/disk") or ""
-        swaps = host.read_sys("/proc/swaps") or ""
-    except Exception:  # noqa: BLE001
-        return False
-    disk_swap = [ln.split()[0] for ln in swaps.splitlines()[1:] if ln.split() and not ln.startswith("/dev/zram")]
-    return "disk" in state.split() and bool(disk_swap) and "[disabled]" not in disk
+        value = detect_hibernation(host).value
+    except Exception:  # noqa: BLE001 - a note, never a reason the panel fails
+        value = None
+    if live:
+        _HIBERNATION[:] = [time.monotonic(), value]
+    return value
+
+
+_HIBERNATION: list = []                 # [when, answer] on the running system
 
 
 def memory_notes(host: Host, st: Status) -> list[str]:
@@ -184,9 +192,13 @@ def memory_notes(host: Host, st: Status) -> list[str]:
         notes.append("This kernel can't keep it out of swap (noswap needs Linux 6.4), and there is swap on disk "
                      f"({', '.join(disk_swap)}): under memory pressure, parts of it can be written there and stay "
                      "after it is closed.")
-    if hibernation_possible(host):
+    hibernation = hibernation_possible(host)
+    if hibernation:
         notes.append("Hibernating writes all of memory, this folder included, to the disk: close it before "
                      "hibernating, or turn hibernation off.")
+    elif hibernation is None:
+        notes.append("Whether this computer can hibernate couldn't be told. If it can, hibernating writes all of "
+                     "memory, this folder included, to the disk: close it before hibernating.")
     cmdline = host.read_sys("/proc/cmdline") or ""
     if re.search(r"\binit_on_free=1\b", cmdline):
         notes.append("The kernel clears memory as it is freed (init_on_free=1), so even pages the overwrite can't "

@@ -266,7 +266,9 @@ class HibernateUnencrypted(Check):
     def detect(self, scan: Scan) -> Outcome:
         hib = scan.context.values["hibernation"]
         if hib.value is False:
-            return passed("Hibernation isn't possible on this machine.", notes=hib.notes)
+            why = hib.note[:1].lower() + hib.note[1:] if hib.note else ""
+            return passed("Hibernation isn't possible on this machine" + (f": {why}." if why else "."), *hib.evidence,
+                          notes=hib.notes)
         if hib.value is None:
             return unknown(f"Couldn't tell whether this machine can hibernate: {hib.note}")
         targets = hibernation_targets(scan)
@@ -631,22 +633,10 @@ class RemovableUnencrypted(Check):
 
 # ------------------------------------------------------------------ crash dumps
 
-def _layered(host: Host, main: str, dropin: str) -> dict:
-    """A systemd config file and its drop-ins, in systemd's order."""
-    layers = []
-    paths = [f"/usr/lib/systemd/{main}"]
-    for d in (f"/usr/lib/systemd/{dropin}", f"/etc/systemd/{dropin}", f"/run/systemd/{dropin}"):
-        paths += [f"{d}/{p.name}" for p in children(host.sys_path(d)) if p.suffix == ".conf"]
-    # drop-ins sort by file name across directories; the main /etc file comes before all of them
-    first, rest = paths[:1], sorted(paths[1:], key=lambda p: p.rsplit("/", 1)[1])
-    for p in first + [f"/etc/systemd/{main}"] + rest:
-        try:
-            text = host.read_sys(p)
-        except Unreadable:
-            continue
-        if text:
-            layers.append(ini.parse(text))
-    return ini.merge(*layers)
+def _layered(host: Host, main: str, dropin: str = "") -> dict:
+    """A systemd config file and its drop-ins, in systemd's order (context.systemd_config)."""
+    from ..context import systemd_config
+    return systemd_config(host, main)[0]
 
 
 def crash_dumps(host: Host) -> tuple[bool, int, list[Evidence]]:

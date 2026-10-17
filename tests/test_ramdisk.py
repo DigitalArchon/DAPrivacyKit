@@ -227,9 +227,11 @@ def test_wipe_overwrites_in_place_and_never_follows_links(tmp_path):
 
 
 def test_status_reads_the_mount_and_says_what_it_cant_protect(tmp_path):
-    host = make_host(tmp_path, files={"/proc/mounts": "", "/proc/swaps": "Filename Type Size Used Priority\n/swapfile file 2097148 0 -2\n",
+    from daprivacyscanner.host import CommandResult
+    host = make_host(tmp_path, files={"/proc/mounts": "", "/proc/swaps": "Filename Type Size Used Priority\n/swapfile file 4194300 0 -2\n",
                                       "/sys/power/state": "freeze mem disk\n", "/sys/power/disk": "[platform] shutdown\n",
-                                      "/proc/meminfo": "MemTotal: 8000000 kB\n"})
+                                      "/proc/meminfo": "MemTotal: 8000000 kB\n", "/proc/cmdline": "ro resume=UUID=x\n"})
+    host.runner.handlers["busctl"] = lambda argv: CommandResult(argv, 0, 's "yes"\n')        # logind lets this user
     st = R.status(host)
     assert not st.open and not st.leftover and R.max_mb(host) == 3906
     assert any("Hibernating" in n for n in st.notes)

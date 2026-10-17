@@ -3047,7 +3047,13 @@ function browserRisks(data, reload) {
       h("div", { class: "orow" }, h("button", { class: "small", onclick: () => openGuideOption("desk.indexers", "baloo_off", reload) },
         "Delete Baloo's index…"))));
   }
-  if (r.hibernation) {
+  // the scan's own answer (context.detect_hibernation): true, false, or null when it couldn't be told
+  if (r.hibernation === null) {
+    out.push(h("div", { class: "notebox risk small" }, h("b", {}, "Before you start: whether this computer can hibernate couldn't be told. "),
+      "If it can, hibernating writes all of memory to the disk, the browser's and ~/TempBrowser's included. Close the "
+      + "browser and ~/TempBrowser before you hibernate.",
+      h("div", { class: "orow" }, guide("enc.hibernate_unencrypted", "Hibernation…"))));
+  } else if (r.hibernation) {
     out.push(h("div", { class: "notebox risk small" }, h("b", {}, "Before you start: this computer can hibernate. "),
       "Hibernating writes all of memory to the disk: the browser's, and ~/TempBrowser's, though it is kept out of swap. "
       + "It stays there until it is overwritten, after the computer has woken up. Close the browser and ~/TempBrowser "

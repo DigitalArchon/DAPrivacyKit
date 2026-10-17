@@ -352,11 +352,92 @@ def detect_session(host: Host) -> ContextValue:
 # ------------------------------------------------------------------ hibernation
 
 _RESUME = re.compile(r"(?:^|\s)resume=(\S+)")
+# systemd's configuration folders, highest precedence first (systemd.syntax(7): a drop-in of the same name in an earlier
+# one hides the later ones'; the main file is the first one found)
+SYSTEMD_CONF_DIRS = ("/etc/systemd", "/run/systemd", "/usr/local/lib/systemd", "/usr/lib/systemd")
+
+
+def systemd_config(host: Host, name: str) -> tuple[dict, list[str]]:
+    """A systemd configuration file (sleep.conf, journald.conf, coredump.conf...) as systemd reads it: the first of
+    /etc, /run, /usr/local/lib and /usr/lib that has NAME, then every NAME.d/*.conf in file name order whatever its
+    folder (one of the same name in /etc hides /run's, which hides /usr/lib's), later ones winning. With the files that
+    were read, in that order. Unreadable files are left out."""
+    def text(path: str) -> str | None:
+        try:
+            return host.read_sys(path)
+        except Unreadable:
+            return None
+    used, layers = [], []
+    main = next((f"{d}/{name}" for d in SYSTEMD_CONF_DIRS if host.sys_path(f"{d}/{name}").is_file()), None)
+    dropins: dict[str, str] = {}
+    for d in reversed(SYSTEMD_CONF_DIRS):                       # later (higher precedence) folders replace
+        try:
+            found = sorted(p.name for p in host.sys_path(f"{d}/{name}.d").iterdir() if p.name.endswith(".conf"))
+        except OSError:
+            found = []
+        for f in found:
+            dropins[f] = f"{d}/{name}.d/{f}"
+    for path in ([main] if main else []) + [dropins[f] for f in sorted(dropins)]:
+        t = text(path)
+        if t is not None:
+            layers.append(ini.parse(t))
+            used.append(path)
+    return ini.merge(*layers), used
+
+
+def _sd_bool(value: str | None) -> bool | None:
+    """systemd's booleans (parse_boolean): yes/no, true/false, on/off, 1/0, y/n, t/f."""
+    v = (value or "").strip().lower()
+    return True if v in ("1", "yes", "y", "true", "t", "on") else False if v in ("0", "no", "n", "false", "f", "off") \
+        else None
+
+
+# systemd's sleep modes that write memory to the disk, by their sleep.conf switch and logind's method
+HIBERNATING_MODES = (("AllowHibernation", "CanHibernate", "hibernate"),
+                     ("AllowSuspendThenHibernate", "CanSuspendThenHibernate", "suspend-then-hibernate"),
+                     ("AllowHybridSleep", "CanHybridSleep", "hybrid sleep"))
+
+
+def sleep_modes(host: Host) -> tuple[list[str], list[str]]:
+    """Which of hibernate, suspend-then-hibernate and hybrid sleep systemd's sleep.conf (and its drop-ins) allows, as
+    logind's methods (CanHibernate...); with the files that turned the others off. sleep.conf(5): every mode is allowed
+    unless switched off; AllowHibernation=no or AllowSuspend=no also turns the other two off, unless they are set to
+    yes themselves."""
+    cfg, used = systemd_config(host, "sleep.conf")
+    get = lambda k: _sd_bool(ini.get(cfg, "Sleep", k))       # noqa: E731
+    both = get("AllowHibernation") is not False and get("AllowSuspend") is not False
+    allowed = {"AllowHibernation": get("AllowHibernation") is not False}
+    for key in ("AllowSuspendThenHibernate", "AllowHybridSleep"):
+        allowed[key] = get(key) if get(key) is not None else both
+    return [method for key, method, _ in HIBERNATING_MODES if allowed[key]], used
+
+
+LOGIND = ("org.freedesktop.login1", "/org/freedesktop/login1", "org.freedesktop.login1.Manager")
+
+
+def logind_can(host: Host, method: str) -> str | None:
+    """logind's answer to CanHibernate (or CanSuspendThenHibernate, CanHybridSleep) for this user: "yes", "challenge"
+    (with an administrator's password), "no" (the system's policy refuses it: Ubuntu's com.ubuntu.desktop.rules does for
+    hibernating, tested on 26.04), "na" (not available: sleep.conf, not enough swap, no resume device). Asked on the
+    system bus with busctl, gdbus or dbus-send, which only reads. None when it can't be asked."""
+    dest, path, iface = LOGIND
+    for argv in (("busctl", "--system", "call", dest, path, iface, method),
+                 ("gdbus", "call", "--system", "--dest", dest, "--object-path", path, "--method", f"{iface}.{method}"),
+                 ("dbus-send", "--system", "--print-reply", f"--dest={dest}", path, f"{iface}.{method}")):
+        if not host.runner.which(argv[0]):
+            continue
+        r = host.run(*argv, timeout=10)
+        m = re.search(r"""["'](yes|no|na|challenge)["']""", r.stdout) if r.ok else None
+        if m:
+            return m.group(1)
+    return None
 
 
 def detect_hibernation(host: Host) -> ContextValue:
-    """Hibernation is possible: the kernel supports it, it isn't locked out, a resume device
-    is configured, and disk-backed swap can hold the image.
+    """Hibernation is possible: the kernel supports it, it isn't locked out, systemd's sleep settings allow it, a resume
+    device is configured, disk-backed swap can hold the image, and logind lets this user do it (Ubuntu's policy refuses
+    it: then it is one step away, as an administrator can still hibernate). When logind can't be asked, a machine that
+    could hibernate as far as the rest goes is unknown, never a guess.
     VERIFY: the size test uses /sys/power/image_size (the kernel's target image size, 2/5 of
     RAM by default) as the threshold; confirm against real hibernation attempts."""
     state = host.read_sys("/sys/power/state")
@@ -375,6 +456,47 @@ def detect_hibernation(host: Host) -> ContextValue:
     ev.append(Evidence.val("Disk-backed swap", _gib(swap_bytes)))
     if swap_bytes == 0:
         return ContextValue("hibernation", False, ev, "No disk-backed swap to write the image to")
+
+    methods, sleep_files = sleep_modes(host)
+    if not methods:
+        where = ", ".join(f for f in sleep_files if "sleep.conf" in f)
+        return ContextValue("hibernation", False, ev + [Evidence.val(
+            "systemd's sleep settings", "hibernate, suspend-then-hibernate and hybrid sleep turned off"
+            + (f" ({where})" if where else ""))], "Hibernation is turned off in systemd's sleep settings")
+    own = _hibernation_by_config(host, ev, swap_bytes)
+    answers = {m: logind_can(host, m) for m in methods}
+    if any(a is None for a in answers.values()):
+        if own.value is True:
+            return ContextValue("hibernation", None, own.evidence,
+                                "Couldn't ask the system's login manager (logind) whether hibernating is allowed "
+                                "here", notes=[Note("limitation", "Whether this computer may hibernate couldn't be told",
+                                                    "The kernel, the swap and the resume settings allow it, but the "
+                                                    "login manager (logind) that decides who may couldn't be asked "
+                                                    "(busctl, gdbus or dbus-send on the system bus).",
+                                                    ("enc.hibernate_unencrypted",))])
+        return own
+    ev = own.evidence + [Evidence.val(f"logind {m}", a) for m, a in answers.items()]
+    if any(a in ("yes", "challenge") for a in answers.values()):
+        # logind knows best what systemctl hibernate would do (its own resume and swap checks)
+        how = own.note if own.value is True else "The system's login manager (logind) says it is available"
+        return ContextValue("hibernation", True, ev, how + (", with an administrator's password"
+                                                             if "yes" not in answers.values() else ""))
+    if "no" in answers.values():
+        return ContextValue("hibernation", False, ev, "The system's policy doesn't let users hibernate (logind says no)",
+                            notes=[_one_step_away(
+                                "The kernel, the swap and the resume settings allow hibernating, but the system's policy "
+                                "refuses it to users (Ubuntu's does). An administrator can still hibernate the computer "
+                                "(sudo systemctl hibernate), and a change of policy would allow it: then")]
+                            if own.value is True else own.notes)
+    if own.value is True or own.value is None:
+        return ContextValue("hibernation", False, ev, "The system's login manager (logind) says hibernation isn't "
+                            "available here")
+    return ContextValue("hibernation", False, ev, own.note, notes=own.notes)
+
+
+def _hibernation_by_config(host: Host, ev: list[Evidence], swap_bytes: int) -> ContextValue:
+    """Whether the resume settings and the size of the swap allow hibernating (logind not asked)."""
+    ev = list(ev)
 
     cmdline = host.read_sys("/proc/cmdline") or ""
     resume_dev = (host.read_sys("/sys/power/resume") or "").strip()

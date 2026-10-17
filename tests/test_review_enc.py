@@ -7,7 +7,7 @@ from daprivacyscanner.host import CommandResult
 from daprivacyscanner.model import Outcome, Status
 
 from conftest import detect, ev, lsblk, make_host, make_scan
-from test_guides import _advice
+from test_guides import _advice, system  # noqa: F401 - the root helper on the fixture tree
 
 UBUNTU = lsblk("ubuntu-24.04-luks-lvm.json")
 EFIVARS = "/sys/firmware/efi/efivars"
@@ -107,3 +107,143 @@ def test_grub_with_boot_on_the_encrypted_root_still_passes(cat, tmp_path):
                                       "/efi/EFI/ubuntu/grubx64.efi": "MZ"})
     o = detect(cat, "enc.boot_no_secureboot", make_scan(host, devices=_no_boot_partition(lsblk("ubuntu-24.04-luks-lvm.json"))))
     assert o.status is Status.PASS and o.summary == "/boot is on encrypted storage."
+
+
+# ------------------------------------------------------------------ hibernation
+
+def _hib_host(tmp_path, files=None, logind=None):
+    base = {"/sys/power/state": "freeze mem disk\n", "/sys/power/disk": "[platform] shutdown reboot\n",
+            "/proc/swaps": "Filename Type Size Used Priority\n/swap.img file 4194300 0 -1\n",
+            "/proc/cmdline": "ro quiet resume=UUID=x\n", "/sys/power/resume": "0:0\n",
+            "/sys/power/image_size": str(2 * 2**30)}
+    host = make_host(tmp_path, files={**base, **(files or {})})
+    asked = []
+    if logind is not None:
+        def busctl(argv):
+            asked.append(argv[-1])
+            said = logind.get(argv[-1], "na") if isinstance(logind, dict) else logind
+            return CommandResult(argv, 0, f's "{said}"\n')
+        host.runner.handlers["busctl"] = busctl
+    return host, asked
+
+
+def test_hibernation_turned_off_in_sleep_conf_is_off(cat, tmp_path):
+    """The guide's "Turn hibernation off" writes this drop-in; it was never read, so the check never passed and swap
+    stayed at severity 9."""
+    from daprivacyscanner.context import detect_hibernation
+    dropin = "[Sleep]\nAllowHibernation=no\nAllowSuspendThenHibernate=no\nAllowHybridSleep=no\n"
+    host, asked = _hib_host(tmp_path, {"/etc/systemd/sleep.conf.d/60-daprivacyscanner.conf": dropin}, logind="yes")
+    v = detect_hibernation(host)
+    assert v.value is False and "sleep settings" in v.note and asked == []
+    o = detect(cat, "enc.hibernate_unencrypted", make_scan(host, hibernation=v))
+    assert o.status is Status.PASS and "turned off in systemd's sleep settings" in o.summary
+
+
+def test_a_mode_switched_back_on_still_hibernates(tmp_path):
+    """sleep.conf(5): AllowHibernation=no turns suspend-then-hibernate and hybrid sleep off too, unless they say yes."""
+    from daprivacyscanner.context import detect_hibernation
+    host, asked = _hib_host(tmp_path, {"/etc/systemd/sleep.conf": "[Sleep]\nAllowHibernation=no\nAllowHybridSleep=yes\n"},
+                            logind={"CanHybridSleep": "yes"})
+    assert detect_hibernation(host).value is True and asked == ["CanHybridSleep"]
+
+
+def test_a_dropin_of_the_same_name_in_etc_hides_the_vendors(tmp_path):
+    from daprivacyscanner import ini
+    from daprivacyscanner.context import systemd_config
+    host = make_host(tmp_path, files={"/usr/lib/systemd/sleep.conf.d/10-x.conf": "[Sleep]\nAllowHibernation=no\n",
+                                      "/etc/systemd/sleep.conf.d/10-x.conf": "[Sleep]\nAllowSuspend=yes\n",
+                                      "/usr/lib/systemd/sleep.conf.d/20-y.conf": "[Sleep]\nHibernateDelaySec=1h\n"})
+    cfg, used = systemd_config(host, "sleep.conf")
+    assert ini.get(cfg, "Sleep", "AllowHibernation") is None and ini.get(cfg, "Sleep", "HibernateDelaySec") == "1h"
+    assert used == ["/etc/systemd/sleep.conf.d/10-x.conf", "/usr/lib/systemd/sleep.conf.d/20-y.conf"]
+
+
+def test_ubuntus_policy_refusing_hibernation_makes_it_one_step_away(tmp_path):
+    """Ubuntu's com.ubuntu.desktop.rules refuses login1.hibernate to users and logind's CanHibernate answers "no" (seen
+    on 26.04): a Problem 9 on a stock install was wrong. An administrator can still hibernate: a risk note says so."""
+    from daprivacyscanner.context import detect_hibernation
+    host, _ = _hib_host(tmp_path, logind="no")
+    v = detect_hibernation(host)
+    assert v.value is False and "policy" in v.note
+    [note] = v.notes
+    assert note.title == "Hibernation is one step away" and "sudo systemctl hibernate" in note.text
+    host, _ = _hib_host(tmp_path / "b", logind="challenge")
+    assert detect_hibernation(host).value is True
+
+
+def test_without_logind_a_hibernation_the_rest_allows_is_unknown(cat, tmp_path):
+    from daprivacyscanner.context import detect_hibernation
+    host, _ = _hib_host(tmp_path)
+    v = detect_hibernation(host)
+    assert v.value is None and v.notes[0].kind == "limitation"
+    assert detect(cat, "enc.hibernate_unencrypted", make_scan(host, hibernation=v)).status is Status.UNKNOWN
+
+
+FEDORA = lsblk("fedora-40-btrfs-luks.json")
+SWAPFILE = {"/proc/swaps": "Filename\tType\tSize\tUsed\tPriority\n/home/swapfile file 8388604 0 -2\n",
+            "/sys/power/resume": "0:0\n", "/sys/power/state": "freeze mem disk\n", "/etc/os-release": "ID=fedora\n"}
+
+
+def test_suspend_then_hibernate_set_up_by_the_guide_passes(cat, tmp_path, system, monkeypatch):
+    """The check read only /sys/power/state, so neither of the guide's fixes was recognised, and its "this check shows
+    it at the next scan" was wrong."""
+    from daprivacyscanner.checks import load_all
+    from test_guides import apply, options, revert, rooted
+    host = make_host(tmp_path, files=SWAPFILE)
+    rooted(host, system, monkeypatch)
+    scan = make_scan(host, devices=FEDORA, hibernation=True, fde="full")
+    assert detect(cat, "kern.suspend_keys_in_ram", scan).status is Status.FAIL
+    check = load_all()["kern.suspend_keys_in_ram"](cat["kern.suspend_keys_in_ram"])
+    log, res = apply(host, options(check.plan_guide(scan, Outcome(Status.FAIL, "x")))["Suspend, then hibernate after 1 hour"])
+    o = detect(cat, "kern.suspend_keys_in_ram", scan)
+    assert o.status is Status.PASS and "hibernates after 1 hour" in o.summary
+    assert next(s for s in check.plan_guide(scan, o).steps if s.title.startswith("Hibernate")).done
+    o = detect(cat, "kern.suspend_keys_in_ram", make_scan(host, devices=FEDORA, hibernation=False, fde="full"))
+    assert o.status is Status.FAIL and "hibernation doesn't work here" in o.summary       # gone back to plain suspend
+    revert(host, log, res)
+
+
+def test_plasma_and_cinnamon_decide_the_lid_themselves(cat, tmp_path):
+    """PowerDevil and Cinnamon's settings daemon hold logind's lid inhibitor: their own settings count, and the guide
+    says where they are."""
+    from daprivacyscanner.checks import load_all
+    from daprivacyscanner.desktop import GNOME
+    from fakes import FakeGSettings
+    check = load_all()["kern.suspend_keys_in_ram"](cat["kern.suspend_keys_in_ram"])
+    host = make_host(tmp_path, files=SWAPFILE,
+                     home_files={".config/powerdevilrc": "[Battery][SuspendAndShutdown]\nSleepMode=3\n"})
+    kde = make_scan(host, devices=FEDORA, hibernation=True, fde="full", desktop=("kde",), plasma_major=6)
+    assert detect(cat, "kern.suspend_keys_in_ram", kde).status is Status.PASS
+    (host.home / ".config/powerdevilrc").write_text("[Battery][SuspendAndShutdown]\nSleepMode=1\n")
+    step = next(s for s in check.plan_guide(kde, Outcome(Status.FAIL, "x")).steps if s.title.startswith("Hibernate"))
+    assert "System Settings → Power Management" in step.text and "Standby, then hibernate" in step.text
+    assert [a.args["name"] for o in step.options for a in o.plan.actions] == ["sleep-delay", "sleep-delay"]
+
+    gs = FakeGSettings({("org.cinnamon.settings-daemon.plugins.power", "lid-close-battery-action"): "'suspend'",
+                        ("org.cinnamon.settings-daemon.plugins.power", "inhibit-lid-switch"): "true"})
+    host = make_host(tmp_path / "c", files={**SWAPFILE, "/etc/systemd/logind.conf.d/60-x.conf":
+                                            "[Login]\nHandleLidSwitch=suspend-then-hibernate\n"})
+    host.runner.handlers["gsettings"] = gs
+    cin = make_scan(host, devices=FEDORA, hibernation=True, fde="full", desktop=("x-cinnamon",))
+    assert detect(cat, "kern.suspend_keys_in_ram", cin).status is Status.FAIL      # Cinnamon holds the lid: logind's isn't used
+    step = next(s for s in check.plan_guide(cin, Outcome(Status.FAIL, "x")).steps if "lid" in s.title.lower())
+    assert "When the lid is closed to Hibernate" in step.text and not step.options
+    gs.values[("org.cinnamon.settings-daemon.plugins.power", "lid-close-battery-action")] = "'hibernate'"
+    cin = make_scan(host, devices=FEDORA, hibernation=True, fde="full", desktop=("x-cinnamon",))
+    o = detect(cat, "kern.suspend_keys_in_ram", cin)
+    assert o.status is Status.PASS and "closing the lid hibernates" in o.summary
+
+
+def test_cryptsetup_suspend_installed_passes(cat, tmp_path):
+    host = make_host(tmp_path, files={**SWAPFILE, "/usr/lib/systemd/system/systemd-suspend.service.d/"
+                                                  "cryptsetup-suspend.conf": "[Service]\n"})
+    o = detect(cat, "kern.suspend_keys_in_ram", make_scan(host, devices=FEDORA, hibernation=False, fde="full"))
+    assert o.status is Status.PASS and "cryptsetup-suspend" in o.summary
+
+
+def test_the_panels_say_what_the_scan_says(tmp_path):
+    """The RAM disk and browser panels said "this computer can hibernate" where the scan said it can't."""
+    from daprivacyscanner.tools import ramdisk as R
+    host, _ = _hib_host(tmp_path, logind="no")
+    assert R.hibernation_possible(host) is False
+    assert not any("Hibernating" in n or "hibernate" in n for n in R.memory_notes(host, R.status(host)))
