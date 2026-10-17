@@ -70,6 +70,34 @@ time.sleep(60)
         app.kill()
 
 
+def test_the_sandboxs_first_process_dies_with_bubblewrap():
+    """Live on Ubuntu 26.04: with the app killed (or Stop), bubblewrap ended but the sandbox ran on, the program with it:
+    STAY is the sandbox's PID 1, and the exec into AppArmor's unpriv_bwrap domain clears the parent-death signal
+    --die-with-parent had set. STAY sets its own; here its parent (standing for bubblewrap) is killed."""
+    parent = subprocess.Popen([sys.executable, "-I", "-c", """
+import subprocess, sys, time
+p = subprocess.Popen([sys.executable, "-I", "-c", sys.argv[1], "/bin/sleep", "60"])
+print(p.pid, flush=True)
+time.sleep(60)
+""", trial.STAY], stdout=subprocess.PIPE, text=True)
+    sleepers = []
+    try:
+        stay = int(parent.stdout.readline())
+        time.sleep(0.5)
+        sleepers = _children(stay)
+        assert not _gone(stay, 0.2) and sleepers
+        parent.kill()
+        parent.wait()
+        assert _gone(stay)
+    finally:
+        parent.kill()
+        for pid in sleepers:                            # outside a PID namespace its child outlives it: not ours to keep
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
+
+
 def test_the_commands_exit_status_is_passed_on_and_stop_reaches_the_command():
     run = lambda *argv: subprocess.run([sys.executable, "-I", "-c", trial.TETHER, str(os.getpid()), *argv],   # noqa: E731
                                        timeout=20).returncode

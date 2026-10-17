@@ -617,10 +617,17 @@ HELPERS = ("dbus-daemon", "dbus-launch", "dbus-broker", "dbus-broker-lau", "at-s
            "klauncher", "kioworker", "kioslave5", "kio_http_cache_", "kglobalacceld", "kglobalaccel5", "kwalletd5",
            "kwalletd6", "ksecretd", "gpg-agent", "ssh-agent", "xdg-document-po", "xdg-permission-", "xdg-desktop-por",
            "pulseaudio", "pipewire", "pipewire-pulse", "wireplumber", "gconfd-2", "xfconfd", "fusermount3", "gnome-keyring-d")
+# STAY is the sandbox's PID 1 (--as-pid-1), and sets its own parent-death signal (prctl 1, SIGKILL) as it starts:
+# bubblewrap's --die-with-parent sets it before the exec, and under Ubuntu's AppArmor profile for bubblewrap the exec
+# into its unpriv_bwrap domain clears it, so with bubblewrap ended (Stop, or the app killed: TETHER) the sandbox ran
+# on, the program with it (tested on Ubuntu 26.04 on 2026-10-17; bubblewrap's own init, which isn't exec'd, keeps it,
+# and so did Mint 22.3). As PID 1, its subreaper setting (prctl 36) is moot but harmless.
 STAY = """\
 import ctypes, os, sys, time
 HELPERS = %r
-ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0)
+libc = ctypes.CDLL(None, use_errno=True)
+libc.prctl(36, 1, 0, 0, 0)
+libc.prctl(1, 9, 0, 0, 0)
 first = os.fork()
 if not first:
     try:

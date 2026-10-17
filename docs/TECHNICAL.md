@@ -1559,7 +1559,11 @@ OACS, FNA and SANICAP via the helper's ioctl), read on request and kept for the 
     Mint 22.3). The kernel's parent-death signal answers to the parent thread, and the app starts trials from
     worker threads, so `TETHER` (one thread) sets it on its command and ends with the app; Stop's signals pass
     through it to the command, and the command's exit status comes back through it. A Box's run is started the
-    same way, by its `--box` process.
+    same way, by its `--box` process. `STAY`, the sandbox's PID 1 (`--as-pid-1`), sets its own parent-death
+    signal as it starts: bubblewrap's `--die-with-parent` sets it before the exec, and under Ubuntu's AppArmor
+    profile for bubblewrap the exec into its `unpriv_bwrap` domain clears it, so with bubblewrap ended (Stop, or
+    the app killed) the sandbox ran on with the program (tested on Ubuntu 26.04 on 2026-10-17; bubblewrap's own
+    init, not exec'd, keeps it, and Mint 22.3 was unaffected).
   - **A .deb's files where it expects them**: a first bubblewrap that is root of its own user namespace mounts an
     overlay of the package's `usr` over `/usr`, then starts the sandbox proper inside that view; the package's
     `opt` is bound at `/opt`. Bubblewrap 0.9 (Mint 22.3) has no overlay option of its own; this needs none
