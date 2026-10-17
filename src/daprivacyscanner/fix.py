@@ -1883,30 +1883,48 @@ class MakeDir(Action):
 class CopyTree(Action):
     """A folder copied to a new place of the user's (the program of a trial, kept in its Box). The place must
     not exist yet; links in it are copied as links. Reverting removes the copy, which is the fix's own: nothing
-    of the user's is in it (a Box's data is in its home, another folder)."""
+    of the user's is in it (a Box's data is in its home, another folder). `replace`: the folder there now (a Box's
+    earlier copy of the program) is moved into History's backups first and put back on revert, so a newer copy of
+    a program can be kept in its Box (found in the 2026-10-17 review: it was silently not copied)."""
     kind = "copytree"
 
-    def __init__(self, source: Path, dest: Path, display: str, what: str):
-        self.source, self.dest, self.display, self.what = source, dest, display, what
+    def __init__(self, source: Path, dest: Path, display: str, what: str, replace: bool = False):
+        self.source, self.dest, self.display, self.what, self.replace = source, dest, display, what, replace
 
     def describe(self) -> str:
-        return f"{shell(['cp', '-a', str(self.source), self.display])}   ({self.what})"
+        kept = (f"{shell(['mv', self.display, '<History backups>'])}; " if self.replace and self.dest.is_dir() else "")
+        return f"{kept}{shell(['cp', '-a', str(self.source), self.display])}   ({self.what})"
 
     @staticmethod
     def undo_hint(record: dict) -> str:
+        if record.get("backup"):
+            return f"{shell(['rm', '-r', record['path']])} && {shell(['mv', record['backup'], record['path']])}"
         return shell(["rm", "-r", record["path"]])
 
     def apply(self, ctx: FixContext) -> dict:
         import shutil
-        if self.dest.exists() or self.dest.is_symlink():
-            raise FixError(f"{self.display} is already there")
         if not self.source.is_dir() or self.source.is_symlink():
             raise FixError(f"{self.what} isn't there any more")
-        shutil.copytree(self.source, self.dest, symlinks=True)
+        backup = None
+        if self.replace and self.dest.is_dir() and not self.dest.is_symlink():
+            ctx.backups.mkdir(parents=True, exist_ok=True, mode=0o700)
+            backup = ctx.backups / f"{uuid.uuid4().hex}-{self.dest.name}"
+            shutil.move(str(self.dest), str(backup))          # a rename where they are on one filesystem
+            did(shell(["mv", str(self.dest), str(backup)]))
+        if self.dest.exists() or self.dest.is_symlink():
+            raise FixError(f"{self.display} is already there")
+        try:
+            shutil.copytree(self.source, self.dest, symlinks=True)
+        except OSError:
+            shutil.rmtree(self.dest, ignore_errors=True)
+            if backup is not None:
+                shutil.move(str(backup), str(self.dest))
+            raise
         os.chmod(self.dest, 0o700)
         did(shell(["cp", "-a", str(self.source), str(self.dest)]))
-        return {"kind": self.kind, "path": str(self.dest), "display": self.display,
-                "text": f"Copied {self.what} to {self.display}"}
+        return {"kind": self.kind, "path": str(self.dest), "display": self.display, "backup": str(backup) if backup else None,
+                "text": f"Copied {self.what} to {self.display}" + (", the copy there before kept in History's backups"
+                                                                   if backup else "")}
 
     @staticmethod
     def changed_back(record: dict, host: Host) -> str | None:
@@ -1916,13 +1934,20 @@ class CopyTree(Action):
     @staticmethod
     def revert(record: dict, ctx: FixContext, force: bool = False) -> RevertResult:
         import shutil
-        p = Path(record["path"])
-        if p.is_symlink() or not p.exists():
-            return RevertResult(True, f"{record['display']} was already gone")
-        shutil.rmtree(p, ignore_errors=True)
-        if p.exists():
-            return RevertResult(False, f"{record['display']} couldn't be removed completely")
-        return RevertResult(True, f"{record['display']} removed")
+        p, backup = Path(record["path"]), Path(record["backup"]) if record.get("backup") else None
+        if p.is_symlink():
+            return RevertResult(False, f"{record['display']} is a link now: left as it is")
+        there = p.exists()
+        if there:
+            shutil.rmtree(p, ignore_errors=True)
+            if p.exists():
+                return RevertResult(False, f"{record['display']} couldn't be removed completely")
+            did(shell(["rm", "-r", str(p)]))
+        if backup is not None and backup.is_dir() and not backup.is_symlink():
+            shutil.move(str(backup), str(p))
+            did(shell(["mv", str(backup), str(p)]))
+            return RevertResult(True, f"{record['display']} put back as it was before")
+        return RevertResult(True, f"{record['display']} removed" if there else f"{record['display']} was already gone")
 
 
 @action

@@ -378,6 +378,56 @@ def test_the_box_says_its_site_codes_can_be_tested(cat, tmp_path):
     assert "no names of sites or files are kept" not in js and "could check whether it contacted a site" in js
 
 
+# ------------------------------------------------------------------ E11: a newer copy of a Box's program
+
+def test_a_newer_copy_of_a_boxs_program_replaces_the_old_one_and_reverts(cat, tmp_path, monkeypatch):
+    """Found in the review: keeping a newer program of the same file name in its Box silently kept the old one (the
+    copy was skipped since the Box's app folder was there, and the guide said there was nothing left to do)."""
+    from daprivacyscanner.tools import box as B
+    from daprivacyscanner.tools import integration as I
+    from daprivacyscanner.runner import Runner
+    from test_guides import apply, build, options, revert
+    host = _box_host(tmp_path)
+    exe = tmp_path / "bin/daprivacyscanner"
+    exe.parent.mkdir()
+    exe.write_text("#!/bin/sh\n")
+    exe.chmod(0o755)
+    monkeypatch.setattr(I, "program", lambda environ: [str(exe)])
+    src = host.home / "Downloads"
+    src.mkdir()
+    v1 = b"\x7fELF\x02\x01\x01\x00AI\x02" + b"1" * 80
+    (src / "Great Tool.AppImage").write_bytes(v1)
+    t1 = trial.prepare_file(host, src / "Great Tool.AppImage", "disk")
+    monkeypatch.setattr(trial, "CURRENT", t1)
+    apply(host, options(build(cat, host, "app.boxes"))["Set up a Box for Great Tool"])
+    trial.discard(host, t1)
+    f = host.home / "Boxes/great-tool"
+    (f / "home/settings").write_text("the app's own data")
+    # the same release tried again: nothing to change
+    t2 = trial.prepare_file(host, src / "Great Tool.AppImage", "disk")
+    monkeypatch.setattr(trial, "CURRENT", t2)
+    g = Runner(cat, host).plan_fix("app.boxes", {"source": "trial"})[1]
+    assert g.steps[1].done and not any(o.plan.actions for st in g.steps for o in st.options)
+    trial.discard(host, t2)
+    # a newer release of the same name: it replaces the copy in the Box, said, and reverting puts the old one back
+    v2 = b"\x7fELF\x02\x01\x01\x00AI\x02" + b"2" * 90
+    (src / "Great Tool.AppImage").write_bytes(v2)
+    t3 = trial.prepare_file(host, src / "Great Tool.AppImage", "disk")
+    monkeypatch.setattr(trial, "CURRENT", t3)
+    try:
+        g = Runner(cat, host).plan_fix("app.boxes", {"source": "trial"})[1]
+        opt = next(o for st in g.steps for o in st.options)
+        assert not g.steps[1].done and [a.kind for a in opt.plan.actions] == ["copytree"]
+        assert any("already holds another copy of Great Tool" in e for e in opt.plan.side_effects)
+        log, res = apply(host, opt.plan)
+        assert (f / "app/Great_Tool.AppImage").read_bytes() == v2 and (f / "home/settings").exists()
+        revert(host, log, res)
+        assert (f / "app/Great_Tool.AppImage").read_bytes() == v1, "the earlier copy is put back"
+        assert (f / "home/settings").read_text() == "the app's own data"
+    finally:
+        trial.discard(host, t3)
+
+
 def test_what_a_program_printed_never_goes_to_the_journal(monkeypatch, capsys):
     from daprivacyscanner import app
     monkeypatch.delenv("DISPLAY", raising=False)

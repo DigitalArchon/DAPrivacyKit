@@ -442,8 +442,15 @@ def boxes(check, scan, outcome):
                               (f / "Exchange", f"{shown}/Exchange", ())):
         if not sub.exists():
             acts.append(MakeDir(sub, label, 0o700, owned=owned))
+    newer = False
     if source == "trial" and not (f / "app").exists():
         acts.append(CopyTree(cur.app, f / "app", f"{shown}/app", f"{cur.name}, as prepared for its trial"))
+    elif source == "trial" and had is not None and not blockers and not B.same_program(cur.app, f / "app"):
+        # the same program by name, but another copy of it (a newer release, downloaded again): it replaces the one in
+        # the Box, which History keeps to put back (found in the 2026-10-17 review: it was silently not copied)
+        newer = True
+        acts.append(CopyTree(cur.app, f / "app", f"{shown}/app", f"{cur.name}, as prepared for its trial, in place of "
+                             "the copy in the Box now", replace=True))
     if read_text(host, f / "box.json") != B.config_text(box):
         acts.append(WriteFile(f / "box.json", lambda old, t=B.config_text(box): t, "Write the Box's settings (box.json)",
                               f"{shown}/box.json", 0o600))
@@ -476,6 +483,10 @@ def boxes(check, scan, outcome):
                        "not at ~/Exchange.")
     if source == "trial" and kind == "deb":
         effects.append("The package stays unpacked, not installed: what it depends on must be installed already.")
+    if newer:
+        effects.insert(0, f"The Box already holds another copy of {cur.name} (an earlier release, or a different file "
+                       "of the same name). This one takes its place; its home and Exchange folders, with the app's "
+                       "data, stay as they are. The copy there now is kept in History, and put back if you revert this.")
     steps.append(Step(
         "Choose the app and what it gets", "The app to keep in a Box. An installed app stays installed as it is; only "
         "the copy started from the Box's menu entry is sandboxed.",

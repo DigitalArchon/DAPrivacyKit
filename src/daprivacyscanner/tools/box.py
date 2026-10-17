@@ -32,6 +32,7 @@ import hmac
 import json
 import os
 import re
+import stat
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -164,6 +165,47 @@ def problem(host: Host, box: Box) -> str | None:
         if not host.run_flatpak("info", "--show-ref", box.flatpak or "", *([branch] if branch else [])).ok:
             return f"its Flatpak app ({box.flatpak}) is no longer installed"
     return None
+
+
+_SAME: dict[tuple, bool] = {}          # what same_program found, by both folders' listings (sizes and times)
+
+
+def _listing(top: Path) -> dict[str, tuple]:
+    out: dict[str, tuple] = {}
+    for dirpath, dirs, files in os.walk(top):                 # links aren't followed: listed as links
+        for n in dirs + files:
+            p = os.path.join(dirpath, n)
+            st = os.lstat(p)
+            rel = os.path.relpath(p, top)
+            if stat.S_ISLNK(st.st_mode):
+                out[rel] = ("link", os.readlink(p))
+            elif stat.S_ISDIR(st.st_mode):
+                out[rel] = ("folder",)
+            else:
+                out[rel] = ("file", st.st_size, st.st_mtime_ns)
+    return out
+
+
+def same_program(a: Path, b: Path) -> bool:
+    """Whether the folders `a` and `b` hold the same program: the same names, links and contents (a trial's copy
+    against the one already kept in a Box). Contents are compared only where everything else agrees."""
+    import filecmp
+    try:
+        la, lb = _listing(a), _listing(b)
+    except OSError:
+        return False
+    key = (str(a), str(b), tuple(sorted(la.items())), tuple(sorted(lb.items())))
+    if key in _SAME:
+        return _SAME[key]
+    shape = lambda listing: {k: v[:2] for k, v in listing.items()}     # noqa: E731 - names, kinds, sizes, links
+    same = shape(la) == shape(lb)
+    try:
+        same = same and all(filecmp.cmp(a / rel, b / rel, shallow=False) for rel, v in la.items() if v[0] == "file")
+    except OSError:
+        same = False
+    _SAME.clear() if len(_SAME) > 32 else None
+    _SAME[key] = same
+    return same
 
 
 def as_trial(host: Host, box: Box) -> trial.Trial:

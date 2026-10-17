@@ -1596,7 +1596,10 @@ OACS, FNA and SANICAP via the helper's ioctl), read on request and kept for the 
   trial of a downloaded file) and `runs.json`. The guide offers the menu's apps whose program is in the
   system's folders, Flatpak apps, and the program on trial now (`trial.CURRENT`, copied in with `CopyTree`), and
   takes the network (none, or observed; a Flatpak's: none, or its usual one), the graphics card and sound as
-  inputs. Its actions: `MakeDir` (0700), `CopyTree`, `WriteFile` for `box.json` and for a menu entry
+  inputs. A program on trial that its Box already holds under the same name, as another copy (a newer release:
+  `box.same_program` compares names, links and contents), replaces the one there with `CopyTree(replace=True)`,
+  which moves the old copy into History's backups and puts it back on revert, and the guide says so (found in
+  the 2026-10-17 review: the newer copy was silently not kept). Its actions: `MakeDir` (0700), `CopyTree`, `WriteFile` for `box.json` and for a menu entry
   (`daprivacyscanner-box-<name>.desktop`) that runs `daprivacyscanner --box <name>` with this copy of the app.
   `--box` (`app.box_cli`, `box.run_to_end`) starts it as a trial is started (`box.as_trial`: no decoys, the
   sandbox's own files in the runtime folder and removed after the run), stays until its program has ended, and
