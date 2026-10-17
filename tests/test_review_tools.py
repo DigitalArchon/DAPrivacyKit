@@ -430,3 +430,14 @@ def test_apparmor_is_named_when_it_is_why_a_package_cant_be_tried(trial_host, mo
     assert why == trial.APPARMOR_BWRAP and "AppArmor" in why and "bwrap-userns-restrict" in why and "0.10" in why
     host = overlay_host(trial_host, native=False, apparmor=False)
     assert trial.probe_overlay(host).startswith("an overlay can't be mounted in a sandbox here")
+
+
+# ------------------------------------------------------------------ 7. Presentation mode
+
+def test_presentations_kept_message_is_plain_words():
+    from daprivacyscanner.tools import presentation as P
+    assert P.kept_text("Notification banners off") == ("Notification banners were changed meanwhile, so they are left "
+                                                       "as they are now.")
+    said = P.kept_text("Clipboard Indicator turned off (its clipboard history menu disappears)")
+    assert "Clipboard Indicator may still be off" in said and "disabled-extensions" not in said
+    assert "display-notifications" not in P.kept_text("Notification banners off (Do Not Disturb)")

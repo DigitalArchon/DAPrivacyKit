@@ -2623,8 +2623,8 @@ async function presentationOff(reload) {
     const r = await api("POST", "/api/tools/presentation/off");
     S.presentation = { on: r.on, since: r.since, lapsed: r.lapsed }; renderTop();
     if (r.failed.length) toast(`Not everything could be put back: ${r.failed.join("; ")}. Presentation mode stays on, to try again.`, "error", 12000);
-    else toast("Presentation mode is off: everything is back as it was."
-      + (r.kept.length ? ` You changed some of it meanwhile, so yours was kept: ${r.kept.join("; ")}.` : ""), "ok", 9000);
+    else toast(r.kept.length ? `Presentation mode is off, and the rest is back as it was. ${r.kept.join(" ")}`
+      : "Presentation mode is off: everything is back as it was.", "ok", 9000);
     reload?.();
   } catch (e) { toast(e.message, "error"); }
 }

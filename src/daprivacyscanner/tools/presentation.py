@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import time
 from dataclasses import dataclass, field
@@ -360,6 +361,26 @@ def renew(host: Host) -> dict:
     return status(host)
 
 
+def kept_text(what: str) -> str:
+    """What turning it off says of a change the user changed again meanwhile (theirs is kept), in plain words: never
+    the setting's key (org.cinnamon.desktop.notifications display-notifications), which tells them nothing."""
+    if what.startswith("Notification banners"):
+        return "Notification banners were changed meanwhile, so they are left as they are now."
+    if what.startswith("Do Not Disturb"):
+        return "Do Not Disturb was changed meanwhile, so it is left as it is now."
+    if what.startswith("Klipper"):
+        return "Klipper (Plasma's clipboard history) was changed meanwhile, so it is left as it is now."
+    if what.startswith("GPaste"):
+        return "GPaste's recording of what you copy was changed meanwhile, so it is left as it is now."
+    if what.startswith("CopyQ"):
+        return "CopyQ's recording of what you copy was changed meanwhile, so it is left as it is now."
+    m = re.match(r"(.+) turned off \(its clipboard history menu disappears\)$", what)
+    if m:
+        return (f"The list of GNOME extensions turned off was changed meanwhile, so it is left as it is now: {m.group(1)} "
+                "may still be off (turn it on again in Extensions).")
+    return f"“{what}” was changed meanwhile, so it is left as it is now."
+
+
 def turn_off(host: Host) -> dict:
     """Puts back what it changed. A setting the user changed meanwhile keeps their value (said in
     `kept`). What couldn't be put back (`failed`) stays in the state file, so it is still shown as
@@ -376,7 +397,7 @@ def turn_off(host: Host) -> dict:
         if res.ok:
             messages.append(res.message)
         elif res.conflict:
-            kept.append(res.message)
+            kept.append(kept_text(rec.get("what") or rec.get("text", "")))
         else:
             failed.append(res.message)
             left.insert(0, rec)

@@ -56,7 +56,8 @@ def test_a_setting_the_user_changed_meanwhile_is_kept(tmp_path):
     gs.values[NOTIF] = "true"                               # they turned banners back on themselves: already as before
     gs.values[DISABLED] = "['clipboard-indicator@tudmotu.com', 'other@x']"      # and disabled another extension
     off = P.turn_off(host)
-    assert len(off["kept"]) == 1 and "disabled-extensions" in off["kept"][0] and not P.state_file(host).exists()
+    assert len(off["kept"]) == 1 and "GNOME extensions turned off was changed meanwhile" in off["kept"][0] \
+        and "disabled-extensions" not in off["kept"][0] and not P.state_file(host).exists()
     assert gs.values[DISABLED] == "['clipboard-indicator@tudmotu.com', 'other@x']" and gs.values[NOTIF] == "true"
 
 
