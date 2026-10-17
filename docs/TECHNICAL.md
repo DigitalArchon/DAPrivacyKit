@@ -1536,7 +1536,15 @@ OACS, FNA and SANICAP via the helper's ioctl), read on request and kept for the 
     `/home/user`, the program read-only at `/app`, the display (on Wayland a socket the compositor marks as a
     sandbox's where it has the protocol; on X11 the X server's, with a warning, or Xephyr when ticked), no session
     D-Bus, keyring or agents, and the kernel keyring and crash-dump protections every start gets
-    (`sandbox.KEYRING`). The graphics card when ticked (on by default: the owner's decision, so that a trial
+    (`sandbox.KEYRING`). Unlike the browser's innermost sandbox, it gets no `/proc` masks (`sandbox.proc_masks`):
+    once a file of a `/proc` is covered, the kernel refuses a new `/proc` mount inside, and programs that start a
+    bubblewrap sandbox of their own mount one: WebKitGTK's web processes (Yelp, Epiphany, Evolution, any GNOME app
+    with a web view) and GNOME's thumbnailer (tested on Fedora 44 with GNOME 50 on 2026-10-17, in a sandbox like the
+    trial's: a WebKit page loaded without the masks and failed with them, "Can't mount proc"; glycin 2.1's image
+    loaders mount no `/proc` and worked either way). The program can read the kernel command line (often the
+    disks' UUIDs), the boot id and the rest of what `/proc` tells any program, and the page and the Box's guide
+    say so. (WebKitGTK's sandbox also binds `/sys/block` and more of `/sys`, which a trial isn't given, since it
+    would show the drives' serial numbers: its web pages don't load in a trial as it is, tested the same day.) The graphics card when ticked (on by default: the owner's decision, so that a trial
     feels as the app would) and sound when ticked. Its command is `STAY`, a subreaper that waits for everything
     the program starts (a launcher that starts the real program and ends) but not for the session's own helpers
     once the program has ended (`HELPERS`: a D-Bus daemon started on demand stays for good, and the trial would

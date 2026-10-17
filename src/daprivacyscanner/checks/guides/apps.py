@@ -393,8 +393,11 @@ def boxes(check, scan, outcome):
          "saves there, you can take out. Nothing else is shared."),
         ("What it doesn't do", "A sandbox isn't a guarantee: it keeps an app from your files, not an app built to break "
          "out through a flaw in the kernel. On an X11 session an app with a window can still read other windows and "
-         "what you type into them. And an app in a Box can't use the desktop's password store, so it may ask you to "
-         "sign in again or keep its login in its own home."),
+         "what you type into them. It can read what the system tells any program about this computer: the kernel's "
+         "command line (which often names your disks' ids), an id that stays the same until a restart, the processor "
+         "and the disks' partitions; hiding them would stop apps that start a sandbox of their own (GNOME's "
+         "thumbnails, web pages in GNOME apps). And an app in a Box can't use the desktop's password store, so it may "
+         "ask you to sign in again or keep its login in its own home."),
         ("Each run in numbers", "While a Box runs it is watched as a trial is, and what is kept is numbers: when, how "
          "long, how many files it wrote, how many hosts it contacted and how many of those were new. No names of files "
          "are kept. Sites aren't kept by name either, but each as a code (a salted hash), so the next run can count the "

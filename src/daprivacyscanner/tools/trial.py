@@ -753,6 +753,10 @@ class Bubblewrap(Engine):
         bwrap = sandbox._need(host, sandbox.BWRAP)
         deb_usr = t.kind == "deb" and (t.app / "usr").is_dir()
         native = deb_usr and native_overlay(host)
+        # No /proc masks (sandbox.proc_masks), as the browser's innermost sandbox has: with a file of /proc covered the
+        # kernel refuses a new /proc inside, and WebKitGTK's web processes and GNOME's thumbnailer mount one for their
+        # own sandbox (tested on Fedora 44, GNOME 50: a WebKit page failed with "Can't mount proc"). The page says the
+        # program can read the kernel command line and the boot id.
         # --die-with-parent: Stop ends bubblewrap, and the sandbox must go with it. Its own process is in a session
         # of its own (--new-session), so a signal to the group doesn't reach it: without this the program ran on
         # after Stop, its folder deleted under it (seen with KWrite on CachyOS)

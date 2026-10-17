@@ -457,7 +457,10 @@ You see:
 
 **Discard the trial** removes everything of it. A sandbox isn't a guarantee: it keeps a program from your
 files, but not a program built to break out of sandboxes. Don't run what you know to be hostile. And a trial
-shows what a program does while you watch, not what it would do next week.
+shows what a program does while you watch, not what it would do next week. The program can still read what
+the system tells any program about the computer: the kernel's command line (which often names your disks'
+ids), an id that stays the same until a restart, the processor. Hiding them would stop programs that start a
+sandbox of their own, as GNOME's thumbnails and the web pages in GNOME apps do.
 
 ### What does this app keep?
 

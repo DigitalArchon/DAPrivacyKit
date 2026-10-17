@@ -194,6 +194,28 @@ def test_a_full_table_folds_the_older_connections_into_their_hosts(monkeypatch):
     assert _flows(p)["hosts"] == r["hosts"], "summing up twice changes nothing"
 
 
+# ------------------------------------------------------------------ E5: no /proc masks in a trial, and the page says so
+
+def test_a_trial_has_no_proc_masks_and_says_what_it_can_read(tmp_path):
+    """E5: the review found that a trial's program reads the real kernel command line and boot id, which the browser's
+    sandbox covers. Covering them breaks programs that start a sandbox with a /proc of their own: a WebKitGTK page in
+    a sandbox like the trial's loaded without the masks and failed with them ("Can't mount proc", Fedora 44 with GNOME
+    50, 2026-10-17). So a trial and a Box get none, and the page and the Box's guide say what the program can read."""
+    from pathlib import Path
+    from test_trial import a_trial, pairs, parts
+    from daprivacyscanner.host import CommandResult, FakeRunner, Host
+    from daprivacyscanner.tools import sandbox
+    root = tmp_path / "root"
+    (root / "tmp/.X11-unix").mkdir(parents=True)
+    host = Host(home=root / "home/a", environ={"DISPLAY": ":0"},
+                runner=FakeRunner(handlers={"bwrap": lambda a: CommandResult(a, 0, "")}), root=root, uid=1000)
+    a = trial.ENGINES["bubblewrap"].command(host, a_trial(tmp_path), parts(host, tmp_path))
+    covered = {inside for _outside, inside in pairs(a, "--ro-bind")}
+    assert not covered & set(sandbox.PROC_OWN.values()) and not any(c.startswith("/proc/") for c in covered)
+    js = (Path(__file__).parent.parent / "src/daprivacyscanner/web/app.js").read_text()
+    assert "its command line (which often names your disks' ids)" in js
+
+
 # ------------------------------------------------------------------ E10: a trial's and a Box's own words
 
 def test_no_display_says_what_has_nowhere_to_show(tmp_path):
