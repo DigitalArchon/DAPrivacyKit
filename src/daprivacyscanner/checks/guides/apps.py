@@ -414,9 +414,12 @@ def boxes(check, scan, outcome):
         blockers.append(f"A Box named {box.slug} is there already for another program: revert it in History first.")
     if not (host.home / B.BOXES).exists():
         acts.append(MakeDir(host.home / B.BOXES, "~/" + B.BOXES, 0o700))
-    for sub, label in ((f, shown), (f / "home", f"{shown}/home"), (f / "Exchange", f"{shown}/Exchange")):
+    # the app's own names in them go with them on revert: the runs it recorded, and the empty folder bubblewrap makes in
+    # the home to mount Exchange on
+    for sub, label, owned in ((f, shown, ("runs.json",)), (f / "home", f"{shown}/home", ("Exchange/",)),
+                              (f / "Exchange", f"{shown}/Exchange", ())):
         if not sub.exists():
-            acts.append(MakeDir(sub, label, 0o700))
+            acts.append(MakeDir(sub, label, 0o700, owned=owned))
     if source == "trial" and not (f / "app").exists():
         acts.append(CopyTree(cur.app, f / "app", f"{shown}/app", f"{cur.name}, as prepared for its trial"))
     if read_text(host, f / "box.json") != B.config_text(box):
@@ -440,7 +443,8 @@ def boxes(check, scan, outcome):
                "copied in: it starts fresh.",
                "It starts this copy of the app (" + shell(command) + "): if you move or delete it, the scan says so and "
                "Set up… writes the menu entry again.",
-               "Reverting removes the menu entry, its settings and a program copied from a trial. The Box's home and "
+               "Reverting removes the menu entry, its settings, the record of its runs and a program copied from a "
+               "trial. The Box's home and "
                "Exchange folders stay when they hold anything, and the message says so: delete them yourself when you "
                "no longer want its data (deleting doesn't erase it from the disk; encryption is what protects it)."]
     if kind == "flatpak":

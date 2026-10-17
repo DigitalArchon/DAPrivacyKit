@@ -283,3 +283,150 @@ def test_the_large_folder_note_is_there_without_a_watcher_and_fillers_move_nothi
     assert any(x.startswith("In a large folder (an indexed one)") for x in p["side_effects"])
     kept = next(x for x in p["side_effects"] if x.startswith("Nothing is kept"))
     assert "moved" not in kept and "fillers are only added and deleted again" in kept
+
+
+# ------------------------------------------------------------------ 6. Try an app and Boxes
+
+@pytest.fixture
+def trial_host(tmp_path):
+    root = tmp_path / "root"
+    home = root / "home/alice"
+    for d in ("home/alice/Downloads", "run/user/1000", "tmp/.X11-unix", "usr/bin", "etc"):
+        (root / d).mkdir(parents=True)
+    (root / "tmp/.X11-unix/X0").write_text("")
+    ok = lambda argv: CommandResult(argv, 0, "")                                         # noqa: E731
+    return Host(home=home, environ={"HOME": str(home), "XDG_RUNTIME_DIR": "/run/user/1000", "DISPLAY": ":0"},
+                runner=FakeRunner(handlers={"bwrap": ok, "pasta": ok, "ip": ok, "mount": ok}), root=root, uid=1000)
+
+
+def test_discarding_the_last_trial_leaves_no_empty_folder(trial_host):
+    from daprivacyscanner.tools import trial
+    src = trial_host.home / "Downloads/tool.sh"
+    src.write_text("#!/bin/sh\necho hi\n")
+    base = trial_host.root / "run/user/1000" / trial.FOLDER
+    t = trial.prepare_file(trial_host, src, "memory")
+    assert base.is_dir()
+    trial.discard(trial_host, t)
+    assert not base.exists()
+    base.mkdir()                                                          # an empty one an earlier version left
+    trial.clear_leftovers(trial_host)
+    assert not base.exists()
+
+
+@pytest.mark.parametrize("code, failed, ended", [
+    (143, False, "was asked to end (SIGTERM, as at logout or shutdown)"),    # through bubblewrap and STAY
+    (-signal.SIGTERM, False, "was asked to end (SIGTERM, as at logout or shutdown)"),
+    (-signal.SIGKILL, False, "was killed (SIGKILL: by the system when memory ran short, or by a kill command)"),
+    (139, True, "crashed (SIGSEGV)"),
+    (2, True, "ended with an error (exit status 2)"),
+    (0, False, "ended by itself"),
+])
+def test_a_program_ended_by_a_signal_didnt_fail(trial_host, tmp_path, code, failed, ended):
+    from daprivacyscanner.tools import trial
+    folder = tmp_path / "t"
+    for sub in ("home", "app", "private"):
+        (folder / sub).mkdir(parents=True)
+    t = trial.Trial("0a1b2c3d4e5f", folder, "memory", "program", "tool", "a program", argv=["/app/tool"])
+    t.proc, t.started, t.state = SimpleNamespace(poll=lambda: code), time.time(), "running"
+    trial._finish(trial_host, t)
+    assert t.result["failed"] is failed and t.result["ended"] == ended
+
+
+def box_host(tmp_path):
+    desktop = "[Desktop Entry]\nType=Application\nName=Chat App\nExec=chat --flag %U\n"
+    h = make_host(tmp_path, files={"/usr/share/applications/chat.desktop": desktop, "/usr/bin/chat": "",
+                                   "/tmp/.X11-unix/X0": "", "/run/user/1000/x": ""},
+                  env={"XDG_DATA_DIRS": "/usr/share", "XDG_RUNTIME_DIR": "/run/user/1000", "DISPLAY": ":0"})
+    for name in ("bwrap", "pasta", "ip", "flatpak"):
+        h.runner.handlers[name] = lambda argv: CommandResult(argv, 0, "")
+    return h
+
+
+def test_a_boxs_revert_takes_its_runs_and_the_exchange_mount_point(cat, tmp_path, monkeypatch):
+    """Before, runs.json (the app's own record) and the empty home/Exchange bubblewrap mounts on kept the Box's folder
+    for ever, Exchange listed as "added since"."""
+    from daprivacyscanner.tools import box as B
+    from daprivacyscanner.tools import integration as I
+    from test_guides import apply, build, options, revert
+    exe = tmp_path / "bin/daprivacyscanner"
+    exe.parent.mkdir(parents=True)
+    exe.write_text("#!/bin/sh\n")
+    exe.chmod(0o755)
+    monkeypatch.setattr(I, "program", lambda environ: [str(exe)])
+    host = box_host(tmp_path)
+    plan = options(build(cat, host, "app.boxes"))["Set up a Box for Chat App"]
+    log, res = apply(host, plan)
+    f = host.home / "Boxes/chat-app"
+    box = B.read(host, "chat-app")
+    B.record_run(host, box, SimpleNamespace(started=1, result={"seconds": 5, "summary": {"totals": {}}}))
+    (f / "home/Exchange").mkdir()                                         # the mount point a run left before
+    assert (f / "runs.json").exists()
+    results = revert(host, log, res)
+    assert not f.exists() and not (host.home / "Boxes").exists(), [r.message for r in results]
+    assert not any("Boxes" in r.message and "added since" in r.message for r in results), [r.message for r in results]
+
+
+def test_a_box_run_removes_the_mount_point_it_made_and_keeps_what_is_in_one(tmp_path):
+    from daprivacyscanner.tools import box as B
+    host = box_host(tmp_path)
+    box = B.Box("chat-app", "Chat App", "installed", ["/usr/bin/chat"])
+    f = B.folder(host, "chat-app")
+    for sub in ("home", "Exchange"):
+        (f / sub).mkdir(parents=True)
+    (f / "box.json").write_text(B.config_text(box))
+
+    def spawn(argv, **kw):
+        (f / "home/Exchange").mkdir(exist_ok=True)                        # as bubblewrap makes it to mount on
+        return SimpleNamespace(pid=1 << 22, stdout=None)
+    B.run_to_end(host, box, spawn, wait=0.01)
+    assert not (f / "home/Exchange").exists()
+    (f / "home/Exchange").mkdir()
+    (f / "home/Exchange/mine.txt").write_text("the app's own")             # a Flatpak's, say: never removed
+    B.run_to_end(host, box, spawn, wait=0.01)
+    assert (f / "home/Exchange/mine.txt").read_text() == "the app's own"
+    assert B.runs(host, "chat-app")["runs"][-1]["signal"] is None
+
+
+def overlay_host(trial_host, native: bool, apparmor: bool = False):
+    from daprivacyscanner.tools import trial
+
+    def bwrap(argv):
+        if argv[1:] == ("--help",) or list(argv[1:]) == ["--help"]:
+            return CommandResult(argv, 0, "    --ro-overlay DEST   Mount overlayfs read-only on DEST\n" if native else
+                                 "    --bind SRC DEST\n")
+        if "/proc/self/attr/current" in argv:
+            return CommandResult(argv, 0, "bwrap//&unpriv_bwrap (enforce)\n" if apparmor else "unconfined\n")
+        if "--ro-overlay" in argv:
+            return CommandResult(argv, 0, "")
+        return CommandResult(argv, 32, "", "mount: /usr: permission denied.\n" if apparmor else "")
+    trial_host.runner.handlers["bwrap"] = bwrap
+    trial._NATIVE.clear()
+    return trial_host
+
+
+def test_a_packages_usr_is_laid_over_by_bubblewrap_itself_where_it_can(trial_host, tmp_path, monkeypatch):
+    """Ubuntu 26.04's AppArmor profile for bubblewrap takes every capability from what it starts, so a first
+    bubblewrap's mount failed; bubblewrap 0.10 and later mount the overlay themselves, which works there (tested)."""
+    from daprivacyscanner.tools import sandbox, trial
+    from test_trial import a_trial, pairs, parts
+    host = overlay_host(trial_host, native=True)
+    monkeypatch.setattr(sandbox, "program", lambda h, name: name)
+    t = a_trial(tmp_path, kind="deb", argv=["/usr/bin/foo"])
+    (t.app / "usr/bin").mkdir(parents=True)
+    a = trial.ENGINES["bubblewrap"].command(host, t, parts(host, tmp_path))
+    assert a[0] == "bwrap" and "--unshare-user" not in a[:3] and trial.OVERLAY not in a
+    i = a.index("--ro-overlay")
+    assert a[i - 4:i + 2] == ["--overlay-src", "/usr", "--overlay-src", str(t.app / "usr"), "--ro-overlay", "/usr"]
+    assert a.index(("--ro-bind")) < i                                     # over the computer's /usr, bound first
+    assert trial.probe_overlay(host) is None
+
+
+def test_apparmor_is_named_when_it_is_why_a_package_cant_be_tried(trial_host, monkeypatch):
+    from daprivacyscanner.tools import sandbox, trial
+    host = overlay_host(trial_host, native=False, apparmor=True)
+    monkeypatch.setattr(sandbox, "program", lambda h, name: name)
+    (host.root / "sys/kernel/security/apparmor").mkdir(parents=True)
+    why = trial.probe_overlay(host)
+    assert why == trial.APPARMOR_BWRAP and "AppArmor" in why and "bwrap-userns-restrict" in why and "0.10" in why
+    host = overlay_host(trial_host, native=False, apparmor=False)
+    assert trial.probe_overlay(host).startswith("an overlay can't be mounted in a sandbox here")

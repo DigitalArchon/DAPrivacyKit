@@ -3697,8 +3697,8 @@ function trialResult(t, call) {
   const discard = h("button", { class: "primary" }, "Discard the trial");
   discard.addEventListener("click", () => call("/api/tools/trial/discard", {}, discard, "Discarding…"));
   return [
-    h("p", {}, h("b", {}, t.name), ` ran for ${fmtMinutes(r.seconds)}`, t.stopped ? " and was ended here." : r.failed
-      ? ` and ended with an error (exit status ${t.exit}).` : " and ended by itself."),
+    h("p", {}, h("b", {}, t.name), ` ran for ${fmtMinutes(r.seconds)} and `, r.ended || (t.stopped ? "was ended here" : r.failed
+      ? `ended with an error (exit status ${t.exit})` : "ended by itself"), "."),
     h("div", { class: "small muted" }, trialHow(t.how)),
     r.output.length ? h("details", { class: "small", open: r.failed }, h("summary", {}, "What it printed last"),
       h("pre", { class: "output" }, r.output.join("\n"))) : null,
@@ -3786,7 +3786,8 @@ function boxesBody(boxes, spec, reload) {
             h("thead", {}, h("tr", {}, h("th", {}, "Started"), h("th", {}, "Lasted"), h("th", {}, "Files written"),
               h("th", {}, "Hosts contacted"), h("th", { title: "Hosts it had never contacted in an earlier run" }, "New hosts"),
               h("th", {}, "Sent"))),
-            h("tbody", {}, b.runs.map(r => h("tr", {}, h("td", { class: "folder" }, when(r.when) + (r.failed ? " (ended with an error)" : "")),
+            h("tbody", {}, b.runs.map(r => h("tr", {}, h("td", { class: "folder" }, when(r.when) + (r.failed ? (r.signal ? ` (crashed, ${r.signal})` : " (ended with an error)")
+                : r.signal ? ` (ended by ${r.signal})` : "")),
               h("td", {}, fmtMinutes(r.seconds)), h("td", {}, `${r.written}`),
               h("td", { class: r.hosts === null ? "zero" : "" }, r.hosts === null ? (r.network === "off" ? "no network" : "not observed") : `${r.hosts}`),
               h("td", { class: r.new_hosts ? "" : "zero" }, r.new_hosts === null ? "" : `${r.new_hosts}`),

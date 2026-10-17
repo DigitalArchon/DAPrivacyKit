@@ -1607,9 +1607,13 @@ class MakeDir(Action):
     the plan's deletions (a folder put where a file was, so nothing can write that file)."""
     kind = "mkdir"
 
-    def __init__(self, path: Path, display: str, mode: int = 0o755, phase: int = 0, note: str = ""):
+    def __init__(self, path: Path, display: str, mode: int = 0o755, phase: int = 0, note: str = "",
+                 owned: tuple[str, ...] = ()):
         self.path, self.display, self.mode, self.phase = path, display, mode, phase
         self.note = note                # what the folder is for, beside the command (never in it: it can be pasted)
+        # names in it that are the app's own, not the user's (a Box's runs.json, the empty mount point bubblewrap
+        # makes for its Exchange folder): reverting removes them first, a regular file or an empty folder only
+        self.owned = tuple(owned)
 
     def describe(self) -> str:
         cmd = shell(["mkdir", *(["-m", f"{self.mode:o}"] if self.mode != 0o755 else []), self.display])
@@ -1617,7 +1621,22 @@ class MakeDir(Action):
 
     @staticmethod
     def undo_hint(record: dict) -> str:
-        return f"{shell(['rmdir', record['path']])}   (if empty)" if record.get("created") else ""
+        if not record.get("created"):
+            return ""
+        first = [shell(["rmdir" if folder else "rm", os.path.join(record["path"], name)])
+                 for name, folder in MakeDir._owned(record)]
+        return "; ".join(first + [shell(["rmdir", record["path"]])]) + "   (if empty" + (
+            ": the app's own files in it go first)" if first else ")")
+
+    @staticmethod
+    def _owned(record: dict) -> list[tuple[str, bool]]:
+        """(name, is a folder) for each of the app's own names in it: "name/" is an empty folder, "name" a file."""
+        out = []
+        for entry in record.get("owned") or []:
+            name = entry.rstrip("/")
+            if isinstance(entry, str) and name and "/" not in name and name not in (".", ".."):
+                out.append((name, entry.endswith("/")))
+        return out
 
     def apply(self, ctx: FixContext) -> dict:
         created = not self.path.exists()
@@ -1628,7 +1647,8 @@ class MakeDir(Action):
         elif not self.path.is_dir() or self.path.is_symlink():
             raise FixError(f"{self.display} exists and isn't a folder")
         return {"kind": self.kind, "path": str(self.path), "display": self.display, "created": created,
-                "mode": self.mode, "text": f"Created {self.display}" if created else f"{self.display} (already there)"}
+                "mode": self.mode, "text": f"Created {self.display}" if created else f"{self.display} (already there)",
+                **({"owned": list(self.owned)} if self.owned and created else {})}
 
     @staticmethod
     def ran(record: dict) -> list[str]:
@@ -1645,6 +1665,18 @@ class MakeDir(Action):
     def revert(record: dict, ctx: FixContext, force: bool = False) -> RevertResult:
         if not record.get("created"):
             return RevertResult(True, "Nothing to undo")
+        for name, folder in MakeDir._owned(record):
+            p = os.path.join(record["path"], name)
+            try:
+                st = os.lstat(p)
+                if folder and stat.S_ISDIR(st.st_mode):
+                    os.rmdir(p)                           # only while empty: what is in it is someone's
+                    did(shell(["rmdir", p]))
+                elif not folder and stat.S_ISREG(st.st_mode):
+                    os.unlink(p)
+                    did(shell(["rm", p]))
+            except OSError:
+                pass
         notes = remove_made_dirs([record["path"]])
         return RevertResult(True, "; ".join(notes) if notes else f"{record['display']} removed")
 

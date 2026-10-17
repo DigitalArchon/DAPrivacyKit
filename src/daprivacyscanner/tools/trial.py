@@ -7,9 +7,10 @@ What can be tried (`prepare`):
   a program, a script. It is copied into the trial's folder; the original isn't touched or run;
 - an archive (tar, zip): unpacked inside a sandbox with no network, then the user picks the program in it;
 - a .deb: unpacked the same way, never installed; its /usr is laid over the computer's inside the sandbox (an
-  overlay, mounted by a first bubblewrap that is root of its own user namespace, then the real sandbox inside
-  it: works with bubblewrap 0.9, which has no overlay option of its own; tested on Mint 22.3) and its /opt put
-  at /opt, so the program finds its files where it expects them. What it depends on isn't installed for it;
+  overlay: bubblewrap's own from 0.10, which works under Ubuntu's AppArmor profile for bubblewrap, tested on Ubuntu
+  26.04; with bubblewrap 0.9, which has none, mounted by a first bubblewrap that is root of its own user namespace,
+  then the real sandbox inside it, tested on Mint 22.3) and its /opt put at /opt, so the program finds its files
+  where it expects them. What it depends on isn't installed for it;
 - an installed app from the menu, with a throwaway home: what it does on a first run, without the real profile;
 - a Flatpak app: in Flatpak's own sandbox with what it declares for itself dropped (`flatpak run --sandbox`) and
   only what the trial grants put back, HOME pointing at the throwaway home, so its data goes there and "home"
@@ -247,12 +248,26 @@ def _remove(folder: Path, in_memory: bool) -> None:
         except OSError:
             pass
     shutil.rmtree(folder, ignore_errors=True)
+    _remove_base(folder.parent)
+
+
+def _remove_base(base: Path) -> None:
+    """The trials' own folder (daprivacyscanner-trial in the runtime or cache folder), once no trial is left in it:
+    nothing of a trial stays behind, not even its empty folder."""
+    if base.name != FOLDER or base.is_symlink():
+        return
+    try:
+        base.rmdir()                                  # only while empty: another trial's folder keeps it
+    except OSError:
+        pass
 
 
 def clear_leftovers(host: Host) -> None:
     memory = {p["folder"] for p in places(host) if p["id"] == "memory"}
     for path in leftovers(host):
         _remove(Path(path), str(Path(path).parent) in memory)
+    for place in places(host):                        # an empty one an earlier version left
+        _remove_base(Path(place["folder"]))
 
 
 # ------------------------------------------------------------------ unpacking, inside a sandbox
@@ -621,10 +636,15 @@ class Bubblewrap(Engine):
 
     def command(self, host: Host, t: Trial, parts: Parts) -> list[str]:
         bwrap = sandbox._need(host, sandbox.BWRAP)
+        deb_usr = t.kind == "deb" and (t.app / "usr").is_dir()
+        native = deb_usr and native_overlay(host)
         # --die-with-parent: Stop ends bubblewrap, and the sandbox must go with it. Its own process is in a session
         # of its own (--new-session), so a signal to the group doesn't reach it: without this the program ran on
         # after Stop, its folder deleted under it (seen with KWrite on CachyOS)
         a = [bwrap, "--die-with-parent", *sandbox.namespaces(bool(parts.pasta)), *sandbox.system(host),
+             # bubblewrap 0.10 and later lay the package's /usr over the computer's themselves (the first source at
+             # the bottom), before AppArmor's bwrap-userns-restrict profile takes the capabilities from what they start
+             *(["--overlay-src", "/usr", "--overlay-src", str(t.app / "usr"), "--ro-overlay", "/usr"] if native else []),
              *sandbox.identity(host, parts.etc, own_dns=bool(parts.pasta)), *sandbox._gpu_argv(parts.devices)]
         a += ["--bind", str(t.home), sandbox.HOME_IN, "--perms", "0700", "--dir", sandbox.RUNTIME_IN]
         if t.kind == "deb":
@@ -651,9 +671,9 @@ class Bubblewrap(Engine):
             a += ["--sync-fd", str(0 if parts.pasta else parts.sync_fd)]
         stay = [sandbox.PYTHON, "-I", "-c", STAY] if host.sys_path(sandbox.PYTHON).exists() else []
         a += ["--chdir", sandbox.HOME_IN, "--", *stay, *t.argv]
-        if t.kind == "deb" and (t.app / "usr").is_dir():
-            # a first bubblewrap, root of its own user namespace, lays the package's /usr over the computer's; the
-            # sandbox proper then starts inside that view
+        if deb_usr and not native:
+            # an older bubblewrap (0.9, Mint 22.3's) has no overlay of its own: a first bubblewrap, root of its own user
+            # namespace, lays the package's /usr over the computer's; the sandbox proper then starts inside that view
             a = [bwrap, "--die-with-parent", "--unshare-user", "--uid", "0", "--gid", "0", "--cap-add", "ALL",
                  "--dev-bind", "/", "/", "--", "/bin/sh", "-c", OVERLAY, "sh", sandbox._need(host, "mount"),
                  str(t.app / "usr"), *a]
@@ -696,18 +716,56 @@ def engine_of(t: Trial) -> Engine:
     return ENGINES["flatpak" if t.kind == "flatpak" else "bubblewrap"]
 
 
+_NATIVE: dict[str, bool] = {}           # bubblewrap's path -> whether it has overlays of its own
+
+
+def native_overlay(host: Host) -> bool:
+    """Whether this bubblewrap mounts overlays itself (--overlay-src and --ro-overlay, bubblewrap 0.10 and later)."""
+    bwrap = sandbox.program(host, sandbox.BWRAP)
+    if not bwrap:
+        return False
+    if bwrap not in _NATIVE:
+        r = host.run(bwrap, "--help", timeout=10)
+        _NATIVE[bwrap] = "--ro-overlay" in (r.stdout + r.stderr)
+    return _NATIVE[bwrap]
+
+
+APPARMOR_BWRAP = ("AppArmor here takes every capability from the programs bubblewrap starts (the bwrap-userns-restrict "
+                  "profile, as Ubuntu ships it), and laying the package's files over /usr needs one in the sandbox's own "
+                  "namespace. A bubblewrap of version 0.10 or later lays them itself, which that profile allows "
+                  "(Ubuntu 26.04's does): with this one, a package can't be tried here.")
+
+
 def probe_overlay(host: Host) -> str | None:
-    """Why a .deb's files can't be laid over /usr here, or None: tried with an empty folder."""
+    """Why a .deb's files can't be laid over /usr here, or None: tried with an empty folder, the way a trial will
+    (bubblewrap's own overlay where it has one, else a first bubblewrap that mounts it)."""
     bwrap, mount = sandbox.program(host, sandbox.BWRAP), sandbox.program(host, "mount")
-    if not bwrap or not mount:
+    empty = "/var/empty" if host.sys_path("/var/empty").is_dir() else "/mnt"
+    if bwrap and native_overlay(host):
+        r = host.run(bwrap, *sandbox.namespaces(False), *sandbox.system(host), "--overlay-src", "/usr", "--overlay-src",
+                     empty, "--ro-overlay", "/usr", "--", "/usr/bin/true", timeout=20)
+    elif not bwrap or not mount:
         return "bubblewrap or mount isn't installed."
-    r = host.run(bwrap, "--unshare-user", "--uid", "0", "--gid", "0", "--cap-add", "ALL", "--dev-bind", "/", "/", "--",
-                 "/bin/sh", "-c", OVERLAY, "sh", mount, "/var/empty" if host.sys_path("/var/empty").is_dir() else "/mnt",
-                 "/usr/bin/true", timeout=20)
+    else:
+        r = host.run(bwrap, "--unshare-user", "--uid", "0", "--gid", "0", "--cap-add", "ALL", "--dev-bind", "/", "/",
+                     "--", "/bin/sh", "-c", OVERLAY, "sh", mount, empty, "/usr/bin/true", timeout=20)
     if r.ok:
         return None
+    if apparmor_strips_bwrap(host):
+        return APPARMOR_BWRAP
     err = (r.stderr or r.stdout).strip().splitlines()
     return f"an overlay can't be mounted in a sandbox here ({err[-1][:160] if err else f'exit status {r.returncode}'})."
+
+
+def apparmor_strips_bwrap(host: Host) -> bool:
+    """Whether AppArmor confines what bubblewrap starts to Ubuntu's unpriv_bwrap profile (bwrap-userns-restrict: no
+    capabilities, even as root of its own namespace): read from a program started that way, as the user (the list of
+    loaded profiles is root's to read)."""
+    bwrap = sandbox.program(host, sandbox.BWRAP)
+    if not bwrap or not host.sys_path("/sys/kernel/security/apparmor").is_dir():
+        return False
+    r = host.run(bwrap, "--dev-bind", "/", "/", "--", "/bin/cat", "/proc/self/attr/current", timeout=10)
+    return "unpriv_bwrap" in r.stdout
 
 
 # ------------------------------------------------------------------ what the program prints, and pasta's packets
@@ -978,8 +1036,12 @@ def _finish(host: Host, t: Trial) -> None:
     ignore = FLATPAK_OWN if t.kind == "flatpak" else ()
     w = activity.Where(str(t.home), host.uid)
     records = t.watch.records() if t.watch is not None else []
-    failed = t.exit not in (0, None) and not t.stopped
+    sig = ended_by_signal(t.exit) if not t.stopped else None
+    # a program asked to end (SIGTERM at logout or shutdown, a hang-up, an interrupt) or killed didn't fail: only an
+    # exit status of its own, or a crash, is an error
+    failed = t.exit not in (0, None) and not t.stopped and (sig is None or sig in CRASHES)
     t.result = {
+        "signal": sig, "ended": ended_words(t.exit, t.stopped, sig),
         "summary": activity.summarise(records, w, seconds, names=True),
         "decoys": t.watch.decoys() if t.watch is not None else [],
         "decoys_planted": t.how.get("decoys", 0),
@@ -993,6 +1055,42 @@ def _finish(host: Host, t: Trial) -> None:
     }
     t.watch = None
     t.reader = None
+
+
+CRASHES = ("SIGSEGV", "SIGABRT", "SIGBUS", "SIGILL", "SIGFPE", "SIGSYS", "SIGTRAP")
+SIGNAL_WORDS = {"SIGTERM": "was asked to end (SIGTERM, as at logout or shutdown)",
+                "SIGHUP": "ended with its session (SIGHUP)",
+                "SIGINT": "was interrupted (SIGINT)",
+                "SIGKILL": "was killed (SIGKILL: by the system when memory ran short, or by a kill command)",
+                "SIGQUIT": "was asked to quit (SIGQUIT)"}
+
+
+def ended_by_signal(code: int | None) -> str | None:
+    """The signal that ended the program, by name, from its exit status: negative for the process the app started,
+    128 plus the signal's number as bubblewrap and the sandbox's command (STAY) pass it on. None for an exit of its
+    own."""
+    if code is None:
+        return None
+    n = -code if code < 0 else code - 128 if 128 < code <= 128 + 64 else 0
+    if not n:
+        return None
+    try:
+        return signal.Signals(n).name
+    except ValueError:
+        return f"signal {n}"
+
+
+def ended_words(code: int | None, stopped: bool, sig: str | None) -> str:
+    """How the program ended, in words, after "It ran for N minutes and …"."""
+    if stopped:
+        return "was ended here"
+    if sig in CRASHES:
+        return f"crashed ({sig})"
+    if sig:
+        return SIGNAL_WORDS.get(sig, f"was ended by a signal ({sig})")
+    if code not in (0, None):
+        return f"ended with an error (exit status {code})"
+    return "ended by itself"
 
 
 def discard(host: Host, t: Trial) -> None:

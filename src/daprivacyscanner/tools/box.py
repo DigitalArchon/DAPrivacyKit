@@ -219,7 +219,7 @@ def record_run(host: Host, box: Box, t: trial.Trial) -> dict:
            "network": box.network, "hosts": len(names) if box.network == "observed" else None,
            "new_hosts": sum(1 for h in hashes if h not in seen) if box.network == "observed" else None,
            "sent": sum(h["sent"] for h in ((r.get("hosts") or {}).get("hosts") or [])) if box.network == "observed" else None,
-           "failed": bool(r.get("failed"))}
+           "failed": bool(r.get("failed")), "signal": r.get("signal")}
     d["runs"] = (d["runs"] + [run])[-RUNS_KEPT:]
     d["hosts"] = (d["hosts"] + [h for h in dict.fromkeys(hashes) if h not in seen])[-HOSTS_KEPT:]
     path = _runs_file(host, box.slug)
@@ -306,6 +306,10 @@ def run_to_end(host: Host, box: Box, spawn=None, wait: float = 1.0) -> trial.Tri
     finally:
         import shutil
         shutil.rmtree(t.private, ignore_errors=True)    # the sandbox's own files for this run: nothing to keep
+        try:                                            # the folder bubblewrap made in the home to mount Exchange on:
+            (t.home / "Exchange").rmdir()               # empty once the run ends (what the app saved there went to
+        except OSError:                                 # the real Exchange); anything in it stays
+            pass
         if fd >= 0:
             os.close(fd)                                # the lock goes with it (a launcher started meanwhile
     return t                                            # opened the same file and was refused)

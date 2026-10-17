@@ -220,7 +220,7 @@ def test_runs_are_kept_in_numbers_and_hosts_as_hashes(host):
             "hosts": {"hosts": [{"host": h, "sent": 1000} for h in hosts]}})
     first = B.record_run(host, box, a_run(["chat.example.net", "cdn.example.net"]))
     assert first == {"when": 1790000000, "seconds": 600, "written": 7, "deleted": 1, "network": "observed", "hosts": 2,
-                     "new_hosts": 2, "sent": 2000, "failed": False}
+                     "new_hosts": 2, "sent": 2000, "failed": False, "signal": None}
     second = B.record_run(host, box, a_run(["chat.example.net", "tracker.example.org"]))
     assert second["hosts"] == 2 and second["new_hosts"] == 1, "one host it had never contacted before"
     saved = (f / "runs.json").read_text()
