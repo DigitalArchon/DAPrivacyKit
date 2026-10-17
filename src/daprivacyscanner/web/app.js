@@ -2256,10 +2256,26 @@ function ramdiskPanel(rd, reload) {
     h("div", { class: "small muted" }, "It takes memory only for what is in it, up to the size. Opening needs administrator "
       + "access. Closing it here overwrites and deletes everything in it; restarting the computer ends it too (logging out "
       + "doesn't)."),
-    rd.leftover ? h("div", { class: "small muted" }, "An empty, read-only ~/RAMDisk folder is left from before a restart; "
-      + "opening uses it again.") : null,
+    leftoverNote(rd, reload, "tool"),
     cmds.slot,
     notes);
+}
+
+// The empty, read-only folder an open left when a restart ended the mount: opening uses it again, and closing puts it
+// back; without opening, this puts it back as it was (as you: no password).
+function leftoverNote(rd, reload, disk) {
+  if (!rd.leftover) return null;
+  const btn = h("button", { class: "small" }, "Put the folder back");
+  btn.addEventListener("click", async () => {
+    btn.disabled = true;
+    try {
+      const r = await api("POST", "/api/tools/ramdisk/tidy", { disk });
+      toast(r.done, "ok");
+      await reload();
+    } catch (e) { toast(e.message, "error", 10000); btn.disabled = false; }
+  });
+  return h("div", { class: "small muted" }, `An empty, read-only ${rd.path} folder is left from before a restart, which `
+    + "ended the RAM disk. Opening uses it again; or put it back as it was before (removed if the app made it).", " ", btn);
 }
 
 function closeRamdisk(rd, reload) {
@@ -2271,6 +2287,9 @@ function closeRamdisk(rd, reload) {
     h("div", { class: "small" }, h("b", {}, "What this doesn't reach: "), "copies other programs made of these files (an "
       + "editor's autosave, the clipboard, a browser's cache), thumbnails and the recent-files list (see the checks for "
       + "them), the files' names" + (rd.noswap ? "" : ", and anything swapped to disk") + "."),
+    h("div", { class: "small" }, h("b", {}, "The system's log: "), "the app keeps systemd from noting there that the RAM "
+      + "disk was opened or closed, but the log, kept on the disk, has a line each time administrator access is given to "
+      + "the app (when, not what for)."),
     h("p", { class: "muted small" }, "If a program still has a file in it open, nothing is closed: the app says which "
       + "program to close first."),
     rd.commands?.close?.length ? h("div", {}, h("div", { class: "muted small" }, "After overwriting and deleting the files (as "
@@ -2792,7 +2811,7 @@ function browserRamdisk(data, reload) {
   return h("div", { class: "notebox info small" }, h("b", {}, "First, open the browser's RAM disk, ~/TempBrowser. "),
     "Programs are allowed to run from it, so the browser can. It takes memory only for what is in it: about 500 MB for the "
     + "browser, more as you browse. Opening needs administrator access.",
-    h("div", { class: "orow" }, h("label", {}, "Size ", size, " MB"), open), cmds.slot);
+    h("div", { class: "orow" }, h("label", {}, "Size ", size, " MB"), open), cmds.slot, leftoverNote(rd, reload, "browser"));
 }
 
 // The sandbox: what it keeps the browser from, whether it can run here, its network, Landlock, and the

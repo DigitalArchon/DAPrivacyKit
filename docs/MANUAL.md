@@ -348,6 +348,10 @@ A folder in memory, `~/RAMDisk`, for work that shouldn't touch the disk.
 If a program still has a file open there, closing is refused and names the program ("Close X first").
 Copies that other programs made (thumbnails, recent-file lists) are outside it; the tool says so.
 
+The system's log doesn't note the RAM disk being opened or closed (the app keeps systemd from logging it), but it
+does keep a line each time you give the app administrator access. After a restart that ended an open RAM disk, its
+empty, read-only folder is left: opening uses it again, or **Put the folder back** returns it to how it was.
+
 ### Tor or Mullvad Browser in memory
 
 Runs **Tor Browser** (hides your address through the Tor network) or **Mullvad Browser** (Tor Browser's

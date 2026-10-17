@@ -464,7 +464,19 @@ The helper's `ramdisk_open`:
    reboot, and the close then still knows whether to remove the folder or which mode to give it back,
    rather than guessing (it used to take a folder of the user's for its own and remove it, or leave one
    at the 0500 an open RAM disk has). The attribute is the user's folder's, so it is checked, and the
-   worst a forged one can do is what the user could do themselves to their own empty folder.
+   worst a forged one can do is what the user could do themselves to their own empty folder. Opening a folder
+   an earlier open left (a restart ended its mount) keeps that open's record: written over with the 0500 the
+   folder had then, it made the close leave the folder empty and read-only for good (found in the review of
+   2026-10-17). Such a folder can also be put back without opening it: the panel's *Put the folder back*
+   (`ramdisk.put_back`, as the user, since it is their own empty folder: removed when the record says the app made
+   it, its mode back otherwise, 0700 when nothing records it).
+7. Keeps the mount out of the journal: systemd makes a mount unit of every mount it sees and logged
+   `home-<user>-TempBrowser.mount: Deactivated successfully.` at every close, in a journal kept on the disk, a
+   timeline of the sessions (found in the review of 2026-10-17). Before mounting, the helper writes a drop-in for
+   that unit in `/run/systemd/system/<unit>.d/` (gone at a reboot) with `LogLevelMax=notice`: systemd reads it as it
+   makes the unit, at the mount, with no `daemon-reload` (whose own lines would say as much), and logs only the
+   unit's warnings and errors (tested on Mint 22.3, systemd 255). The close removes it. What stays in the journal:
+   pkexec's line each time administrator access is given to the app (when, not what for); the close dialog says so.
 
 ### 7.4 Step 2: getting the browser
 

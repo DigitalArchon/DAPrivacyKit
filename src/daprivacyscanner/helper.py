@@ -2050,6 +2050,55 @@ def _kernel_has_noswap(release: str | None = None) -> bool:
     return bool(m) and (int(m.group(1)), int(m.group(2))) >= (6, 4)
 
 
+# systemd makes a mount unit of every mount it sees, and logs "<unit>: Deactivated successfully." at every unmount, in
+# a journal kept on the disk: a timeline of the RAM disk's sessions, ~/TempBrowser's named (found in the review of
+# 2026-10-17). A drop-in of the helper's in /run (gone at a reboot, as the mount is) gives that unit LogLevelMax=notice,
+# so only its warnings and errors are logged. systemd reads it when it makes the unit, at the mount, with no
+# daemon-reload, whose own lines would say as much (tested on Mint 22.3, systemd 255: the line is gone).
+QUIET_DIR = "/run/systemd/system"
+QUIET_FILE = "50-daprivacyscanner-quiet.conf"
+QUIET_SETTING = "[Mount]\nLogLevelMax=notice\n"
+
+
+def quiet_paths(path: str) -> tuple[str, str]:
+    """(the drop-in's folder, the drop-in) for the mount unit of `path`."""
+    folder = f"{QUIET_DIR}/{unit_name(path)}.d"
+    return folder, f"{folder}/{QUIET_FILE}"
+
+
+def quiet_commands(path: str, on: bool) -> list[str]:
+    """What writing (or removing) the drop-in does, as the commands that do the same."""
+    folder, file = quiet_paths(path)
+    if on:
+        return [f"mkdir -p {shlex.quote(folder)}",
+                f"printf {shlex.quote(QUIET_SETTING.replace(chr(10), chr(92) + 'n'))} > {shlex.quote(file)}"]
+    return [f"rm -f {shlex.quote(file)}", f"rmdir {shlex.quote(folder)}"]
+
+
+def _quiet(path: str, on: bool) -> bool:
+    """Writes (or removes) the drop-in that keeps systemd from logging the RAM disk's mount unit. Best effort: a
+    computer without systemd's runtime folder, or a failure, costs only that line. Whether it did it (the caller
+    lists quiet_commands then)."""
+    if not os.path.isdir(_p(QUIET_DIR)):
+        return False
+    folder, file = quiet_paths(path)
+    try:
+        if on:
+            _write(file, ("# Written by DA Privacy Kit for the RAM disk it opened here: nothing but warnings and "
+                          "errors about it in the journal.\n" + QUIET_SETTING).encode(), 0o644)
+            return True
+        if not os.path.lexists(_check_path(file)):
+            return False
+        _write(file, None)
+    except (OSError, Refused):
+        return False
+    try:
+        os.rmdir(_check_path(folder))           # only while empty: a drop-in of someone else's stays
+    except (OSError, Refused):
+        pass
+    return True
+
+
 def _remember_folder(fd: int, created: bool, mode: int, path: str) -> None:
     """Keeps on the folder itself (an extended attribute) whether the helper made it and what its mode was. A
     filesystem without them leaves the state in /run alone, as before."""
@@ -2068,23 +2117,28 @@ def _forget_folder(fd: int) -> None:
         pass
 
 
+def _record_of(fd: int) -> dict | None:
+    """What the folder open at `fd` says about itself (_remember_folder), checked (it is the user's folder: they can
+    write the attribute too, and get only what they could do themselves, chmod or rmdir of an empty folder of theirs)."""
+    try:
+        d = json.loads(os.getxattr(fd, RAMDISK_XATTR))
+    except (OSError, ValueError):
+        return None
+    mode = d.get("folder_mode") if isinstance(d, dict) else None
+    if not isinstance(d, dict) or d.get("created") not in (True, False) or not (
+            mode is None or (isinstance(mode, int) and not isinstance(mode, bool) and 0 <= mode <= 0o7777)):
+        return None
+    return {"created": d["created"], "folder_mode": mode}
+
+
 def _remembered_folder(home: str, parts: tuple[str, ...], uid: int) -> dict | None:
-    """What the folder says about itself (_remember_folder), checked (it is the user's folder: they can write
-    the attribute too, and get only what they could do themselves, chmod or rmdir of an empty folder of theirs)."""
+    """What the folder says about itself (_record_of), opened without following links."""
     try:
         fd, _ = _folder_fd(home, parts, uid, 0, create=False)
     except (Refused, OSError):
         return None
     try:
-        try:
-            d = json.loads(os.getxattr(fd, RAMDISK_XATTR))
-        except (OSError, ValueError):
-            return None
-        mode = d.get("folder_mode") if isinstance(d, dict) else None
-        if not isinstance(d, dict) or d.get("created") not in (True, False) or not (
-                mode is None or (isinstance(mode, int) and not isinstance(mode, bool) and 0 <= mode <= 0o7777)):
-            return None
-        return {"created": d["created"], "folder_mode": mode}
+        return _record_of(fd)
     finally:
         os.close(fd)
 
@@ -2124,20 +2178,36 @@ def ramdisk_open(args: dict) -> dict:
             raise Refused(f"~/{name} has files in it on the disk: move them out first (a mount would hide them, "
                           "not remove them)")
         before = stat.S_IMODE(os.fstat(fd).st_mode)
+        undo = (before, None)                   # what a failed mount puts back: the mode, and the record that was there
+        earlier = None if created else _record_of(fd)
+        if earlier is not None:
+            # left by an open whose mount a restart ended (the folder read-only, 0500): its record still says what the
+            # folder was before that open, which this open's 0500 would otherwise replace, so the folder stayed
+            # empty and read-only for good after the close (found in the review of 2026-10-17)
+            undo = (before, earlier)
+            created, before = earlier["created"], earlier["folder_mode"] if earlier["created"] is False else before
         _remember_folder(fd, created, before, path)
         os.fchmod(fd, 0o500)            # the folder under the mount: nothing can be saved in it while closed
         flags = MS_NOSUID | MS_NODEV | (MS_NOEXEC if noexec else 0)
         options = f"size={size}M,mode=0700,uid={uid},gid={gid}"
         noswap = _kernel_has_noswap()
+        quiet = _quiet(path, True)              # systemd logs nothing about its mount unit but warnings and errors
         err = MOUNT(f"/proc/self/fd/{fd}", flags, options + (",noswap" if noswap else ""))
         if err == errno.EINVAL and noswap:          # a kernel built without it
             noswap = False
             err = MOUNT(f"/proc/self/fd/{fd}", flags, options)
         if err:
-            os.fchmod(fd, before)
-            _forget_folder(fd)
+            os.fchmod(fd, undo[0])
+            if undo[1] is None:
+                _forget_folder(fd)
+            else:
+                _remember_folder(fd, undo[1]["created"], undo[1]["folder_mode"], path)
+            if quiet:
+                _quiet(path, False)
             raise Refused(f"the mount failed: {os.strerror(err)}")
         _did(["chmod", "500", path])
+        if quiet:
+            DID.extend(quiet_commands(path, True))
         _did(["mount", "-t", "tmpfs", "-o", ",".join(["nosuid", "nodev", *(["noexec"] if noexec else []), options,
                                                       *(["noswap"] if noswap else [])]), "tmpfs", path])
     finally:
@@ -2173,6 +2243,8 @@ def ramdisk_close(args: dict) -> dict:
         if err:
             raise Refused(f"unmounting failed: {os.strerror(err)}")
         _did(["umount", path])
+    if _quiet(path, False):                      # read when the unit was made: removing it now changes nothing logged
+        DID.extend(quiet_commands(path, False))
     if state is None:                            # after a reboot /run is empty: the folder itself says what to put back
         state = _remembered_folder(home, parts, uid)
     if state is None:

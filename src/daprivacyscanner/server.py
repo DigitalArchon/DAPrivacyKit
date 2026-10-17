@@ -1142,6 +1142,22 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
                 await asyncio.to_thread(owner.claim, host, name, ramdisk.folder(host, name))
         return {"ramdisk": await asyncio.to_thread(ramdisk_view, host, name), "admin_active": admin.active()}
 
+    @app.post("/api/tools/ramdisk/tidy", dependencies=[Depends(auth)])
+    async def tools_ramdisk_tidy(request: Request):
+        """Body {"disk"}: the empty, read-only folder an open left when a restart ended the mount, put back as it was
+        (ramdisk.put_back, as the user: no administrator access). Closing one that isn't open stays refused."""
+        from .tools import ramdisk
+        name = disk_of(await body_of(request))
+        host = make_host()
+        st = await asyncio.to_thread(ramdisk.status, host, name)
+        if st.open or not st.leftover:
+            return JSONResponse({"error": f"~/{name} isn't a folder a RAM disk left behind."}, status_code=409)
+        try:
+            done = await asyncio.to_thread(ramdisk.put_back, host, name)
+        except OSError as e:
+            return JSONResponse({"error": f"It couldn't be put back: {e.strerror or e}."}, status_code=409)
+        return {"ramdisk": await asyncio.to_thread(ramdisk_view, host, name), "done": done}
+
     @app.post("/api/tools/ramdisk/close", dependencies=[Depends(auth)])
     async def tools_ramdisk_close(request: Request):
         """Body {"disk"} as for opening. Refused while a program uses it ("Close X first");

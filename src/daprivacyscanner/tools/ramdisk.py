@@ -89,6 +89,8 @@ def commands(host: Host, name: str = NAME, size_mb: int = DEFAULT_MB) -> dict[st
         gid = host.uid
     noswap = helper._kernel_has_noswap()
 
+    quiet = os.path.isdir(host.sys_path(helper.QUIET_DIR))          # systemd's runtime folder: the helper's _quiet
+
     def opening(noexec: bool) -> list[str]:
         import json
         import stat as st_
@@ -100,11 +102,18 @@ def commands(host: Host, name: str = NAME, size_mb: int = DEFAULT_MB) -> dict[st
             mode = st_.S_IMODE(os.lstat(path).st_mode) if exists else None
         except OSError:
             mode = None
-        # what to put back when it is closed, kept on the folder itself (the helper's _remember_folder)
-        remember = json.dumps({"created": not exists, "folder_mode": mode})
+        # what to put back when it is closed, kept on the folder itself (the helper's _remember_folder); a record left
+        # by an open a restart ended is kept as it is
+        earlier = record(Path(path)) if exists else None
+        created = not exists if earlier is None else earlier["created"]
+        if earlier is not None and earlier["created"] is False:
+            mode = earlier["folder_mode"]
+        remember = json.dumps({"created": created, "folder_mode": None if created else mode})
         return made + [shell(["setfattr", "-n", helper.RAMDISK_XATTR, "-v", remember, path]), shell(["chmod", "500", path]),
+                       *(helper.quiet_commands(path, True) if quiet else []),
                        shell(["mount", "-t", "tmpfs", "-o", options, "tmpfs", path])]
-    return {"open": opening(True), "open_exec": opening(False), "close": [shell(["umount", path])]}
+    return {"open": opening(True), "open_exec": opening(False),
+            "close": [shell(["umount", path]), *(helper.quiet_commands(path, False) if quiet else [])]}
 
 
 def _here(host: Host, path: Path) -> list[list[str]]:
@@ -161,6 +170,60 @@ def left_by_app(path: Path) -> bool:
         return stat.S_IMODE(os.lstat(path).st_mode) == 0o500
     except OSError:
         return False
+
+
+def record(path: Path) -> dict | None:
+    """The helper's record of an open on the folder itself ({"created", "folder_mode"}), checked as the helper checks
+    it (helper._record_of), or None."""
+    import json
+    from ..helper import RAMDISK_XATTR
+    try:
+        d = json.loads(os.getxattr(path, RAMDISK_XATTR, follow_symlinks=False))
+    except (OSError, ValueError):
+        return None
+    mode = d.get("folder_mode") if isinstance(d, dict) else None
+    if not isinstance(d, dict) or d.get("created") not in (True, False) or not (
+            mode is None or (isinstance(mode, int) and not isinstance(mode, bool) and 0 <= mode <= 0o7777)):
+        return None
+    return {"created": d["created"], "folder_mode": mode}
+
+
+def put_back(host: Host, name: str = NAME) -> str:
+    """A closed RAM disk's folder an open left behind (a restart ended the mount: status().leftover) put back as it
+    was before that open, as the user (it is their folder, in their home: no administrator access): removed when the
+    open made it, its mode back otherwise (0700 when nothing says what it was: a filesystem without extended
+    attributes). Only an empty folder, never through a link. Returns what was done, in words; raises OSError."""
+    import errno
+    from ..helper import RAMDISK_XATTR
+    path = folder(host, name)
+    if mounted(host, name):
+        raise OSError(errno.EBUSY, f"~/{name} is open")
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        st = os.fstat(fd)
+        if st.st_uid != host.uid:
+            raise OSError(errno.EPERM, f"~/{name} isn't your folder")
+        if os.listdir(fd):
+            raise OSError(errno.ENOTEMPTY, f"~/{name} isn't empty")
+        if not left_by_app(path):
+            raise OSError(errno.EINVAL, f"~/{name} isn't a folder a RAM disk left")
+        rec = record(path)
+        if rec is not None and rec["created"]:
+            home_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+            try:
+                os.rmdir(name, dir_fd=home_fd)
+            finally:
+                os.close(home_fd)
+            return f"~/{name} was removed: the app had made it."
+        mode = (rec or {}).get("folder_mode") or 0o700
+        os.fchmod(fd, mode)
+        try:
+            os.removexattr(fd, RAMDISK_XATTR)
+        except OSError:
+            pass
+        return f"~/{name} is a folder of yours again (its permissions put back)."
+    finally:
+        os.close(fd)
 
 
 def hibernation_possible(host: Host) -> bool | None:
