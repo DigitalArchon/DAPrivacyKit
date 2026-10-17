@@ -817,7 +817,7 @@ class UpdatesRefreshed(OnlineCheck):
         import shutil
         import tempfile
         own = scan.paths.cache_home / "daprivacyscanner"
-        shutil.rmtree(own / "apt", ignore_errors=True)    # where versions before 0.1.0b3 kept them, for good (269 MB)
+        shutil.rmtree(own / "apt", ignore_errors=True)    # where 0.1.0b2 and earlier kept them, for good (269 MB)
         runtime = scan.host.environ.get("XDG_RUNTIME_DIR") or ""
         # the lists take about 170 MB while they download (Ubuntu 26.04), and the runtime folder is a tenth of memory:
         # with too little room there they go in the app's cache folder, on the disk, and are removed all the same
