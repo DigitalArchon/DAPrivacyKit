@@ -797,7 +797,11 @@ checks:
       - 'systemctl is-active xrdp x11vnc; ss -tlnp for 3389 and 5900-5910'
       - 'Running: RustDesk, AnyDesk, TeamViewer, Chrome Remote Desktop (remoting_me2me_host, chrome-remote-desktop-host:
         it listens on no port, connecting out through Google), NoMachine (nxserver.bin, nxnode.bin), Sunshine'
-    fix: Disable when not needed; otherwise require strong credentials and bind to a VPN interface.
+    fix: >
+      Disable when not needed; otherwise require strong credentials and bind to a VPN interface. What the guide has no
+      option for: where this desktop starts programs at login (Cinnamon: System Settings → Startup Applications; KDE
+      Plasma: Autostart, and Remote Desktop for KDE's RDP server), and for each program found running the commands that
+      show it (pgrep), the systemd unit that starts it, and stop it now; for a port alone, the program listening (ss).
     remedy: >
       Others on the network can connect to your desktop. Guide… turns it off if you don't use it; if
       you do, give it a strong password.
@@ -1034,7 +1038,12 @@ checks:
       - 'umask  (0022 = new files readable by other users)'
       - 'Home directory mode: when others can''t enter it (no o+x), the umask only matters outside it (/tmp, shared
         folders): a pass with a note'
-    fix: Suggest 027 or 077 in the login profile.
+    fix: >
+      027 or 077 in the login files (login shells, and the X11 session script that starts Cinnamon, Xfce and MATE), and
+      UMask= in a drop-in for the user's user@UID.service (GNOME and Plasma start through the systemd user manager, on
+      X11 as on Wayland; ~/.config/environment.d sets variables only, never the umask). The drop-in applies when the
+      user manager starts again (a restart, or every session closed with nothing of the user's left running), not
+      reliably at the next login: the guide says so, with the command that shows the manager's umask now.
     remedy: >
       New files you create can be read by other accounts on this computer. Guide… makes new files
       private by default, for your terminals and your desktop apps.
@@ -1169,20 +1178,25 @@ checks:
       /var/log/wtmp and /var/log/lastlog record when, and from which address, every account
       logged in; the `last` and `lastlog` commands show them to any user.
     detect:
-      - 'stat /var/log/wtmp /var/log/lastlog /var/log/btmp (and wtmp.1, lastlog under /var/lib/wtmpdb): flag world-readable'
+      - 'stat /var/log/wtmp /var/log/lastlog /var/log/btmp, their rotated copies in /var/log (wtmp.1; wtmp-YYYYMMDD with
+        Fedora''s dateext; compressed), /var/lib/wtmpdb/wtmp.db and /var/lib/lastlog/lastlog2.db: flag world-readable'
     fix: >
       A chmod alone doesn't last: systemd-tmpfiles sets the mode again at every boot (tmpfiles.d var.conf,
       `f /var/log/wtmp 0664`) and logrotate creates a new wtmp with `create 0664`. The helper writes its own
       /etc/tmpfiles.d/00-daprivacyscanner-wtmp.conf (0660 for wtmp and lastlog; an earlier name wins for the same
-      path), applies it now with systemd-tmpfiles, and sets logrotate's create mode to 0660 in /etc/logrotate.d/wtmp.
-      Non-administrators then can't run `last`. wtmpdb and lastlog2 databases (Debian 13, openSUSE) aren't covered by
-      the rule: the guide gives chmod o-r commands for them and says an update may reset it.
+      path), applies it now with systemd-tmpfiles, and sets logrotate's create mode to 0660 where the rule for
+      /var/log/wtmp is: /etc/logrotate.d/wtmp (Debian, Ubuntu, Fedora 44) or /etc/logrotate.conf; a rule elsewhere, or
+      another create line, is the user's to edit (sudoedit, the line named). Rotated copies keep the mode they had: chmod
+      o-r commands (btmp's: chmod 600). Non-administrators then can't run `last`. wtmpdb and lastlog2 databases (Debian
+      13, Fedora 44, openSUSE) aren't covered by the rule: the guide gives chmod o-r commands for them and says an update
+      may reset it.
     remedy: >
       Every account can see when you logged in, and from where. Guide… makes the login records
       readable by administrators only, lasting through restarts.
     verify: >
       That tmpfiles.d applies the entry of the earliest-named file for a path on the targeted systemd versions,
-      and where distributions other than Debian/Ubuntu keep the logrotate rule for wtmp.
+      and where Arch's and openSUSE's logrotate keep the rule for wtmp (Fedora 44: /etc/logrotate.d/wtmp, seen
+      2026-10-17; Omarchy has no logrotate).
 
 # ---------------------------------------------------------------------------
 # NETWORK EXPOSURE AND TRACKING

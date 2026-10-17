@@ -8,7 +8,7 @@ from pathlib import Path
 from ...fix import ChmodPath, ClearInFile, RootChange, WriteFile
 from ...guide import Guide, Input, Step
 from ...host import Unreadable
-from .._util import children, isdir, isfile, mode_of, read_text
+from .._util import children, isdir, isfile, mode_of, processes, read_text
 from ..fixes import gset
 from . import guide, option, evidence, service_off, install, dropin, remote_session
 
@@ -229,14 +229,52 @@ def remote_desktop(check, scan, outcome):
     other = [k for k in found if not k.startswith(("GNOME Remote Desktop", *REMOTE_SERVICES))
              and not (named and re.match(r"^(RDP|VNC) port ", k))]
     if other:
-        steps.append(Step("Other remote access", "Stop these if you don't use them, and remove them from startup "
-                          "(System Settings → Remote Desktop on KDE; Desktop Sharing for krfb): " + ", ".join(other) + "."))
+        steps.append(_other_remote(scan, other))
     steps.append(Step("If you do need it",
                       "Use a strong, unique password, and reach it over a VPN (e.g. WireGuard or Tailscale) rather "
                       "than exposing it to every network you join."))
     return Guide(check.id, "Turn off remote desktop servers you don't use",
                  "A screen-sharing server lets anyone with the password, or an exploit, see and control your session.",
                  steps)
+
+
+# where a remote access program's systemd unit is found by name, when its process name doesn't say
+REMOTE_UNITS = {"remoting_me2me_": "chrome-remote-desktop", "chrome-remote-d": "chrome-remote-desktop",
+                "nxserver.bin": "nxserver", "nxnode.bin": "nxserver", "Xvnc": "vnc", "x0vncserver": "vnc",
+                "vino-server": "vino", "teamviewerd": "teamviewer"}
+
+
+def _other_remote(scan, other: list[str]) -> Step:
+    """Remote access the app has no option for: where this desktop starts programs at login, and the commands that
+    show each one (what runs, the unit that starts it, if any), stop it now, or name the program behind a port."""
+    from ..auth import REMOTE_PROCESSES
+    d, names, running = scan.context.desktop, set(scan.context.desktop.names), processes(scan.host)
+    procs = [p for label in other for p, shown in REMOTE_PROCESSES.items() if shown == label and p in running]
+    ports = [m.group(1) for k in other for m in [re.match(r"^(?:RDP|VNC) port (\d+)", k)] if m]
+    if d.is_kde:
+        text = ("Stop them if you don't use them, and keep them from starting again: System Settings → Autostart lists "
+                "what starts at login" + ("; KDE's RDP server is turned off in System Settings → Remote Desktop"
+                                          if "krdpserver" in procs else "")
+                + ("; Desktop Sharing (krfb) is quit from its own window, and taken out of Autostart" if "krfb" in procs
+                   else "") + ".")
+        cmds = ["systemsettings kcm_autostart"] + (["systemsettings kcm_krdpserver"] if "krdpserver" in procs else [])
+    elif names & {"x-cinnamon", "cinnamon"}:
+        text = ("Stop them if you don't use them, and keep them from starting again: System Settings → Startup "
+                "Applications lists what starts at login.")
+        cmds = ["cinnamon-settings startup"]
+    else:
+        text = ("Stop them if you don't use them, and keep them from starting again: your desktop's list of startup "
+                "applications, or the systemd unit below.")
+        cmds = []
+    text += " Programs a service starts come back when stopped by hand: disable the service, as root for a system one."
+    for p in procs:
+        unit = REMOTE_UNITS.get(p, p.removesuffix(".bin"))
+        cmds += [f"pgrep -ax {p}     # what runs, with its command line",
+                 f"systemctl list-unit-files '*{unit}*'; systemctl --user list-unit-files '*{unit}*'     # a service "
+                 "that starts it",
+                 f"pkill -x {p}     # stop it now"]
+    cmds += [f"sudo ss -tlnp 'sport = :{port}'     # which program listens on port {port}" for port in ports]
+    return Step("Other remote access", f"Found: {', '.join(other)}. {text}", commands=cmds)
 
 
 @guide("auth.ssh_key_no_passphrase")
@@ -440,13 +478,21 @@ WTMP_DROPIN = "/etc/tmpfiles.d/00-daprivacyscanner-wtmp.conf"
 
 @guide("auth.login_history")
 def login_history(check, scan, outcome):
+    from ..auth import ROTATED_RECORD, wtmp_rotation
     readable = [e.label for e in outcome.evidence if isinstance(e.value, str) and "anyone can read it" in e.value]
     files = {f: "0660" for f in ("/var/log/wtmp", "/var/log/lastlog") if f in readable}
     acts = [dropin("tmpfiles-wtmp", files, WTMP_DROPIN)] if files else []
-    rotate = read_text(scan.host, scan.host.sys_path("/etc/logrotate.d/wtmp")) or ""
-    if "/var/log/wtmp" in files and re.search(r"^\s*create\s+0?664\s+root\s+utmp\s*$", rotate, re.M):
-        acts.append(RootChange("edit_config", {"target": "logrotate-wtmp"},
-                               "Set logrotate's mode for a new wtmp to 0660 (create 0660 root utmp in /etc/logrotate.d/wtmp)"))
+    # logrotate makes a new wtmp each month with its rule's create mode: the rule is where the distribution put it
+    rule = wtmp_rotation(scan.host)
+    loose_rule = rule is not None and rule[1] is not None and bool(re.match(r"create\s+0?[0-7][0-7][4-7]\b", rule[1]))
+    by_hand = None
+    if "/var/log/wtmp" in files and loose_rule:
+        if rule[0] in ("/etc/logrotate.d/wtmp", "/etc/logrotate.conf") and \
+                re.fullmatch(r"create\s+0?664\s+root\s+utmp", rule[1]):
+            acts.append(RootChange("edit_config", {"target": "logrotate-wtmp"},
+                                   f"Set logrotate's mode for a new wtmp to 0660 (create 0660 root utmp in {rule[0]})"))
+        else:
+            by_hand = rule                              # a file or a line the helper doesn't edit
     steps = [Step("Make them readable by administrators only",
                   "A chmod alone doesn't last: at every boot systemd-tmpfiles sets the mode again, and logrotate "
                   "makes a new wtmp each month. A rule of the app's own fixes both, and is applied at once.",
@@ -455,16 +501,30 @@ def login_history(check, scan, outcome):
                       f"systemd-tmpfiles notes at each boot that it skipped its own line for these files ({WTMP_DROPIN} "
                       "comes first).", "Reverting puts back the distribution's 0664 at once."])] if acts else [],
                   done=not acts)]
-    others = [f for f in readable if f not in files and f != "/var/log/btmp"]
+    if by_hand:
+        steps.append(Step("Logrotate's rule for wtmp",
+                          f"logrotate makes a new wtmp each month with the mode of its rule in {by_hand[0]} "
+                          f"(\"{by_hand[1]}\"), which lets everyone read it. Change that line to create 0660 root utmp.",
+                          commands=[f"sudoedit {by_hand[0]}"]))
+    name = lambda f: f.rsplit("/", 1)[-1]                                      # noqa: E731
+    rotated = [f for f in readable if f.startswith("/var/log/") and ROTATED_RECORD.fullmatch(name(f))]
+    old_wtmp = [f for f in rotated if name(f).startswith("wtmp")]
+    if old_wtmp:
+        steps.append(Step("Last month's records",
+                          "logrotate keeps the previous wtmp beside it with the mode it had, so it stays readable until "
+                          "it is rotated away. Once the rule above is in place, the next ones are made readable by "
+                          "administrators only.", commands=[f"sudo chmod o-r {f}" for f in old_wtmp]))
+    others = [f for f in readable if f not in files and not name(f).startswith("btmp") and f not in rotated]
     if others:
         # wtmpdb and lastlog2 (Debian 13, openSUSE): databases the app's tmpfiles rule doesn't cover
         steps.append(Step("Login databases (wtmpdb, lastlog2)",
                           "These newer login records aren't covered by the rule above. This makes them readable by "
                           "administrators only; a package update may reset it, so scan again after updates.",
                           commands=[f"sudo chmod o-r {f}" for f in others]))
-    if "/var/log/btmp" in readable:
+    btmp = [f for f in readable if name(f).startswith("btmp")]
+    if btmp:
         steps.append(Step("Failed logins (btmp)", "It should never be readable by everyone:",
-                          commands=["sudo chmod 600 /var/log/btmp"]))
+                          commands=[f"sudo chmod 600 {f}" for f in btmp]))
     return Guide(check.id, "Keep login history from other users", "", steps)
 
 
@@ -501,7 +561,7 @@ def umask(check, scan, outcome):
                  help="Other accounts can't read your new files either way. 027 keeps files readable by your own "
                       "group, which on most systems has only you in it; 077 is stricter and can trouble programs "
                       "that share files through a group.")
-    files = [h / ".profile"]                      # sh, and X11 sessions (lightdm, SDDM and GDM's Xsession)
+    files = [h / ".profile"]                      # sh, and the X11 session script (lightdm, SDDM and GDM's Xsession)
     bash_login = next((h / f for f in (".bash_profile", ".bash_login") if isfile(h / f)), None)
     if bash_login:                                # bash reads it instead of ~/.profile
         files.append(bash_login)
@@ -517,15 +577,23 @@ def umask(check, scan, outcome):
     manager_done = f"UMask=0{value}" in (read_text(host, host.sys_path(unit)) or "")
     caveat = ("Commands you run with sudo get this umask too: a file you create with sudo (say, a config file copied "
               "into /etc) may then be unreadable by the service that needs it; check with ls -l and fix with chmod.")
+    manager = f"user@{host.uid}.service"
     steps = [
-        Step("Your terminals and X11 sessions", "Login shells read these files, and so do X11 desktop sessions "
-             "(Cinnamon, Xfce, MATE, and GNOME or Plasma on X11): what you start from them gets the new umask. "
-             "Takes effect at the next login.", inputs=[pick],
+        Step("Login shells, and Cinnamon, Xfce and MATE on X11",
+             "Login shells read these files (the text console, SSH), and so does the script that starts Cinnamon, Xfce "
+             "or MATE on X11: what you start from those gets the new umask, terminal windows included. A new login "
+             "shell has it at once; the desktop from your next login.", inputs=[pick],
              options=[option(check, f"Set umask {value} in your login files", shells, recommended=True,
                              side_effects=[caveat])] if shells else [], done=not shells),
-        Step("Apps your desktop starts on Wayland", "GNOME and Plasma start their shell, and the apps you open from it, "
-             "through your systemd user manager, which doesn't read the files above. This gives your user manager "
-             "the same umask, for your account only. Takes effect at the next login.",
+        Step("GNOME and KDE Plasma, on Wayland and X11",
+             "GNOME and Plasma start their shell, and the apps and terminals you open from it, through your systemd "
+             "user manager, on X11 as on Wayland, and it doesn't read the files above. This gives it the same umask "
+             f"(UMask= in a drop-in for {manager}, your account only). ~/.config/environment.d can't do this: it sets "
+             "environment variables, and the umask isn't one. It takes effect when your user manager starts again: "
+             "after a restart of the computer, or once you have logged out of every session (SSH included) and "
+             "nothing of yours is left running. A logout alone often isn't enough: the user manager stays while any "
+             "program of yours still runs. To see the umask it runs with now:",
+             commands=[f"grep Umask /proc/$(systemctl show -p MainPID --value {manager})/status"],
              options=[] if manager_done else [option(check, f"Set umask {value} for your user manager",
                                                          [dropin("user-umask", {"UMask": "0" + value}, unit)],
                                                          recommended=True, side_effects=[caveat])],

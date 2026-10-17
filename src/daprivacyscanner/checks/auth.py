@@ -1990,6 +1990,28 @@ class SshAuthorizedKeys(Check):
 
 LOGIN_RECORDS = ("/var/log/wtmp", "/var/log/lastlog", "/var/log/btmp", "/var/lib/wtmpdb/wtmp.db",
                  "/var/lib/lastlog/lastlog2.db")
+# last month's wtmp and btmp as logrotate leaves them, with the mode they had: wtmp.1 (Debian, Ubuntu, Arch),
+# wtmp-20261001 (Fedora's dateext), compressed where a rule says so
+ROTATED_RECORD = re.compile(r"(?:wtmp|btmp)(?:\.\d+|-\d{8})(?:\.(?:gz|xz|zst|bz2))?")
+
+
+def login_records(host) -> list[str]:
+    """The login record files to look at: LOGIN_RECORDS, and the rotated copies of wtmp and btmp in /var/log."""
+    rotated = [f"/var/log/{p.name}" for p in children(host.sys_path("/var/log")) if ROTATED_RECORD.fullmatch(p.name)]
+    return [*LOGIN_RECORDS, *rotated]
+
+
+def wtmp_rotation(host) -> tuple[str, str | None] | None:
+    """Where logrotate's rule for /var/log/wtmp is, and its create line ("create 0664 root utmp"; None when the rule has
+    none): Debian, Ubuntu and Fedora keep it in /etc/logrotate.d/wtmp, others in /etc/logrotate.conf or another file
+    there. None without a rule (no logrotate: Omarchy)."""
+    names = ["/etc/logrotate.conf"] + [f"/etc/logrotate.d/{p.name}" for p in children(host.sys_path("/etc/logrotate.d"))]
+    for name in names:
+        text = re.sub(r"#[^\n]*", "", read_text(host, host.sys_path(name)) or "")
+        for m in re.finditer(r"^[^{}\n]*?/var/log/wtmp(?=[\s{])[^{}\n]*\{([^}]*)\}", text, re.M):
+            c = re.search(r"^\s*(create\b[^\n]*?)\s*$", m.group(1), re.M)
+            return name, c.group(1) if c else None
+    return None
 
 
 @register
@@ -1998,7 +2020,7 @@ class LoginHistory(Check):
 
     def detect(self, scan: Scan) -> Outcome:
         ev, readable, found = [], [], []
-        for f in LOGIN_RECORDS:
+        for f in login_records(scan.host):
             mode = mode_of(scan.host.sys_path(f))
             if mode is None:
                 continue
@@ -2009,10 +2031,11 @@ class LoginHistory(Check):
         if not found:
             return absent("No login records (wtmp, lastlog) on this system.")
         notes = []
-        if "/var/log/btmp" in readable:
+        btmp = [f for f in readable if f.startswith("/var/log/btmp")]
+        if btmp:
             notes.append(Note("risk", "btmp is readable by everyone",
                               "It records failed logins, including passwords typed into the user-name field by "
-                              "mistake. It should be mode 600 (sudo chmod 600 /var/log/btmp)."))
+                              f"mistake. It should be mode 600 (sudo chmod 600 {' '.join(btmp)})."))
         if readable:
             return failed(f"{len(readable)} login record file{'s' if len(readable) > 1 else ''} can be read by every "
                           "account on this machine.", *ev, notes=notes)

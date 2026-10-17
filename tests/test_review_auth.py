@@ -453,3 +453,95 @@ def test_doas_rule_applies_to_its_own_user_or_group(cat, tmp_path):
     assert o.status is Status.PASS and "apt-get update" in o.notes[0].text
     assert doas("permit nopass alice as root cmd /usr/bin/vim\n", tmp_path / "h").status is Status.FAIL
     assert doas("permit nopass alice as postgres\n", tmp_path / "i").status is Status.PASS       # not root
+
+
+# ------------------------------------------------------------------ the umask guide
+
+def test_umask_guide_says_where_the_desktop_gets_it_and_when(cat, tmp_path):
+    """It said X11 sessions get the umask from the login files (GNOME and Plasma start through systemd on X11 too) and
+    that the user manager's takes effect at the next login (not while user@UID.service survives the logout)."""
+    host = make_host(tmp_path, files={"/proc/self/status": "Name:\tx\nUmask:\t0002\n",
+                                      "/etc/passwd": "alice:x:1000:1000::/home/alice:/bin/bash\n"}, env={"USER": "alice"})
+    g = build(cat, host, "auth.umask")
+    shells, manager = g.steps
+    assert "Cinnamon, Xfce or MATE on X11" in shells.text and "GNOME or Plasma on X11" not in shells.text
+    assert "on X11 as on Wayland" in manager.text and "environment.d" in manager.text
+    assert "after a restart of the computer" in manager.text and "next login" not in manager.text
+    assert manager.commands == ["grep Umask /proc/$(systemctl show -p MainPID --value user@1000.service)/status"]
+
+
+# ------------------------------------------------------------------ other remote access
+
+def test_other_remote_access_step_is_the_desktops_own(cat, tmp_path):
+    """It named KDE's settings on every desktop and gave no command."""
+    host = make_host(tmp_path, files={"/proc/42/comm": "x11vnc\n"})
+    g = build(cat, host, "auth.remote_desktop", listeners=[], desktop=("x-cinnamon",))
+    step = next(s for s in g.steps if s.title == "Other remote access")
+    assert "Startup Applications" in step.text and "KDE" not in step.text
+    assert step.commands[:2] == ["cinnamon-settings startup", "pgrep -ax x11vnc     # what runs, with its command line"]
+    assert "pkill -x x11vnc     # stop it now" in step.commands
+    host = make_host(tmp_path / "k", files={"/proc/42/comm": "krdpserver\n"})
+    listeners = parse_ss("tcp   LISTEN 0      128          0.0.0.0:5900        0.0.0.0:*\n")
+    g = build(cat, host, "auth.remote_desktop", listeners=listeners, **KDE)
+    step = next(s for s in g.steps if s.title == "Other remote access")
+    assert "System Settings → Remote Desktop" in step.text
+    assert step.commands[:2] == ["systemsettings kcm_autostart", "systemsettings kcm_krdpserver"]
+    # a port with no program the app knows: which program listens on it
+    host = make_host(tmp_path / "p")
+    g = build(cat, host, "auth.remote_desktop", listeners=listeners, **KDE)
+    step = next(s for s in g.steps if s.title == "Other remote access")
+    assert step.commands[-1] == "sudo ss -tlnp 'sport = :5900'     # which program listens on port 5900"
+
+
+# ------------------------------------------------------------------ login records
+
+def _records(tmp_path, files, modes):
+    import os
+    host = make_host(tmp_path, files=files)
+    for f, mode in modes.items():
+        os.chmod(host.sys_path(f), mode)
+    return host
+
+
+def test_rotated_wtmp_is_a_login_record_too(cat, tmp_path):
+    from daprivacyscanner.context import ContextValue
+    multi = dict(multi_user=ContextValue("multi_user", True, [], ""))
+    host = _records(tmp_path, {"/var/log/wtmp": "", "/var/log/wtmp.1": "", "/var/log/btmp-20261001": "",
+                               "/var/log/wtmpx": ""},
+                    {"/var/log/wtmp": 0o660, "/var/log/wtmp.1": 0o664, "/var/log/btmp-20261001": 0o664,
+                     "/var/log/wtmpx": 0o664})
+    o = detect(cat, "auth.login_history", make_scan(host, **multi))
+    assert o.status is Status.FAIL and "/var/log/wtmpx" not in ev(o)
+    assert ev(o)["/var/log/wtmp.1"] == "mode 664 (anyone can read it)" and o.notes[0].title == "btmp is readable by everyone"
+    g = build(cat, host, "auth.login_history", **multi)
+    cmds = {s.title: s.commands for s in g.steps}
+    assert cmds["Last month's records"] == ["sudo chmod o-r /var/log/wtmp.1"]
+    assert cmds["Failed logins (btmp)"] == ["sudo chmod 600 /var/log/btmp-20261001"]
+    assert "Login databases (wtmpdb, lastlog2)" not in cmds and g.steps[0].done
+
+
+def test_logrotate_rule_for_wtmp_where_it_is(cat, tmp_path):
+    """The step read only /etc/logrotate.d/wtmp: a rule in logrotate.conf, or in another file, was never changed."""
+    from daprivacyscanner.checks.auth import wtmp_rotation
+    from daprivacyscanner.context import ContextValue
+    multi = dict(multi_user=ContextValue("multi_user", True, [], ""))
+    conf = ("weekly\ninclude /etc/logrotate.d\n# /var/log/wtmp { create 0600 x y }\n"
+            "/var/log/wtmp {\n    monthly\n    create 0664 root utmp\n    minsize 1M\n    rotate 1\n}\n"
+            "/var/log/btmp {\n    missingok\n    monthly\n    create 0600 root utmp\n    rotate 1\n}\n")
+    host = _records(tmp_path, {"/var/log/wtmp": "", "/etc/logrotate.conf": conf}, {"/var/log/wtmp": 0o664})
+    assert wtmp_rotation(host) == ("/etc/logrotate.conf", "create 0664 root utmp")
+    plan = build(cat, host, "auth.login_history", **multi).steps[0].options[0].plan
+    assert plan.actions[-1].args == {"target": "logrotate-wtmp"} and "in /etc/logrotate.conf" in plan.actions[-1].describe()
+    # somewhere the helper doesn't edit: the user is told which file and line
+    host = _records(tmp_path / "b", {"/var/log/wtmp": "", "/etc/logrotate.d/login-records":
+                                     "/var/log/wtmp /var/log/btmp {\n    create 0644 root root\n}\n"},
+                    {"/var/log/wtmp": 0o664})
+    g = build(cat, host, "auth.login_history", **multi)
+    assert [a.request for a in g.steps[0].options[0].plan.actions] == ["write_dropin"]
+    step = next(s for s in g.steps if s.title == "Logrotate's rule for wtmp")
+    assert step.commands == ["sudoedit /etc/logrotate.d/login-records"] and '"create 0644 root root"' in step.text
+    # no logrotate at all (Omarchy): nothing about it
+    host = _records(tmp_path / "c", {"/var/log/wtmp": ""}, {"/var/log/wtmp": 0o664})
+    assert wtmp_rotation(host) is None
+    assert [a.request for a in build(cat, host, "auth.login_history", **multi).steps[0].options[0].plan.actions] == \
+        ["write_dropin"]
