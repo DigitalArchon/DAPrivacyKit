@@ -1422,7 +1422,8 @@ OACS, FNA and SANICAP via the helper's ioctl), read on request and kept for the 
   one app does on this machine, with the user's real profile. The user picks an app from the menu (`menu.apps`:
   the .desktop files the menu shows), the tool starts it in a systemd scope of its own (`systemd-run --user
   --scope`, so every process it starts is in one cgroup; Flatpak and Snap move an app into a scope of theirs,
-  matched by name: `app-flatpak-<id>-*.scope`, `snap.<name>.*.scope`) and the helper watches the filesystems
+  matched by name: `app-flatpak-<id>-*.scope`, `snap.<name>.*.scope`; with a `--description` of its own, since
+  the journal otherwise says "Started …scope - /usr/bin/xed.") and the helper watches the filesystems
   with fanotify until the user ends it. An app that is already running is refused ("Close X first": started
   again it would hand over to the open copy, which isn't in the scope): a Flatpak by `flatpak ps`, a Snap by its
   cgroup (`snap.<name>.…scope`), anything else by a process of the user's that runs its program or, when the menu

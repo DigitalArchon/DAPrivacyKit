@@ -323,8 +323,8 @@ def test_the_apps_units_and_command(host):
     assert appwatch.units(flat, "0a1b") == ["daprivacyscanner-watch-0a1b.scope", "app-flatpak-org.x.App-*.scope"]
     (host.root / "usr/share/applications/env.desktop").write_text(DESKTOP.format(name="E", exec="env A=1 foo", extra=""))
     assert appwatch.command(menu.app(host, "env.desktop"), "0a1b") == [
-        "systemd-run", "--user", "--scope", "--collect", "--quiet", "--unit=daprivacyscanner-watch-0a1b.scope", "--",
-        "env", "A=1", "foo"]
+        "systemd-run", "--user", "--scope", "--collect", "--quiet", "--unit=daprivacyscanner-watch-0a1b.scope",
+        "--description=An app watched by DA Privacy Kit", "--", "env", "A=1", "foo"]
     assert all(helper.WATCH_UNIT.fullmatch(u) for u in appwatch.units(flat, "0a1b"))
     assert appwatch.available(host) is None
     host.runner = FakeRunner()

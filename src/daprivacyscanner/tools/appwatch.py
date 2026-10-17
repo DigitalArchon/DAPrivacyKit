@@ -32,6 +32,7 @@ from . import activity, menu
 
 SYSTEMD_RUN = "systemd-run"
 UNIT = "daprivacyscanner-watch-{token}.scope"
+DESCRIPTION = "An app watched by DA Privacy Kit"
 QUIET_AFTER = 20.0                      # seconds running with no file of its own or the user's opened: handed over?
 OTHERS_SHOWN = 40
 WARNING = ("This needs administrator access from the moment you start until you end it: watching which files a "
@@ -76,7 +77,10 @@ def units(app: menu.App, token: str) -> list[str]:
 
 
 def command(app: menu.App, token: str) -> list[str]:
-    return [SYSTEMD_RUN, "--user", "--scope", "--collect", "--quiet", f"--unit={UNIT.format(token=token)}", "--",
+    # the description is what the journal says the scope is: without one, systemd names the command ("Started
+    # daprivacyscanner-watch-….scope - /usr/bin/xed.", tested on Mint), which says which app was watched, when
+    return [SYSTEMD_RUN, "--user", "--scope", "--collect", "--quiet", f"--unit={UNIT.format(token=token)}",
+            f"--description={DESCRIPTION}", "--",
             *(["env", *(f"{k}={v}" for k, v in app.env.items())] if app.env else []), *app.argv]
 
 

@@ -241,3 +241,13 @@ def test_a_watch_that_saw_nothing_of_the_app_says_it_may_have_handed_over():
     assert 'job["quiet"]' in src and "appwatch.QUIET_AFTER" in src
     js = (Path(__file__).parent.parent / "src/daprivacyscanner/web/app.js").read_text()
     assert "job.quiet ?" in js and "!r.files ?" in js and "r.others_places" in js
+
+
+# ------------------------------------------------------------------ D12: the journal doesn't say which app
+
+def test_the_scope_has_a_description_that_doesnt_name_the_app():
+    """Without one, systemd journals "Started daprivacyscanner-watch-….scope - /usr/bin/xed." (Mint 22.3)."""
+    argv = appwatch.command(menu.App("xed.desktop", "Xed", ["/usr/bin/xed", "--new-window"], "native"), "0a1b")
+    sep = argv.index("--")
+    assert "--description=An app watched by DA Privacy Kit" in argv[:sep]
+    assert not any("xed" in a.lower() for a in argv[:sep]) and argv[sep + 1:] == ["/usr/bin/xed", "--new-window"]
