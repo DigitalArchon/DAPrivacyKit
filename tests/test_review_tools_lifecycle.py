@@ -81,6 +81,8 @@ def test_at_a_logout_the_files_are_overwritten_and_the_disk_stays_mounted(host, 
     (disk / "page.html").write_text("visited")
     msg = B.close_disk(host, lambda: None)                              # no access, and none asked for
     assert "couldn't be unmounted" in msg and not (disk / "page.html").exists()
+    # its mark went with the wipe, and so does the lock's file (it stayed in the runtime folder: seen on p330)
+    assert "TempBrowser" not in owner._HELD and not list(owner._locks(host).glob("*.lock"))
 
 
 # ------------------------------------------------------------------ A3: systemd's line in the journal at every close

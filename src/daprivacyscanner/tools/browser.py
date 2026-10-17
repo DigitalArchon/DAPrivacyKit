@@ -1853,12 +1853,12 @@ def close_disk(host: Host, helper: Callable[[], object]) -> str:
             return (f"~/{DISK} stays open: {', '.join(users)} still uses it. Close it in the app's "
                     "Tools panel later, or restart the computer.")
         w = wipe_disk(rd.path)
+        owner.release(host, DISK)                       # its mark went with the wipe: the lock's file goes too
         h = helper()
         if h is None:
             return (f"~/{DISK}'s files were overwritten and deleted, but it couldn't be unmounted without administrator "
                     "access.")
         h.call("ramdisk_close", {"name": DISK})
-        owner.release(host, DISK)
         return f"~/{DISK} was closed: {w.files} file{'' if w.files == 1 else 's'} overwritten and deleted."
     finally:
         for fd in held:
