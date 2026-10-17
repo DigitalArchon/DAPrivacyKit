@@ -1043,8 +1043,15 @@ forgotten when `~/TempBrowser` is wiped, which waits for a run in progress (`OUT
 `~/.ssh/id_ed25519` that points nowhere inside the sandbox but at the real key outside. So
 `transfer.downloads` reads the folder one name at a time without following links (every folder from the
 RAM disk down) and lists only finished downloads: regular files on the RAM disk's device, one hard link,
-no `.part`, unchanged for 2 seconds. Each is judged by content (`sniff.py`, from an open descriptor, at
-most 16 MB read, cached while unchanged):
+no `.part`, unchanged for 2 seconds, no larger than the RAM disk and not sparse (`transfer.plain`: a file of
+holes 8 EiB long was hashed for ever, found in the 2026-10-17 review). Each is judged by content (`sniff.py`,
+from an open descriptor, at most 16 MB read; a ZIP's index only when its end record says it is at most 20,000
+entries and 2 MB, since `zipfile` loads all of it first: a million entries took 3.6 s and 534 MB), and its
+SHA-256 taken, remembered while unchanged (device, inode, size, mtime and ctime, which no program can set back:
+with the mtime alone, a picture rewritten as a program of the same size stayed "a PNG picture"). One download
+is judged at a time, for at most a second per listing: a listing that finds one being judged goes on without
+it (counted among the things not listed), so a slow file never holds every server thread, and closing
+`~/TempBrowser` stops a digest under way (`transfer.STOP`):
 
 - programs whatever their name: ELF, Windows PE, Mach-O, Java, Android, `#!` scripts, `.desktop`
   launchers, Windows shortcuts ("it is a Linux program, though its name says pdf file");

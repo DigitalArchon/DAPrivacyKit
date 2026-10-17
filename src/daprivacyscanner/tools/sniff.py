@@ -23,6 +23,8 @@ from dataclasses import dataclass, field
 
 SCAN_LIMIT = 16 * 1024 * 1024          # bytes read looking for macros or a PDF's actions
 HEAD = 4096
+ZIP_ENTRIES = 20_000                   # a ZIP's index is read only up to this many entries
+ZIP_INDEX = 2 * 1024 * 1024            # and this many bytes (an entry takes 46 bytes and its name: 45,000 at most)
 
 RUNS = re.compile(r"\.(desktop|sh|bash|zsh|run|bin|appimage|exe|msi|bat|cmd|com|scr|ps1|vbs|jar|py|pl|rb|deb|rpm|"
                   r"apk|flatpakref|flatpakrepo|flatpak|snap|pkg|lnk|hta|js|elf|so|reg|msc|cpl|application|appx|"
@@ -105,15 +107,36 @@ def _desktop_entry(head: bytes) -> bool:
     return False
 
 
+def _zip_index(f) -> tuple[int, int] | None:
+    """(how many entries, how many bytes) the ZIP's index says it has, from its end record (ZIP64's where it says
+    so), read as zipfile reads it (its own _EndRecData: what it would then load); None when there is none."""
+    try:
+        end = zipfile._EndRecData(f)
+        return (int(end[zipfile._ECD_ENTRIES_TOTAL]), int(end[zipfile._ECD_SIZE])) if end else None
+    except (AttributeError, IndexError, TypeError, ValueError, OSError, zipfile.BadZipFile):
+        return None
+
+
 def _zip(fd: int, name: str) -> Inspection:
     try:
-        with os.fdopen(os.dup(fd), "rb") as f, zipfile.ZipFile(f) as z:
-            names = z.namelist()[:20000]
-            mimetype = ""
-            if "mimetype" in names:
-                with z.open("mimetype") as m:                 # its first bytes only: a huge entry isn't unpacked
-                    mimetype = m.read(100).decode("ascii", "replace").strip()
-    except (zipfile.BadZipFile, OSError, KeyError, ValueError, RuntimeError, NotImplementedError):
+        with os.fdopen(os.dup(fd), "rb") as f:
+            # zipfile loads the whole index before anything can be asked of it: a ZIP of a million entries took 3.6 s
+            # and 534 MB, three million 11 s and 1.6 GB (the 2026-10-17 review), and it stays small compressed. So
+            # the index's size comes from the end record first, and a larger one isn't read: an archive, unchecked.
+            index = _zip_index(f)
+            if index is None:
+                return Inspection("archive", "a ZIP archive")
+            if index[0] > ZIP_ENTRIES or index[1] > ZIP_INDEX:
+                return Inspection("archive", "a ZIP archive", [f"its list of contents is too long to look through "
+                                                              f"(it says it holds {index[0]:,} files)"])
+            f.seek(0)
+            with zipfile.ZipFile(f) as z:
+                names = z.namelist()[:ZIP_ENTRIES]
+                mimetype = ""
+                if "mimetype" in names:
+                    with z.open("mimetype") as m:             # its first bytes only: a huge entry isn't unpacked
+                        mimetype = m.read(100).decode("ascii", "replace").strip()
+    except (zipfile.BadZipFile, OSError, KeyError, ValueError, RuntimeError, NotImplementedError, EOFError):
         return Inspection("archive", "a ZIP archive")
     lower = [n.lower() for n in names]
     if "androidmanifest.xml" in lower or "classes.dex" in lower:

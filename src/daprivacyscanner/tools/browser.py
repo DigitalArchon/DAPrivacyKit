@@ -1611,8 +1611,12 @@ def wipe_disk(path: Path) -> "ramdisk.Wipe":
     """~/TempBrowser's files overwritten and deleted, once the TempOutboxes aren't being emptied. Whoever owned it
     owns nothing from here on (its mark goes first, so it isn't counted among the user's files)."""
     owner.unmark(path)
-    with transfer.OUTBOX_LOCK:
-        w = ramdisk.wipe(path)
+    transfer.STOP.set()                     # a download being judged stops reading, and the TempOutbox after its file
+    try:
+        with transfer.OUTBOX_LOCK:
+            w = ramdisk.wipe(path)
+    finally:
+        transfer.STOP.clear()
     transfer.forget_recent()
     return w
 

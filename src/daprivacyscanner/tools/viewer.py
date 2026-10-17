@@ -287,23 +287,11 @@ def _staging(host: Host) -> tuple[Path, int]:
 
 def _source(host: Host, folder: str, name: str) -> tuple[int, sniff.Inspection]:
     """The finished download `name`, opened without following links and checked as Save… checks it."""
-    if not isinstance(name, str) or not name or "/" in name or name in (".", "..") or "\0" in name:
-        raise ViewError("That isn't one of the browser's downloads.")
-    listed = {e.name: e for e in transfer.downloads(host, folder)[0]}
-    if name not in listed:
-        raise ViewError(f"{name} isn't a finished download in the browser's folder.")
-    dfd = transfer._open_dir(host, transfer.downloads_dir(host, folder))
     try:
-        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=dfd)
-    except OSError:
-        raise ViewError(f"{name} can't be read (it may have just changed).") from None
-    finally:
-        os.close(dfd)
-    st = os.fstat(fd)
-    if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1 or st.st_dev != transfer._ramdisk_dev(host):
-        os.close(fd)
-        raise ViewError(f"{name} isn't a plain file in ~/TempBrowser.")
-    return fd, sniff.inspect(fd, name, st.st_size)
+        fd = transfer.open_finished(host, folder, name)
+    except transfer.TransferError as e:
+        raise ViewError(str(e)) from None
+    return fd, sniff.inspect(fd, name, os.fstat(fd).st_size)
 
 
 def plan(host: Host, folder: str, name: str) -> Viewer:

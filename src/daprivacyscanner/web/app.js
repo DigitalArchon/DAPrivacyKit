@@ -3234,7 +3234,8 @@ function browserFiles(b, data, reload) {
       f.viewable ? h("button", { class: "small", onclick: (e) => viewOffline(b, f, e.target) }, "View offline…") : null)))
       : h("div", { class: "muted" }, "Nothing yet."),
     b.downloads_other ? h("div", { class: "muted" }, `${b.downloads_other} other ${b.downloads_other === 1 ? "thing isn't" : "things aren't"} `
-      + "listed: downloads still in progress, folders or links.") : null,
+      + "listed: downloads still in progress or being checked, folders, links, or files that can't be a real download "
+      + "(larger than ~/TempBrowser, or made of empty space).") : null,
     h("div", { class: "orow" }, showBtn("downloads", "Open the folder"), h("button", { class: "small ghost", onclick: reload }, "Refresh")));
 }
 

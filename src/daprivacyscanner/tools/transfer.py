@@ -120,36 +120,82 @@ def safe_name(name: str) -> str:
     return name
 
 
-_SEEN: dict[tuple[int, int, int, int], tuple[sniff.Inspection, str]] = {}   # (dev, inode, size, mtime) -> (what it is, digest)
+# What each download is, remembered while it is unchanged: (device, inode, size, mtime, ctime) -> (what it is,
+# digest). The ctime, which no program can set back (utime changes it too), is in the key: a picture rewritten as
+# a program of the same size, its mtime put back, stayed "a PNG picture" in the list while Save… found it changed
+# every time (the 2026-10-17 review).
+_SEEN: dict[tuple[int, int, int, int, int], tuple[sniff.Inspection, str]] = {}
 _SEEN_LOCK = threading.Lock()
+# One download judged at a time, and a listing that finds another being judged doesn't wait for it: a listing is
+# asked for every few seconds while the browser runs, each in a worker thread of the server's, and a file that
+# took long to read (a huge or endless one) held one worker per poll until none was left, Quit's included.
+_INSPECTING = threading.Lock()
+BUDGET = 1.0                    # seconds a listing spends judging new downloads; the rest wait for the next one
+STOP = threading.Event()        # set while ~/TempBrowser is wiped: a digest under way stops
 
 
-def digest(fd: int) -> str:
-    """SHA-256 of what `fd` holds, read from the start."""
+class Stopped(TransferError):
+    pass
+
+
+def digest(fd: int, limit: int | None = None) -> str:
+    """SHA-256 of what `fd` holds, read from the start (at most `limit` bytes: more is refused, Stopped). Stops when
+    ~/TempBrowser is being closed (STOP)."""
     h = hashlib.sha256()
     offset = 0
     while chunk := os.pread(fd, 1 << 20, offset):
         h.update(chunk)
         offset += len(chunk)
+        if STOP.is_set() or (limit is not None and offset > limit):
+            raise Stopped("It wasn't read to its end.")
     return h.hexdigest()
 
 
-def inspect(dirfd: int, name: str) -> tuple[os.stat_result, sniff.Inspection, str] | None:
+def _disk_size(host: Host) -> int:
+    v = os.statvfs(ramdisk.folder(host, ramdisk.BROWSER))
+    return v.f_blocks * v.f_frsize
+
+
+def plain(st: os.stat_result, dev: int, disk: int) -> bool:
+    """A plain file on the RAM disk that a finished download can be: regular, one link, on its device, no larger
+    than the disk itself, and not sparse (its blocks hold its size: a file of holes, 8 EiB long, read as zeros
+    for ever, and nothing a browser saves has holes)."""
+    return (stat.S_ISREG(st.st_mode) and st.st_nlink == 1 and st.st_dev == dev and st.st_size <= disk
+            and st.st_blocks * 512 + (1 << 20) >= st.st_size)
+
+
+def finished(st: os.stat_result, name: str, names, dev: int, disk: int, now: float) -> bool:
+    """Whether the entry `name` (its lstat `st`, beside `names`) is a finished download: a plain file (above), no
+    .part beside it, unchanged for SETTLE seconds."""
+    partial = name.endswith(".part") or f"{name}.part" in names
+    return plain(st, dev, disk) and not partial and now - st.st_mtime >= SETTLE
+
+
+def inspect(dirfd: int, name: str, disk: int | None = None,
+            wait: bool = True) -> tuple[os.stat_result, sniff.Inspection, str] | None:
     """A file in the Downloads folder opened by name without following a link, what it is (tools/sniff.py)
-    and its digest, remembered while it is unchanged; None if it isn't a plain file there."""
+    and its digest, remembered while it is unchanged; None if it isn't a plain file there (no larger than
+    `disk` bytes), or, without `wait`, while another is being judged."""
     try:
         fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=dirfd)
     except OSError:
         return None
     try:
         st = os.fstat(fd)
-        if not stat.S_ISREG(st.st_mode):
+        if not stat.S_ISREG(st.st_mode) or (disk is not None and not plain(st, st.st_dev, disk)):
             return None
-        key = (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
+        key = (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
         with _SEEN_LOCK:
             got = _SEEN.get(key)
         if got is None:
-            got = (sniff.inspect(fd, name, st.st_size), digest(fd))
+            if not _INSPECTING.acquire(blocking=wait):
+                return None
+            try:
+                got = (sniff.inspect(fd, name, st.st_size), digest(fd, st.st_size))
+            except Stopped:
+                return None
+            finally:
+                _INSPECTING.release()
             with _SEEN_LOCK:
                 if len(_SEEN) >= MAX_CACHED:
                     _SEEN.clear()
@@ -188,29 +234,30 @@ def check_of(size: int, ins: sniff.Inspection, content: str) -> str:
 
 
 def downloads(host: Host, folder: str) -> tuple[list[Entry], int]:
-    """(finished downloads, how many other things are in the folder: links, folders, partial files).
-    Never follows a link. Each is judged by its content (tools/sniff.py), not only its name."""
+    """(finished downloads, how many other things are in the folder: links, folders, partial files, and downloads
+    still being judged). Never follows a link. Each is judged by its content (tools/sniff.py), not only its name,
+    for at most BUDGET seconds per listing, one at a time (inspect): the next listing goes on where this one
+    stopped."""
     d = downloads_dir(host, folder)
     try:
         fd = _open_dir(host, d)
     except (TransferError, ValueError, OSError):
         return [], 0
     try:
-        dev, names = _ramdisk_dev(host), os.listdir(fd)
+        dev, disk, names = _ramdisk_dev(host), _disk_size(host), os.listdir(fd)
         out, other, now = [], 0, time.time()
+        deadline = time.monotonic() + BUDGET
         for name in sorted(names):
             try:
                 st = os.stat(name, dir_fd=fd, follow_symlinks=False)
             except OSError:
                 continue
-            partial = name.endswith(".part") or f"{name}.part" in names
-            if (not stat.S_ISREG(st.st_mode) or st.st_nlink != 1 or st.st_dev != dev or partial
-                    or now - st.st_mtime < SETTLE):
+            if not finished(st, name, names, dev, disk, now):
                 other += 1
                 continue
             if len(out) >= MAX_LISTED:
                 continue
-            got = inspect(fd, name)
+            got = inspect(fd, name, disk, wait=False) if time.monotonic() < deadline else None
             if got is None:
                 other += 1
                 continue
@@ -220,6 +267,32 @@ def downloads(host: Host, folder: str) -> tuple[list[Entry], int]:
         return out, other
     finally:
         os.close(fd)
+
+
+def open_finished(host: Host, folder: str, name: str) -> int:
+    """The finished download `name` opened without following links (every folder from the RAM disk down), as the
+    listing would take it, but without judging it (the caller judges what it makes of it). Raises TransferError
+    when it isn't one."""
+    if not isinstance(name, str) or not name or "/" in name or name in (".", "..") or "\0" in name:
+        raise TransferError("That isn't one of the browser's downloads.")
+    dfd = _open_dir(host, downloads_dir(host, folder))
+    try:
+        try:
+            st = os.stat(name, dir_fd=dfd, follow_symlinks=False)
+            fd = None
+            if finished(st, name, os.listdir(dfd), _ramdisk_dev(host), _disk_size(host), time.time()):
+                fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=dfd)
+        except OSError:
+            fd = None
+        if fd is None:
+            raise TransferError(f"{name} isn't a finished download in the browser's folder.")
+    finally:
+        os.close(dfd)
+    st = os.fstat(fd)
+    if not plain(st, _ramdisk_dev(host), _disk_size(host)):
+        os.close(fd)
+        raise TransferError(f"{name} isn't a plain file in ~/TempBrowser.")
+    return fd
 
 
 def _free(dirfd: int, name: str) -> str:
@@ -293,25 +366,14 @@ def snapshot(host: Host, folder: str, name: str, check: str | None, stage: tuple
     """The finished download `name` copied out of the browser's reach (into `stage`, a folder and its fd,
     or a new .checking- folder), and judged again there. Raises Changed when that copy isn't what the page
     showed (`check`, from the listing): the browser changed it after it was listed."""
-    if not isinstance(name, str) or not name or "/" in name or name in (".", "..") or "\0" in name:
-        raise TransferError("That isn't one of the browser's downloads.")
     if not isinstance(check, str) or not check:
+        if not isinstance(name, str) or not name or "/" in name or name in (".", "..") or "\0" in name:
+            raise TransferError("That isn't one of the browser's downloads.")
         raise TransferError("The list of downloads is out of date: refresh it and try again.")
-    if name not in {e.name for e in downloads(host, folder)[0]}:
-        raise TransferError(f"{name} isn't a finished download in the browser's folder.")
-    dfd = _open_dir(host, downloads_dir(host, folder))
-    try:
-        try:
-            src = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=dfd)
-        except OSError:
-            raise TransferError(f"{name} can't be read (it may have just changed).") from None
-    finally:
-        os.close(dfd)
+    src = open_finished(host, folder, name)
     own = stage is None
     try:
         st = os.fstat(src)
-        if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1 or st.st_dev != _ramdisk_dev(host):
-            raise TransferError(f"{name} isn't a plain file in ~/TempBrowser.")
         free = os.statvfs(ramdisk.folder(host, ramdisk.BROWSER))
         if st.st_size + (16 << 20) > free.f_bavail * free.f_frsize:
             raise TransferError(f"There isn't room in ~/TempBrowser to check a copy of {name} first.")
@@ -328,13 +390,17 @@ def snapshot(host: Host, folder: str, name: str, check: str | None, stage: tuple
         size = os.fstat(cfd).st_size
         snap = Snapshot(path, copied, size, sniff.inspect(cfd, name, size))
         content = digest(cfd)
+    except Stopped:
+        content = None
     finally:
         os.close(cfd)
-    if check_of(size, snap.inspection, content) != check:
+    if content is None or check_of(size, snap.inspection, content) != check:
         if own:
             snap.remove()
         else:
             (path / copied).unlink(missing_ok=True)
+        if content is None:
+            raise TransferError(f"{name} wasn't checked: ~/TempBrowser is being closed.")
         now = snap.inspection.what or ", ".join(snap.inspection.warnings) or "something else"
         raise Changed(f"{name} changed after it was listed (it is now {now}, {size} bytes, and not the same file), "
                       "so nothing was done with it. Look at it again in the list, which shows what it is now.")

@@ -126,3 +126,119 @@ def test_through_the_api_a_planted_link_is_refused(cat, host):
     r = c.post("/api/tools/browser/upload", headers=H, json={"browser": "tor", "paths": [str(planted)], "clean": False})
     assert r.status_code == 400 and "link in ~/TempBrowser" in r.json()["error"]
     assert list(T.uploads_dir(host, "tor-browser").iterdir()) == []
+
+
+# ------------------------------------------------------------------ C4, C5: judging a download, within bounds
+
+def test_a_zip_whose_index_is_too_long_isn_t_read(tmp_path, monkeypatch):
+    """zipfile loads a ZIP's whole index first: a million entries took 3.6 s and 534 MB. The end record says how
+    long it is, and a longer one isn't opened: an archive, unchecked."""
+    import struct
+    import zipfile
+    from daprivacyscanner.tools import sniff
+    f = tmp_path / "big.zip"
+    with zipfile.ZipFile(f, "w") as z:
+        z.writestr("a.txt", "a")
+    data = bytearray(f.read_bytes())
+    end = data.rfind(b"PK\x05\x06")
+    data[end + 8:end + 16] = struct.pack("<HHI", 0xFFFE, 0xFFFE, 64 << 20)     # 65,534 entries, a 64 MB index
+    f.write_bytes(bytes(data))
+    monkeypatch.setattr(sniff.zipfile, "ZipFile", lambda *a, **k: pytest.fail("the index isn't loaded"))
+    fd = os.open(f, os.O_RDONLY)
+    try:
+        ins = sniff.inspect(fd, "report.docx", len(data))
+    finally:
+        os.close(fd)
+    assert ins.kind == "archive" and not ins.viewable and any("too long to look through" in w for w in ins.warnings)
+
+
+def test_a_zip_of_ordinary_size_is_still_looked_into(tmp_path):
+    import zipfile
+    from daprivacyscanner.tools import sniff
+    f = tmp_path / "doc.docx"
+    with zipfile.ZipFile(f, "w") as z:
+        z.writestr("[Content_Types].xml", "<x/>")
+        z.writestr("word/vbaProject.bin", "macro")
+    fd = os.open(f, os.O_RDONLY)
+    try:
+        ins = sniff.inspect(fd, "doc.docx", f.stat().st_size)
+    finally:
+        os.close(fd)
+    assert ins.what == "an Office document" and any("macros" in w for w in ins.warnings)
+
+
+def test_a_file_of_holes_or_larger_than_the_disk_isn_t_read(host, monkeypatch):
+    """A sparse file the browser made 8 EiB long was hashed for ever, one server worker per listing: one that
+    isn't plain (its blocks don't hold its size, or the RAM disk couldn't hold it) is never read."""
+    installed_tor(host)
+    T.prepare(host, "tor-browser")
+    d = T.downloads_dir(host, "tor-browser")
+    with open(d / "huge.pdf", "wb") as f:
+        f.write(b"%PDF-1.7\n")
+        f.truncate(1 << 40)                                            # a TiB of holes
+    old(d / "huge.pdf")
+    (d / "small.pdf").write_bytes(b"%PDF-1.7\n" + bytes(4096))
+    old(d / "small.pdf")
+    monkeypatch.setattr(T, "digest", lambda fd, limit=None: "d" if os.fstat(fd).st_size < 1 << 20 else pytest.fail("read"))
+    got, other = T.downloads(host, "tor-browser")
+    assert [e.name for e in got] == ["small.pdf"] and other == 1
+    with pytest.raises(T.TransferError, match="isn't a finished download"):
+        T.snapshot(host, "tor-browser", "huge.pdf", "x")
+    monkeypatch.setattr(T, "_disk_size", lambda host: 1000)            # larger than the disk: not plain either
+    assert T.downloads(host, "tor-browser") == ([], 2)
+
+
+def test_a_listing_doesn_t_wait_for_a_download_being_judged(host):
+    """One download judged at a time; a listing that finds one being judged (by a listing in another worker) goes on
+    without it, and shows it once it has been judged."""
+    installed_tor(host)
+    T.prepare(host, "tor-browser")
+    d = T.downloads_dir(host, "tor-browser")
+    (d / "a.pdf").write_bytes(b"%PDF-1.7\n")
+    old(d / "a.pdf")
+    T._SEEN.clear()
+    assert T._INSPECTING.acquire(blocking=False)
+    try:
+        assert T.downloads(host, "tor-browser") == ([], 1)
+    finally:
+        T._INSPECTING.release()
+    assert [e.name for e in T.downloads(host, "tor-browser")[0]] == ["a.pdf"]
+
+
+def test_a_digest_stops_when_the_disk_is_being_closed(tmp_path):
+    f = tmp_path / "f"
+    f.write_bytes(bytes(3 << 20))
+    fd = os.open(f, os.O_RDONLY)
+    try:
+        assert T.digest(fd) and T.digest(fd, 3 << 20)
+        with pytest.raises(T.Stopped):
+            T.digest(fd, 1 << 20)                                       # more than it said it held
+        T.STOP.set()
+        with pytest.raises(T.Stopped):
+            T.digest(fd)
+    finally:
+        T.STOP.clear()
+        os.close(fd)
+
+
+def test_a_picture_rewritten_as_a_program_with_its_time_put_back_is_judged_again(host):
+    """The listing's memory was keyed on (device, inode, size, mtime): a PNG rewritten as an ELF of the same size,
+    its mtime put back, stayed "a PNG picture", while Save… found it changed every time. The ctime can't be put
+    back."""
+    import time
+    installed_tor(host)
+    T.prepare(host, "tor-browser")
+    d = T.downloads_dir(host, "tor-browser")
+    (d / "photo.png").write_bytes(b"\x89PNG\r\n\x1a\n" + bytes(64))
+    old(d / "photo.png")
+    assert T.downloads(host, "tor-browser")[0][0].what == "a PNG picture"
+    st = os.stat(d / "photo.png")
+    time.sleep(0.02)
+    with open(d / "photo.png", "r+b") as f:
+        f.write(b"\x7fELF" + bytes(68))
+    os.utime(d / "photo.png", ns=(st.st_atime_ns, st.st_mtime_ns))
+    [e] = T.downloads(host, "tor-browser")[0]
+    assert e.kind == "program" and e.what == "a Linux program"
+    dest = host.home / "Documents"
+    dest.mkdir()
+    assert T.save(host, "tor-browser", "photo.png", dest, e.check).read_bytes().startswith(b"\x7fELF")
