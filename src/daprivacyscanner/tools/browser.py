@@ -532,13 +532,21 @@ def ready(host: Host) -> str | None:
 
 # ------------------------------------------------------------------ getting it
 
+def _failed(r) -> str:
+    """Why a request failed, in plain words: the server's answer, or the system's reason without its "[Errno N]"
+    ("([Errno 111] Connection refused).)." was shown: review of 2026-10-17)."""
+    if r.status:
+        return f"the server answered {r.status}"
+    return re.sub(r"^\[Errno -?\d+\]\s*", "", str(r.error or "")).strip().rstrip(".") or "no answer"
+
+
 def release(net, b: Browser, plat: str) -> tuple[str, str, str]:
     """(version, archive URL, signature URL) from the project's own index. Every URL must be https
     on one of the browser's hosts, and the file name the project's own pattern."""
     url = b.index.format(platform=plat)
     r = net.http_get(url, hosts=b.hosts)
     if not r.ok:
-        raise BrowserError(f"{urllib.parse.urlsplit(url).hostname} didn't answer ({r.status or r.error}).")
+        raise BrowserError(f"{urllib.parse.urlsplit(url).hostname} didn't answer ({_failed(r)}).")
     try:
         data = json.loads(r.text())
         version, binary, sig = str(data["version"]), str(data["binary"]), str(data["sig"])
@@ -588,7 +596,7 @@ def download(host: Host, net, b: Browser, job: dict, stop: Callable[[], bool]) -
             if stop():
                 raise Stopped("Stopped: nothing was kept.")
             if not r.ok:
-                raise BrowserError(f"The {what} couldn't be downloaded ({r.status or r.error}).")
+                raise BrowserError(f"The {what} couldn't be downloaded ({_failed(r)}).")
             os.replace(part, path)
     except BaseException:
         for _, path, _ in files:
@@ -827,7 +835,8 @@ def accept_unchecked(archive: Path, b: Browser, why: str, signed: int | None) ->
                            f"an archive signed in the last {RECENT_DAYS} days (a newer version, with security fixes, is "
                            "likely out by now). Get the latest archive (from the project's site, a mirror, or GetTor) "
                            "and try again. Nothing was unpacked.")
-    return (f"Whether {b.name} {version_of(archive.name)} is the latest couldn't be checked ({why.split(': ', 1)[-1]}). "
+    return (f"Whether {b.name} {version_of(archive.name)} is the latest couldn't be checked "
+            f"({why.split(': ', 1)[-1].rstrip('.')}). "
             f"Its signature was made {days} day{'s' if days != 1 else ''} ago, so it is recent, but a newer version with "
             "security fixes may be out: check when you can (the project's site, a mirror, or GetTor).")
 
@@ -977,10 +986,13 @@ def record_release(host: Host, b: Browser, archive: Path, source: str, security:
     """What was unpacked: its version (from the verified archive's name), when its signature was made
     (`signed`, from `verified`: the verified signature's own date), when it was set up, the security level it
     starts at, whether its being the latest couldn't be checked, and what preset_vpn did, kept in the app's
-    private folder for the RAM disk's lifetime."""
+    private folder for the RAM disk's lifetime. `unchecked_days`: how old the signature was when it was accepted
+    without that check, what the decision went by (the card said how long before the set-up it was signed instead,
+    which a start weeks later accepted on its age then: review of 2026-10-17)."""
+    now = int(time.time())
     _write_release(host, b, {"version": version_of(archive.name), "signed": signed, "source": source,
-                             "unpacked": int(time.time()), "checked": int(time.time()), "security": security,
-                             "unchecked": unchecked, "vpn": vpn})
+                             "unpacked": now, "checked": now, "security": security, "unchecked": unchecked,
+                             "unchecked_days": _days(now - signed) if unchecked and signed else None, "vpn": vpn})
     return release_info(host, b) or {}
 
 
@@ -1016,6 +1028,7 @@ def release_info(host: Host, b: Browser) -> dict | None:
     return {"version": str(d.get("version", ""))[:40], "signed": signed, "source": str(d.get("source", "")),
             "unpacked": unpacked, "check_from": check_from, "check_due": due, "host": index_host(b),
             "security": security, "unchecked": d.get("unchecked") is True, "signed_days": age,
+            "unchecked_days": num("unchecked_days") if d.get("unchecked") is True else None,
             "stale": age is not None and age > STALE_DAYS, "vpn": _vpn_view(d.get("vpn"))}
 
 
@@ -1042,8 +1055,11 @@ def check_before_start(host: Host, b: Browser, net) -> None:
         latest = latest_version(net() if callable(net) else net, b)
     except Unreachable as e:
         if _recent(info["signed"]):
-            # the project's server blocked: a release signed within RECENT_DAYS still starts, its card says why
-            _write_release(host, b, {**_release(host, b), "checked": int(time.time()), "unchecked": True})
+            # the project's server blocked: a release signed within RECENT_DAYS still starts, its card says why, by the
+            # signature's age now, which is what decided
+            now = int(time.time())
+            _write_release(host, b, {**_release(host, b), "checked": now, "unchecked": True,
+                                     "unchecked_days": _days(now - info["signed"])})
             return
         raise BrowserError(f"{e} It was set up more than a day ago, and its signature is more than {RECENT_DAYS} days "
                            f"old, so it doesn't start without that check. Save what you need from its Downloads, then "
@@ -1055,7 +1071,8 @@ def check_before_start(host: Host, b: Browser, net) -> None:
         raise BrowserError(f"{b.name} {latest} is out, and this copy is {info['version']}: it doesn't update itself, "
                            f"so it won't start. Save what you need from its Downloads (Save…), then close ~/{DISK} "
                            "(that overwrites everything in it) and download it again here.")
-    _write_release(host, b, {**_release(host, b), "checked": int(time.time()), "unchecked": False})
+    _write_release(host, b, {**_release(host, b), "checked": int(time.time()), "unchecked": False,
+                             "unchecked_days": None})
 
 
 def tidy(host: Host, archive: Path) -> None:

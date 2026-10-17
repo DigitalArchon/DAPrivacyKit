@@ -519,7 +519,9 @@ and nothing is unpacked.
 **Where the index can't be reached** (the project's server blocked, typical where people get Tor Browser
 from GetTor or a mirror), a picked archive is accepted only once its signature verifies *and* the
 signature's hashed creation time (`keys.signature_created`, trustworthy once the signature is good) is
-within 30 days (`RECENT_DAYS`). The job and the card say the check couldn't be made.
+within 30 days (`RECENT_DAYS`). The job and the card say the check couldn't be made, and how old the signature was
+when that decided (`unchecked_days` in the release record, written again when a start after a day is accepted the
+same way: the card used to say how long before the set-up it was signed, which a start weeks later didn't go by).
 
 ### 7.6 Step 4: unpacking
 

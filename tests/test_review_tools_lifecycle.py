@@ -316,3 +316,40 @@ def test_the_panel_names_a_proxy_the_download_doesnt_use(host):  # noqa: F811
     assert B.status(host)["proxy_vars"] == []
     host.environ.update({"ALL_PROXY": "socks5h://127.0.0.1:9050", "https_proxy": " "})
     assert B.status(host)["proxy_vars"] == ["ALL_PROXY"]
+
+
+# ------------------------------------------------------------------ A11: the texts
+
+def test_a_server_that_cant_be_reached_is_said_in_plain_words(tmp_path, monkeypatch):
+    """"(aus1.torproject.org didn't answer ([Errno 111] Connection refused).)." was shown."""
+    from daprivacyscanner.online import FakeNet, HttpResult
+    from test_browser_tool import INDEX
+    monkeypatch.setattr(B.platform, "machine", lambda: "x86_64")
+    tor = B.BROWSERS["tor"]
+    net = FakeNet(http={INDEX: HttpResult(None, b"", "[Errno 111] Connection refused")})
+    with pytest.raises(B.Unreachable) as e:
+        B.latest_version(net, tor)
+    assert str(e.value).endswith("aus1.torproject.org didn't answer (Connection refused).")
+    archive = tmp_path / "tor-browser-linux-x86_64-15.0.24.tar.xz"
+    said = B.accept_unchecked(archive, tor, str(e.value), int(time.time()) - 2 * 86400)
+    assert "couldn't be checked (aus1.torproject.org didn't answer (Connection refused)). Its signature" in said
+    assert ".)." not in said and "Errno" not in said
+    assert B._failed(HttpResult(503, b"")) == "the server answered 503"
+
+
+def test_the_card_says_how_old_the_signature_was_when_it_was_accepted_unchecked(host, monkeypatch):  # noqa: F811
+    """A copy set up two days after its release, started 25 days later with the index blocked, was accepted on its age
+    then (27 days), while the card said "signed 2 days before it was set up"."""
+    from daprivacyscanner.online import FakeNet
+    from test_browser_tool import set_up_tor
+    monkeypatch.setattr(B.platform, "machine", lambda: "x86_64")
+    b = set_up_tor(host, hours_ago=25 * 24, signed_days=27)
+    d = json.loads((B.private_dir(host, b) / "release.json").read_text())
+    d["signed"] = d["unpacked"] - 2 * 86400                             # signed two days before it was set up
+    (B.private_dir(host, b) / "release.json").write_text(json.dumps(d))
+    B.check_before_start(host, b, FakeNet())                            # the index can't be reached
+    info = B.release_info(host, b)
+    assert info["unchecked"] and info["signed_days"] == 2 and info["unchecked_days"] == 27
+    archive = host.home / "x/tor-browser-linux-x86_64-15.0.24.tar.xz"
+    assert B.record_release(host, b, archive, "file", unchecked=True, signed=int(time.time()) - 5 * 86400)[
+        "unchecked_days"] == 5

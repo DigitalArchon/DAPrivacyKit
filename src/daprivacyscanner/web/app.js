@@ -2992,10 +2992,13 @@ function browserSandbox(data, opts) {
 // thumbnails the file manager keeps on the disk of what is in To upload and Downloads; and crash dumps
 // kept on the disk (the browser's own are started without memory; the check's guide turns them off).
 // What turning swap off costs: with nowhere to put memory that runs short, the kernel ends a program to make room.
-function memoryNote(mem, rd) {
+function memoryNote(mem, rd, running = false) {
   if (!mem?.total_mb) return null;
   const disk = rd?.open && rd.total ? Math.round(rd.total / 1048576) : 0;          // its size, in MB
-  const need = disk + mem.browser_mb;
+  // what may still be taken: the RAM disk's room left and a browser not running yet. What is in the RAM disk and a
+  // running browser are already out of "free" (MemAvailable): counting them again said memory was short when it wasn't
+  const room = rd?.open && rd.total ? Math.max(0, Math.round((rd.total - rd.used) / 1048576)) : 0;
+  const need = room + (running ? 0 : mem.browser_mb);
   const tight = mem.available_mb != null && mem.available_mb < need;
   return h("div", { class: tight ? "warnbox small" : "muted" },
     `Without swap, when memory runs out the system ends a program to make room, and the browser can be the one. This `
@@ -3038,12 +3041,12 @@ function browserRisks(data, reload) {
       cmds(sw.on_commands || []),
       h("div", { class: "muted" }, "Turning it off is refused if memory can't take back what is in swap now. It doesn't "
         + "erase what earlier sessions left there; only zram or encrypted swap does that, for the future."),
-      memoryNote(r.memory, data.ramdisk)));
+      memoryNote(r.memory, data.ramdisk, (data.browsers || []).some(b => b.running))));
   } else if (sw.paused?.length) {
     out.push(h("div", { class: "notebox info small" }, h("b", {}, "Swap is off for this session. "),
       `It was turned off here (${sw.paused.join(", ")}): the browser's memory can't be written to the disk. Turn it back `
       + "on when you are done (it also comes back on at the next restart). That runs:", cmds(sw.on_commands || []),
-      memoryNote(r.memory, data.ramdisk),
+      memoryNote(r.memory, data.ramdisk, (data.browsers || []).some(b => b.running)),
       h("div", { class: "orow" }, swapButton(false, "Turn swap back on"))));
   }
   if (th.in_memory === false) {
@@ -3471,8 +3474,9 @@ function browserCards(data, reload, opts = { sandbox: true, sound: false, nested
         + (b.release?.check_from && !b.release.check_due ? ` From ${fmtWhen(b.release.check_from)}, starting it first checks for a newer version.` : "")) : null,
       b.installed && b.release?.unchecked ? h("div", { class: "warnbox small" },
         `Whether this is the latest version couldn't be checked: ${b.release.host} couldn't be reached. It was accepted `
-        + `because its signature was made ${plural(b.release.signed_days ?? 0, "day")} before it was set up, but a newer `
-        + "version with security fixes may be out. Check when you can (the project's site, a mirror, or GetTor).") : null,
+        + `because its signature was ${plural(b.release.unchecked_days ?? b.release.signed_days ?? 0, "day")} old then (it `
+        + "accepts one made in the last 30 days), but a newer version with security fixes may be out. Check when you can "
+        + "(the project's site, a mirror, or GetTor).") : null,
       b.installed && b.release?.stale ? h("div", { class: "warnbox small" },
         `This release was signed ${plural(b.release.signed_days, "day")} before it was set up. ${b.name} usually has a new `
         + "release every few weeks, so a newer one is likely out, even though the project's server said this was the "

@@ -102,7 +102,7 @@ const browserState = () => ({ platform: "linux-x86_64", min_mb: 1024, can_pick: 
                start_error: browserStartError,
                release: { version: "15.0.24", signed: 1790687273, source: "download", unpacked: 1790800000,
                           check_from: 1790886400, check_due: browserDue, host: "aus1.torproject.org",
-                          unchecked: browserUnchecked, signed_days: 2, stale: false },
+                          unchecked: browserUnchecked, signed_days: 2, unchecked_days: browserUnchecked ? 26 : null, stale: false },
                available: true, folder: "~/RAMDisk/tor-browser", installed: browserJob?.state === "done", running: !!browserStarted,
                uploads_folder: "~/RAMDisk/tor-browser/Browser/To upload", downloads_folder: "~/RAMDisk/tor-browser/Browser/Downloads",
                uploads: [], downloads: [{ name: "report.pdf", size: 2048, mtime: 1, warnings: ["can fetch things from the internet"],
@@ -962,6 +962,11 @@ check(text(".modal .browser-tool").includes("Before you start: swap reaches the 
 check(text(".modal .browser-tool").includes("Without swap, when memory runs out the system ends a program")
       && $$(".modal .browser-tool .warnbox").some(w => w.textContent.includes("That is more than is free now")),
       "turning swap off says what it costs, and warns when the browser and its RAM disk won't fit in what is free");
+{ const mem = { total_mb: 8000, available_mb: 2500, browser_mb: 2048 };
+  const rd = { open: true, total: 1024 * 1048576, used: 1000 * 1048576 };     // nearly full: what is in it is out of "free"
+  check(window.memoryNote(mem, rd, false).className === "muted" && window.memoryNote(mem, { ...rd, used: 0 }, false).className.includes("warnbox")
+        && window.memoryNote(mem, { ...rd, used: 0 }, true).className === "muted",
+        "the warning counts what may still be taken (the RAM disk's room left, a browser not running yet), not what is already out of free memory"); }
 check(text(".modal .browser-tool").includes("Unless you allow it below, it has no graphics card: pages draw with the processor"),
       "the sandbox says what it doesn't hide, and that pages draw without the graphics card");
 check(text(".modal .browser-tool").includes("when the computer was started")
@@ -1093,8 +1098,8 @@ while ($$(".modal").length) { $$(".modal .buttons button").at(-1).click(); await
 browserUnchecked = true;
 await window.openBrowserTool(); await tick(); await tick();
 check(text(".modal .browser-tool").includes("Whether this is the latest version couldn't be checked: aus1.torproject.org couldn't be reached")
-      && text(".modal .browser-tool").includes("2 days before it was set up"),
-      "one accepted where the index was blocked says so, and how recent its signature was");
+      && text(".modal .browser-tool").includes("its signature was 26 days old then (it accepts one made in the last 30 days)"),
+      "one accepted where the index was blocked says so, and how old its signature was when that decided (not at the set-up)");
 browserUnchecked = false;
 while ($$(".modal").length) { $$(".modal .buttons button").at(-1).click(); await tick(); }
 sandboxDown = true;
