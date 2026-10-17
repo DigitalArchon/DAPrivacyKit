@@ -550,7 +550,9 @@ checks:
     fix: >
       Enable tmp.mount (the helper; on Debian, Ubuntu and Mint it links the distribution's own
       /usr/share/systemd/tmp.mount, as `systemctl enable /usr/share/systemd/tmp.mount` does), from the next boot:
-      mounting it now would hide the files of running programs. Otherwise an fstab tmpfs entry, as a command.
+      mounting it now would hide the files of running programs. Otherwise an fstab tmpfs entry, as a command. Never
+      offered where enabling changes nothing (systemctl is-enabled): masked (unmask it first), generated from an
+      /etc/fstab line for /tmp (change that line), static (local-fs.target add-wants).
     remedy: >
       Temporary files stay on disk after you log out. Guide… keeps /tmp in memory from the next boot,
       so it starts empty every time.
@@ -639,13 +641,18 @@ checks:
         SSDs by itself)'
       - 'systemd-detect-virt --vm: inside a virtual machine TRIM reaches a virtual disk, not a drive (not applicable)'
     fix: >
-      A guide. LUKS2: `cryptsetup --allow-discards --persistent refresh <name>` (asks for a passphrase; the flag is kept
-      in the header, applies at once and at every unlock, whichever initramfs or crypttab the distribution uses). LUKS1
+      A guide. Where TRIM stops is the deepest layer that takes none (a logical volume over LUKS without discards
+      reports 0 too: every such layer counts). LUKS2: `cryptsetup --allow-discards --persistent refresh <name>` (asks
+      for a passphrase; the flag is kept in the header, applies at every unlock, whichever initramfs or crypttab the
+      distribution uses), with the options of the persistent flags already there (luksDump's Flags, read with
+      administrator access: --persistent stores exactly the options given, cryptsetup-refresh(8)); the logical volumes
+      inside take it up after `lvchange --refresh <vg>` or a restart. LUKS1
       (no persistent flags): `cryptsetup --allow-discards refresh` for now, `discard` in /etc/crypttab for the next
       boot (commands for the user: the app never edits crypttab), the initramfs rebuilt when the volume is unlocked
       there (update-initramfs, dracut, mkinitcpio), and the kernel command line changed instead when it carries the
-      options (cryptdevice=…:allow-discards for Arch's encrypt hook, rd.luks.options). fstrim.timer enabled through
-      the helper (set_service, reversible). Never fstab: the discard mount option isn't needed with the timer.
+      options (cryptdevice=…:allow-discards for Arch's encrypt hook, rd.luks.options). A volume that still takes no TRIM
+      over layers that do: `lvchange --refresh`. fstrim.timer enabled through the helper (set_service, reversible);
+      masked: unmask it, as commands. Never fstab: the discard mount option isn't needed with the timer.
       raid4/5/6 drop discards unless raid456.devices_handle_discard_safely=Y, which is safe only when every member
       reads zeros after TRIM: explained, never offered. USB adapters and drives without TRIM: nothing to do.
     remedy: >

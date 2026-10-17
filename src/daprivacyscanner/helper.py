@@ -244,12 +244,17 @@ _PROP = re.compile(r"^\s+([A-Za-z0-9 _-]+?):\s*(.*)$")
 def parse_luks_dump(text: str) -> dict:
     """The parts of `cryptsetup luksDump` detection needs. Salts, digests and key material
     descriptions are left out."""
-    out: dict = {"version": None, "keyslots": [], "tokens": []}
+    out: dict = {"version": None, "keyslots": [], "tokens": [], "flags": None}
     section, entry = None, None
     for line in text.splitlines():
         m = re.match(r"^Version:\s*(\d+)", line)
         if m:
             out["version"] = int(m.group(1))
+            continue
+        m = re.match(r"^Flags:\s*(.*)$", line)                  # LUKS2's persistent activation flags
+        if m:
+            value = m.group(1).strip()
+            out["flags"] = [] if value in ("", "(no flags)") else [f for f in value.split() if re.fullmatch(r"[a-z-]+", f)]
             continue
         m = _LUKS1_SLOT.match(line)
         if m:

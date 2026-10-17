@@ -29,7 +29,8 @@ def test_parse_luks2_dump():
 
 def test_parse_luks1_dump():
     d = helper.parse_luks_dump(sample("luksdump/luks1.txt"))
-    assert d == {"version": 1, "keyslots": [{"id": 0, "type": "luks1", "pbkdf": "pbkdf2"}], "tokens": []}
+    # LUKS1 has no persistent flags ("flags", LUKS2's, for the TRIM guide since the review of 2026-10-17)
+    assert d == {"version": 1, "keyslots": [{"id": 0, "type": "luks1", "pbkdf": "pbkdf2"}], "tokens": [], "flags": None}
 
 
 def test_parse_clevis_list():

@@ -257,8 +257,26 @@ def tmp_on_disk(check, scan, outcome):
                "What is in /tmp on the disk at that reboot stays there, hidden under the mount (the distribution "
                "normally clears it at boot, so it is one session's worth)."]
     from .._util import systemctl_state
-    if unit_exists(scan, "tmp.mount") and systemctl_state(scan.host, "is-enabled", "tmp.mount") == "enabled":
+    state = systemctl_state(scan.host, "is-enabled", "tmp.mount")
+    fstab_line = ("echo 'tmpfs /tmp tmpfs defaults,noatime,nosuid,nodev,mode=1777,size=50% 0 0' | sudo tee -a "
+                  "/etc/fstab")
+    if unit_exists(scan, "tmp.mount") and state == "enabled":
         step = Step("Mount /tmp in memory", "tmp.mount is enabled: /tmp is in memory from the next boot.", done=True)
+    elif state == "masked":
+        # enabling a masked unit changes nothing (the helper says it is so already, and the check still fails)
+        step = Step("Mount /tmp in memory", "tmp.mount is masked here: turned off for good, by the distribution or an "
+                    "administrator, so enabling it would change nothing. Unmask it, then check again: the guide then "
+                    "offers to enable it.", commands=["sudo systemctl unmask tmp.mount"], side_effects=effects)
+    elif state == "generated":
+        step = Step("Mount /tmp in memory", "/etc/fstab mounts /tmp from the disk (tmp.mount is made from that line), so "
+                    "enabling it would change nothing. In /etc/fstab, replace the line for /tmp with this one, from the "
+                    "next boot:", commands=["sudoedit /etc/fstab     # the /tmp line: tmpfs /tmp tmpfs defaults,noatime,"
+                                            "nosuid,nodev,mode=1777,size=50% 0 0"], side_effects=effects)
+    elif state == "static":
+        step = Step("Mount /tmp in memory", "tmp.mount can't be enabled here (it has no [Install] section): it is "
+                    "mounted when something at boot wants it, and here nothing does. Have the local filesystems want it, "
+                    "from the next boot:", commands=["sudo systemctl add-wants local-fs.target tmp.mount"],
+                    side_effects=effects)
     elif unit_exists(scan, "tmp.mount"):
         step = Step("Mount /tmp in memory", options=[option(check, "Enable tmp.mount", [RootChange(
             "set_service", {"unit": "tmp.mount", "enable": True, "start": None},
@@ -273,8 +291,7 @@ def tmp_on_disk(check, scan, outcome):
                     side_effects=effects)
     else:
         step = Step("Mount /tmp in memory", "Add this line to /etc/fstab:",
-                    commands=["echo 'tmpfs /tmp tmpfs defaults,noatime,nosuid,nodev,mode=1777,size=50% 0 0' | "
-                              "sudo tee -a /etc/fstab"], side_effects=effects)
+                    commands=[fstab_line], side_effects=effects)
     return Guide(check.id, "Keep /tmp in memory", "Temporary files then never reach the disk.", [step])
 
 
@@ -643,6 +660,55 @@ def _luks1_step(scan, name: str, device: str | None, root: bool) -> Step:
     return Step(f"Allow TRIM through {name} (LUKS1)", "\n".join(text), commands=commands)
 
 
+def volume_group(dm_name: str) -> str | None:
+    """The volume group of an LVM device-mapper name ("vgmint-root" → vgmint; a hyphen inside a name is doubled:
+    "my--vg-root" → my-vg)."""
+    import re
+    parts = re.split(r"(?<!-)-(?!-)", dm_name)
+    return parts[0].replace("--", "-") if len(parts) >= 2 and parts[0] else None
+
+
+# LUKS2's persistent flags (luksDump "Flags:") and the refresh options that keep them: --persistent stores exactly the
+# options given, so one left out is dropped from the header (cryptsetup-refresh(8): "--persistent stores any
+# combination of device parameters above"; with it, the stored flags are ignored and replaced)
+LUKS_FLAG_OPTIONS = {"allow-discards": "--allow-discards", "same-cpu-crypt": "--perf-same_cpu_crypt",
+                     "submit-from-crypt-cpus": "--perf-submit_from_crypt_cpus",
+                     "no-read-workqueue": "--perf-no_read_workqueue", "no-write-workqueue": "--perf-no_write_workqueue",
+                     "no-journal": "--integrity-no-journal"}
+
+
+def _luks2_step(name: str, device: str | None, version, flags: list[str] | None, vgs: list[str], refresh: list[str],
+                usage: str) -> Step:
+    """TRIM through a LUKS2 volume, kept in its header with the flags it has already."""
+    keep = [LUKS_FLAG_OPTIONS[f] for f in flags or [] if f in LUKS_FLAG_OPTIONS and f != "allow-discards"]
+    cmd = " ".join(["sudo cryptsetup --allow-discards", *keep, "--persistent refresh", name])
+    text = ("This keeps the setting in the encrypted disk's own header (LUKS2), so it applies at every start, however "
+            "this system unlocks the disk; nothing in /etc/crypttab or the initramfs needs changing. It asks for one of "
+            "the disk's passphrases (a recovery key works too).")
+    unknown = [f for f in flags or [] if f not in LUKS_FLAG_OPTIONS]
+    if keep:
+        text += (" The header keeps other settings too (" + ", ".join(f for f in flags if f in LUKS_FLAG_OPTIONS and
+                                                                       f != "allow-discards")
+                 + "): the command gives them again, since --persistent stores exactly the options it is given.")
+    if unknown:
+        text += (f" It also keeps {', '.join(unknown)}, which the app doesn't know the option for: add it to the command "
+                 "(man cryptsetup-refresh lists them), or it is dropped.")
+    elif flags is None:
+        dump = f"sudo cryptsetup luksDump {device or '/dev/…'} | grep Flags"
+        text += (f" --persistent stores exactly the options it is given: if `{dump}` lists other flags (such as "
+                 "no-read-workqueue), add their options to the command (--perf-no_read_workqueue), or they are dropped.")
+    if vgs:
+        text += (f" The encrypted volume takes it at once; the logical volumes inside it ({', '.join(vgs)}) only once "
+                 "their table is loaded again: the second command does that, or a restart.")
+    else:
+        text += " It works at once."
+    if version != 2:
+        text += (" (If it answers that the device is LUKS1, run "
+                 f"sudo cryptsetup luksDump {device or '/dev/…'} | head to check, and scan again "
+                 "with administrator access for the LUKS1 steps.)")
+    return Step(f"Allow TRIM through {name}", text, commands=[cmd, *refresh], side_effects=[usage])
+
+
 @guide("enc.trim_off", keys=("weekly_timer",))
 def trim_off(check, scan, outcome):
     from ...storage import luks_version, stacks, underlying
@@ -657,31 +723,40 @@ def trim_off(check, scan, outcome):
     for st in all_stacks:
         if st.hard_disk:
             continue
-        for layer in st.layers:
+        for i, layer in enumerate(st.layers):
             if layer.discard_max != 0 or layer.name in seen:
                 continue
             seen.add(layer.name)
+            # the logical volumes above it take a change below them up only once their table is loaded again
+            vgs = sorted({vg for x in st.layers[:i] if x.kind == "lvm" and (vg := volume_group(x.label))})
+            refresh = [f"sudo lvchange --refresh {vg}" for vg in vgs]
             if layer.kind == "crypt":
                 version = luks_version(host, layer)
                 device = underlying(host, layer)
-                if version is None and device and scan.privileged is not None:
+                dump = None
+                if device and scan.privileged is not None:
                     try:
-                        version = scan.privileged.luks_dump(device)["version"]
+                        dump = scan.privileged.luks_dump(device)
                     except Exception:  # noqa: BLE001 - asked for the version below instead
-                        version = None
+                        dump = None
+                version = version or (dump or {}).get("version")
                 if version == 1:
-                    steps.append(_luks1_step(scan, layer.label, device, layer.name in root_layers))
+                    step = _luks1_step(scan, layer.label, device, layer.name in root_layers)
+                    step.commands[1:1] = refresh
+                    if vgs:
+                        step.text += (f"\nThe logical volumes inside it ({', '.join(vgs)}) take TRIM up after "
+                                      f"{' and '.join(refresh)} (the second command), or a restart.")
+                    steps.append(step)
                 else:
-                    cmd = f"sudo cryptsetup --allow-discards --persistent refresh {layer.label}"
-                    steps.append(Step(
-                        f"Allow TRIM through {layer.label}",
-                        "This keeps the setting in the encrypted disk's own header (LUKS2), so it works at once and "
-                        "at every start, however this system unlocks the disk; nothing in /etc/crypttab or the "
-                        "initramfs needs changing. It asks for one of the disk's passphrases (a recovery key works "
-                        "too)." + ("" if version == 2 else " (If it answers that the device is LUKS1, run "
-                                   f"sudo cryptsetup luksDump {device or '/dev/…'} | head to check, and scan again "
-                                   "with administrator access for the LUKS1 steps.)"),
-                        commands=[cmd], side_effects=[usage]))
+                    steps.append(_luks2_step(layer.label, device, version, (dump or {}).get("flags"), vgs, refresh, usage))
+            elif layer.kind == "lvm" and all(x.discard_max != 0 for x in st.layers[i + 1:]):
+                # what is below passes TRIM (a LUKS refresh made since this volume was loaded): it hasn't taken it up
+                vg = volume_group(layer.label) or layer.label
+                steps.append(Step(f"Let {layer.label} pass TRIM on",
+                                  f"Every layer below the logical volume {layer.label} takes TRIM now, but the volume "
+                                  "still has the settings it was loaded with. Loading its table again takes it up at "
+                                  "once (a restart does too); nothing is unmounted.",
+                                  commands=[f"sudo lvchange --refresh {vg}"]))
             elif layer.kind == "md" and layer.label in ("raid4", "raid5", "raid6"):
                 regen = _initramfs_command(scan)
                 steps.append(Step(
@@ -695,10 +770,17 @@ def trim_off(check, scan, outcome):
                               "/etc/modprobe.d/raid456-discard.conf"] + ([regen] if regen else []),
                     side_effects=["Wrong when a drive doesn't really read zeros after TRIM: the array can then lose "
                                   "data on a rebuild. When in doubt, leave it."]))
+    from .._util import systemctl_state
     timer = trim_timer(host)
     if any(not st.hard_disk and not st.continuous for st in all_stacks):
         if timer == "enabled":
             pass
+        elif systemctl_state(host, "is-enabled", "fstrim.timer") == "masked":
+            # enabling a masked unit changes nothing: the helper says it is so already, and the check still fails
+            steps.append(Step("Trim every week",
+                              "The fstrim timer is masked here: turned off for good, by the distribution or an "
+                              "administrator, so enabling it would change nothing. Unmask it and turn it on:",
+                              commands=["sudo systemctl unmask fstrim.timer", "sudo systemctl enable --now fstrim.timer"]))
         elif unit_exists(scan, "fstrim.timer"):
             steps.append(Step("Trim every week",
                               "Nothing runs TRIM here yet. The fstrim timer trims every filesystem on an SSD once a "

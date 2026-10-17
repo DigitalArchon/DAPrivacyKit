@@ -112,9 +112,18 @@ class Stack:
     drives: list[Drive]
 
     @property
+    def stops(self) -> list[Layer]:
+        """Every layer that takes no TRIM, from the filesystem down."""
+        return [x for x in self.layers if x.discard_max == 0]
+
+    @property
     def stop(self) -> Layer | None:
-        """The first layer TRIM doesn't pass (from the filesystem down), if any."""
-        return next((x for x in self.layers if x.discard_max == 0), None)
+        """Where TRIM stops: the deepest layer that takes none, if any. A layer above one that takes none reports none
+        either: a logical volume on LUKS opened without discards says 0 because LUKS does (the first one from the
+        top would name the volume, not the cause). A volume that still says 0 over layers that pass hasn't taken up
+        a change below it yet (lvchange --refresh)."""
+        zero = self.stops
+        return zero[-1] if zero else None
 
     @property
     def hard_disk(self) -> bool:
@@ -162,6 +171,10 @@ def stop_reason(layer: Layer, drives: list[Drive], vm: bool = False) -> str:
         return "the virtual disk doesn't take TRIM"
     if layer.kind == "disk":
         return "the drive doesn't take TRIM"
+    if layer.kind == "lvm":
+        # the deepest layer that takes none (Stack.stop): those below it pass TRIM, it hasn't taken that up yet
+        return (f"the logical volume {layer.label} hasn't taken up TRIM from the layers below it yet (it does after "
+                "sudo lvchange --refresh, or a restart)")
     return f"a layer of the storage ({layer.label or layer.name}) doesn't pass TRIM on"
 
 

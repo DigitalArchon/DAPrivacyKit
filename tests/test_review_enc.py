@@ -507,6 +507,140 @@ def test_zram_generator_configured_but_not_running_is_started_not_rewritten(cat,
     assert not any("tee /etc/systemd/zram-generator.conf" in c for c in step.commands)
 
 
+# ------------------------------------------------------------------ TRIM through LVM on LUKS
+
+def _lvm_on_luks(r, crypt="0", lv="0"):
+    """/ on the logical volume vgmint-root (dm-1) inside LUKS (dm-0), as Mint and Ubuntu install it."""
+    import os
+    from test_trimtest import link, make_storage, write
+    make_storage(r, luks="no-discards")
+    write(r / "sys/devices/virtual/block/dm-0/queue/discard_max_bytes", crypt + "\n")
+    dm = r / "sys/devices/virtual/block/dm-1"
+    write(dm / "dm/name", "vgmint-root\n")
+    write(dm / "dm/uuid", "LVM-abcdef\n")
+    write(dm / "queue/discard_max_bytes", lv + "\n")
+    write(dm / "stat", " ".join(["0"] * 17) + "\n")
+    link(dm / "slaves/dm-0", "../../dm-0")
+    link(r / "sys/class/block/dm-1", "../../devices/virtual/block/dm-1")
+    link(r / "dev/mapper/vgmint-root", "../dm-1")
+    (r / "proc/self/mounts").write_text("/dev/mapper/vgmint-root / ext4 rw,relatime 0 0\nproc /proc proc rw 0 0\n")
+    write(r / "sys/devices/pci0000:00/nvme/nvme0/nvme0n1/nvme0n1p2/dev", "259:2\n")
+    write(r / "run/udev/data/b259:2", "E:ID_FS_TYPE=crypto_LUKS\nE:ID_FS_VERSION=2\n")
+    assert os.path.exists(r / "sys/class/block/dm-1/slaves/dm-0/dm/name")
+
+
+def _trim(cat, r, privileged=None):
+    from daprivacyscanner.checks import load_all
+    from test_trim_guide import host_for
+    host = host_for(r)
+    host.privileged = privileged
+    check = load_all()["enc.trim_off"](cat["enc.trim_off"])
+    scan = make_scan(host, fde="full")
+    o = check.detect(scan)
+    return check, scan, o
+
+
+def test_lvm_on_luks_without_discards_gets_the_luks_step_and_the_volume_refresh(cat, tmp_path, monkeypatch):
+    """storage.Stack.stop found the logical volume, not the crypt layer: blocked stayed empty and the user saw "The
+    guide doesn't cover this machine". After the refresh the volume keeps discard_max_bytes 0 until lvchange --refresh
+    or a restart, yet the guide said it "works at once"."""
+    from daprivacyscanner import helper
+    r = tmp_path / "root"
+    (r / "home/alice").mkdir(parents=True)
+    monkeypatch.setattr(helper, "ROOT", str(r))
+    _lvm_on_luks(r)
+    check, scan, o = _trim(cat, r)
+    assert o.status is Status.FAIL and "encrypted volume luks-1 isn't opened with discards allowed" in o.summary
+    assert check.blocked == {"luks"} and check.can_fix(scan, o)
+    luks = check.plan_guide(scan, o).steps[0]
+    assert luks.commands == ["sudo cryptsetup --allow-discards --persistent refresh luks-1",
+                             "sudo lvchange --refresh vgmint"]
+    assert "works at once" not in luks.text and "vgmint" in luks.text and "luksDump" in luks.text
+
+
+def test_a_volume_not_refreshed_since_the_luks_change_gets_its_refresh(cat, tmp_path, monkeypatch):
+    from daprivacyscanner import helper
+    r = tmp_path / "root"
+    (r / "home/alice").mkdir(parents=True)
+    monkeypatch.setattr(helper, "ROOT", str(r))
+    _lvm_on_luks(r, crypt="2199023255040", lv="0")
+    check, scan, o = _trim(cat, r)
+    assert o.status is Status.FAIL and "lvchange --refresh" in o.summary and check.blocked == {"refresh"}
+    [step, _] = check.plan_guide(scan, o).steps
+    assert step.commands == ["sudo lvchange --refresh vgmint"]
+
+
+def test_the_luks_refresh_keeps_the_flags_already_in_the_header(cat, tmp_path, monkeypatch):
+    """cryptsetup refresh --persistent stores exactly the options given: no-read-workqueue would have been dropped."""
+    from daprivacyscanner import helper
+    from daprivacyscanner.privileged import FakePrivileged
+    r = tmp_path / "root"
+    (r / "home/alice").mkdir(parents=True)
+    monkeypatch.setattr(helper, "ROOT", str(r))
+    _lvm_on_luks(r)
+    dump = {"version": 2, "keyslots": [], "tokens": [], "flags": ["no-read-workqueue", "no-write-workqueue"]}
+    priv = FakePrivileged()
+    priv.luks_dump = lambda device: dump
+    check, scan, o = _trim(cat, r, priv)
+    luks = check.plan_guide(scan, o).steps[0]
+    assert luks.commands[0] == ("sudo cryptsetup --allow-discards --perf-no_read_workqueue --perf-no_write_workqueue "
+                                "--persistent refresh luks-1")
+
+
+def test_the_helper_reads_luks2_flags():
+    from daprivacyscanner.helper import parse_luks_dump
+    assert parse_luks_dump("LUKS header information\nVersion:       \t2\nFlags:       \t(no flags)\n")["flags"] == []
+    assert parse_luks_dump("Version: 2\nFlags:       \tallow-discards no-read-workqueue \n")["flags"] == [
+        "allow-discards", "no-read-workqueue"]
+
+
+@pytest.mark.parametrize("name, vg", [("vgmint-root", "vgmint"), ("my--vg-swap_1", "my-vg"), ("luks-1", "luks"),
+                                      ("plain", None)])
+def test_volume_group_from_its_device_mapper_name(name, vg):
+    from daprivacyscanner.checks.guides.encryption import volume_group
+    assert volume_group(name) == vg
+
+
+# ------------------------------------------------------------------ masked units
+
+def test_a_masked_tmp_mount_isnt_offered_enabling(cat, tmp_path):
+    """The helper said "already so", the check still failed, and Easy offered it for ever."""
+    from daprivacyscanner.checks import load_all
+    host = make_host(tmp_path, files={"/proc/mounts": "/dev/sda2 / ext4 rw 0 0\n"},
+                     commands={"systemctl is-enabled tmp.mount": "masked\n",
+                               "systemctl show --property=LoadState --value tmp.mount": "masked\n"})
+    check = load_all()["enc.tmp_on_disk"](cat["enc.tmp_on_disk"])
+    scan = make_scan(host)
+    [step] = check.plan_guide(scan, check.detect(scan)).steps
+    assert not step.options and step.commands == ["sudo systemctl unmask tmp.mount"]
+    host = make_host(tmp_path / "g", files={"/proc/mounts": "/dev/sda3 /tmp ext4 rw 0 0\n"},
+                     commands={"systemctl is-enabled tmp.mount": "generated\n",
+                               "systemctl show --property=LoadState --value tmp.mount": "loaded\n"})
+    scan = make_scan(host)
+    [step] = check.plan_guide(scan, check.detect(scan)).steps
+    assert not step.options and "replace the line for /tmp" in step.text
+
+
+def test_a_masked_fstrim_timer_isnt_offered_enabling(cat, tmp_path, monkeypatch):
+    from daprivacyscanner import helper
+    from daprivacyscanner.checks import load_all
+    from daprivacyscanner.host import FakeRunner, Host
+    from test_trimtest import make_storage
+    r = tmp_path / "root"
+    (r / "home/alice").mkdir(parents=True)
+    monkeypatch.setattr(helper, "ROOT", str(r))
+    make_storage(r)
+    home = r / "home/alice"
+    host = Host(home=home, environ={"HOME": str(home)}, root=r, uid=1000,
+                runner=FakeRunner({"systemctl is-enabled fstrim.timer": "masked\n",
+                                   "systemctl show --property=LoadState --value fstrim.timer": "masked\n"}))
+    check = load_all()["enc.trim_off"](cat["enc.trim_off"])
+    scan = make_scan(host, fde="full")
+    o = check.detect(scan)
+    week = next(s for s in check.plan_guide(scan, o).steps if s.title == "Trim every week")
+    assert not week.options and week.commands[0] == "sudo systemctl unmask fstrim.timer"
+
+
 def test_the_panels_say_what_the_scan_says(tmp_path):
     """The RAM disk and browser panels said "this computer can hibernate" where the scan said it can't."""
     from daprivacyscanner.tools import ramdisk as R

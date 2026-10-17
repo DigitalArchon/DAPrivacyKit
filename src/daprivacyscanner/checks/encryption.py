@@ -1506,9 +1506,13 @@ class TrimOff(Check):
         if not stopped and not untrimmed and all("hard disk" in e.value for e in ev):
             return absent("Only hard disks here: they have no TRIM.", *ev)
         never_runs = bool(untrimmed) and timer == "disabled"
+        # every layer that takes no TRIM, deepest first, counts: a logical volume over LUKS without discards says 0
+        # too, and was all the guide saw ("The guide doesn't cover this machine")
+        layers = [x for st, _ in stopped for x in reversed(st.stops)]
         self.blocked = frozenset(k for k, on in (
-            ("luks", any(x.kind == "crypt" for _, x in stopped)),
-            ("raid", any(x.kind == "md" and x.label in ("raid4", "raid5", "raid6") for _, x in stopped)),
+            ("luks", any(x.kind == "crypt" for x in layers)),
+            ("raid", any(x.kind == "md" and x.label in ("raid4", "raid5", "raid6") for x in layers)),
+            ("refresh", any(x.kind == "lvm" for _, x in stopped)),      # the volume hasn't taken it up yet
             ("never_runs", never_runs)) if on)
         problems = [f"{st.mount}: TRIM doesn't reach the drive ({stop_reason(x, st.drives)})" for st, x in stopped]
         if never_runs:

@@ -210,10 +210,12 @@ def targets(host: Host) -> list[Target]:
                        "overwrites it. Encryption is what protects it.")
             t.no_trim = "hdd"
             continue
-        stuck = next((x for x in t.layers if x.discard_max == 0), None)
+        # the deepest layer that takes no TRIM is where it stops: a logical volume on LUKS without discards says 0
+        # because LUKS does (enc.trim_off's Stack.stop)
+        stuck = ([x for x in t.layers if x.discard_max == 0] or [None])[-1]
         if stuck is not None:
             t.known, t.no_trim = no_trim_text(t, stuck), "layer"
-            if stuck.kind == "crypt" or stuck.kind == "md" and stuck.label in ("raid4", "raid5", "raid6"):
+            if stuck.kind in ("crypt", "lvm") or stuck.kind == "md" and stuck.label in ("raid4", "raid5", "raid6"):
                 t.guide = "enc.trim_off"
             continue
         if m in main:
