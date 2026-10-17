@@ -1292,6 +1292,8 @@ POLICIES = {
                  "DefaultCookiesSetting": (4,),
                  # 2: no site may ask for the location
                  "DefaultGeolocationSetting": (2,),
+                 # 1: standard protection, not Enhanced Safe Browsing (which sends each page's address to Google)
+                 "SafeBrowsingProtectionLevel": (1,),
                  # VERIFY: Chromium honours the list only with SyncDisabled
                  "SyncDisabled": _BOOL, "ClearBrowsingDataOnExitList": (CLEAR_ON_EXIT,)},
 }

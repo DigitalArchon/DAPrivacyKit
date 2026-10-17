@@ -10,6 +10,7 @@ import re
 import secrets
 import urllib.parse
 import xml.etree.ElementTree as ET
+from contextlib import nullcontext
 from dataclasses import dataclass
 
 from .. import network as net
@@ -19,7 +20,8 @@ from ..online import host_of, is_lan
 from ..privileged import HelperError
 from . import Check, Scan, register
 from .network import local_roots  # noqa: F401 (the guide imports it from here too)
-from .kernel import dnf_security, kernel_restart, no_pass_when_unsupported, package_names, updates_outcome
+from .kernel import (DNF5_NO_RUNTIME, dnf5_away_from_home, dnf_security, is_dnf5, kernel_restart,
+                     no_pass_when_unsupported, package_names, updates_outcome)
 from ._util import absent, children, failed, installed, passed, unknown, warned
 
 
@@ -827,11 +829,17 @@ class UpdatesRefreshed(OnlineCheck):
             pm = "apt"
         elif installed(host, "dnf"):
             pm = "dnf"
-            r = host.run("dnf", "-q", "check-update", "--refresh", timeout=600)
-            if r.returncode in (0, 100):
-                names, security = package_names("dnf", r.stdout), dnf_security(scan)
-            else:
-                why = f"dnf check-update failed: {(r.stderr or r.stdout).strip()[-150:]}"
+            # dnf5 downloads the lists into a folder of its own in memory, never ~/.cache/libdnf5 (100 MB and more)
+            with dnf5_away_from_home(host, cache_only=False) if is_dnf5(host) else nullcontext(()) as opts:
+                program = "dnf5" if opts else "dnf"
+                if opts is None:
+                    why = DNF5_NO_RUNTIME
+                else:
+                    r = host.run(program, *opts, "-q", "check-update", "--refresh", timeout=600)
+                    if r.returncode in (0, 100):
+                        names, security = package_names("dnf", r.stdout), dnf_security(scan, *opts, program=program)
+                    else:
+                        why = f"dnf check-update failed: {(r.stderr or r.stdout).strip()[-150:]}"
         elif installed(host, "pacman"):
             pm = "pacman"
             if installed(host, "checkupdates"):

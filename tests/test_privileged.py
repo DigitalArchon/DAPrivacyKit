@@ -173,7 +173,7 @@ SURFACES = {4: "afe8f5a5be1c5b48", 5: "87c08bf809a1a000", 6: "f74cc3bd8d4bdd5f",
             25: "6a0cdefc1e1dd2ec",                             # 25: names from the ext4 journal, and clearing it
             26: "2df0660e730b9b6a",                             # 26: the watch of one app (What does this app keep?)
             27: "2df0660e730b9b6a",                             # 27: install_self installs the code read at start; ramdisk_open's answer
-            28: "b4180ef1adda2067"}                             # 28: set_service takes units together and records a partial failure; reverts say what they put back; the SecureBoot variable's right GUID; clear_journal_files
+            28: "eeefe6d32bd215ed"}                             # 28: set_service takes units together and records a partial failure; reverts say what they put back; the SecureBoot variable's right GUID; clear_journal_files; SafeBrowsingProtectionLevel
 
 
 def test_changing_what_the_helper_does_bumps_its_protocol():

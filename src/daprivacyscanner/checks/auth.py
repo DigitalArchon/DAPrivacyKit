@@ -418,12 +418,17 @@ class ChromiumBasicStore(Check):
         secret_service = None if not r.ok else "org.freedesktop.secrets" in r.stdout
         if secret_service is not None:
             ev.append(Evidence.val("Secret Service on the session bus", secret_service))
+        # on KDE Plasma, Chromium and Electron store their key in KDE Wallet through its own D-Bus name (kwallet5/6
+        # stores, picked by the desktop), whether or not the wallet also offers the Secret Service
+        if secret_service is False and scan.context.desktop.is_kde and re.search(r"\borg\.kde\.kwalletd[56]?\b", r.stdout):
+            secret_service = True
+            ev.append(Evidence.val("KDE Wallet on the session bus", True))
         if problems or v10:
             return failed("Chromium-based browsers or Electron apps store passwords or cookies under a built-in key, "
                           "which is effectively unencrypted.", *ev, notes=notes)
         if secret_service is False and (dirs or plain):
-            return failed("No keyring (Secret Service) is available, so Chromium-based browsers and Electron apps fall "
-                          "back to the built-in key.", *ev, notes=notes)
+            return failed("No keyring (Secret Service, or KDE Wallet on Plasma) is available, so Chromium-based browsers "
+                          "and Electron apps fall back to the built-in key.", *ev, notes=notes)
         return passed("Chromium-based browsers and Electron apps use the keyring for passwords and cookies." if dirs
                       else "Electron apps use the keyring for the secrets they keep there.", *ev, notes=notes)
 
@@ -747,12 +752,13 @@ ENV_REFERENCE = re.compile(r"""^(["']?)\$(?:\{[A-Za-z_][A-Za-z0-9_]*\??\}|[A-Za-
 
 
 def _npm(text: str) -> bool:
-    """An npm token in .npmrc (_authToken, for every registry or one), not a reference to an environment variable,
-    which npm's own documentation recommends and the guide too."""
+    """An npm credential in .npmrc, for every registry or one: a token (_authToken), or a user's password (_password,
+    base64) or user:password (_auth, base64), not a reference to an environment variable, which npm's own
+    documentation recommends and the guide too."""
     for line in text.splitlines():
         if line.lstrip().startswith(("#", ";")):
             continue
-        m = re.search(r"_authToken\s*=\s*(\S.*?)\s*$", line)
+        m = re.search(r"(?:_authToken|_auth|_password)\s*=\s*(\S.*?)\s*$", line)
         if m and not ENV_REFERENCE.match(m.group(1)):
             return True
     return False
@@ -776,7 +782,7 @@ CREDENTIAL_FILES = (
     (".config/rclone/rclone.conf", "rclone passwords and tokens (obscured, not encrypted)",
      _has(r"^\s*(pass|password|token|secret_access_key|client_secret)\s*=\s*\S")),
     (".config/gh/hosts.yml", "GitHub CLI token", _has(r"^\s*oauth_token:\s*\S")),
-    (".npmrc", "npm token", _npm),
+    (".npmrc", "npm token or password", _npm),
     (".pypirc", "PyPI password", _has(r"^\s*password\s*[=:]\s*\S")),
     (".kube/config", "Kubernetes credentials", _has(r"^\s*(token|client-key-data|password):\s*\S")),
 )

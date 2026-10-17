@@ -828,7 +828,7 @@ def detect_exposed_services(host: Host, listeners: list | None = None) -> Contex
     ev = [Evidence.count("Services listening on all interfaces", len(found))]
     ev += [Evidence.val("Listening", s.label()) for s in found[:20]]
     notes = []
-    if any(s.port == 5355 for s in found):
+    if any(s.port == 5355 for s in found) and _llmnr_answers(host) is not False:
         notes.append(Note(
             "risk", "LLMNR answers name queries from any network",
             "systemd-resolved listens for LLMNR (Link-Local Multicast Name Resolution) on port 5355 on every network "
@@ -839,6 +839,14 @@ def detect_exposed_services(host: Host, listeners: list | None = None) -> Contex
             ("net.hostname_broadcast", "net.exposed_services")))
     return ContextValue("exposed_services", bool(found), ev,
                         "Sockets bound to all interfaces (DHCP, mDNS and ephemeral UDP ports aside)", notes=notes)
+
+
+def _llmnr_answers(host: Host) -> bool | None:
+    """Whether systemd-resolved answers LLMNR queries on a network link, or only asks (Fedora's LLMNR=resolve still
+    listens on 5355, and answers no one); None when resolvectl can't say."""
+    from .checks.network import resolved_announces, resolved_links
+    links = resolved_links(host)
+    return resolved_announces(links, "llmnr") if links else None
 
 
 # ------------------------------------------------------------------ vpn_active, ipv6_global

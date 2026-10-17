@@ -137,10 +137,15 @@ def ad_features(check, scan, outcome):
                   "\"Make searches and browsing better\" and \"Autocomplete searches and URLs\" off. Or, for every user:",
                   options=chromium, done=not flagged)]
     if enhanced:
+        in_dirs = {d.label for d, _, active, _ in states if ENHANCED_SAFE_BROWSING in active}
         steps.append(Step("Enhanced Safe Browsing",
                           "It sends the address of each page you open to Google, to be checked as you browse. Standard "
                           "protection still warns about dangerous sites, from a list the browser downloads: Settings → "
-                          "Privacy and security → Security → Standard protection. On now in: " + "; ".join(enhanced) + "."))
+                          "Privacy and security → Security → Standard protection. On now in: " + "; ".join(enhanced) + ". "
+                          "Or, for every user:",
+                          options=chromium_policy_options(check, scan, {"SafeBrowsingProtectionLevel": 1},
+                                                          "Use standard protection",
+                                                          skip=lambda d: d.label not in in_dirs)))
     return Guide(check.id, "Turn off features that report what you browse", "", steps)
 
 

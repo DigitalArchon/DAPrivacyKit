@@ -105,7 +105,14 @@ def test_enhanced_safe_browsing_has_a_step(cat, tmp_path):
     step = _step(g, "Enhanced Safe Browsing")
     assert "Security → Standard protection" in step.text and "Google Chrome, Default" in step.text
     chromium = _step(g, "Chromium-based browsers")
-    assert chromium.done and not chromium.options       # the policy doesn't turn it off: no option for it
+    assert chromium.done and not chromium.options       # nothing else is on
+    # the policy for every user: SafeBrowsingProtectionLevel 1 is standard protection
+    [opt] = step.options
+    assert opt.plan.actions[0].args == {"browser": "chrome", "settings": {"SafeBrowsingProtectionLevel": 1}}
+    policy = host.root / "etc/opt/chrome/policies/managed/daprivacyscanner.json"
+    policy.parent.mkdir(parents=True)
+    policy.write_text(json.dumps({"SafeBrowsingProtectionLevel": 1}))
+    assert detect(cat, "br.ad_features", make_scan(host)).status is Status.PASS     # read back: not offered again
 
 
 def test_a_browser_never_used_isnt_said_to_block(cat, tmp_path):

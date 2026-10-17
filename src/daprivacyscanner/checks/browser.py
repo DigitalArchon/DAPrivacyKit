@@ -769,12 +769,13 @@ class AccountSync(Check):
 # The Privacy Sandbox keys are only written once the user answers Chrome's ad privacy notice, so
 # an absent key means the feature was never turned on (and Chromium, Edge, Vivaldi and Opera
 # builds don't offer it). VERIFY: the privacy_sandbox keys on current Chrome releases.
-ENHANCED_SAFE_BROWSING = "enhanced Safe Browsing (sends URLs)"     # the profile's own setting: no policy option
+ENHANCED_SAFE_BROWSING = "enhanced Safe Browsing (sends URLs)"
 CHROMIUM_AD_PREFS = (("privacy_sandbox.m1.topics_enabled", "ad topics from your history", False, "PrivacySandboxAdTopicsEnabled"),
                      ("privacy_sandbox.m1.fledge_enabled", "site-suggested ads", False, "PrivacySandboxSiteEnabledAdsEnabled"),
                      ("privacy_sandbox.m1.ad_measurement_enabled", "ad measurement", False, "PrivacySandboxAdMeasurementEnabled"),
                      ("search.suggest_enabled", "search suggestions as you type", True, "SearchSuggestEnabled"),
-                     ("safebrowsing.enhanced", ENHANCED_SAFE_BROWSING, False, None))
+                     # a policy with a value rather than false: SafeBrowsingProtectionLevel 1 is standard protection
+                     ("safebrowsing.enhanced", ENHANCED_SAFE_BROWSING, False, ("SafeBrowsingProtectionLevel", 1)))
 REGION = "region"           # on by default in some countries only (Firefox Suggest, sponsored shortcuts)
 FIREFOX_AD_PREFS = (("browser.search.suggest.enabled", "search suggestions as you type", True, None),
                     ("browser.urlbar.suggest.quicksuggest.sponsored", "sponsored address bar suggestions", REGION, None),
@@ -789,7 +790,9 @@ def _ad_settings(prefs: dict, table, policy: dict, get) -> tuple[list[str], list
     """(features turned on in the profile, features on only as the browser's default)."""
     on, defaults = [], []
     for key, what, default, policy_name in table:
-        if policy_name and policy.get(policy_name) is False:
+        name, off = policy_name if isinstance(policy_name, tuple) else (policy_name, False)
+        now = policy.get(name) if name else None
+        if now is not None and type(now) is type(off) and now == off:
             continue                                        # turned off for every user
         v = get(prefs, key)
         if v is True:

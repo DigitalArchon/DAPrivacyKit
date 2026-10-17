@@ -10,6 +10,7 @@ import json
 import os
 import re
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 
 from .. import ini
@@ -191,34 +192,50 @@ def dnf_automatic(host) -> bool:
     return ini.truthy(ini.get(ini.merge(*layers), "commands", "apply_updates")) is True
 
 
-def _dnf_pending(scan: Scan) -> Pending:
-    """DNF5 run as a user copies the system's metadata into its own cache (~/.cache/libdnf5: 105 MB on Fedora 44) and
-    writes ~/.local/state/dnf5.log, at every scan, scheduled ones too: a scan never writes (rule 4). It gets a cache and
-    a log folder of its own in the runtime folder, in memory, removed at once (tested on Fedora 44: nothing in the home
-    folder; with the system's cache folder itself it can't run, needing to rewrite its .solv files). DNF4 run with -C
-    reads the system's cache as it is."""
+def is_dnf5(host) -> bool:
+    """dnf is DNF5 from Fedora 41 (/usr/bin/dnf a link to dnf5); before, dnf5 could be installed beside DNF4, whose
+    cache it doesn't use. Told from the link, never by running it: even `dnf --version` writes ~/.local/state/dnf5.log."""
+    dnf_link = next((host.sys_path(f"{d}/dnf") for d in ("/usr/bin", "/bin") if host.sys_path(f"{d}/dnf").exists()), None)
+    return installed(host, "dnf5") and (dnf_link is None or os.path.basename(os.path.realpath(dnf_link)) == "dnf5")
+
+
+DNF5_NO_RUNTIME = ("dnf5 needs a folder of its own to read the package lists in, and there is no runtime folder "
+                   "($XDG_RUNTIME_DIR) to keep it in memory")
+
+
+@contextmanager
+def dnf5_away_from_home(host, cache_only: bool = True):
+    """dnf5's options for a run as the user that writes nothing in the home folder, or None without a runtime folder.
+    Run as a user, DNF5 copies the system's metadata into its own cache (~/.cache/libdnf5: 105 MB on Fedora 44) and
+    writes ~/.local/state/dnf5.log, at every scan, scheduled ones too: a scan never writes (rule 4), and the online
+    test, which downloads the lists afresh, would leave them there. It gets a cache and a log folder of its own in the
+    runtime folder, in memory, removed at once (tested on Fedora 44: nothing in the home folder; with the system's
+    cache folder itself it can't run, needing to rewrite its .solv files)."""
     import shutil
     import tempfile
-    from pathlib import Path
+    runtime = host.environ.get("XDG_RUNTIME_DIR") or ""
+    if not runtime or not os.path.isdir(runtime):
+        yield None
+        return
+    tmp = tempfile.mkdtemp(prefix="daprivacyscanner-dnf.", dir=runtime)
+    try:
+        yield ((("-C",) if cache_only else ()) + (f"--setopt=cachedir={tmp}/cache", f"--setopt=logdir={tmp}/log"))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _dnf_pending(scan: Scan) -> Pending:
+    """DNF5 reads the lists away from the home folder (dnf5_away_from_home); DNF4 run with -C reads the system's cache
+    as it is."""
     host = scan.host
     ev = [Evidence.val("Automatic updates", "on" if dnf_automatic(host) else "off")]
-    # dnf is DNF5 from Fedora 41 (/usr/bin/dnf a link to dnf5); before, dnf5 could be installed beside DNF4, whose cache
-    # it doesn't use. Told from the link, never by running it: even `dnf --version` writes ~/.local/state/dnf5.log
-    dnf_link = next((host.sys_path(f"{d}/dnf") for d in ("/usr/bin", "/bin") if host.sys_path(f"{d}/dnf").exists()), None)
-    dnf5 = installed(host, "dnf5") and (dnf_link is None or os.path.basename(os.path.realpath(dnf_link)) == "dnf5")
-    if dnf5:
+    if is_dnf5(host):
         age = _age([p.stat().st_mtime for p in host.sys_path("/var/cache/libdnf5").glob("*/repodata/repomd.xml")])
-        runtime = host.environ.get("XDG_RUNTIME_DIR") or ""
-        if not runtime or not Path(runtime).is_dir():
-            return Pending("dnf", None, None, ev, "dnf5 needs a folder of its own to read the package lists in, and "
-                           "there is no runtime folder ($XDG_RUNTIME_DIR) to keep it in memory")
-        tmp = tempfile.mkdtemp(prefix="daprivacyscanner-dnf.", dir=runtime)
-        try:
-            opts = ("-C", f"--setopt=cachedir={tmp}/cache", f"--setopt=logdir={tmp}/log")
+        with dnf5_away_from_home(host) as opts:
+            if opts is None:
+                return Pending("dnf", None, None, ev, DNF5_NO_RUNTIME)
             r = host.run("dnf5", *opts, "-q", "check-update", timeout=300)
             security = dnf_security(scan, *opts, program="dnf5")
-        finally:
-            shutil.rmtree(tmp, ignore_errors=True)
     else:
         age = _age([p.stat().st_mtime for p in host.sys_path("/var/cache/dnf").glob("*/repodata/repomd.xml")])
         r = host.run("dnf", "-C", "-q", "check-update")
@@ -941,8 +958,9 @@ class SuspendKeysInRam(Check):
     def detect(self, scan: Scan) -> Outcome:
         from .encryption import hibernation_encrypted
         state = (scan.host.read_sys("/sys/power/state") or "").split()
-        if "mem" not in state:
-            return passed("This machine can't suspend to RAM.")
+        # suspend-to-idle (freeze) and standby keep memory powered, keys included, as suspend to RAM (mem) does
+        if not {"mem", "freeze", "standby"} & set(state):
+            return passed("This machine can't suspend, so no key is left in memory while it sleeps.")
         me = memory_encryption_note(scan)
         travel = Note("info", "Shut down when travelling",
                       "A stolen laptop that is asleep can have its keys read from memory by DMA or cold-boot attacks. "

@@ -325,11 +325,20 @@ _HTTP_HOST = re.compile(r"\bhttp://([^\s/]+)", re.I)
 NO_HTTPS = frozenset({"packages.linuxmint.com"})
 
 
+def _parts_in_use(text: str) -> list[str]:
+    """The parts of a repository file in use: a deb822 stanza with "Enabled: no", or a dnf or zypper section with
+    enabled=0, is never contacted, and is left out."""
+    if re.search(r"^\s*\[", text, re.M):                     # sections: dnf's and zypper's .repo, pacman.conf
+        return [p for p in re.split(r"(?m)^(?=\s*\[)", text) if not re.search(r"^\s*enabled\s*=\s*0\s*$", p, re.M | re.I)]
+    return [p for p in re.split(r"\n[ \t]*\n", text) if not re.search(r"^Enabled:[ \t]*no[ \t]*$", p, re.M | re.I)]
+
+
 def http_hosts(text: str) -> list[str]:
-    """The hosts of every plain-HTTP mirror a repository file names (comments left out)."""
+    """The hosts of every plain-HTTP mirror a repository file names (comments and disabled sources left out)."""
     out = []
-    for m in _SOURCE_LINE.finditer(text):
-        out += _HTTP_HOST.findall(" ".join(v for v in m.groupdict().values() if v))
+    for part in _parts_in_use(text):
+        for m in _SOURCE_LINE.finditer(part):
+            out += _HTTP_HOST.findall(" ".join(v for v in m.groupdict().values() if v))
     return out
 
 
