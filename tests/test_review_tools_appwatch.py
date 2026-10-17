@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from daprivacyscanner import helper
 from daprivacyscanner.host import FakeRunner, Host
 from daprivacyscanner.privileged import HelperError, Privileged
 from daprivacyscanner.server import create_app
@@ -353,3 +354,16 @@ def test_the_watch_and_the_other_long_root_work_keep_apart(cat, menu_host, monke
         r = c.post("/api/tools/keeps/start", headers=H, json={"app": "foo.desktop"})
         assert r.status_code == 409 and "TRIM test" in r.json()["error"] and fake.calls.count("watch_begin") == 1
         c.app.state.trim_job = None
+
+
+# ------------------------------------------------------------------ the helper's watch
+
+def test_the_kernels_queue_is_bounded_and_an_overflow_is_counted():
+    """FAN_UNLIMITED_QUEUE let the kernel's queue grow to 1.7 GB under busy programs, never reporting an overflow
+    (D6): the default queue drops what doesn't fit and says so, and the watch counts it."""
+    assert not helper.WATCH_INIT_FLAGS & helper.FAN_UNLIMITED_QUEUE
+    assert helper.WATCH_INIT_FLAGS & helper.FAN_REPORT_DIR_FID and helper.WATCH_INIT_FLAGS & helper.FAN_REPORT_NAME
+    src = Path(helper.__file__).read_text()
+    assert "FAN_UNLIMITED_QUEUE |" not in src and "| FAN_UNLIMITED_QUEUE" not in src
+    events = list(helper._fan_events(struct.pack("=IBBHQii", 24, 3, 0, 24, helper.FAN_Q_OVERFLOW, -1, 0)))
+    assert events == [(helper.FAN_Q_OVERFLOW, 0, [])]

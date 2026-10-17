@@ -1447,7 +1447,11 @@ OACS, FNA and SANICAP via the helper's ioctl), read on request and kept for the 
     subvolume (EXDEV, on Linux 7.2 too), so the child takes a mount namespace of its own and mounts the top level
     (`subvolid=5`) there, seen by nothing else, then maps each path back through where the subvolumes are
     mounted; a subvolume mounted nowhere gives no path. Opens, executions, changes, creations, deletions and
-    renames are watched; not each read (an open is the read), nor folders being listed.
+    renames are watched; not each read (an open is the read), nor folders being listed. The kernel's queue keeps
+    its own limit (never `FAN_UNLIMITED_QUEUE`, with which a reader behind six busy programs let it grow from 470 MB
+    to 1.7 GB of kernel memory in 25 seconds, the events' processes long gone by the time they were read): when it
+    is full the kernel drops what comes next and says so, which is counted, and the page says that some of what
+    happened is missing.
   - **Whose event it is**: the process's cgroup when the event is read, which must be one of the request's
     units under the caller's own `user-UID.slice`; the request can't name another account's. A process is looked
     up again when it runs a program (systemd-run and `flatpak run` move themselves into the scope first, then

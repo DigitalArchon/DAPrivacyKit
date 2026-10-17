@@ -4732,6 +4732,7 @@ FAN_MARK_ADD, FAN_MARK_FILESYSTEM = 0x1, 0x100
 FAN_MODIFY, FAN_OPEN, FAN_MOVED_FROM, FAN_MOVED_TO = 0x2, 0x20, 0x40, 0x80
 FAN_CREATE, FAN_DELETE, FAN_OPEN_EXEC, FAN_Q_OVERFLOW, FAN_ONDIR = 0x100, 0x200, 0x1000, 0x4000, 0x40000000
 FAN_WATCHED = FAN_MODIFY | FAN_OPEN | FAN_MOVED_FROM | FAN_MOVED_TO | FAN_CREATE | FAN_DELETE | FAN_OPEN_EXEC
+WATCH_INIT_FLAGS = FAN_CLOEXEC | FAN_NONBLOCK | FAN_UNLIMITED_MARKS | FAN_REPORT_DIR_FID | FAN_REPORT_NAME
 FAN_INFO_DFID_NAME, FAN_INFO_DFID, FAN_INFO_OLD_DFID_NAME, FAN_INFO_NEW_DFID_NAME = 2, 3, 10, 12
 _WATCH: dict = {}                              # the running watch: its child process and who asked
 
@@ -4993,8 +4994,12 @@ class _Watched:
             # nosuid, nodev, noexec, noatime: it is only looked through
             if libc.mount(fs["source"].encode(), at.encode(), fs["fstype"].encode(), 2 | 4 | 8 | 1024, b"subvolid=5"):
                 raise OSError(ctypes.get_errno(), "its top level couldn't be mounted")
-        self.fan = libc.fanotify_init(FAN_CLOEXEC | FAN_NONBLOCK | FAN_UNLIMITED_QUEUE | FAN_UNLIMITED_MARKS
-                                      | FAN_REPORT_DIR_FID | FAN_REPORT_NAME, os.O_RDONLY | os.O_CLOEXEC)
+        # the kernel's own queue limit (fs.fanotify.max_queued_events), never FAN_UNLIMITED_QUEUE: with it, a
+        # reader that fell behind under six busy programs let the kernel's queue grow from 470 MB to 1.7 GB in 25
+        # seconds, never said so, and by the time the events were read their processes had ended (tested on
+        # Mint). A full queue drops what comes next and says so (FAN_Q_OVERFLOW): counted, and the page says some
+        # of what happened is missing.
+        self.fan = libc.fanotify_init(WATCH_INIT_FLAGS, os.O_RDONLY | os.O_CLOEXEC)
         if self.fan < 0:
             raise OSError(ctypes.get_errno(), "fanotify isn't available")
         if libc.fanotify_mark(self.fan, FAN_MARK_ADD | FAN_MARK_FILESYSTEM, FAN_WATCHED, -100, at.encode()):
