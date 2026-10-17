@@ -537,10 +537,13 @@ same way: the card used to say how long before the set-up it was signed, which a
 4. Refuses if the unpacked size plus 64 MB exceeds the free space.
 5. Extracts into `.<folder>.unpacking/`: folders 0700, files created with `O_EXCL | O_NOFOLLOW` at 0600,
    then 0700 if the archive marked them executable. Owner-only permissions throughout.
-6. Renames the staging folder into place. On any error the staging folder is removed.
+6. Renames the staging folder into place. On any error, or Stop, the staging folder is removed (Stop is looked
+   for between files: before the review of 2026-10-17 it went unheard until the end).
 
 The downloaded archive and signature are then deleted (`tidy`): they are public files, and their memory is
-given back.
+given back. A copy of the app killed during a set-up left the staging folder (some 350 MB of memory) and the
+download's files until the next set-up of that browser: the panel's status removes them (`tidy_leftovers`) while
+no copy of the app is setting that browser up (`owner.hold`).
 
 ### 7.7 Step 5: the security level
 
@@ -559,7 +562,10 @@ Mullvad Browser starts at Standard, its own default (it creates its profile at f
 preset).
 
 `record_release` writes `release.json`: version, signature creation time, source, set-up time, last check,
-security level, and whether the latest-version check couldn't be made.
+security level, and whether the latest-version check couldn't be made. A copy unpacked but never recorded (its
+set-up interrupted) doesn't start; its card offers *Remove this copy…* (`remove_copy`: its folder, its session
+folder and the app's private folder for it overwritten and deleted, the other browser left as it is), where only
+closing all of `~/TempBrowser` took it away before the review of 2026-10-17.
 
 ### 7.8 Step 6: before each start
 

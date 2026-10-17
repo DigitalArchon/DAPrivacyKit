@@ -353,3 +353,52 @@ def test_the_card_says_how_old_the_signature_was_when_it_was_accepted_unchecked(
     archive = host.home / "x/tor-browser-linux-x86_64-15.0.24.tar.xz"
     assert B.record_release(host, b, archive, "file", unchecked=True, signed=int(time.time()) - 5 * 86400)[
         "unchecked_days"] == 5
+
+
+# ------------------------------------------------------------------ suspicions: what a killed set-up leaves
+
+def test_what_a_killed_set_up_left_goes_when_the_panel_is_shown(cat, host, other):  # noqa: F811
+    """.tor-browser.unpacking (some 350 MB of memory) and the download's .part files stayed after the copy setting it up
+    was killed, until the next set-up of that browser."""
+    from fastapi.testclient import TestClient
+    disk = open_ramdisk(host)
+    (disk / ".tor-browser.unpacking/Browser").mkdir(parents=True)
+    (disk / ".tor-browser.unpacking/Browser/libxul.so").write_bytes(b"x" * 1000)
+    (disk / ".downloads").mkdir()
+    for name in ("tor-browser-linux-x86_64-15.0.24.tar.xz.part", "tor-browser-linux-x86_64-15.0.24.tar.xz.asc",
+                 "mullvad-browser-linux-x86_64-15.0.24.tar.xz.part", "notes.txt"):
+        (disk / ".downloads" / name).write_bytes(b"x")
+    assert other("hold", key="browser-mullvad")                         # Mullvad Browser is being set up elsewhere
+    c = TestClient(create_app("t0ken", cat, make_host=lambda: host))
+    c.get("/api/tools/browser", headers=H)
+    assert not (disk / ".tor-browser.unpacking").exists()
+    assert sorted(p.name for p in (disk / ".downloads").iterdir()) == ["mullvad-browser-linux-x86_64-15.0.24.tar.xz.part",
+                                                                       "notes.txt"]
+    other.end()
+    c.get("/api/tools/browser", headers=H)
+    assert sorted(p.name for p in (disk / ".downloads").iterdir()) == ["notes.txt"]
+
+
+def test_a_copy_whose_set_up_was_interrupted_is_removed_on_its_own(cat, host, monkeypatch):  # noqa: F811
+    """It doesn't start (no record), and only closing all of ~/TempBrowser, the other browser with it, took it away."""
+    from fastapi.testclient import TestClient
+    from test_browser_tool import set_up_tor
+    tor = set_up_tor(host)
+    disk = host.home / "TempBrowser"
+    (disk / "mullvad-browser/Browser").mkdir(parents=True)
+    (disk / "mullvad-browser/Browser/start-mullvad-browser").write_text("#!/bin/sh\n")
+    (disk / ".mullvad-browser-session/config").mkdir(parents=True)
+    (disk / ".mullvad-browser-app").mkdir()
+    (disk / ".mullvad-browser-app/sandboxed").write_text("")
+    monkeypatch.setattr(B, "running", lambda host, b: [])
+    c = TestClient(create_app("t0ken", cat, make_host=lambda: host))
+    r = c.post("/api/tools/browser/remove", headers=H, json={"browser": "tor"})
+    assert r.status_code == 409 and "set up in full" in r.json()["error"] and B.installed(host, tor)
+    r = c.post("/api/tools/browser/remove", headers=H, json={"browser": "mullvad"})
+    assert r.status_code == 200 and r.json()["removed"] == 2
+    assert not any((disk / n).exists() for n in ("mullvad-browser", ".mullvad-browser-session", ".mullvad-browser-app"))
+    assert B.installed(host, tor)                                       # the other browser stays
+    monkeypatch.setattr(B, "running", lambda host, b: [1])
+    (disk / "mullvad-browser/Browser").mkdir(parents=True)
+    (disk / "mullvad-browser/Browser/start-mullvad-browser").write_text("#!/bin/sh\n")
+    assert "is running" in c.post("/api/tools/browser/remove", headers=H, json={"browser": "mullvad"}).json()["error"]

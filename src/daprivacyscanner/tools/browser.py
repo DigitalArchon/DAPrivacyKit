@@ -1045,7 +1045,8 @@ def check_before_start(host: Host, b: Browser, net) -> None:
     info = release_info(host, b)
     if info is None:                                    # unpacked, but never recorded (an interrupted set-up)
         raise BrowserError(f"How this copy of {b.name} was set up isn't recorded (its set-up may have been "
-                           f"interrupted), so it doesn't start. Close ~/{DISK} and set it up again.")
+                           "interrupted), so it doesn't start. Remove it (Remove this copy…, on its card) and set it up "
+                           "again.")
     if not info["check_due"]:
         return
     if net is None:
@@ -1073,6 +1074,76 @@ def check_before_start(host: Host, b: Browser, net) -> None:
                            "(that overwrites everything in it) and download it again here.")
     _write_release(host, b, {**_release(host, b), "checked": int(time.time()), "unchecked": False,
                              "unchecked_days": None})
+
+
+def _set_up_files(b: Browser, name: str) -> bool:
+    """A file a set-up of `b` writes into .downloads: its archive or signature, or either half-downloaded."""
+    return b.archive_name(name.removesuffix(".part").removesuffix(".asc"))
+
+
+def tidy_leftovers(host: Host) -> list[str]:
+    """What a set-up left in ~/TempBrowser when its copy of the app was killed: the half-unpacked folder
+    (.<folder>.unpacking, some 350 MB of memory) and the download's files, which stayed until the next set-up of that
+    browser (review of 2026-10-17). Removed (it is memory: the RAM disk's wipe at its close overwrites what is freed
+    with it anyway) while no copy of the app is setting that browser up (owner.hold). The names removed."""
+    if not ramdisk.mounted(host, DISK):
+        return []
+    base, removed = root(host), []
+    for b in BROWSERS.values():
+        staging = base / f".{b.folder}.unpacking"
+        try:
+            files = [p for p in (base / DOWNLOADS).iterdir() if _set_up_files(b, p.name)]
+        except OSError:
+            files = []
+        if not (staging.exists() or staging.is_symlink()) and not files:
+            continue
+        key = f"browser-{b.id}"
+        fd = None if owner.held_here(key) else owner.hold(host, key)
+        if fd is None:
+            continue                                    # a set-up under way, here or in another copy: its own
+        try:
+            if staging.is_symlink() or staging.is_file():
+                staging.unlink()
+                removed.append(staging.name)
+            elif staging.is_dir():
+                ramdisk.wipe(staging)
+                staging.rmdir()
+                removed.append(staging.name)
+            for p in files:
+                p.unlink(missing_ok=True)
+                removed.append(f"{DOWNLOADS}/{p.name}")
+        except OSError:
+            pass
+        finally:
+            owner.let_go(fd)
+    return removed
+
+
+def remove_copy(host: Host, b: Browser) -> int:
+    """A copy whose set-up was interrupted after unpacking (no release record: check_before_start refuses to start it)
+    removed on its own: its folder, its session folder and the app's private folder for it, every file overwritten
+    and deleted as closing ~/TempBrowser does, the other browser left as it is. Only such a copy, never one that
+    runs or is being set up or started. Returns how many files were overwritten."""
+    if not installed(host, b):
+        raise BrowserError(f"{b.name} isn't in ~/{DISK}.")
+    if release_info(host, b) is not None:
+        raise BrowserError(f"This copy of {b.name} was set up in full: close ~/{DISK} to remove it.")
+    if running(host, b):
+        raise BrowserError(f"{b.name} is running.")
+    fd = None if owner.held_here(f"browser-{b.id}") else owner.hold(host, f"browser-{b.id}")
+    if fd is None:
+        raise BrowserError(f"{b.name} is being set up or started: try again once that has finished.")
+    try:
+        dev = _ramdisk_dev(host)
+        files = 0
+        for path in (root(host) / b.folder, session_dir(host, b), private_dir(host, b)):
+            if path.is_symlink() or not path.is_dir():
+                continue
+            files += ramdisk.wipe(path, device=dev).files
+            path.rmdir()
+        return files
+    finally:
+        owner.let_go(fd)
 
 
 def tidy(host: Host, archive: Path) -> None:

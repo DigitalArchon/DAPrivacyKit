@@ -1101,6 +1101,9 @@ check(text(".modal .browser-tool").includes("Whether this is the latest version 
       && text(".modal .browser-tool").includes("its signature was 26 days old then (it accepts one made in the last 30 days)"),
       "one accepted where the index was blocked says so, and how old its signature was when that decided (not at the set-up)");
 browserUnchecked = false;
+check(window.browserRemove({ id: "mullvad", name: "Mullvad Browser", folder: "~/TempBrowser/mullvad-browser" }, () => {})
+        .textContent.includes("isn't recorded (its set-up was probably interrupted), so it doesn't start. Remove it"),
+      "a copy whose set-up was interrupted can be removed on its own, without closing ~/TempBrowser");
 while ($$(".modal").length) { $$(".modal .buttons button").at(-1).click(); await tick(); }
 sandboxDown = true;
 await window.openBrowserTool(); await tick(); await tick();

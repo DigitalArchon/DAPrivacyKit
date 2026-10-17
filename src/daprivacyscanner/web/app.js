@@ -3422,6 +3422,7 @@ function browserCards(data, reload, opts = { sandbox: true, sound: false, nested
   const cards = data.browsers.map(b => {
     let action;
     if (b.running) action = h("span", { class: "badge st-pass" }, "running");
+    else if (b.installed && !b.release) action = browserRemove(b, reload);
     else if (b.installed) {
       action = h("button", { class: "small primary", onclick: async (e) => {
         if (b.release?.check_due && !await confirmModal(`Check for a newer ${b.name} first?`, [
@@ -3509,6 +3510,24 @@ function browserCards(data, reload, opts = { sandbox: true, sound: false, nested
       + "last 30 days, and says so."),
     proxyWarning(data, ["aus1.torproject.org or cdn.mullvad.net"]),
     h("div", { class: "orow" }, use))];
+}
+
+// A copy whose set-up was interrupted after unpacking: it isn't recorded, so it doesn't start; removed on its own,
+// without closing ~/TempBrowser (and the other browser with it).
+function browserRemove(b, reload) {
+  return h("div", {}, h("div", { class: "warnbox small" }, `How this copy of ${b.name} was set up isn't recorded (its set-up `
+    + "was probably interrupted), so it doesn't start. Remove it, then set it up again."),
+    h("button", { class: "small danger", onclick: () => modal({ title: `Remove this copy of ${b.name}?`, body: [
+      h("p", {}, `Every file in ${b.folder}, and the app's own files for it in ~/TempBrowser, is overwritten with zeros where `
+        + `it lies in memory and deleted. The other browser, and ~/TempBrowser itself, stay as they are.`)],
+      buttons: [{ label: "Cancel" }, { label: "Remove", kind: "danger", onclick: async (close, el) => {
+        el.disabled = true;
+        try {
+          const r = await api("POST", "/api/tools/browser/remove", { browser: b.id });
+          close(); toast(`Removed: ${plural(r.removed, "file")} overwritten and deleted.`, "ok");
+        } catch (e) { close(); toast(e.message, "error", 10000); }
+        await reload();
+      } }] }) }, "Remove this copy…"));
 }
 
 const fmtWhen = (secs) => new Date(secs * 1000).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" });

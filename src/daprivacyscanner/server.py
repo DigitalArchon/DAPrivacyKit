@@ -1281,6 +1281,7 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
         host = make_host()
         chooser = "window" if pick is not None else getattr(dialog(host), "__name__", None)
         await asyncio.to_thread(adopt_browser_disk, host)
+        await asyncio.to_thread(B.tidy_leftovers, host)  # what a killed copy's set-up left: memory, until the next
         return {**await asyncio.to_thread(B.status, host), "job": browser_view(app.state.browser_job),
                 "can_pick": chooser is not None, "picker": chooser, "admin_active": admin.active()}
 
@@ -1348,6 +1349,25 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
     def browser_of(body: dict):
         from .tools import browser as B
         return B.BROWSERS.get(body.get("browser")) if isinstance(body.get("browser"), str) else None
+
+    @app.post("/api/tools/browser/remove", dependencies=[Depends(auth)])
+    async def tools_browser_remove(request: Request):
+        """Body {"browser"}: a copy whose set-up was interrupted (unpacked, never recorded, so it doesn't start)
+        overwritten and deleted on its own, without closing ~/TempBrowser and the other browser with it."""
+        from .tools import browser as B
+        host = make_host()
+        b = browser_of(await body_of(request))
+        if b is None:
+            return JSONResponse({"error": "Choose Tor Browser or Mullvad Browser."}, status_code=400)
+        if browser_busy() and app.state.browser_job.get("browser") == b.id:
+            return JSONResponse({"error": f"{b.name} is being set up: wait until that has finished."}, status_code=409)
+        try:
+            files = await asyncio.to_thread(B.remove_copy, host, b)
+        except B.BrowserError as e:
+            return JSONResponse({"error": str(e)}, status_code=409)
+        except OSError as e:
+            return JSONResponse({"error": f"It couldn't be removed: {e.strerror or e}"}, status_code=400)
+        return {**await asyncio.to_thread(B.status, host), "removed": files}
 
     @app.post("/api/tools/browser/start", dependencies=[Depends(auth)])
     async def tools_browser_start(request: Request):
