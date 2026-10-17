@@ -441,3 +441,140 @@ def test_presentations_kept_message_is_plain_words():
     said = P.kept_text("Clipboard Indicator turned off (its clipboard history menu disappears)")
     assert "Clipboard Indicator may still be off" in said and "disabled-extensions" not in said
     assert "display-notifications" not in P.kept_text("Notification banners off (Do Not Disturb)")
+
+
+# ------------------------------------------------------------------ 8. a folder kept in memory, put back while busy
+
+def gvfs_root(system_root, monkeypatch):
+    r, system = system_root
+    (r / "home/alice/.local/share").mkdir(parents=True)
+    calls = []
+
+    def run(argv):
+        calls.append(list(argv))
+        if argv[0] in ("pkill", "pgrep"):
+            return (0 if argv[0] == "pkill" else 1), "", ""
+        if argv[:3] == ["systemctl", "disable", "--now"] or argv[:2] == ["systemctl", "stop"]:
+            system(argv)
+            return 0, "", ""                        # systemd 255: 0, though the stop job failed (target is busy)
+        return system(argv)
+    monkeypatch.setattr(helper, "RUN", run)
+    return r, calls
+
+
+def test_reverting_an_in_memory_folder_still_held_says_it_stays_in_memory(system_root, monkeypatch):
+    r, calls = gvfs_root(system_root, monkeypatch)
+    res = helper_call("mount_tmpfs", target="gvfs-metadata", size_mb=50)
+    path = "/home/alice/.local/share/gvfs-metadata"
+    (r / "proc").mkdir(exist_ok=True)
+    (r / "proc/mounts").write_text(f"tmpfs {path} tmpfs rw 0 0\n")     # gvfsd-metadata started again, holds it
+    rv = helper_call("revert", change_id=res["change_id"])
+    assert rv["ok"] and "Put back" not in rv["message"]
+    assert rv["message"].startswith(f"{path} stays in memory until the next restart, with its mount unit removed")
+    assert ["pkill", "-TERM", "-x", "-u", str(ME[0]), "gvfsd-metadata"] in calls     # stopped first, as applying does
+    assert any(c[:2] == ["systemctl", "stop"] for c in calls)                        # and tried once more
+    # unmounted: said so
+    (r / "proc/mounts").write_text("")                                 # after the restart
+    res = helper_call("mount_tmpfs", target="gvfs-metadata", size_mb=50)
+    rv = helper_call("revert", change_id=res["change_id"])
+    assert rv["message"] == f"{path} is no longer kept in memory (its mount unit removed)"
+
+
+# ------------------------------------------------------------------ 9. services turned off together, and failures
+
+def test_a_socket_and_its_service_go_off_in_one_call_and_come_back_in_one(system_root):
+    r, system = system_root
+    system.units = {"avahi-daemon.socket": ["enabled", "active"], "avahi-daemon.service": ["enabled", "active"]}
+    res = helper_call("set_service", units=["avahi-daemon.socket", "avahi-daemon.service"], enable=False, start=False)
+    assert res["ran"] == ["systemctl disable --now avahi-daemon.socket avahi-daemon.service"]
+    assert system.units == {"avahi-daemon.socket": ["disabled", "inactive"], "avahi-daemon.service": ["disabled", "inactive"]}
+    assert helper.planned("set_service", {"units": ["avahi-daemon.socket", "avahi-daemon.service"], "enable": False,
+                                          "start": False}) == res["ran"]
+    rv = helper_call("revert", change_id=res["change_id"])
+    assert rv["ran"] == ["systemctl enable --now avahi-daemon.socket avahi-daemon.service"]
+    assert rv["message"] == "Avahi-daemon.socket and avahi-daemon.service enabled and running again"
+    assert system.units["avahi-daemon.service"] == ["enabled", "active"]
+
+
+def test_service_off_asks_for_the_units_together(tmp_path):
+    from daprivacyscanner.checks.guides import service_off
+    from conftest import make_scan
+    host = make_host(tmp_path, commands={
+        ("systemctl", "show", "--property=LoadState", "--value", "avahi-daemon.socket"): "loaded\n",
+        ("systemctl", "show", "--property=LoadState", "--value", "avahi-daemon.service"): "loaded\n",
+        ("systemctl", "is-enabled", "avahi-daemon.socket"): "enabled\n",
+        ("systemctl", "is-enabled", "avahi-daemon.service"): "enabled\n"})
+    [step] = service_off(make_scan(host), "avahi-daemon.socket", "avahi-daemon.service")
+    assert step.args == {"units": ["avahi-daemon.socket", "avahi-daemon.service"], "enable": False, "start": False}
+    assert step.describe() == ("Stop and disable avahi-daemon.socket and avahi-daemon.service (systemctl disable --now "
+                               "avahi-daemon.socket avahi-daemon.service)")
+
+
+def cancelling(system):
+    """systemctl as on Mint before the fix: the units are disabled, then the stop job is cancelled (cups-browsed
+    started Avahi again over D-Bus)."""
+    def run(argv):
+        if list(argv[:3]) == ["systemctl", "disable", "--now"]:
+            for u in argv[3:]:
+                system.units[u][0] = "disabled"
+            return 1, "", "Job for avahi-daemon.socket canceled.\n"
+        return system(argv)
+    return run
+
+
+def test_a_failure_part_way_is_journalled_recorded_and_put_back(system_root, monkeypatch, tmp_path):
+    """Before, "Turn off Avahi" left avahi-daemon.socket disabled with no History entry: the helper raised before it
+    journalled what it had changed."""
+    from daprivacyscanner.fix import FixPlan, RootChange, apply_plan
+    from daprivacyscanner.undo import UndoLog
+    r, system = system_root
+    system.units = {"avahi-daemon.socket": ["enabled", "active"], "avahi-daemon.service": ["enabled", "active"]}
+    monkeypatch.setattr(helper, "RUN", cancelling(system))
+    with pytest.raises(helper.Refused) as e:
+        helper_call("set_service", units=["avahi-daemon.socket", "avahi-daemon.service"], enable=False, start=False)
+    reply = e.value.reply
+    assert "canceled" in reply["error"] and "recorded" in reply["error"] and reply["change_id"]
+    assert reply["ran"] == ["systemctl disable --now avahi-daemon.socket avahi-daemon.service"]
+    assert (r / f"var/lib/daprivacyscanner/changes/{reply['change_id']}.json").exists()
+    helper_call("revert", change_id=reply["change_id"])
+    assert system.units["avahi-daemon.socket"] == ["enabled", "active"]
+    # through the app: the attempt is kept in History as failed, its step put back
+    host = make_host(tmp_path / "h")
+    host.privileged = FakePrivileged()
+    log = UndoLog(tmp_path / "state")
+    step = RootChange("set_service", {"units": ["avahi-daemon.socket", "avahi-daemon.service"], "enable": False,
+                                      "start": False}, "Stop and disable Avahi")
+    res = apply_plan(FixPlan("net.hostname_broadcast", "t", [step]), host, log)
+    assert not res.ok and res.entry_id and "canceled" in res.error
+    entry = log.get(res.entry_id)
+    assert entry["state"] == "failed" and entry["records"][0]["kind"] == "root" and entry["records"][0]["reverted"]
+    assert system.units == {"avahi-daemon.socket": ["enabled", "active"], "avahi-daemon.service": ["enabled", "active"]}
+
+
+@pytest.mark.parametrize("state, said", [("masked", "masked"), ("static", "static"), ("generated", "generated")])
+def test_a_unit_that_cant_be_turned_on_is_refused_saying_why(system_root, state, said):
+    _, system = system_root
+    system.units = {"firewalld.service": [state, "inactive"]}
+    with pytest.raises(helper.Refused, match=f"firewalld.service can't be turned on: it is {said}"):
+        helper_call("set_service", unit="firewalld.service", enable=True, start=True)
+    assert system.units == {"firewalld.service": [state, "inactive"]} and not any(
+        c[1] in ("enable", "start") for c in system.calls)
+
+
+# ------------------------------------------------------------------ 10. what a revert says
+
+def test_each_revert_says_what_it_put_back(system_root):
+    """kern.dmesg_restrict's two steps both said "Put back"."""
+    r, _ = system_root
+    (r / "proc/sys/kernel").mkdir(parents=True)
+    (r / "proc/sys/kernel/dmesg_restrict").write_text("0\n")
+    now = helper_call("set_sysctl", key="kernel.dmesg_restrict", value="1")
+    boot = helper_call("write_dropin", name="sysctl-dmesg", settings={"kernel.dmesg_restrict": "1"})
+    assert helper_call("revert", change_id=boot["change_id"])["message"] == \
+        "/etc/sysctl.d/60-daprivacyscanner-dmesg.conf removed"
+    assert helper_call("revert", change_id=now["change_id"])["message"] == "The kernel setting kernel.dmesg_restrict back to 0"
+    (r / "etc/systemd/sleep.conf.d").mkdir(parents=True)
+    (r / "etc/systemd/sleep.conf.d/60-daprivacyscanner.conf").write_text("# mine\n")
+    c = helper_call("write_dropin", name="sleep", settings={"AllowHibernation": "no"})
+    assert helper_call("revert", change_id=c["change_id"])["message"] == \
+        "/etc/systemd/sleep.conf.d/60-daprivacyscanner.conf put back as it was"

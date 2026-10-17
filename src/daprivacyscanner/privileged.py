@@ -37,7 +37,12 @@ class HelperDeclined(HelperUnavailable):
 
 
 class HelperError(Exception):
-    """The helper refused or failed one request."""
+    """The helper refused or failed one request. `data`: what the answer carried beside the error, such as the
+    "change_id" of a change that failed part way (journalled, so it can be put back) and what it "ran"."""
+
+    def __init__(self, message: str = "", data: dict | None = None):
+        super().__init__(message)
+        self.data = dict(data or {})
 
 
 class Privileged:
@@ -245,7 +250,8 @@ class PkexecHelper(Privileged):
             if reply.get("id") != rid:
                 raise HelperError("unexpected reply from the helper")
             if not reply.get("ok"):
-                raise HelperError(reply.get("error") or "the helper refused")
+                raise HelperError(reply.get("error") or "the helper refused",
+                                  {k: reply[k] for k in ("change_id", "ran") if k in reply})
             return reply.get("result")
 
     def call(self, action: str, args: dict, timeout: float | None = None):
@@ -323,7 +329,7 @@ class FakePrivileged(Privileged):
         self.calls.append((action, json.dumps(args, sort_keys=True)))
         reply = helper.handle(json.dumps({"id": 1, "action": action, "args": args}))
         if not reply["ok"]:
-            raise HelperError(reply["error"])
+            raise HelperError(reply["error"], {k: reply[k] for k in ("change_id", "ran") if k in reply})
         return reply["result"]
 
     def empty_password_accounts(self) -> list[str]:

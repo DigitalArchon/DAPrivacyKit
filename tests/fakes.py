@@ -165,6 +165,20 @@ class FakeSystem:
                 return 0, "", ""
             if verb == "show":
                 return 0, "loaded\n" if unit in self.units else "not-found\n", ""
+            names = [x for x in a[2:] if not x.startswith("--")]      # systemctl takes several units in one call
+            if verb in ("enable", "disable", "start", "stop") and len(names) > 1 or "--now" in a:
+                missing = [n for n in names if n not in self.units]
+                if missing:
+                    return 5, "", f"Unit {missing[0]} not loaded."
+                for n in names:
+                    u = self.units[n]
+                    if verb in ("enable", "disable"):
+                        u[0] = verb + "d"
+                        if "--now" in a:
+                            u[1] = "active" if verb == "enable" else "inactive"
+                    else:
+                        u[1] = "active" if verb == "start" else "inactive"
+                return 0, "", ""
             if unit not in self.units:
                 return 5, "", f"Unit {unit} not loaded."
             u = self.units[unit]

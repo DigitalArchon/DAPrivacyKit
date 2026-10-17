@@ -126,7 +126,7 @@ import uuid
 # Bumped whenever the actions or their arguments change: an installed (root-owned) copy from an
 # older version is then refused with a clear message instead of failing on an unknown action. Also
 # bumped when an action's answer is corrected, so an installed copy is named out of date and replaced.
-PROTOCOL = 27
+PROTOCOL = 28
 # Prefix for every path the helper writes or journals. Empty in use; tests point it at a fixture
 # tree (and replace RUN), so nothing in the test suite touches the real system.
 ROOT = ""
@@ -155,7 +155,13 @@ _ENV = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL": "C", "LANG": "C"}
 
 
 class Refused(Exception):
-    pass
+    """A request refused, or a change that failed. `data` goes into the answer beside the error: a change that failed
+    part way, having changed something, is journalled first and its "change_id" sent, so the app records the attempt
+    and can put it back (a failure that left a unit disabled with no History entry: Avahi on Mint)."""
+
+    def __init__(self, message: str = "", data: dict | None = None):
+        super().__init__(message)
+        self.data = dict(data or {})
 
 
 def readable(path: str) -> bool:
@@ -1069,30 +1075,83 @@ def _unit_state(unit: str) -> tuple[str, str]:
     return enabled.strip().splitlines()[0] if enabled.strip() else "unknown", active.strip() or "unknown"
 
 
+def _set_units(want: dict[str, tuple[bool | None, bool | None]], now: dict[str, tuple[str, str]]) -> None:
+    """Each unit to (enabled?, running?), None for leave as it is, in as few systemctl calls as it takes: units turned
+    off together are disabled and stopped in one call (`disable --now`), and turned on together in one (`enable
+    --now`). Avahi on Mint shows why: its socket stopped on its own, avahi-daemon.service, still enabled, was started
+    again on demand over D-Bus by cups-browsed, which cancelled the socket's stop job. Disabling the service removes the
+    name D-Bus starts it by (its dbus-org.freedesktop.Avahi.service alias), and both then stop in the same call."""
+    units = list(want)
+    for on in (False, True):
+        flip = [u for u in units if want[u][0] is on and now[u][0] in ("enabled", "disabled")
+                and (now[u][0] == "enabled") != on]
+        together = bool(flip) and all(want[u][1] is on for u in flip)
+        if flip:
+            _do(["systemctl", "enable" if on else "disable", *(["--now"] if together else []), *flip])
+        if together:
+            now = {**now, **{u: (now[u][0], "active" if on else "inactive") for u in flip}}
+    for on in (False, True):
+        run = [u for u in units if want[u][1] is on and (now[u][1] == "active") != on]
+        if run:
+            _do(["systemctl", "start" if on else "stop", *run])
+
+
 def _set_unit(unit: str, enable: bool | None, start: bool | None, now: tuple[str, str]) -> None:
-    if enable is not None and now[0] in ("enabled", "disabled"):
-        if (now[0] == "enabled") != enable:
-            _do(["systemctl", "enable" if enable else "disable", unit])
-    if start is not None and (now[1] == "active") != start:
-        _do(["systemctl", "start" if start else "stop", unit])
+    _set_units({unit: (enable, start)}, {unit: now})
+
+
+# what a unit's enablement says when it can't be turned on here: set_service refuses, saying why, rather than run a
+# systemctl that fails part way (or does nothing and reports "already so")
+CANT_ENABLE = {
+    "masked": "it is masked (switched off for good with systemctl mask): undo that first, with sudo systemctl unmask {u}",
+    "masked-runtime": "it is masked until the next restart (systemctl mask --runtime)",
+    "static": "it is static: it has no [Install] section, so it can't be enabled, and starts only when another unit "
+              "or a socket needs it",
+    "generated": "it is generated at boot from another file (such as /etc/fstab), so it can't be enabled here",
+    "transient": "it was made for this boot only, so it can't be enabled",
+    "bad": "its unit file can't be read",
+}
 
 
 def set_service(args: dict) -> dict:
+    """{"unit"} or {"units"} (up to 4, turned on or off together), "enable", "start": True, False or None (leave).
+    A change that fails part way (one unit disabled, the stop cancelled) is journalled before the error goes back, so
+    it is recorded and can be put back."""
     _must_be_root()
-    unit, enable, start = args.get("unit"), args.get("enable"), args.get("start")
-    if unit not in SERVICES:
+    units, enable, start = args.get("units", [args.get("unit")]), args.get("enable"), args.get("start")
+    if not isinstance(units, list) or not 1 <= len(units) <= 4 or len(set(units)) != len(units) or \
+            any(u not in SERVICES for u in units):
         raise Refused("that unit isn't on the helper's list")
     if enable not in (True, False, None) or start not in (True, False, None) or (enable is None and start is None):
         raise Refused("bad request")
-    before = _unit_state(unit)
+    before = {u: _unit_state(u) for u in units}
+    for u in units:
+        why = CANT_ENABLE.get(before[u][0]) if enable is True or (start is True and before[u][0].startswith("masked")) \
+            else None
+        if why:
+            raise Refused(f"{u} can't be turned on: " + why.format(u=u))
     had = _unit_dirs()
-    _set_unit(unit, enable, start, before)
-    after = _unit_state(unit)
+    try:
+        _set_units({u: (enable, start) for u in units}, before)
+    except Refused as e:
+        try:
+            after = {u: _unit_state(u) for u in units}
+        except Refused:
+            after = before
+        if after == before:
+            raise
+        made = sorted(_unit_dirs() - had)
+        change_id = _journal({"services": [{"unit": u, "before": before[u], "after": after[u]} for u in units],
+                              "failed": str(e), **({"dirs": made} if made else {})})
+        raise Refused(f"{e} (what it had changed by then is recorded, so it can be put back)",
+                      {"change_id": change_id}) from None
+    after = {u: _unit_state(u) for u in units}
     if after == before:
         return {"changed": False}
     made = sorted(_unit_dirs() - had)
-    return {"changed": True, "change_id": _journal({"service": {"unit": unit, "before": before, "after": after},
-                                                    **({"dirs": made} if made else {})}),
+    return {"changed": True,
+            "change_id": _journal({"services": [{"unit": u, "before": before[u], "after": after[u]} for u in units],
+                                   **({"dirs": made} if made else {})}),
             "warnings": [], "dirs": made}
 
 
@@ -1508,9 +1567,11 @@ def revert(args: dict) -> dict:
     for f in change.get("files", []):
         if _sha(_read(f["path"])) != f["after_sha"]:
             conflicts.append(f"{f['path']} has been edited since")
-    svc = change.get("service")
-    if svc and tuple(_unit_state(svc["unit"])) != tuple(svc["after"]):
-        conflicts.append(f"{svc['unit']} has been changed since")
+    # one unit (journals before protocol 28) or several turned on or off together
+    services = change.get("services") or ([change["service"]] if change.get("service") else [])
+    for svc in services:
+        if tuple(_unit_state(svc["unit"])) != tuple(svc["after"]):
+            conflicts.append(f"{svc['unit']} has been changed since")
     sc = change.get("sysctl")
     if sc:
         with open(_check_path(_sysctl_path(sc["key"]))) as fh:
@@ -1526,40 +1587,70 @@ def revert(args: dict) -> dict:
             conflicts.append(f"{linked['unit']} has been changed since")
     if conflicts and not force:
         return {"ok": False, "conflict": True, "message": "; ".join(conflicts)}
-    problems = _remove_mount_unit(mount_unit) if mount_unit else []
+    said: list[str] = []                # what was put back, by kind of change: the revert's message
+    problems: list[str] = []
+    if mount_unit:
+        still, problems = _remove_mount_unit(mount_unit)
+        said.append(f"{mount_unit['path']} stays in memory until the next restart, with its mount unit removed" if still
+                    else f"{mount_unit['path']} is no longer kept in memory (its mount unit removed)")
     for f in change.get("files", []):
         _write(f["path"], None if f["before"] is None else base64.b64decode(f["before"]))
         if f["before"] is None:
             _did(["rm", f["path"]])
         else:                           # put back whole from the journal's copy: no command does the same
             DID.append(f"# {f['path']} put back as it was before the change (from the helper's journal)")
-    if svc:
-        before = tuple(svc["before"])
-        _set_unit(svc["unit"], before[0] == "enabled" if before[0] in ("enabled", "disabled") else None,
-                  before[1] == "active", _unit_state(svc["unit"]))
+        if not mount_unit:              # the mount unit's own file is said above
+            said.append(f"{f['path']} removed" if f["before"] is None else f"{f['path']} put back as it was")
+    if services:
+        now = {s["unit"]: _unit_state(s["unit"]) for s in services}
+        _set_units({s["unit"]: (s["before"][0] == "enabled" if s["before"][0] in ("enabled", "disabled") else None,
+                                s["before"][1] == "active") for s in services}, now)
+        said += _units_said(services)
     if sc:
         with open(_check_path(_sysctl_path(sc["key"])), "w") as fh:
             fh.write(sc["before"])
         _did(["sysctl", "-w", f"{sc['key']}={sc['before']}"])
+        said.append(f"the kernel setting {sc['key']} back to {sc['before']}")
     ufw = change.get("ufw")
     if ufw:
         for a in ufw["added"]:
             _do_code(["ufw", "delete", "allow", a])
         if not ufw["was_active"]:
             _do(["ufw", "--force", "disable"])
+        said.append("the firewall turned off again" if not ufw["was_active"] else
+                    f"the firewall's rules it added removed ({', '.join(ufw['added'])})")
     if linked:
         code, out, err = _do_code(["systemctl", "disable", linked["unit"]])
         if code != 0:
             problems.append(f"systemctl disable {linked['unit']}: {(err or out).strip()[:120]}")
         _do_code(["systemctl", "daemon-reload"])
+        said.append(f"{linked['unit']} disabled: /tmp is no longer kept in memory from the next restart")
     problems += _remove_dirs(change.get("dirs", []))     # last: what was in them is gone by now
     problems += _hooks(change.get("hooks", []), reverting=True)
     if mount_unit:
         _do_code(["systemctl", "daemon-reload"])
     _write(f"{CHANGES_DIR}/{change['id']}.json", None)
     _rmdir_empty(CHANGES_DIR, os.path.dirname(CHANGES_DIR))     # the journal's own folders, once nothing is in them
-    return {"ok": True, "conflict": False, "message": "Put back" + (f" ({'; '.join(problems)})" if problems else ""),
+    message = "; ".join(said) or "Put back as it was"
+    message = message[:1].upper() + message[1:] + (f". {'; '.join(problems)}" if problems else "")
+    return {"ok": True, "conflict": False, "message": message,
             "warnings": problems, "files": [f["path"] for f in change.get("files", [])]}
+
+
+def _units_said(services: list[dict]) -> list[str]:
+    """What putting units back did, in words, units in the same state together ("avahi-daemon.socket and
+    avahi-daemon.service enabled and running again")."""
+    def words(before) -> str:
+        en, active = before[0], before[1] == "active"
+        if en == "enabled":
+            return "enabled and running again" if active else "enabled again"
+        if en == "disabled":
+            return "disabled and stopped again" if not active else "disabled again, and running"
+        return "running again" if active else "stopped again"
+    groups: dict[str, list[str]] = {}
+    for s in services:
+        groups.setdefault(words(s["before"]), []).append(s["unit"])
+    return [f"{' and '.join(units)} {w}" for w, units in groups.items()]
 
 
 # ------------------------------------------------------------------ folders kept in memory
@@ -1799,16 +1890,42 @@ def _ephemeral_has_files(mu: dict) -> bool:
         os.close(fd)
 
 
-def _remove_mount_unit(mu: dict) -> list[str]:
-    """Before the unit file goes: disable it and stop it, which unmounts. A busy folder stays
-    mounted until the next reboot (the unit is gone by then). ~/Ephemeral's folder on disk gets
-    its permissions back, or goes if the helper made it (and it is empty)."""
-    code, out, err = _do_code(["systemctl", "disable", "--now", mu["name"]])
-    if code != 0:
-        return [f"{mu['path']} stays in memory until the next reboot ({(err or out).strip()[:80]})"]
+def _stop_metadata_daemon(uid) -> None:
+    """GVFS's metadata daemon of that user holds its folder open (its database mapped): stopped before the folder is
+    unmounted, as applying stops it (as the user) before the folder is emptied. It starts again on demand, so this is
+    the one program stopped here."""
+    if not isinstance(uid, int) or isinstance(uid, bool) or uid < 1:
+        return
+    code, _, _ = _do_code(["pkill", "-TERM", "-x", "-u", str(uid), "gvfsd-metadata"])
+    if code != 0:                                   # 1: none was running
+        return
+    for _ in range(20):                             # gone within 2 s
+        code, _, _ = RUN(["pgrep", "-x", "-u", str(uid), "gvfsd-metadata"])
+        if code != 0:
+            return
+        time.sleep(0.1)
+
+
+def _remove_mount_unit(mu: dict) -> tuple[bool, list[str]]:
+    """Before the unit file goes: disable it and stop it, which unmounts. Whether it unmounted is read from the mount
+    table, never from systemctl's exit status: systemd 255 answers 0 for `disable --now` when the stop job failed
+    (umount: target is busy), and the revert said "Put back" over a folder still in memory (GVFS metadata, held by
+    gvfsd-metadata). A folder still busy stays mounted until the next restart (the unit is gone by then).
+    ~/Ephemeral's folder on disk gets its permissions back, or goes if the helper made it (and it is empty).
+    Returns (still mounted, notes)."""
     target = mu.get("target", "thumbnails")
-    if target not in IN_MEMORY or _mounted_at(mu["path"]) or "home" not in mu:
-        return []
+    if target == "gvfs-metadata":
+        _stop_metadata_daemon(mu.get("uid"))
+    code, out, err = _do_code(["systemctl", "disable", "--now", mu["name"]])
+    if _mounted_at(mu["path"]) and target == "gvfs-metadata":
+        _stop_metadata_daemon(mu.get("uid"))        # started again meanwhile (a file manager asked): once more
+        code, out, err = _do_code(["systemctl", "stop", mu["name"]])
+    if _mounted_at(mu["path"]):
+        why = (err or out).strip()[:120]
+        return True, [f"a program still has a file in {mu['path']} open, so it couldn't be unmounted now"
+                      + (f" ({why})" if why else "")]
+    if target not in IN_MEMORY or "home" not in mu:
+        return False, []
     ephemeral = target == "ephemeral"
     # made by the helper: ~/Ephemeral's records from before say so with folder_mode None, the others with created
     made = mu.get("folder_mode") is None if ephemeral and "created" not in mu else bool(mu.get("created"))
@@ -1825,8 +1942,8 @@ def _remove_mount_unit(mu: dict) -> list[str]:
             except OSError as e:
                 if e.errno in (errno.ENOTEMPTY, errno.EEXIST):
                     real = _p(mu["path"])
-                    return [f"{mu['path']} was left, with what is in it: the app made it, but it now holds what was "
-                            f"saved there since ({_listing(real)})"]
+                    return False, [f"{mu['path']} was left, with what is in it: the app made it, but it now holds "
+                                   f"what was saved there since ({_listing(real)})"]
                 raise
             finally:
                 os.close(pfd)
@@ -1838,8 +1955,8 @@ def _remove_mount_unit(mu: dict) -> list[str]:
             finally:
                 os.close(fd)
     except (OSError, Refused) as e:
-        return [f"{mu['path']} was left as it is ({getattr(e, 'strerror', None) or e})"]
-    return []
+        return False, [f"{mu['path']} was left as it is ({getattr(e, 'strerror', None) or e})"]
+    return False, []
 
 
 # ------------------------------------------------------------------ the RAM disk (a tool, on demand)
@@ -4368,11 +4485,13 @@ def planned(request: str, args: dict, home: str | None = None) -> list[str]:
                 out += [q(hook["validate"])] if hook.get("validate") else []
                 out += [q(argv) for argv in hook.get("run", [])]
         elif request == "set_service":
-            unit = args["unit"]
-            if args.get("enable") is not None:
-                out.append(q(["systemctl", "enable" if args["enable"] else "disable", unit]))
-            if args.get("start") is not None:
-                out.append(q(["systemctl", "start" if args["start"] else "stop", unit]))
+            units = args.get("units") or [args["unit"]]
+            enable, start = args.get("enable"), args.get("start")
+            if enable is not None:          # turned on or off together: one call (_set_units)
+                out.append(q(["systemctl", "enable" if enable else "disable", *(["--now"] if start is enable else []),
+                              *units]))
+            if start is not None and start is not enable:
+                out.append(q(["systemctl", "start" if start else "stop", *units]))
         elif request == "set_sysctl":
             out.append(q(["sysctl", "-w", f"{args['key']}={args['value']}"]))
         elif request == "ufw_enable":
@@ -5041,7 +5160,9 @@ def handle(line: str) -> dict:
             result = {**result, "ran": list(DID)}
         return {"id": rid, "ok": True, "result": result}
     except Refused as e:
-        return {"id": rid, "ok": False, "error": str(e)}
+        # what it had run before it failed, and a change it journalled on the way (Refused.data)
+        return {"id": rid, "ok": False, "error": str(e), **({"ran": list(DID)} if DID else {}),
+                **{k: v for k, v in e.data.items() if k in ("change_id", "message")}}
     except json.JSONDecodeError:
         return {"id": None, "ok": False, "error": "bad request"}
     except Exception as e:  # noqa: BLE001 - report, never crash mid-session

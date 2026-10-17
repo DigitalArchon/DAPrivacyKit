@@ -60,14 +60,17 @@ def unit_exists(scan: Scan, unit: str, user: bool = False) -> bool:
 
 
 def service_off(scan: Scan, *units: str) -> list[RootChange]:
-    """Stop and disable each unit that exists and is enabled or running."""
-    out = []
-    for u in units:
-        if unit_exists(scan, u) and (systemctl_state(scan.host, "is-enabled", u) == "enabled"
-                                     or systemctl_state(scan.host, "is-active", u) == "active"):
-            out.append(RootChange("set_service", {"unit": u, "enable": False, "start": False},
-                                  f"Stop and disable {u} (systemctl disable --now {u})"))
-    return out
+    """Stop and disable the units that exist and are enabled or running, together in one step and one systemctl call:
+    stopped one at a time, a socket's service could be started again on demand in between (Avahi on Mint, by
+    cups-browsed over D-Bus, cancelled the socket's stop), and disabling the service too removes the name it is
+    started by. One unit keeps the request's earlier form."""
+    on = [u for u in units if unit_exists(scan, u) and (systemctl_state(scan.host, "is-enabled", u) == "enabled"
+                                                       or systemctl_state(scan.host, "is-active", u) == "active")]
+    if not on:
+        return []
+    return [RootChange("set_service", {**({"unit": on[0]} if len(on) == 1 else {"units": on}), "enable": False,
+                                       "start": False},
+                       f"Stop and disable {' and '.join(on)} (systemctl disable --now {' '.join(on)})")]
 
 
 def dropin(name: str, settings: dict[str, str], path: str) -> RootChange:

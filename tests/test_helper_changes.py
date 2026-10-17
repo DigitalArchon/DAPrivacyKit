@@ -380,10 +380,14 @@ def test_a_home_reached_through_a_link_is_mounted_by_its_real_path(root, monkeyp
 
 
 def test_mount_tmpfs_busy_at_revert_is_a_warning(root, caller):
+    """Whether it unmounted is read from the mount table: systemd 255 answers 0 for `disable --now` even when the
+    stop job failed (target is busy), and the revert said "Put back" over a folder still in memory."""
     r = call("mount_tmpfs", size_mb=100)
     helper.RUN.busy.add("home-alice-.cache-thumbnails.mount")
+    write(root, "/proc/mounts", "tmpfs /home/alice/.cache/thumbnails tmpfs rw 0 0\n")       # still mounted
     rv = call("revert", change_id=r["change_id"])
-    assert rv["ok"] and "until the next reboot" in rv["message"] and not (root / UNIT).exists()
+    assert rv["ok"] and "stays in memory until the next restart" in rv["message"] and not (root / UNIT).exists()
+    assert "Put back" not in rv["message"] and "a program still has a file" in rv["message"]
 
 
 @pytest.mark.parametrize("size", [10, 5000, "200", True])

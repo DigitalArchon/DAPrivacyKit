@@ -37,7 +37,13 @@ if TYPE_CHECKING:
 
 
 class FixError(Exception):
-    pass
+    """A step that failed. `record`: the undo record of what it changed before failing (a root change the helper
+    journalled part way), which apply_plan keeps with the attempt and puts back like the steps before it."""
+
+    def __init__(self, message: str = "", record: dict | None = None, data: dict | None = None):
+        super().__init__(message)
+        self.record = record
+        self.data = dict(data or {})
 
 
 @dataclass
@@ -1446,6 +1452,8 @@ def apply_plan(plan: FixPlan, host: Host, log: "UndoLog", confirmed_irreversible
             records.append(rec)
     except Exception as e:  # noqa: BLE001 - roll back whatever was changed, then report
         error = f"{type(e).__name__}: {e}" if not isinstance(e, FixError) else str(e)
+        if isinstance(e, FixError) and e.record:       # the failing step had changed something: kept, and put back
+            records.append(e.record)
         rolled = []
         for rec in reversed(records):
             # each step that ran is put back, and what putting it back ran is kept with it, as a revert's is
@@ -1949,7 +1957,7 @@ def _call(ctx: FixContext, request: str, args: dict):
     try:
         return _helper(ctx).call(request, args)
     except HelperError as e:
-        raise FixError(f"The administrator helper refused: {e}") from None
+        raise FixError(f"The administrator helper refused: {e}", data=getattr(e, "data", None)) from None
 
 
 @action
@@ -1988,7 +1996,13 @@ class RootChange(Action):
 
     def apply(self, ctx: FixContext) -> dict:
         lines = self.preview()                          # what the drop-in will hold, read before it is written
-        r = _call(ctx, self.request, self.args)
+        try:
+            r = _call(ctx, self.request, self.args)
+        except FixError as e:
+            if e.data.get("change_id"):                 # it changed something before failing, and the helper kept it
+                e.record = {"kind": self.kind, "change_id": e.data["change_id"], "text": f"{self.text} (failed part way)",
+                            "ran": list(e.data.get("ran") or []), "files": [], "lines": [], "dirs": []}
+            raise
         warn = "; ".join(r.get("warnings") or [])
         if not r.get("changed"):
             return {"kind": self.kind, "change_id": None, "text": f"{self.text} (already so)"}
