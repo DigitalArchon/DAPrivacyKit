@@ -261,7 +261,7 @@ def test_connection_list_in_a_file_and_forwarded_logs(cat, tmp_path, system):
 
 def test_guide_on_a_machine_without_opensnitch(cat, tmp_path):
     g = guide(cat, make_host(tmp_path, files={"/etc/os-release": "ID=arch\n"}))
-    assert step(g, "Install OpenSnitch").commands == ["sudo pacman -S opensnitch"]
+    assert step(g, "Install OpenSnitch").commands == ["sudo pacman -Syu opensnitch"]
     starter = step(g, "Start with rules").options[0].plan
     assert any("Install OpenSnitch first" in b for b in starter.blockers)
     assert all(o.plan.blockers for s in g.steps for o in s.options)

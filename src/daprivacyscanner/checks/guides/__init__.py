@@ -94,10 +94,12 @@ def family(scan: Scan) -> str | None:
 
 
 def install(scan: Scan, **packages: str) -> str | None:
-    """The command that installs a package on this distribution (packages by family)."""
+    """The command that installs a package on this distribution (packages by family). On Arch, -Syu: the documented
+    form (a partial upgrade isn't supported), and the one that works where the package lists were never downloaded
+    (a fresh Omarchy has only sync/offline.db: pacman -S fails there)."""
     fam = family(scan)
     pkg = packages.get(fam or "")
-    cmd = {"debian": "sudo apt install", "fedora": "sudo dnf install", "arch": "sudo pacman -S",
+    cmd = {"debian": "sudo apt install", "fedora": "sudo dnf install", "arch": "sudo pacman -Syu",
            "suse": "sudo zypper install"}.get(fam or "")
     return f"{cmd} {pkg}" if cmd and pkg else None
 

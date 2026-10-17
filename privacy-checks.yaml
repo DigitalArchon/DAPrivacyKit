@@ -3237,9 +3237,16 @@ checks:
       and can carry fixes nobody labelled, but are rarely urgent. pacman marks no update as a
       security fix, so on Arch the severity says it could be higher.
     detect:
-      - 'Debian/Ubuntu: apt list --upgradable (security: the -security suite); /etc/apt/apt.conf.d/20auto-upgrades'
-      - 'Fedora: dnf -C check-update, dnf -C updateinfo list --security; dnf-automatic timer'
-      - 'Arch: pacman -Qu (no security marking offline); openSUSE: zypper lu, zypper lp --category security'
+      - 'Debian/Ubuntu: apt list --upgradable (security: the -security suite); /etc/apt/apt.conf.d/20auto-upgrades;
+        Mint: mintupdate-automation-upgrade.timer enabled (Update Manager''s automation)'
+      - 'Fedora: dnf -C check-update, dnf -C updateinfo list --security (security packages counted by name and arch, in
+        DNF4''s and DNF5''s formats); dnf-automatic-install.timer, or dnf-automatic.timer / dnf5-automatic.timer with
+        apply_updates = yes. DNF5 as a user copies the system''s metadata into ~/.cache/libdnf5 (105 MB on Fedora 44)
+        and logs to ~/.local/state: it runs with --setopt=cachedir= and logdir= in a folder of its own in
+        $XDG_RUNTIME_DIR, removed at once (rule 4); without a runtime folder, couldn''t check'
+      - 'Arch: pacman -Qu (no security marking offline); a repository of /etc/pacman.conf without its
+        /var/lib/pacman/sync/<name>.db, or pacman''s "database file for ... does not exist": couldn''t check (pacman -Qu
+        exits 1 then too; a fresh Omarchy has only offline.db). openSUSE: zypper lu, zypper lp --category security'
       - 'Kernel: kernel and microcode package names; a newer kernel in /usr/lib/modules (same build) than /proc/sys/kernel/osrelease, or the running one''s modules gone'
       - 'flatpak remote-ls --updates; snap refresh --list'
       - 'Firmware: fwupdmgr get-updates --json --no-metadata-check --no-unreported-check --no-reboot-check (the metadata already on the machine; not in a VM or container)'
@@ -3777,7 +3784,7 @@ checks:
     verify: The lists of public and intercepting issuers.
 
   - id: kern.updates_refreshed
-    title: Security updates not applied (with fresh package lists)
+    title: Updates waiting to be installed (with fresh package lists)
     category: kernel
     severity: 2
     warn_lower: 2
@@ -3797,8 +3804,9 @@ checks:
       - 'dnf: dnf check-update --refresh (and updateinfo --security); pacman: checkupdates; flatpak remote-ls --updates; snap refresh --list'
     fix: Install the updates (kern.updates' guide, as commands only).
     remedy: >
-      Security updates are waiting. How to… gives the command that installs them on this computer
-      (the same as the Guide… of “Updates waiting to be installed”).
+      Updates are waiting to be installed, counted against freshly downloaded package lists (security fixes among
+      them where the package manager marks them). How to… gives the commands that install them on this computer,
+      Flatpak and Snap apps included (the same as the Guide… of “Updates waiting to be installed”).
     contacts:
       - 'Your distribution''s package mirrors (as in its repository files), Flathub and the Snap Store if used: they see your IP address. apt downloads tens of MB of lists.'
     related: [kern.updates]

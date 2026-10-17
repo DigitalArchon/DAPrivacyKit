@@ -13,8 +13,17 @@ def updates(check, scan, outcome):
     fam, (os_id, _) = family(scan), os_release(scan)
     cmd = {"debian": "sudo apt update && sudo apt upgrade", "fedora": "sudo dnf upgrade --refresh",
            "arch": "sudo pacman -Syu", "suse": "sudo zypper update"}.get(fam or "")
-    steps = [Step("Install the updates", "Mint's Update Manager does the same." if os_id == "linuxmint" else "",
-                  commands=[cmd] if cmd else [])]
+    value = lambda label: next((e.value for e in outcome.evidence if e.label == label), None)   # noqa: E731
+    none_waiting = value("Pending updates") == 0            # only a restart or firmware left: nothing to install here
+    steps = [Step("Install the updates", "No package updates are waiting." if none_waiting else
+                  "Mint's Update Manager does the same." if os_id == "linuxmint" else "",
+                  commands=[cmd] if cmd and not none_waiting else [], done=none_waiting)]
+    for label, title, command in (("Pending Flatpak updates", "Update the Flatpak apps", "flatpak update"),
+                                  ("Pending snap updates", "Update the Snap apps", "sudo snap refresh")):
+        n = value(label)
+        if isinstance(n, int) and n:
+            steps.append(Step(title, f"{n} {'is' if n == 1 else 'are'} waiting: the system's package manager doesn't "
+                              "update them.", commands=[command]))
     found = getattr(outcome, "findings", {}) or {}
     if found.get("kernel_update_pending") or found.get("kernel_restart_pending"):
         steps.append(Step("Restart", "A new kernel (or CPU microcode) is only put to work by a restart: until then "
@@ -26,28 +35,40 @@ def updates(check, scan, outcome):
                           "in; some are installed during a restart, which the command asks for. The desktop's "
                           "software centre (GNOME Software, Discover) or Firmware app does the same.",
                           commands=["fwupdmgr get-updates", "fwupdmgr update"]))
+    auto = value("Automatic security updates") == "on" or value("Automatic updates") == "on"
     if os_id == "linuxmint":
-        steps.append(Step("Install updates automatically", "Update Manager → Edit → Preferences → Automation → "
-                          "Automatic updates."))
+        steps.append(Step("Install updates automatically", "Update Manager installs them by itself." if auto else
+                          "Update Manager → Edit → Preferences → Automation → Automatic updates.", done=auto))
     elif fam == "debian":
-        auto = any(e.label == "Automatic security updates" and e.value == "on" for e in outcome.evidence)
-        if isfile(scan.host.sys_path("/usr/bin/unattended-upgrade")):
+        if auto:
+            # Ubuntu's own 20auto-upgrades, or the app's: nothing to apply (an option here showed "Apply this step")
+            steps.append(Step("Install security updates automatically", "unattended-upgrades installs them every day.",
+                              done=True))
+        elif isfile(scan.host.sys_path("/usr/bin/unattended-upgrade")):
             steps.append(Step("Install security updates automatically", options=[option(
                 check, "Turn on unattended-upgrades", [dropin("apt-auto", {"APT::Periodic::Update-Package-Lists": "1",
                                                                            "APT::Periodic::Unattended-Upgrade": "1"},
                                                               "/etc/apt/apt.conf.d/52daprivacyscanner-auto-upgrades")],
-                side_effects=["Security updates are downloaded and installed daily in the background."])],
-                done=auto))
+                side_effects=["Security updates are downloaded and installed daily in the background."])]))
         else:
             steps.append(Step("Install security updates automatically",
                               commands=["sudo apt install unattended-upgrades",
-                                        "sudo dpkg-reconfigure -plow unattended-upgrades"], done=auto))
+                                        "sudo dpkg-reconfigure -plow unattended-upgrades"]))
     elif fam == "fedora":
-        steps.append(Step("Install updates automatically", "DNF5 (Fedora 41 and later): install the plugin, set "
-                          "apply_updates = yes in /etc/dnf/automatic.conf, enable the timer. DNF4: the -install timer.",
-                          commands=["sudo dnf install dnf5-plugin-automatic",
-                                    "sudo systemctl enable --now dnf5-automatic.timer",
-                                    "sudo dnf install dnf-automatic && sudo systemctl enable --now dnf-automatic-install.timer"]))
+        if auto:
+            steps.append(Step("Install updates automatically", "dnf-automatic installs them by itself.", done=True))
+        elif scan.host.runner.which("dnf5"):
+            steps.append(Step("Install updates automatically", "DNF5 (Fedora 41 and later): install the plugin, set "
+                              "apply_updates = yes in the [commands] part of /etc/dnf/automatic.conf, and turn on its "
+                              "timer.",
+                              commands=["sudo dnf install dnf5-plugin-automatic",
+                                        "sudoedit /etc/dnf/automatic.conf     # [commands] apply_updates = yes",
+                                        "sudo systemctl enable --now dnf5-automatic.timer"]))
+        else:
+            steps.append(Step("Install updates automatically", "DNF4: dnf-automatic's -install timer downloads and "
+                              "installs them.",
+                              commands=["sudo dnf install dnf-automatic",
+                                        "sudo systemctl enable --now dnf-automatic-install.timer"]))
     return Guide(check.id, "Install pending updates", "", steps)
 
 

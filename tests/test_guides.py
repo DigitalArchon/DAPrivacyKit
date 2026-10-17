@@ -129,7 +129,7 @@ def test_secure_boot_with_limine_enrols_its_config(cat, tmp_path):
                                       "/etc/os-release": "ID=cachyos\nID_LIKE=arch\n"})
     g = _advice(cat, host, "enc.boot_no_secureboot")
     cmds = g.steps[0].commands
-    assert "sudo limine-enroll-config" in cmds and "sudo sbctl-batch-sign" in cmds and "sudo pacman -S sbctl" in cmds
+    assert "sudo limine-enroll-config" in cmds and "sudo sbctl-batch-sign" in cmds and "sudo pacman -Syu sbctl" in cmds
     assert "Secure Boot" in g.intro and not any(st.done for st in g.steps)
 
 

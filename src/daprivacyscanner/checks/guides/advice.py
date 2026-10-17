@@ -1135,8 +1135,8 @@ def updates_refreshed(check, scan, outcome):
         steps = [Step(g.steps[0].title if g.steps else "Install the updates",
                       "Install them with your distribution's update tool; the app couldn't tell which package "
                       "manager this computer uses.")]
-    return Guide(check.id, g.title, "With the package lists just refreshed, these security updates are waiting. "
-                 "The commands install them, as kern.updates' guide does.", steps)
+    return Guide(check.id, g.title, "With the package lists just refreshed, these updates are waiting. The commands "
+                 "install them, as kern.updates' guide does, Flatpak and Snap apps included.", steps)
 
 
 @guide("net.dns_leak")

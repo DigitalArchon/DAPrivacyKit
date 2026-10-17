@@ -127,36 +127,130 @@ def updates_outcome(pm: str, names: list[str] | None, security: int | None, ev: 
     return warned(summary, *ev, findings=findings, notes=notes)
 
 
-def _pending(scan: Scan) -> tuple[str, list[str] | None, int | None, list[Evidence]] | None:
-    """(package manager, names of the pending updates, how many are security fixes (None: the
-    package manager doesn't say), evidence) from the package lists already on disk: nothing is
-    downloaded (the app never goes online)."""
+def _age(mtimes: list[float]) -> Evidence | None:
+    if not mtimes:
+        return None
+    days = int((time.time() - max(mtimes)) / 86400)
+    return Evidence.val("Package lists last refreshed", f"{days} day{'s' if days != 1 else ''} ago")
+
+
+@dataclass
+class Pending:
+    """What kern.updates found waiting, from the package lists already on disk."""
+    pm: str
+    names: list[str] | None                 # the pending updates' package names; None: couldn't list them
+    security: int | None                    # how many are security fixes; None: the package manager doesn't say
+    evidence: list[Evidence]
+    why: str = ""                           # why they couldn't be listed
+
+
+def _pending(scan: Scan) -> Pending | None:
+    """The pending updates from the package lists already on disk: nothing is downloaded (the app never goes online),
+    and nothing is written (rule 4: dnf5 gets a cache of its own in memory)."""
+    from ._util import systemctl_state
     host = scan.host
     if installed(host, "apt"):
         r = host.run("apt", "list", "--upgradable")
         lines = [ln for ln in r.stdout.splitlines() if "/" in ln and "[upgradable" in ln]
         security = sum(1 for ln in lines if "-security" in ln)
-        lists = [p.stat().st_mtime for p in children(host.sys_path("/var/lib/apt/lists")) if p.is_file()]
-        ev = []
-        if lists:
-            ev.append(Evidence.val("Package lists last refreshed", f"{int((time.time() - max(lists)) / 86400)} days ago"))
-        ev.append(Evidence.val("Automatic security updates", "on" if apt_unattended(scan) else "off"))
-        return ("apt", package_names("apt", r.stdout) if r.ok else None, security, ev)
-    if installed(host, "dnf"):
-        r = host.run("dnf", "-C", "-q", "check-update")
-        timer = host.run("systemctl", "is-enabled", "dnf-automatic.timer", "dnf5-automatic.timer").stdout
-        ev = [Evidence.val("Automatic updates", "on" if "enabled" in timer else "off")]
-        return ("dnf", package_names("dnf", r.stdout) if r.returncode in (0, 100) else None, dnf_security(scan, "-C"), ev)
+        age = _age([p.stat().st_mtime for p in children(host.sys_path("/var/lib/apt/lists")) if p.is_file()])
+        ev = [age] if age else []
+        # Mint's Update Manager installs them itself when its automation is on (Edit → Preferences → Automation)
+        mint = systemctl_state(host, "is-enabled", "mintupdate-automation-upgrade.timer") == "enabled"
+        ev.append(Evidence.val("Automatic security updates", "on" if apt_unattended(scan) or mint else "off"))
+        if mint:
+            ev.append(Evidence.val("Update Manager's automatic updates", "on"))
+        return Pending("apt", package_names("apt", r.stdout) if r.ok else None, security, ev)
+    if installed(host, "dnf", "dnf5"):
+        return _dnf_pending(scan)
     if installed(host, "pacman"):
-        r = host.run("pacman", "-Qu")
-        # pacman marks nothing as a security fix (arch-audit would, but it goes online)
-        return ("pacman", package_names("pacman", r.stdout) if r.returncode in (0, 1) else None, None, [])
+        return _pacman_pending(scan)
     if installed(host, "zypper"):
         r = host.run("zypper", "--non-interactive", "--no-refresh", "list-updates")
         p = host.run("zypper", "--non-interactive", "--no-refresh", "list-patches", "--category", "security")
         security = len([ln for ln in p.stdout.splitlines() if re.search(r"\|\s*security\s*\|", ln)]) if p.ok else None
-        return ("zypper", package_names("zypper", r.stdout) if r.ok else None, security, [])
+        return Pending("zypper", package_names("zypper", r.stdout) if r.ok else None, security, [])
     return None
+
+
+def dnf_automatic(host) -> bool:
+    """dnf-automatic installs updates by itself: its -install timer (DNF4), or dnf-automatic.timer or DNF5's
+    dnf5-automatic.timer with apply_updates = yes ([commands] in /etc/dnf/automatic.conf, over DNF5's defaults)."""
+    from ._util import systemctl_state
+    if systemctl_state(host, "is-enabled", "dnf-automatic-install.timer") == "enabled":
+        return True
+    if not any(systemctl_state(host, "is-enabled", t) == "enabled" for t in ("dnf-automatic.timer", "dnf5-automatic.timer")):
+        return False
+    layers = []
+    for path in ("/usr/share/dnf5/dnf5-plugins/automatic.conf", "/etc/dnf/automatic.conf"):
+        try:
+            layers.append(ini.parse(host.read_sys(path) or ""))
+        except Unreadable:
+            continue
+    return ini.truthy(ini.get(ini.merge(*layers), "commands", "apply_updates")) is True
+
+
+def _dnf_pending(scan: Scan) -> Pending:
+    """DNF5 run as a user copies the system's metadata into its own cache (~/.cache/libdnf5: 105 MB on Fedora 44) and
+    writes ~/.local/state/dnf5.log, at every scan, scheduled ones too: a scan never writes (rule 4). It gets a cache and
+    a log folder of its own in the runtime folder, in memory, removed at once (tested on Fedora 44: nothing in the home
+    folder; with the system's cache folder itself it can't run, needing to rewrite its .solv files). DNF4 run with -C
+    reads the system's cache as it is."""
+    import shutil
+    import tempfile
+    from pathlib import Path
+    host = scan.host
+    ev = [Evidence.val("Automatic updates", "on" if dnf_automatic(host) else "off")]
+    if installed(host, "dnf5"):
+        age = _age([p.stat().st_mtime for p in host.sys_path("/var/cache/libdnf5").glob("*/repodata/repomd.xml")])
+        runtime = host.environ.get("XDG_RUNTIME_DIR") or ""
+        if not runtime or not Path(runtime).is_dir():
+            return Pending("dnf", None, None, ev, "dnf5 needs a folder of its own to read the package lists in, and "
+                           "there is no runtime folder ($XDG_RUNTIME_DIR) to keep it in memory")
+        tmp = tempfile.mkdtemp(prefix="daprivacyscanner-dnf.", dir=runtime)
+        try:
+            opts = ("-C", f"--setopt=cachedir={tmp}/cache", f"--setopt=logdir={tmp}/log")
+            r = host.run("dnf5", *opts, "-q", "check-update", timeout=300)
+            security = dnf_security(scan, *opts, program="dnf5")
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+    else:
+        age = _age([p.stat().st_mtime for p in host.sys_path("/var/cache/dnf").glob("*/repodata/repomd.xml")])
+        r = host.run("dnf", "-C", "-q", "check-update")
+        security = dnf_security(scan, "-C")
+    return Pending("dnf", package_names("dnf", r.stdout) if r.returncode in (0, 100) else None, security,
+                   ([age] if age else []) + ev)
+
+
+def pacman_repositories(host) -> list[str]:
+    """The repositories /etc/pacman.conf names ([core], [extra]...; [options] isn't one)."""
+    try:
+        text = host.read_sys("/etc/pacman.conf") or ""
+    except Unreadable:
+        return []
+    return [m.group(1) for m in re.finditer(r"^\s*\[([^\]]+)\]", text, re.M) if m.group(1) != "options"]
+
+
+def _pacman_pending(scan: Scan) -> Pending:
+    """pacman -Qu exits 1 both when nothing is waiting and on an error: on a fresh Omarchy, which has only
+    sync/offline.db, it warned "database file for 'core' does not exist" and the check said up to date while 12 updates
+    waited. Without the repositories' lists it couldn't check. pacman marks nothing as a security fix (arch-audit
+    would, but it goes online)."""
+    host = scan.host
+    sync = host.sys_path("/var/lib/pacman/sync")
+    have = {p.stem for p in children(sync) if p.suffix == ".db"}
+    missing = [repo for repo in pacman_repositories(host) if repo not in have]
+    age = _age([p.stat().st_mtime for p in children(sync) if p.suffix == ".db" and p.stem not in ("offline",)])
+    ev = [age] if age else []
+    r = host.run("pacman", "-Qu")
+    gone = re.findall(r"database file for '([^']+)' does not exist", r.stderr)
+    if missing or gone:
+        names = ", ".join(dict.fromkeys(missing + gone))
+        return Pending("pacman", None, None, ev, f"the package lists of {names} have never been downloaded here "
+                       "(sudo pacman -Syu does, and installs what is waiting)")
+    if r.returncode not in (0, 1) or "error:" in r.stderr:
+        return Pending("pacman", None, None, ev, (r.stderr.strip().splitlines() or ["pacman -Qu failed"])[-1][:150])
+    return Pending("pacman", package_names("pacman", r.stdout), None, ev)
 
 
 def firmware_updates(scan: Scan) -> list[str] | None:
@@ -193,13 +287,34 @@ def apt_unattended(scan: Scan) -> bool:
     return value not in (None, "0", "false")
 
 
-def dnf_security(scan: Scan, *opts: str) -> int | None:
+ARCHES = frozenset({"x86_64", "noarch", "i686", "aarch64", "ppc64le", "s390x", "armv7hl", "riscv64", "src"})
+_NEVRA = re.compile(r"^(?P<name>.+)-(?:\d+:)?[^-]+-[^-]+\.(?P<arch>[A-Za-z0-9_]+)$")
+
+
+def security_packages(out: str) -> set[tuple[str, str]]:
+    """(name, arch) of each package `updateinfo list --security` names: DNF4's lines (ADVISORY SEVERITY/Sec. NEVRA)
+    and DNF5's (ADVISORY security SEVERITY NEVRA ISSUED-DATE ISSUED-TIME, whose last field is a time: 244 package
+    lines were counted as 60 on Fedora 44). A package fixed by several advisories, or several versions of it, is one
+    update to install."""
+    out_ = set()
+    for ln in out.splitlines():
+        if not re.search(r"/Sec\.|\bsecurity\b", ln, re.I):
+            continue
+        for field in ln.split()[1:]:
+            m = _NEVRA.match(field)
+            if m and m.group("arch") in ARCHES:
+                out_.add((m.group("name"), m.group("arch")))
+                break
+    return out_
+
+
+def dnf_security(scan: Scan, *opts: str, program: str = "dnf") -> int | None:
     """How many pending updates dnf's advisories mark as security fixes, or None when it can't say
     (no advisory data in its cache)."""
-    r = scan.host.run("dnf", *opts, "-q", "updateinfo", "list", "--security", timeout=300)
+    r = scan.host.run(program, *opts, "-q", "updateinfo", "list", "--security", timeout=300)
     if not r.ok:
         return None
-    return len({ln.split()[-1] for ln in r.stdout.splitlines() if re.search(r"/Sec\.|\bsecurity\b", ln, re.I)})
+    return len(security_packages(r.stdout))
 
 
 def no_pass_when_unsupported(scan: Scan, o: Outcome) -> Outcome:
@@ -225,11 +340,13 @@ class Updates(Check):
         result = _pending(scan)
         if result is None:
             return unknown("No supported package manager (apt, dnf, pacman, zypper) was found.")
-        pm, names, security, ev = result
+        pm, names, security, ev = result.pm, result.names, result.security, result.evidence
         restart, kev = kernel_restart(scan)
         note = Note("limitation", "Based on the package lists already on this machine",
                     "The app never goes online, so it doesn't refresh the lists first; updates published since your "
                     "last refresh aren't counted. Flatpak and Snap updates aren't checked for the same reason.")
+        if names is None and result.why:
+            return unknown(f"Couldn't list pending updates with {pm}: {result.why}.", *ev, *kev, notes=[note])
         firmware = firmware_updates(scan) or []
         if firmware:
             ev.append(Evidence.val("Firmware updates", ", ".join(firmware[:6])))

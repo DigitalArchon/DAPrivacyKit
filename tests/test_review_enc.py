@@ -742,6 +742,140 @@ def test_debian_backports_over_https_and_usbguard_with_sudo(cat, tmp_path):
     assert "sudo usbguard list-devices --blocked" in cmds and "usbguard list-devices --blocked" not in cmds
 
 
+# ------------------------------------------------------------------ updates
+
+DNF5_SECURITY = """Name                   Type     Severity                                                      Package              Issued
+FEDORA-2026-001de57d4f security Moderate                gdk-pixbuf2-2.44.6^really2.44.4-3.fc44.x86_64 2026-09-02 01:32:36
+FEDORA-2026-00901a5e8f security Important                                ipp-usb-0.9.34-2.fc44.x86_64 2026-09-02 01:32:36
+FEDORA-2026-044e56d9ff security Moderate                                     tar-2:1.35-9.fc44.x86_64 2026-09-09 04:47:08
+"""
+
+
+def _dnf5_host(tmp_path, runtime=True):
+    calls = []
+
+    def dnf5(argv):
+        calls.append(argv)
+        cache = next(a.split("=", 1)[1] for a in argv if a.startswith("--setopt=cachedir="))
+        os.makedirs(cache, exist_ok=True)                 # dnf5 copies the system's metadata into it
+        if "check-update" in argv:
+            return CommandResult(argv, 100, "\ngdk-pixbuf2.x86_64 2.44.6-3.fc44 updates\nipp-usb.x86_64 0.9.34-2.fc44 updates\n"
+                                            "tar.x86_64 2:1.35-9.fc44 updates\nmpv.x86_64 0.39-1.fc44 updates\n")
+        return CommandResult(argv, 0, DNF5_SECURITY)
+    import os
+    env = {"XDG_RUNTIME_DIR": str(tmp_path / "run")} if runtime else {}
+    (tmp_path / "run").mkdir(parents=True)
+    host = make_host(tmp_path, env=env, files={"/proc/sys/kernel/osrelease": "6.17.1-300.fc44.x86_64\n"})
+    host.runner.handlers["dnf5"] = dnf5
+    return host, calls
+
+
+def test_dnf5_counts_security_packages_not_issue_times(cat, tmp_path):
+    """DNF5's updateinfo list ends each line with the issue time: two advisories issued the same second counted as one
+    (244 package lines counted as 60 on the Fedora VM)."""
+    host, _ = _dnf5_host(tmp_path)
+    o = detect(cat, "kern.updates", make_scan(host))
+    assert ev(o)["Security updates"] == 3 and ev(o)["Pending updates"] == 4
+
+
+def test_dnf5_never_writes_to_the_home_folder(cat, tmp_path):
+    """dnf -C as the user copied about 105 MB into ~/.cache/libdnf5 at every scan, scheduled ones too (rule 4)."""
+    host, calls = _dnf5_host(tmp_path)
+    detect(cat, "kern.updates", make_scan(host))
+    assert calls and all(any(a.startswith(f"--setopt=cachedir={tmp_path}/run/") for a in c) and
+                         any(a.startswith(f"--setopt=logdir={tmp_path}/run/") for a in c) and "-C" in c for c in calls)
+    assert list((tmp_path / "run").iterdir()) == []                    # removed at once
+    assert not (host.home / ".cache").exists() and not (host.home / ".local").exists()
+    host, calls = _dnf5_host(tmp_path / "b", runtime=False)
+    o = detect(cat, "kern.updates", make_scan(host))
+    assert o.status is Status.UNKNOWN and "runtime folder" in o.summary and not calls
+
+
+def test_pacman_without_its_lists_couldnt_check(cat, tmp_path):
+    """A fresh Omarchy has only sync/offline.db: pacman -Qu warned and exited 1, which passed as "up to date"."""
+    warn = ("warning: database file for 'core' does not exist (use '-Sy' to download)\n"
+            "warning: database file for 'extra' does not exist (use '-Sy' to download)\n")
+    host = make_host(tmp_path, installed=["pacman"], commands={"pacman -Qu": CommandResult((), 1, "", warn)},
+                     files={"/etc/pacman.conf": "[options]\nHoldPkg = pacman\n[core]\nInclude = x\n[extra]\nInclude = x\n",
+                            "/var/lib/pacman/sync/offline.db": "x"})
+    o = detect(cat, "kern.updates", make_scan(host))
+    assert o.status is Status.UNKNOWN and "core, extra" in o.summary and "never been downloaded" in o.summary
+    host = make_host(tmp_path / "b", installed=["pacman"], commands={"pacman -Qu": CommandResult((), 1, "", "")},
+                     files={"/etc/pacman.conf": "[options]\n[core]\n", "/var/lib/pacman/sync/core.db": "x"})
+    o = detect(cat, "kern.updates", make_scan(host))
+    assert o.status is Status.PASS and ev(o)["Package lists last refreshed"] == "0 days ago"
+
+
+def test_install_on_arch_refreshes_and_upgrades(tmp_path):
+    from daprivacyscanner.checks.guides import install
+    host = make_host(tmp_path, files={"/etc/os-release": "ID=omarchy\nID_LIKE=arch\n"})
+    assert install(make_scan(host), arch="usbguard") == "sudo pacman -Syu usbguard"
+
+
+def test_mints_update_manager_automation_counts(cat, tmp_path):
+    host = make_host(tmp_path, commands={"apt list --upgradable": "Listing...\n",
+                                         "systemctl is-enabled mintupdate-automation-upgrade.timer": "enabled\n"},
+                     files={"/etc/os-release": "ID=linuxmint\nID_LIKE=\"ubuntu debian\"\n"})
+    o = detect(cat, "kern.updates", make_scan(host))
+    assert ev(o)["Automatic security updates"] == "on"
+    g = _guide_with(cat, "kern.updates", host, o)
+    step = next(s for s in g.steps if s.title == "Install updates automatically")
+    assert step.done
+
+
+@pytest.mark.parametrize("timers, conf, on", [
+    ({"dnf-automatic-install.timer": "enabled"}, "", True),
+    ({"dnf5-automatic.timer": "enabled"}, "[commands]\napply_updates = yes\n", True),
+    ({"dnf5-automatic.timer": "enabled"}, "[commands]\napply_updates = no\n", False),           # downloads only
+    ({}, "", False)])
+def test_dnf_automatic_as_set_up(tmp_path, timers, conf, on):
+    from daprivacyscanner.checks.kernel import dnf_automatic
+    def systemctl(argv):
+        return CommandResult(argv, 0, timers.get(argv[-1], "disabled") + "\n")
+    host = make_host(tmp_path, files={"/etc/dnf/automatic.conf": conf} if conf else {})
+    host.runner.handlers["systemctl"] = systemctl
+    assert dnf_automatic(host) is on
+
+
+def test_fedora_dnf5_guide_gives_dnf5_commands_only(cat, tmp_path):
+    host = make_host(tmp_path, files={"/etc/os-release": "ID=fedora\n"}, installed=("dnf5",))
+    o = Outcome(Status.WARN, "x", [])
+    from daprivacyscanner.model import Evidence
+    o.evidence = [Evidence.count("Pending updates", 2), Evidence.val("Automatic updates", "off")]
+    g = _guide_with(cat, "kern.updates", host, o)
+    step = next(s for s in g.steps if s.title == "Install updates automatically")
+    assert step.commands[-1] == "sudo systemctl enable --now dnf5-automatic.timer"
+    assert not any("dnf-automatic-install" in c for c in step.commands)
+
+
+def test_nothing_to_install_and_ubuntus_own_automatic_updates_are_done(cat, tmp_path):
+    from daprivacyscanner.model import Evidence
+    host = make_host(tmp_path, files={"/etc/os-release": "ID=ubuntu\nID_LIKE=debian\n", "/usr/bin/unattended-upgrade": ""})
+    o = Outcome(Status.FAIL, "x", [Evidence.count("Pending updates", 0), Evidence.val("Automatic security updates", "on"),
+                                   Evidence.val("Firmware updates", "System Firmware")])
+    g = _guide_with(cat, "kern.updates", host, o)
+    first = g.steps[0]
+    assert first.title == "Install the updates" and first.done and not first.commands
+    auto = next(s for s in g.steps if s.title == "Install security updates automatically")
+    assert auto.done and not auto.options                    # no "Apply this step" for what is there already
+
+
+def test_refreshed_updates_guide_installs_flatpak_and_snap_too(cat, tmp_path):
+    from daprivacyscanner.model import Evidence
+    host = make_host(tmp_path, files={"/etc/os-release": "ID=ubuntu\nID_LIKE=debian\n"})
+    o = Outcome(Status.WARN, "x", [Evidence.count("Pending updates", 1), Evidence.count("Pending Flatpak updates", 3),
+                                   Evidence.count("Pending snap updates", 1)])
+    g = _guide_with(cat, "kern.updates_refreshed", host, o)
+    cmds = [c for s in g.steps for c in s.commands]
+    assert "flatpak update" in cmds and "sudo snap refresh" in cmds
+    assert "security updates" not in g.intro
+
+
+def _guide_with(cat, check_id, host, outcome):
+    from daprivacyscanner.checks import load_all
+    return load_all()[check_id](cat[check_id]).plan_guide(make_scan(host), outcome)
+
+
 def test_the_panels_say_what_the_scan_says(tmp_path):
     """The RAM disk and browser panels said "this computer can hibernate" where the scan said it can't."""
     from daprivacyscanner.tools import ramdisk as R
