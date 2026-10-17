@@ -3379,7 +3379,7 @@ checks:
       Without hidepid on /proc, every account can list what you run with its full command line,
       including passwords and tokens passed as arguments.
     detect:
-      - '/proc/self/mountinfo: options of the /proc mount; hidepid=2 or hidepid=invisible (or 1/noaccess) hides them'
+      - '/proc/self/mountinfo: options of the /proc mount; hidepid=2 or hidepid=invisible (or 1/noaccess, 4/ptraceable) hides them'
     fix: >
       Explain the fstab option (hidepid=invisible,gid=proc) and that systemd-logind, polkit and
       monitoring tools need the gid exception; some distributions break without it. Never automate.
@@ -3401,7 +3401,7 @@ checks:
       is why few distributions enable it; live data is in memory either way, so it narrows the risk
       rather than removing it.
     detect:
-      - '/proc/cmdline init_on_free='
+      - '/proc/cmdline init_on_free=: the last one, as the kernel reads it (kstrtobool: y, t, e, 1, on are on; n, f, d, 0, off off; anything else leaves the built-in default); the How to… takes out the old one and adds the new one at the end'
       - 'CONFIG_INIT_ON_FREE_DEFAULT_ON in /boot/config-$(uname -r) or /proc/config.gz'
     fix: Explain the kernel parameter and its performance cost.
     remedy: >
@@ -3420,7 +3420,7 @@ checks:
       nothing and meaningfully improves security, so finding it off is strange: it usually means a
       custom kernel or a boot option turned it off, and is worth looking into.
     detect:
-      - '/proc/cmdline init_on_alloc='
+      - '/proc/cmdline init_on_alloc=: the last one, read as for init_on_free'
       - 'CONFIG_INIT_ON_ALLOC_DEFAULT_ON in the kernel config'
     fix: Explain the kernel parameter and its performance cost.
     remedy: >

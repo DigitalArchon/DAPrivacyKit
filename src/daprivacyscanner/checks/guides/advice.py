@@ -15,9 +15,12 @@ from . import evidence, family, guide, install, os_release
 # ------------------------------------------------------------------ kernel boot options
 
 def kernel_option_steps(scan, args: str) -> list[Step]:
-    """How to add `args` to the kernel command line with this machine's bootloader, then restart."""
+    """How to set `args` (param=value) on the kernel command line with this machine's bootloader, then restart. The
+    kernel uses the last param= it is given, so an existing one is taken out and the new one goes at the end: adding a
+    copy in front of an old init_on_alloc=0 changed nothing."""
     host = scan.host
     fam = family(scan)
+    param = args.split("=", 1)[0]
     has = lambda p: isfile(host.sys_path(p))          # noqa: E731
     if has("/usr/bin/limine-update"):                 # CachyOS and others with limine-entry-tool
         # /etc/default/limine is read last: a plain "=" there replaces what drop-ins add ("+=" lines are
@@ -25,33 +28,39 @@ def kernel_option_steps(scan, args: str) -> list[Step]:
         default = read_text(host, host.sys_path("/etc/default/limine")) or ""
         if re.search(r"^\s*KERNEL_CMDLINE\[default\]\s*=", default, re.M):
             text = ("Limine's entries are made by limine-entry-tool, from the KERNEL_CMDLINE[default]= line in "
-                    f"/etc/default/limine: add {args} inside its quotes, after the other options, then write the "
-                    "entries again.")
+                    f"/etc/default/limine: add {args} inside its quotes, after the other options (and delete any other "
+                    f"{param}= there), then write the entries again.")
             cmds = ["sudoedit /etc/default/limine", "sudo limine-update"]
         else:
             text = ("Limine's entries are made by limine-entry-tool: a drop-in file adds the option to every kernel's "
-                    "entry, and limine-update writes them again.")
+                    "entry, after the others (the kernel uses the last one given), and limine-update writes them "
+                    "again.")
             cmds = ["sudo mkdir -p /etc/limine-entry-tool.d",
                     f"echo 'KERNEL_CMDLINE[default]+={args}' | sudo tee /etc/limine-entry-tool.d/60-daprivacyscanner.conf",
                     "sudo limine-update"]
     elif has("/etc/sdboot-manage.conf"):
-        text = ("sdboot-manage writes the systemd-boot entries: add the option to the LINUX_OPTIONS line of "
-                "/etc/sdboot-manage.conf, then write the entries again.")
+        text = ("sdboot-manage writes the systemd-boot entries: add the option at the end of the LINUX_OPTIONS line of "
+                f"/etc/sdboot-manage.conf (and delete any other {param}= on it), then write the entries again.")
         cmds = ["sudoedit /etc/sdboot-manage.conf", "sudo sdboot-manage gen"]
     elif fam == "fedora" and host.runner.which("grubby"):
-        text = "Fedora keeps the kernel options with grubby, for every installed kernel and future ones."
-        cmds = [f'sudo grubby --update-kernel=ALL --args="{args}"']
+        text = ("Fedora keeps the kernel options with grubby, for every installed kernel and future ones: it takes out "
+                f"any {param}= there is, then adds this one.")
+        cmds = [f'sudo grubby --update-kernel=ALL --remove-args="{param}" --args="{args}"']
     elif has("/etc/kernel/cmdline"):
         text = ("The kernel options are in /etc/kernel/cmdline (systemd-boot or unified kernel images): the first "
-                "command adds the option to its line, the second installs the kernels again so their entries pick it "
-                "up.")
-        cmds = [f"sudo sed -i '1s/$/ {args}/' /etc/kernel/cmdline", "sudo kernel-install add-all"]
+                f"command takes out any {param}= on its line and adds the option at the end, the second installs the "
+                "kernels again so their entries pick it up.")
+        cmds = [f"sudo sed -i -E '1s/(^| ){re.escape(param)}=[^ ]*//g; 1s/$/ {args}/' /etc/kernel/cmdline",
+                "sudo kernel-install add-all"]
     elif has("/etc/default/grub"):
         regen = {"debian": "sudo update-grub", "arch": "sudo grub-mkconfig -o /boot/grub/grub.cfg",
                  "suse": "sudo grub2-mkconfig -o /boot/grub2/grub.cfg",
                  "fedora": "sudo grub2-mkconfig -o /boot/grub2/grub.cfg"}.get(fam or "", "sudo update-grub")
-        text = "GRUB reads the kernel options from GRUB_CMDLINE_LINUX_DEFAULT in /etc/default/grub."
-        cmds = [f"sudo sed -i 's/^GRUB_CMDLINE_LINUX_DEFAULT=\"/&{args} /' /etc/default/grub", regen]
+        text = ("GRUB reads the kernel options from GRUB_CMDLINE_LINUX and GRUB_CMDLINE_LINUX_DEFAULT in "
+                f"/etc/default/grub. The first command takes out any {param}= on those lines and adds the option at "
+                "the end of the second (the kernel uses the last one given); the next rebuilds GRUB's menu.")
+        cmds = ["sudo sed -i -E -e '/^GRUB_CMDLINE_LINUX(_DEFAULT)?=/s/(\"| )" + re.escape(param) + "=[^\" ]*/\\1/g' "
+                f"-e 's/^(GRUB_CMDLINE_LINUX_DEFAULT=\"[^\"]*)\"/\\1 {args}\"/' /etc/default/grub", regen]
     else:
         text = (f"Add {args} to the kernel command line in your bootloader's configuration; the app couldn't tell "
                 "which bootloader this computer uses.")
@@ -105,7 +114,7 @@ def usb_trusted(check, scan, outcome):
                             "sudo systemctl enable --now usbguard.service"]),
              Step("Allow a new device", "A device plugged in later stays blocked until you allow it; -p keeps it "
                   "allowed after a restart.",
-                  commands=["usbguard list-devices --blocked", "sudo usbguard allow-device -p ID     # ID from the list"])]
+                  commands=["sudo usbguard list-devices --blocked", "sudo usbguard allow-device -p ID     # ID from the list"])]
     if scan.context.desktop.is_gnome:
         steps.append(Step("Or, on GNOME: block new devices only while the screen is locked",
                           f"GNOME Shell asks USBGuard to let devices in while you are logged in and the screen is "
@@ -198,7 +207,7 @@ def proc_hidepid(check, scan, outcome):
                                     "/etc/fstab"]),
                      Step("If something breaks", "Monitoring tools, polkit prompts or a desktop component that can't "
                           "see processes are the usual suspects. Undo it now, then remove the line from /etc/fstab.",
-                          commands=["sudo mount -o remount,hidepid=default /proc"]),
+                          commands=["sudo mount -o remount,hidepid=off /proc"]),
                  ])
 
 
@@ -592,7 +601,7 @@ def landlock(check, scan, outcome):
                       "backports archive, from the Debian project, carries a newer one (6.12 or later) built for "
                       "Debian 12. The first command adds the archive; nothing else is taken from it unless you "
                       "ask for it.",
-                      commands=["echo 'deb http://deb.debian.org/debian bookworm-backports main' | sudo tee "
+                      commands=["echo 'deb https://deb.debian.org/debian bookworm-backports main' | sudo tee "
                                 "/etc/apt/sources.list.d/bookworm-backports.list",
                                 "sudo apt update",
                                 "sudo apt install -t bookworm-backports linux-image-amd64"]), check_step]

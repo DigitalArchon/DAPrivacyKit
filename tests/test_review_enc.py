@@ -672,6 +672,76 @@ def test_timeshift_is_judged_by_its_drive_and_the_guide_says_only_that(cat, tmp_
     assert "LUKS-encrypted drive" in step.text and ", or leave your home folder" not in step.text
 
 
+# ------------------------------------------------------------------ kernel options
+
+@pytest.mark.parametrize("cmdline, status", [
+    ("ro init_on_alloc=0 quiet init_on_alloc=1", Status.PASS),      # the kernel uses the last one
+    ("ro init_on_alloc=1 quiet init_on_alloc=0", Status.FAIL),
+    ("ro init_on_alloc=Y", Status.PASS), ("ro init_on_alloc=yes", Status.PASS), ("ro init_on_alloc=true", Status.PASS),
+    ("ro init_on_alloc=on", Status.PASS), ("ro init_on_alloc=off", Status.FAIL), ("ro init_on_alloc=N", Status.FAIL),
+])
+def test_init_on_alloc_is_read_as_the_kernel_reads_it(cat, tmp_path, cmdline, status):
+    """The first init_on_alloc= was read, and Y, yes and true counted as off."""
+    host = make_host(tmp_path, files={"/proc/cmdline": cmdline + "\n"})
+    assert detect(cat, "kern.init_on_alloc", make_scan(host)).status is status
+
+
+def test_a_value_the_kernel_doesnt_take_leaves_its_default(cat, tmp_path):
+    host = make_host(tmp_path, files={"/proc/cmdline": "ro init_on_free=maybe\n",
+                                      "/proc/sys/kernel/osrelease": "7.0.0\n",
+                                      "/boot/config-7.0.0": "CONFIG_INIT_ON_FREE_DEFAULT_ON=y\n"})
+    o = detect(cat, "kern.init_on_free", make_scan(host))
+    assert o.status is Status.PASS and ev(o) == {"CONFIG_INIT_ON_FREE_DEFAULT_ON": "y"}
+
+
+@pytest.mark.parametrize("cmdline, state", [("mem_encrypt=off mem_encrypt=on", "on"), ("mem_encrypt=on mem_encrypt=off", "off")])
+def test_mem_encrypt_takes_the_last_value(tmp_path, cmdline, state):
+    from daprivacyscanner.checks.kernel import memory_encryption
+    host = make_host(tmp_path, files={"/proc/cmdline": cmdline + "\n", "/proc/cpuinfo": "flags\t\t: fpu sme sev\n"})
+    assert memory_encryption(make_scan(host, virtualization="none")) == ("AMD SME", state)
+
+
+def test_how_to_replaces_an_existing_option_rather_than_adding_a_copy(cat, tmp_path):
+    """The How to… put init_on_alloc=1 in front of the line, where an init_on_alloc=0 later on it still won."""
+    import subprocess
+    host = make_host(tmp_path, files={"/etc/default/grub": 'GRUB_CMDLINE_LINUX_DEFAULT="quiet init_on_alloc=0 splash"\n'
+                                                          'GRUB_CMDLINE_LINUX="init_on_alloc=0"\n',
+                                      "/etc/os-release": "ID=ubuntu\nID_LIKE=debian\n"})
+    sed = _advice(cat, host, "kern.init_on_alloc").steps[0].commands[0]
+    assert sed.startswith("sudo sed -i -E ")
+    grub = tmp_path / "grub"
+    grub.write_text(host.sys_path("/etc/default/grub").read_text())
+    subprocess.run(sed.removeprefix("sudo ").replace("/etc/default/grub", str(grub)), shell=True, check=True)
+    assert grub.read_text() == ('GRUB_CMDLINE_LINUX_DEFAULT="quiet  splash init_on_alloc=1"\nGRUB_CMDLINE_LINUX=""\n')
+    host = make_host(tmp_path / "k", files={"/etc/kernel/cmdline": "root=/dev/x init_on_alloc=0 quiet\n"})
+    sed = _advice(cat, host, "kern.init_on_alloc").steps[0].commands[0]
+    line = tmp_path / "cmdline"
+    line.write_text("root=/dev/x init_on_alloc=0 quiet\n")
+    subprocess.run(sed.removeprefix("sudo ").replace("/etc/kernel/cmdline", str(line)), shell=True, check=True)
+    assert line.read_text() == "root=/dev/x quiet init_on_alloc=1\n"
+    host = make_host(tmp_path / "f", files={"/etc/os-release": "ID=fedora\n"}, installed=("grubby",))
+    assert _advice(cat, host, "kern.init_on_alloc").steps[0].commands == [
+        'sudo grubby --update-kernel=ALL --remove-args="init_on_alloc" --args="init_on_alloc=1"']
+
+
+def test_hidepid_ptraceable_hides_and_the_undo_command_is_valid(cat, tmp_path):
+    host = make_host(tmp_path, files={"/proc/mounts": "proc /proc proc rw,nosuid,nodev,noexec,relatime,hidepid=ptraceable 0 0\n"})
+    assert detect(cat, "kern.proc_hidepid", make_scan(host)).status is Status.PASS
+    g = _advice(cat, make_host(tmp_path / "b"), "kern.proc_hidepid")
+    assert g.steps[-1].commands == ["sudo mount -o remount,hidepid=off /proc"]       # "default" is refused by mount
+
+
+def test_debian_backports_over_https_and_usbguard_with_sudo(cat, tmp_path):
+    host = make_host(tmp_path, files={"/etc/os-release": 'ID=debian\nVERSION_ID="12"\n',
+                                      "/proc/sys/kernel/osrelease": "6.1.0-18-amd64\n",
+                                      "/sys/kernel/security/lsm": "lockdown,capability,landlock,yama,apparmor\n"})
+    cmds = [c for s in _advice(cat, host, "kern.landlock").steps for c in s.commands]
+    assert any("deb https://deb.debian.org/debian bookworm-backports main" in c for c in cmds)
+    assert not any("http://" in c for c in cmds)
+    cmds = [c for s in _advice(cat, make_host(tmp_path / "u"), "kern.usb_trusted").steps for c in s.commands]
+    assert "sudo usbguard list-devices --blocked" in cmds and "usbguard list-devices --blocked" not in cmds
+
+
 def test_the_panels_say_what_the_scan_says(tmp_path):
     """The RAM disk and browser panels said "this computer can hibernate" where the scan said it can't."""
     from daprivacyscanner.tools import ramdisk as R

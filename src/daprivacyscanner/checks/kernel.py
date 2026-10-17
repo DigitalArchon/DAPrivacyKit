@@ -416,11 +416,32 @@ class PtraceScope(Check):
         return passed("Processes can't read each other's memory unless one started the other.", *ev)
 
 
+def cmdline_value(cmdline: str, param: str) -> str | None:
+    """The value of param= the kernel uses: the last one on its command line (its parsers keep overwriting, and
+    arch/x86's cmdline_find_option returns the last instance)."""
+    values = re.findall(rf"(?:^|\s){re.escape(param)}=(\S*)", cmdline)
+    return values[-1] if values else None
+
+
+def kstrtobool(value: str) -> bool | None:
+    """A boolean boot option as the kernel reads it (lib/kstrtox.c kstrtobool, by its first characters): y, t, e, 1 and
+    "on" are on; n, f, d, 0 and "off" off; anything else isn't taken (the built-in default stays)."""
+    v = value.lower()
+    if v[:1] in ("y", "t", "e", "1"):
+        return True
+    if v[:1] in ("n", "f", "d", "0"):
+        return False
+    if v[:1] == "o" and v[1:2] in ("n", "f"):
+        return v[1:2] == "n"
+    return None
+
+
 def _kernel_option(scan: Scan, param: str, config: str) -> tuple[bool | None, Evidence]:
     cmdline = scan.host.read_sys("/proc/cmdline") or ""
-    m = re.search(rf"(?:^|\s){param}=(\S+)", cmdline)
-    if m:
-        return m.group(1) in ("1", "on", "y"), Evidence.val(f"{param} on the command line", m.group(1))
+    value = cmdline_value(cmdline, param)
+    on = kstrtobool(value) if value is not None else None
+    if on is not None:
+        return on, Evidence.val(f"{param} on the command line", value)
     release = (scan.host.read_sys("/proc/sys/kernel/osrelease") or "").strip()
     text = None
     try:
@@ -586,7 +607,7 @@ def _groups_of(scan: Scan) -> set[str]:
     return out
 
 
-HIDDEN = {"1", "2", "noaccess", "invisible"}
+HIDDEN = {"1", "2", "4", "noaccess", "invisible", "ptraceable"}     # ptraceable: only what one may trace
 
 
 @register
@@ -623,10 +644,10 @@ def memory_encryption(scan: Scan) -> tuple[str, str] | None:
             flags = set(line.split(":", 1)[1].split())
             break
     if "sme" in flags:
-        cmdline = scan.host.read_sys("/proc/cmdline") or ""
-        m = re.search(r"(?:^|\s)mem_encrypt=(\S+)", cmdline)
-        if m:
-            return "AMD SME", "on" if m.group(1) == "on" else "off"
+        # the last mem_encrypt= (cmdline_find_option), "on" or "off" exactly; anything else leaves the built-in default
+        value = cmdline_value(scan.host.read_sys("/proc/cmdline") or "", "mem_encrypt")
+        if value in ("on", "off"):
+            return "AMD SME", value
         on, _ = _kernel_option(scan, "mem_encrypt", "CONFIG_AMD_MEM_ENCRYPT_ACTIVE_BY_DEFAULT")
         return "AMD SME", "unknown" if on is None else "on" if on else "off"
     if "tme" in flags:

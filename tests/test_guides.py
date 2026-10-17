@@ -1204,7 +1204,9 @@ def test_landlock_guide_turns_it_on_keeping_the_other_modules(cat, tmp_path):
                                       "/boot/config-6.12.9-amd64": "CONFIG_SECURITY_LANDLOCK=y\n"})
     g = _advice(cat, host, "kern.landlock")
     assert g.title == "Turn on Landlock"
-    assert any("lsm=landlock,lockdown,yama,apparmor " in c for c in g.steps[0].commands)
+    # at the end of the line, an older lsm= taken out (the kernel uses the last: one put in front changed nothing)
+    assert any('\\1 lsm=landlock,lockdown,yama,apparmor"' in c and '(\\"| )lsm=' not in c and '("| )lsm=' in c
+               for c in g.steps[0].commands)
 
 
 # ------------------------------------------------------------------ online findings: a guide for every one
