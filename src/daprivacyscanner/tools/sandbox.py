@@ -49,8 +49,9 @@ The network:
 - Tor Browser has none of its own. Two sandboxes, one inside the other: the outer one shares the
   computer's network and runs tor (Tor Browser's own, from its folder, with its pluggable transports in
   a sandbox of their own, without the display, sound or the browser's profile the outer one holds) and
-  a filter on tor's control port (tools/torgate.py, run by the host's python3); the inner one, with only a loopback interface,
-  runs the browser, which reaches tor through two Unix sockets: SOCKS, and the filtered control port.
+  a filter on tor's control port (tools/torgate.py, run by the host's python3); the inner one, with
+  only a loopback interface, runs the browser, which reaches tor through two Unix sockets: SOCKS, and
+  the filtered control port.
   So a browser that was taken over can't connect around Tor (revealing the address), nor to services
   on this computer or the local network, nor to the session's abstract sockets (they belong to the
   network namespace), and the filter refuses anything that would change tor's settings (a proxy or a
