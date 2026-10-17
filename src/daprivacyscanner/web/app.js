@@ -2831,8 +2831,10 @@ function browserSandbox(data, opts) {
       h("b", {}, "Mullvad Browser"), sb.pasta?.available
         ? (sb.pasta.lan_blocked
           ? " gets a network of its own: the internet, but not this computer's services, your local network (the router, "
-            + "printers, other computers) or other programs' hidden sockets. Mullvad VPN's own proxies are let through, so "
-            + "its extension can change the browser's country while the VPN is connected."
+            + "printers, other computers), this computer's or the router's hardware address, or other programs' hidden "
+            + "sockets. Mullvad VPN's own proxies are let through, so its extension can change the browser's country while "
+            + "the VPN is connected. Your router's public address can't be refused (this computer doesn't know it), and many "
+            + "routers show their settings page there too: keep that page behind a password of its own."
           : " gets a network of its own: the internet, but not this computer's own services or other programs' hidden "
             + `sockets. It can still reach your local network: ${sb.pasta.lan_why}`)
         : " shares this computer's network: see the warning below.",

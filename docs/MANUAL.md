@@ -399,7 +399,9 @@ lower it with the shield button in the browser's toolbar. Mullvad Browser starts
 - **Thumbnails, crash dumps or file search** that would keep copies on the disk, each with a button to
   fix it.
 - **No passt installed** (Mullvad Browser): without it, the browser can see your local network. Install
-  `passt` with the command shown.
+  `passt` with the command shown. With it, the local network is fenced off, all but your router's public
+  address, which your computer doesn't know: many routers show their settings page there too, so give that
+  page a password of its own.
 - **X11 desktop**: the sandbox protects your files but not your screen. Wayland is safer.
 
 **What the sandbox can't hide** from a website that got past the browser's own protections is listed in the

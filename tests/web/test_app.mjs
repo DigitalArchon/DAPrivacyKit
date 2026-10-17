@@ -76,7 +76,7 @@ const ramdisk = () => ({ path: "~/RAMDisk", full_path: "/home/a/RAMDisk", open: 
     open_exec: ["chmod 500 /home/a/RAMDisk", "mount -t tmpfs -o nosuid,nodev,size=1024M,mode=0700,uid=1000,gid=1000,noswap tmpfs /home/a/RAMDisk"],
     close: ["umount /home/a/RAMDisk"] } });
 let browserJob = null, browserStarted = null, browserStartError = null, browserDue = false, torProgress = 45,
-    browserUnchecked = false, sandboxDown = false, kdeWayland = false, waylandUnasked = false;
+    browserUnchecked = false, sandboxDown = false, kdeWayland = false, waylandUnasked = false, pastaFenced = false;
 const browserState = () => ({ platform: "linux-x86_64", min_mb: 1024, can_pick: true, picker: "zenity", admin_active: true, job: browserJob,
   ramdisk: { ...ramdisk(), noexec: !ramOpen ? true : toolBodies.open?.noexec !== false }, mat2: true,
   sandbox: { available: !sandboxDown, why: sandboxDown ? "bubblewrap can't set up a sandbox here (setting up uid map: Permission denied)." : "",
@@ -84,7 +84,8 @@ const browserState = () => ({ platform: "linux-x86_64", min_mb: 1024, can_pick: 
              wayland_context: kdeWayland, wayland_risky: waylandUnasked ? null : kdeWayland ? [{ global: "ext_data_control_manager_v1",
                what: "read and change the clipboard in the background" }] : [], sound: true, gpu: true, python: true, wlroots: false, desktop: [],
              xephyr: { available: true, install: "sudo apt install xserver-xephyr" },
-             pasta: { available: false, why: "pasta isn't installed (the passt package).", install: "sudo apt install passt" } },
+             pasta: pastaFenced ? { available: true, why: "", install: "sudo apt install passt", lan_blocked: true, lan_why: "" }
+                                : { available: false, why: "pasta isn't installed (the passt package).", install: "sudo apt install passt" } },
   risks: { swap: toolBodies.swap?.off ? { on_disk: [], used_mb: 0, paused: ["/dev/sda3"], off_commands: [], on_commands: ["sudo swapon /dev/sda3"] }
                                        : { on_disk: ["/dev/sda3"], used_mb: 102, paused: [], off_commands: ["sudo swapoff /dev/sda3"],
                                            on_commands: ["sudo swapon /dev/sda3"] },
@@ -1110,6 +1111,14 @@ check(text(".modal .browser-tool").includes("couldn't be asked") && text(".modal
       && !text(".modal .browser-tool").includes("marks the browser's connection as a sandbox's: it gets only its own windows"),
       "a compositor that couldn't be asked is said to be unknown, never taken for one that keeps the browser to its windows");
 kdeWayland = false; waylandUnasked = false;
+while ($$(".modal").length) { $$(".modal .buttons button").at(-1).click(); await tick(); }
+pastaFenced = true;
+await window.openBrowserTool(); await tick(); await tick();
+check(text(".modal .browser-tool").includes("this computer's or the router's hardware address")
+      && text(".modal .browser-tool").includes("Your router's public address can't be refused")
+      && !text(".modal .browser-tool").includes("Install passt before you use Mullvad Browser here"),
+      "with pasta's fence, the page says what it keeps away, and its one gap: the router's public address");
+pastaFenced = false;
 while ($$(".modal").length) { $$(".modal .buttons button").at(-1).click(); await tick(); }
 await window.openBrowserTool(); await tick(); await tick();
 $$(".modal .browser-tool button").find(b => b.textContent === "Start Tor Browser").click(); await tick();
