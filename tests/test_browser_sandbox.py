@@ -61,6 +61,15 @@ def bwrap_ok(host, calls=None):
     host.runner.handlers["bwrap"] = bwrap
 
 
+def ip_ok(host, addresses="[]", routes="[]"):
+    """iproute2's ip: rules set, and the computer's own networks listed (none by default) as `ip -j` prints them."""
+    def ip(argv):
+        if "-j" in argv:
+            return CommandResult(tuple(argv), 0, addresses if "address" in argv else routes)
+        return CommandResult(tuple(argv), 0)
+    host.runner.handlers["ip"] = ip
+
+
 def pairs(argv, flag):
     return [(argv[i + 1], argv[i + 2]) for i, a in enumerate(argv) if a == flag]
 
@@ -103,7 +112,7 @@ def test_pasta_s_namespace_is_fenced_off_from_the_local_network(host):
     calls = []
     host.runner.handlers["pasta"] = lambda argv: calls.append(argv) or CommandResult(tuple(argv), 0)
     assert S.probe_fence(host) == "iproute2's ip isn't installed."
-    host.runner.handlers["ip"] = lambda argv: CommandResult(tuple(argv), 0)
+    ip_ok(host)
     assert S.probe_fence(host) is None
     a = list(calls[-1])
     i = a.index("--")
@@ -202,7 +211,7 @@ def test_mullvad_in_its_own_network_sees_nothing_of_home_or_the_computer(host):
     assert argv[:2] == ["pasta", "--config-net"] and "--no-map-gw" in argv
     i = argv.index("--")
     assert argv[i + 1] == "bwrap"
-    host.runner.handlers["ip"] = lambda argv: CommandResult(tuple(argv), 0)
+    ip_ok(host)
     fenced = S.browser_argv(host, lay, disp, False, True, etc, "pasta")
     j = fenced.index("--")
     assert fenced[j + 1:j + 3] == ["/bin/sh", "-c"] and "192.168.0.0/16" in fenced[j + 3] and fenced[j + 4] == "bwrap"
@@ -1085,7 +1094,7 @@ def test_under_pasta_the_wayland_pipe_goes_in_as_stdin(host, monkeypatch):
     wayland(host)
     bwrap_ok(host)
     host.runner.handlers["pasta"] = lambda argv: CommandResult(tuple(argv), 0)
-    host.runner.handlers["ip"] = lambda argv: CommandResult(tuple(argv), 0)
+    ip_ok(host)
     monkeypatch.setattr(B, "START_WAIT", 0.05)
     monkeypatch.setattr(B, "_socket_at", lambda h, path: "/run/compositor-0")
     B._PROBED.clear()

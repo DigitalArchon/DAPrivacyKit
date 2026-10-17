@@ -37,9 +37,10 @@ def host(tmp_path):
         "[Desktop Entry]\nType=Application\nName=App\nExec=flatpak run --branch=stable --command=app org.x.App @@u %u @@\n"
         "X-Flatpak=org.x.App\n")
     ok = lambda argv: CommandResult(argv, 0, "")                                         # noqa: E731
+    ip = lambda argv: CommandResult(argv, 0, "[]" if "-j" in argv else "")             # noqa: E731 (no networks listed)
     return Host(home=home, environ={"HOME": str(home), "XDG_RUNTIME_DIR": "/run/user/1000", "DISPLAY": ":0",
                                     "XDG_DATA_DIRS": "/usr/share", "LANG": "en_GB.UTF-8"},
-                runner=FakeRunner(handlers={"bwrap": ok, "pasta": ok, "ip": ok, "mount": ok, "flatpak": ok}), root=root, uid=1000)
+                runner=FakeRunner(handlers={"bwrap": ok, "pasta": ok, "ip": ip, "mount": ok, "flatpak": ok}), root=root, uid=1000)
 
 
 # ------------------------------------------------------------------ what a file is

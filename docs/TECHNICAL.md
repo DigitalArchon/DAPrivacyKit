@@ -903,7 +903,18 @@ has no capabilities to change them):
 | 50 | `lookup main to 169.254.0.1`: pasta's DNS forwarder |
 | 100 | `prohibit` to 0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10 (CGNAT, Tailscale), 169.254.0.0/16, 172.16.0.0/12, 192.0.0.0/24, 192.168.0.0/16, 198.18.0.0/15, 224.0.0.0/3 |
 | 100 | `prohibit` to fc00::/7, fe80::/10, ff00::/8 (tolerated if pasta has no IPv6) |
-| 100 | `prohibit` to **every unicast route pasta copied except the default one**: the network's own prefixes, which on IPv6, and on some IPv4 networks, are public addresses no fixed list covers |
+| 100 | `prohibit` to **the computer's own networks** (`host_networks`, listed on the computer with `ip -j address show` and `ip -j route show table all type unicast` just before pasta starts): every address of the computer's on every interface (but loopback's) and the network it is on, a point-to-point link's far end, and the unicast routes of every routing table, merged, those inside the ranges above left out. Not the default routes, nor the routes through one interface that between them cover at least a sixteenth of IPv4 (or of IPv6's 2000::/3): a VPN that carries everything but the local network does it with broad routes in place of a default one (WireGuard's "exclude private IPs", OpenVPN's 0.0.0.0/1 and 128.0.0.0/1) |
+| 100 | `prohibit` to **every unicast route pasta copied except the default one**, should a pasta version copy any |
+
+pasta connects from the computer's side, so the namespace's own routes say nothing of where it can reach: before
+the computer's own networks were listed, the browser reached services on the computer's addresses on other
+interfaces (a second network card, a VPN's own), the ranges a split VPN routes, Docker's and libvirt's public IPv6
+networks, and the local network's IPv6 prefix while a VPN held the default route (found in the review of
+2026-10-17 in throwaway namespaces; refused since). Routes added after the start (a VPN connected later) are
+fenced from the next start. The listing fails closed: when `ip` can't list them, or there are more than 4096
+(`FENCE_MAX`), the panel says the local network can't be fenced off, and a start the panel showed fenced is
+refused. The router's own public (WAN) address can't be fenced: the computer doesn't know it without asking the
+internet, and many routers answer their settings page on it from inside.
 
 `prohibit` rules sit ahead of the main table, so no route can be more specific than them. If any IPv4 or
 own-route rule fails, the start stops ("The local network could not be fenced off"). Tested in a namespace
