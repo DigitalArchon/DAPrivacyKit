@@ -1222,19 +1222,23 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
         return j is not None and j["state"] == "running"
 
     async def run_browser_job(job: dict, b, archive: Path | None, held: int | None = None) -> None:
-        from .tools import browser as B, owner
+        from .tools import browser as B, kept, owner
         host = make_host()
         state, error, unchecked = "failed", "", ""
         try:
             if archive is None:
                 archive = await asyncio.to_thread(B.download, host, make_net(), b, job, lambda: job["cancel"])
-            else:                                       # the user's own archive: a copy of it, only the latest version
+            else:   # the user's own archive, or the kept copy: a copy of it in the RAM disk, only the latest version
                 archive = await asyncio.to_thread(B.copy_in, host, archive, job)
                 job.update(phase=f"Asking {B.index_host(b)} which version is the latest", done=0, total=0)
                 try:
-                    job["latest"] = await asyncio.to_thread(B.check_latest, make_net(), b, archive.name)
+                    job["latest"] = await asyncio.to_thread(B.check_latest, make_net(), b, archive.name,
+                                                            job["source"] == "kept")
                 except B.Unreachable as e:              # blocked here? decided once the signature is verified
                     unchecked = str(e)
+                except B.Outdated as e:                 # the page offers the download of the new one
+                    job["newer"] = e.latest
+                    raise
             job.update(phase=f"Checking {archive.name}'s signature", done=0, total=0)
             job["verdict"] = await asyncio.to_thread(B.verified, host, archive)
             if unchecked:
@@ -1249,6 +1253,14 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
                                                      bool(unchecked), job["verdict"]["signed"], vpn_preset)
             job["outbox"] = await asyncio.to_thread(B.default_outbox, host, b)
             job["version"] = job["version"] or job["release"]["version"]
+            if job.get("keep"):                         # ticked: from the verified file, verified again where it is kept
+                job.update(phase="Keeping the download for next time")
+                try:
+                    k = await asyncio.to_thread(kept.keep, host, b, archive, B.verified)
+                    job["kept"] = {"version": k["version"], "folder": host.display(kept.folder(host))}
+                except (kept.KeepError, B.BrowserError, OSError) as e:
+                    why = (e.strerror or e) if isinstance(e, OSError) else e
+                    job["keep_error"] = f"The download wasn't kept: {why}"
             state = "done"
         except B.Stopped as e:
             state, error = "stopped", str(e)
@@ -1287,23 +1299,30 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
 
     @app.post("/api/tools/browser/get", dependencies=[Depends(auth)])
     async def tools_browser_get(request: Request):
-        """Body {"browser": "tor" | "mullvad"} to download it (the page has named the hosts), or
-        {"archive": path} for one the user downloaded (its .asc beside it); "vpn" (default true): Mullvad
-        Browser set up for Mullvad VPN (browser.preset_vpn). Returns at once; the page follows the job with
+        """Body {"browser": "tor" | "mullvad"} to download it (the page has named the hosts; "keep": true keeps the
+        download for next time, tools/kept.py), {"archive": path} for one the user downloaded (its .asc beside it), or
+        {"kept": "tor" | "mullvad"} for the kept copy, which goes the picked archive's way; "vpn" (default true):
+        Mullvad Browser set up for Mullvad VPN (browser.preset_vpn). Returns at once; the page follows the job with
         GET /api/tools/browser."""
-        from .tools import browser as B
+        from .tools import browser as B, kept
         body = await body_of(request)
         host = make_host()
         if browser_busy():
             return JSONResponse({"error": "A browser is already being set up."}, status_code=409)
-        archive = None
+        archive, source = None, "download"
         try:
             if body.get("archive"):
-                archive = tool_paths(host, body["archive"])[0]
+                archive, source = tool_paths(host, body["archive"])[0], "file"
                 b = B.which(archive)
                 plat = B.platform_name()
                 if plat is None or plat not in archive.name:
                     return JSONResponse({"error": f"{archive.name} isn't made for this processor."}, status_code=400)
+            elif body.get("kept"):
+                b = B.BROWSERS[body.get("kept")]
+                k = await asyncio.to_thread(kept.kept, host, b)
+                if k is None:
+                    return JSONResponse({"error": f"No download of {b.name} is kept."}, status_code=409)
+                archive, source = k["archive"], "kept"
             else:
                 b = B.BROWSERS[body.get("browser")]
         except (KeyError, TypeError):
@@ -1319,10 +1338,11 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
             return JSONResponse({"error": f"{b.name} is being set up or started in another window of this app."},
                                 status_code=409)
         job = app.state.browser_job = {"id": uuid.uuid4().hex, "state": "running", "browser": b.id, "name": b.name,
-                                       "source": "file" if archive else "download", "hosts": [B.index_host(b)] if archive else list(b.hosts),
+                                       "source": source, "hosts": [B.index_host(b)] if archive else list(b.hosts),
                                        "phase": "Starting", "done": 0, "total": 0, "version": "", "verdict": None,
                                        "error": "", "cancel": False, "created": time.time(), "finished": None,
-                                       "vpn": b.id == "mullvad" and body.get("vpn", True) is not False}
+                                       "vpn": b.id == "mullvad" and body.get("vpn", True) is not False,
+                                       "keep": source == "download" and body.get("keep") is True}
         app.state.browser_task = asyncio.create_task(run_browser_job(job, b, archive, held))
         return {"job": browser_view(job)}
 
@@ -1349,6 +1369,28 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
     def browser_of(body: dict):
         from .tools import browser as B
         return B.BROWSERS.get(body.get("browser")) if isinstance(body.get("browser"), str) else None
+
+    @app.post("/api/tools/browser/kept/delete", dependencies=[Depends(auth)])
+    async def tools_browser_kept_delete(request: Request):
+        """Body {"browser"}: its kept download deleted from the app's cache folder (tools/kept.py). Not while it is
+        being set up from it, here or in another copy of the app."""
+        from .tools import browser as B, kept, owner
+        host = make_host()
+        b = browser_of(await body_of(request))
+        if b is None:
+            return JSONResponse({"error": "Choose Tor Browser or Mullvad Browser."}, status_code=400)
+        key = f"browser-{b.id}"
+        held = None if owner.held_here(key) else await asyncio.to_thread(owner.hold, host, key)
+        if held is None:
+            return JSONResponse({"error": f"{b.name} is being set up: delete it once that has finished."},
+                                status_code=409)
+        try:
+            there = await asyncio.to_thread(kept.delete, host, b)
+        except OSError as e:
+            return JSONResponse({"error": f"It couldn't be deleted: {e.strerror or e}"}, status_code=400)
+        finally:
+            owner.let_go(held)
+        return {**await asyncio.to_thread(B.status, host), "deleted": there}
 
     @app.post("/api/tools/browser/remove", dependencies=[Depends(auth)])
     async def tools_browser_remove(request: Request):

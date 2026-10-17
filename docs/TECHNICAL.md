@@ -83,7 +83,8 @@ Tools are what the user starts on files, folders or drives they choose, where ch
 
 - They run only when started, on what the user chose and the companions next to it (a signature, a checksum
   list), send nothing anywhere (the browser download apart, which names its hosts first), and keep nothing
-  afterwards: no log, no history, nothing in reports or exports.
+  afterwards: no log, no history, nothing in reports or exports (the browser's download apart, kept on the disk for
+  next time only when the user ticks it, and said).
 - They never change the file they were given: a cleaned copy is a new file beside it. The two that delete or
   change something (Before you hand over a drive, Presentation mode) show it first, or put it back.
 - They may show the user what is in their own file (its metadata, a signer's name): rule 2's limits on evidence
@@ -507,6 +508,23 @@ is a regular file of at most 600 MB and that there is room, and copies it into `
 `O_EXCL | O_NOFOLLOW`. What is verified and unpacked is that copy, never the user's file (which could
 change between the check and the unpack on a shared or removable disk). The user's file is never touched.
 Then `check_latest` asks the project's index for the latest version and refuses an older archive.
+
+**Or the kept copy** (`tools/kept.py`, the owner's request of 2026-10-17). The download dialog's *Keep the download
+for next time*, off by default, keeps the archive and its signature in `$XDG_CACHE_HOME/daprivacyscanner/browsers/<id>/`
+(the folders 0700, the files 0600), on the disk. The dialog says first what that means: they tell anyone who looks
+at the computer that the browser was set up here (nothing of the browsing is in them), and deleting them doesn't
+erase them from the disk (rule 8). It is kept only once the set-up has succeeded (verified and unpacked, the version
+inside checked): copied from the verified file in `.downloads`, never fetched again, into `.<id>.new-<random>` beside
+the kept one, verified there once more (never an unverified file kept), then put in place of the older copy by two
+renames (the old folder aside, the new one in, the old removed: never an old archive beside a new signature). One
+kept copy per browser; a folder or a link in place of the app's folders is refused, and a keep that fails leaves
+the set-up done, with the reason on the job. *Set up from the kept copy (version X, kept on DATE)…* then goes the
+picked archive's way exactly: `copy_in`, `check_latest` (a newer version out: refused, `Outdated`, and the page offers
+the download of the new one, which can be kept in its place), the app's own keys, the version inside the archive,
+and `accept_unchecked` within `RECENT_DAYS` where the index can't be reached. The dialog names the index host. The
+panel lists the kept copies whether or not `~/TempBrowser` is open, each with *Delete…* (refused while that browser is
+being set up, `owner.hold`). Kept copies aren't in History, reports or exports; `packaging/uninstall.sh` removes the
+folder, with `--keep-data` too.
 
 ### 7.5 Step 3: verification
 
@@ -1697,9 +1715,12 @@ OACS, FNA and SANICAP via the helper's ioctl), read on request and kept for the 
 | `$XDG_CONFIG_HOME/daprivacyscanner/` | `ui.json` (welcome dismissed), `online.json` (endpoints) | |
 | `/var/lib/daprivacyscanner/changes` | The helper's journal of root changes | Root-owned |
 | `/run/daprivacyscanner/` | RAM disk state, swap state | Gone at reboot |
+| `/run/systemd/system/<unit>.d/50-daprivacyscanner-quiet.conf` | `LogLevelMax=notice` for an open RAM disk's mount unit | Root-owned; removed at the close, gone at reboot |
 | `~/TempBrowser`, `~/RAMDisk` | Tool data | In memory only |
+| `$XDG_CACHE_HOME/daprivacyscanner/browsers/` (0700) | Tor Browser's or Mullvad Browser's archive and signature, one per browser | Only when the download dialog's tick asks for it; deleted from the panel; on the disk, so it says the browser was set up here |
 
-Tools keep nothing afterwards: no log, no history, nothing in reports or exports.
+Tools keep nothing afterwards: no log, no history, nothing in reports or exports. The one exception is the
+browser's download, kept on the disk for next time when the user ticks it (section 7.4).
 
 ---
 

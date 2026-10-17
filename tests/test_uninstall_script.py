@@ -134,3 +134,19 @@ def test_the_script_names_what_the_app_installs():
     mark = text.split('MARK="', 1)[1].split('"', 1)[0]
     assert integration.MARK.startswith(mark)
     assert all(mark in e.content for e in integration.file_manager_entries(Path("/x"), ["/usr/bin/daprivacyscanner"]))
+
+
+def test_kept_browser_downloads_go_even_with_keep_data(tmp_path):
+    """Tor Browser's or Mullvad Browser's archive kept for next time (tools/kept.py) says the browser was set up here:
+    removed with the rest, and also with --keep-data, which keeps History and the settings only."""
+    from daprivacyscanner.tools import kept
+    home, env, _ = _home(tmp_path)
+    archive = home / ".cache/daprivacyscanner" / kept.FOLDER / "tor/tor-browser-linux-x86_64-15.0.24.tar.xz"
+    archive.parent.mkdir(parents=True)
+    archive.write_bytes(b"x")
+    r = _run(env, "--dry-run")
+    assert "kept for next time" in r.stdout and str(archive.parents[1]) in r.stdout and archive.exists()
+    r = _run(env, "--yes", "--keep-data")
+    assert r.returncode == 0 and not archive.parents[1].exists()
+    assert (home / ".config/daprivacyscanner/ui.json").exists()                  # what --keep-data keeps, kept
+    assert f'$CACHE/daprivacyscanner/{kept.FOLDER}' in SCRIPT.read_text()

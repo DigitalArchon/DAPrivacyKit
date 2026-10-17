@@ -2743,7 +2743,7 @@ async function openBrowserTool(reloadTools) {
     const job = data.job;
     fill(body, browserIntro(data), browserRamdisk(data, reload), browserSandbox(data, opts), browserRisks(data, reload),
       browserJob(job, data, reload),
-      job?.state === "running" ? null : browserCards(data, reload, opts), browserLimits(data));
+      job?.state === "running" ? null : browserCards(data, reload, opts), browserKept(data, reload), browserLimits(data));
     follow();
   };
   render();
@@ -2753,7 +2753,8 @@ const FOLLOW_AFTER = 20000;          // ms the panel keeps following after somet
 
 // What the panel shows that changes while a browser runs: it is drawn again when this changes.
 function browserShown(d) {
-  return JSON.stringify([d.ramdisk?.open, d.job?.state, (d.browsers || []).map(b => [b.running, b.installed,
+  return JSON.stringify([d.ramdisk?.open, d.job?.state, (d.kept?.copies || []).map(c => [c.browser, c.version, c.kept]),
+    (d.browsers || []).map(b => [b.running, b.installed,
     b.start_error, b.connection, b.downloads, b.downloads_other, b.uploads,
     b.outbox && [b.outbox.on, b.outbox.waiting, b.outbox.partial, b.outbox.originals, b.outbox.not_cleaned,
       b.outbox.recent]])]);
@@ -3453,7 +3454,10 @@ function browserCards(data, reload, opts = { sandbox: true, sound: false, nested
         } catch (err) { toast(err.message, "error", 10000); e.target.disabled = false; }
       } }, `Start ${b.name}`);
     } else {
-      action = h("button", { class: "small", disabled: !usable || !b.available, onclick: () => browserDownload(b, data, reload) }, "Download…");
+      const k = (data.kept?.copies || []).find(c => c.browser === b.id);
+      action = [h("button", { class: "small", disabled: !usable || !b.available, onclick: () => browserDownload(b, data, reload) }, "Download…"),
+        k ? h("button", { class: "small", disabled: !usable || !b.available, onclick: () => browserFromKept(b, k, data, reload) },
+          `Set up from the kept copy (version ${k.version}, kept ${fmtDay(k.kept)})…`) : null];
     }
     const vpnSetup = b.id === "mullvad" ? (b.installed ? mullvadVpnNote(b.release?.vpn) : mullvadVpnTick()) : null;
     return h("div", { class: "toolcard" }, h("b", {}, b.name), h("p", { class: "small" }, b.about),
@@ -3531,6 +3535,60 @@ function browserRemove(b, reload) {
 }
 
 const fmtWhen = (secs) => new Date(secs * 1000).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" });
+const fmtDay = (secs) => new Date(secs * 1000).toLocaleDateString([], { day: "numeric", month: "short", year: "numeric" });
+
+// What keeping a download means, said before it is kept: on the disk, where it says the browser was set up here,
+// and deleting it doesn't erase it (rule 8).
+function keptMeaning(data, name) {
+  return `The archive and its signature stay in the app's cache folder, ${data.kept?.folder || "~/.cache/daprivacyscanner/browsers"}, `
+    + `on the disk, so the next set-up needn't download them: it checks they are still the latest version and verifies `
+    + `the signature again first. On the disk they tell anyone who looks at this computer that ${name} was set up here `
+    + "(nothing of your browsing is in them), and deleting them later doesn't erase them from the disk: on an SSD, or a "
+    + "filesystem that keeps copies, what was deleted can stay readable; only disk encryption protects it.";
+}
+
+// The kept copy: as an archive the user picked (copied into ~/TempBrowser, checked against the project's index, its
+// signature verified with the app's own key, the version inside it against its name).
+function browserFromKept(b, k, data, reload) {
+  const host = b.tor ? "aus1.torproject.org" : "cdn.mullvad.net";
+  modal({ title: `Set up ${b.name} from the kept copy?`, body: [
+    h("p", {}, `The kept copy is ${b.name} ${k.version}, kept ${fmtDay(k.kept)}. Setting it up first asks ${host} which `
+      + "version is the latest, directly, as the download would: the server sees this computer's address, nothing else. "
+      + "If a newer version is out, the kept copy isn't used, and you can download the new one instead."),
+    proxyWarning(data, [host]),
+    h("p", { class: "small muted" }, "It is copied into the RAM disk, its signature is checked again against the Tor Browser "
+      + "Developers key the app carries, and the version inside it against its name; nothing is unpacked unless all of "
+      + `that holds. If ${host} can't be reached (blocked where you are, say), it is used only if its signature was made in `
+      + "the last 30 days, and the card says the check couldn't be made."),
+    b.id === "mullvad" ? h("p", { class: "small" }, browserSetup.vpn
+      ? "It is set up for Mullvad VPN (the tick on its card): no page loads unless Mullvad VPN is connected."
+      : "It isn't set up for Mullvad VPN (the tick on its card): it starts as the browser leaves it.") : null,
+  ], buttons: [{ label: "Cancel" }, { label: "Check and set up", kind: "primary", onclick: async (close, el) => {
+    el.disabled = true;
+    try { await api("POST", "/api/tools/browser/get", { kept: b.id, vpn: browserSetup.vpn }); close(); await reload(); }
+    catch (e) { close(); toast(e.message, "error", 10000); }
+  } }] });
+}
+
+// The downloads kept for next time: on the disk, shown whether or not ~/TempBrowser is open, each with Delete.
+function browserKept(data, reload) {
+  const copies = data.kept?.copies || [];
+  if (!copies.length) return null;
+  return h("div", { class: "notebox small browser-kept" }, h("b", {}, "Kept downloads, on the disk "),
+    `(${data.kept.folder}): they say that the browser was set up on this computer.`,
+    h("ul", {}, copies.map(c => h("li", {}, `${c.name} ${c.version}, kept ${fmtDay(c.kept)} (${fmtSize(c.size)}) `,
+      h("button", { class: "small", onclick: () => modal({ title: `Delete the kept ${c.name}?`, body: [
+        h("p", {}, `${c.name} ${c.version} and its signature are deleted from ${data.kept.folder}; setting it up again then `
+          + "downloads it."),
+        h("p", { class: "small" }, "Deleting doesn't erase it from the disk: on an SSD, or a filesystem that keeps copies, "
+          + "what was deleted can stay readable until it is written over. Disk encryption is what protects it.")],
+        buttons: [{ label: "Cancel" }, { label: "Delete", kind: "danger", onclick: async (close, el) => {
+          el.disabled = true;
+          try { await api("POST", "/api/tools/browser/kept/delete", { browser: c.browser }); close(); toast("Deleted.", "ok"); }
+          catch (e) { close(); toast(e.message, "error", 10000); }
+          await reload();
+        } }] }) }, "Delete…")))));
+}
 
 // The download and the version checks go out directly, never through a proxy set in the environment (as the online
 // tests): said before either, as the online tests' dialog does.
@@ -3542,6 +3600,8 @@ function proxyWarning(data, hosts) {
 }
 
 function browserDownload(b, data, reload) {
+  const keep = h("input", { type: "checkbox" });                // off by default: kept, it is on the disk
+  const kept = (data.kept?.copies || []).find(c => c.browser === b.id);
   modal({ title: `Download ${b.name}?`, body: [
     h("p", {}, `This contacts ${b.hosts.join(" and ")}, the project's own servers: to learn the latest version, then for `
       + "the archive (about 120–140 MB) and its signature. They see this computer's address, as with any download; "
@@ -3552,9 +3612,12 @@ function browserDownload(b, data, reload) {
     b.id === "mullvad" ? h("p", { class: "small" }, browserSetup.vpn
       ? "It is set up for Mullvad VPN (the tick on its card): no page loads unless Mullvad VPN is connected."
       : "It isn't set up for Mullvad VPN (the tick on its card): it starts as the browser leaves it.") : null,
+    h("label", { class: "check small keep-download" }, keep, "Keep the download for next time"),
+    h("div", { class: "small muted" }, keptMeaning(data, b.name) + " It is kept only once its signature is verified"
+      + (kept ? `, in place of the kept ${kept.version}.` : ".")),
   ], buttons: [{ label: "Cancel" }, { label: "Download", kind: "primary", onclick: async (close, el) => {
     el.disabled = true;
-    try { await api("POST", "/api/tools/browser/get", { browser: b.id, vpn: browserSetup.vpn }); close(); await reload(); }
+    try { await api("POST", "/api/tools/browser/get", { browser: b.id, vpn: browserSetup.vpn, keep: keep.checked }); close(); await reload(); }
     catch (e) { close(); toast(e.message, "error", 10000); }
   } }] });
 }
@@ -3577,10 +3640,15 @@ function browserJob(job, data, reload) {
       h("b", {}, `${job.name}${job.version ? " " + job.version : ""} is in the RAM disk. `),
       `${v.title || "Verified"}: signed by ${v.signer || "Tor Browser Developers"} (${(v.fingerprint || "").replace(/(.{4})/g, "$1 ").trim()}).`,
       job.warning ? h("div", { class: "warnbox small" }, job.warning) : null,
+      job.kept ? h("div", {}, `The download is kept for next time, in ${job.kept.folder}.`) : null,
+      job.keep_error ? h("div", { class: "warnbox small" }, job.keep_error) : null,
       h("div", { class: "orow" }, dismiss));
   }
+  // the kept copy is older than the latest: it isn't used; the new one can be downloaded (and kept in its place)
+  const b = job.newer ? (data.browsers || []).find(x => x.id === job.browser) : null;
   return h("div", { class: job.state === "failed" ? "warnbox" : "notebox info small" }, job.error || "Stopped.",
-    h("div", { class: "orow" }, dismiss));
+    h("div", { class: "orow" }, b ? h("button", { class: "small primary", onclick: () => browserDownload(b, data, reload) },
+      `Download ${b.name} ${job.newer}…`) : null, dismiss));
 }
 
 function browserLimits(data) {

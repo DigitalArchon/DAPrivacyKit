@@ -364,6 +364,13 @@ is left on your disk afterwards.
    (torproject.org or mullvad.net), downloads the browser into memory, and checks its signature. Nothing
    is unpacked unless the signature is right. You can instead pick an archive you downloaded yourself
    (with its `.asc` file beside it) and click **Check and unpack**.
+   - **Keep the download for next time** (off unless you tick it): once its signature is verified, the
+     archive and its signature stay in `~/.cache/daprivacyscanner/browsers`, on the disk. Next time,
+     **Set up from the kept copy…** uses it without downloading: it still asks the project's server whether
+     it is the latest version (and isn't used if a newer one is out: download that instead) and checks the
+     signature again. Kept on the disk, they tell anyone who looks at this computer that the browser was set
+     up here (nothing of your browsing is in them), and deleting them (**Delete…** in the panel's list of
+     kept downloads) doesn't erase them from the disk. One copy is kept per browser: a newer one replaces it.
 4. Choose the options:
    - **Run it in a sandbox** (keep it ticked): the browser can't see your files, keys or other
      programs. Untick only if you need a screen reader or an input method for Chinese, Japanese or Korean.

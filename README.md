@@ -52,7 +52,7 @@ The Tools… button holds what you start yourself, on files, folders or drives y
 - **RAM disk**: a folder in memory, opened when you want it and overwritten when you close it.
 - **Tor or Mullvad Browser in memory**: downloads either browser into a RAM disk, checks its signature and
   runs it from there, in a sandbox that keeps it from your files, so the browser itself leaves nothing on the
-  disk.
+  disk. When you ask for it, the download is kept on the disk for next time, checked again before each use.
 - **Try an app**: run a program you don't trust yet (an AppImage, a script, an archive, a .deb, an installed
   or Flatpak app) in a sandbox with a made-up home folder, and see what it writes, which decoy files it looks
   at and which hosts it contacts. **What does this app keep?**: use an app as usual while it is watched, then

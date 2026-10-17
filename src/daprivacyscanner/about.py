@@ -173,5 +173,6 @@ NEVER = [
     "settings changes can be reverted from History.",
     "The tools (Verify a download, Remove metadata, the RAM disk) run only when you start them, on the files you choose; "
     "they send nothing anywhere and keep nothing afterwards. The one that downloads (Tor or Mullvad Browser in memory) "
-    "names the project's servers it contacts before it starts.",
+    "names the project's servers it contacts before it starts, and keeps its download on the disk only when you tick "
+    "it, in ~/.cache/daprivacyscanner/browsers, deleted from its panel.",
 ]

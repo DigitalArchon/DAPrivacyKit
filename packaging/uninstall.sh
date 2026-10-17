@@ -8,8 +8,8 @@
 #   packaging/uninstall.sh --no-root    leave the administrator helper (no password asked)
 #
 # Removed: scheduled scans, the Outbox's watcher, the file manager's right-click entries and the menu entries of
-# Boxes (they run the app), the app's data and settings, and, as administrator, the helper and its record of root
-# changes.
+# Boxes (they run the app), downloads of Tor Browser or Mullvad Browser kept for next time (also with --keep-data),
+# the app's data and settings, and, as administrator, the helper and its record of root changes.
 # Never removed: the fixes you applied. Settings the app changed, and files it wrote for them in /etc, protect
 # this computer without the app, and stay. To undo one, revert it in the app's History BEFORE running this:
 # afterwards it can only be undone by hand. Your own files (~/Outbox and what is in it, ~/Ephemeral, ~/Boxes with
@@ -142,6 +142,19 @@ fi
 if [ "$dry" -eq 0 ]; then
     rmdir "$UNITS/timers.target.wants" "$UNITS/default.target.wants" "$UNITS" "$CONFIG/systemd" \
           "$DATA/nemo/actions" "$DATA/nemo" "$DATA/kio/servicemenus" "$DATA/kio" "$DATA/nautilus/scripts" 2>/dev/null || true
+fi
+
+# ------------------------------------------------------------------ downloads kept for next time
+# Tor Browser's or Mullvad Browser's archive, kept when the download dialog's tick asked for it (tools/kept.py): they
+# say the browser was set up here, so they go even with --keep-data, which keeps History and settings only
+say "Downloads of Tor Browser or Mullvad Browser kept for next time (they say the browser was set up here):"
+kept="$CACHE/daprivacyscanner/browsers"
+if [ -e "$kept" ] || [ -L "$kept" ]; then
+    say "  $kept"
+    say "  Deleting them doesn't erase them from the disk: only disk encryption protects what was deleted."
+    confirm "  Remove them?" && remove "$kept"
+else
+    say "  none"
 fi
 
 # ------------------------------------------------------------------ the app's own data

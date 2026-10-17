@@ -337,7 +337,9 @@ def status(host: Host) -> dict:
                 entry.update(bridges=bridges_view(host, b), connection=tor_status(host, b))
         out.append(entry)
     from ..online import proxy_vars
+    from . import kept
     return {"platform": plat, "min_mb": MIN_MB, "mat2": bool(host.runner.which("mat2")),
+            "kept": kept.view(host, BROWSERS.values()),       # downloads kept for next time, on the disk
             "ramdisk": {**rd.to_dict(host.home), "max_mb": ramdisk.max_mb(host), "default_mb": ramdisk.DEFAULT_MB,
                         "commands": ramdisk.commands(host, DISK)},
             # set, and not used: the download and the version checks go out directly (online.Net), as the online
@@ -841,15 +843,28 @@ def accept_unchecked(archive: Path, b: Browser, why: str, signed: int | None) ->
             "security fixes may be out: check when you can (the project's site, a mirror, or GetTor).")
 
 
-def check_latest(net, b: Browser, archive_name: str) -> str:
-    """For an archive the user picked: refuses one older than the latest; raises Unreachable when that can't be
-    checked (accept_unchecked decides then, once the signature is verified). Returns the latest version."""
+class Outdated(BrowserError):
+    """An archive older than the latest version (`latest`)."""
+
+    def __init__(self, message: str, latest: str):
+        super().__init__(message)
+        self.latest = latest
+
+
+def check_latest(net, b: Browser, archive_name: str, kept: bool = False) -> str:
+    """For an archive the user picked (or the kept copy, `kept`): refuses one older than the latest (Outdated);
+    raises Unreachable when that can't be checked (accept_unchecked decides then, once the signature is verified).
+    Returns the latest version."""
     latest = latest_version(net, b)
     mine = version_of(archive_name)
     if _version_key(mine) < _version_key(latest):
-        raise BrowserError(f"{archive_name} is version {mine}, and {b.name} {latest} is out: an old version has "
-                           "security holes the new one fixes. Download it again here (Download…), or the latest "
-                           "archive yourself. Nothing was unpacked.")
+        if kept:
+            raise Outdated(f"The kept copy is {b.name} {mine}, and {latest} is out: an old version has security holes "
+                           "the new one fixes, so the kept copy isn't used. Download the new one (Download…). Nothing "
+                           "was unpacked.", latest)
+        raise Outdated(f"{archive_name} is version {mine}, and {b.name} {latest} is out: an old version has "
+                       "security holes the new one fixes. Download it again here (Download…), or the latest "
+                       "archive yourself. Nothing was unpacked.", latest)
     return latest
 
 

@@ -75,10 +75,10 @@ const ramdisk = () => ({ path: "~/RAMDisk", full_path: "/home/a/RAMDisk", open: 
     open: ["chmod 500 /home/a/RAMDisk", "mount -t tmpfs -o nosuid,nodev,noexec,size=1024M,mode=0700,uid=1000,gid=1000,noswap tmpfs /home/a/RAMDisk"],
     open_exec: ["chmod 500 /home/a/RAMDisk", "mount -t tmpfs -o nosuid,nodev,size=1024M,mode=0700,uid=1000,gid=1000,noswap tmpfs /home/a/RAMDisk"],
     close: ["umount /home/a/RAMDisk"] } });
-let browserJob = null, browserStarted = null, browserStartError = null, browserDue = false, torProgress = 45, browserProxy = [],
+let browserJob = null, browserStarted = null, browserStartError = null, browserDue = false, torProgress = 45, browserProxy = [], browserKept = [],
     browserUnchecked = false, sandboxDown = false, kdeWayland = false, waylandUnasked = false, pastaFenced = false;
 const browserState = () => ({ platform: "linux-x86_64", min_mb: 1024, can_pick: true, picker: "zenity", admin_active: true, job: browserJob,
-  proxy_vars: browserProxy,
+  proxy_vars: browserProxy, kept: { folder: "~/.cache/daprivacyscanner/browsers", copies: browserKept },
   ramdisk: { ...ramdisk(), noexec: !ramOpen ? true : toolBodies.open?.noexec !== false }, mat2: true,
   sandbox: { available: !sandboxDown, why: sandboxDown ? "bubblewrap can't set up a sandbox here (setting up uid map: Permission denied)." : "",
              apparmor: sandboxDown, landlock: false, display: kdeWayland ? "wayland" : "x11",
@@ -132,6 +132,7 @@ Object.assign(routes, {
   "POST /api/tools/browser/upload": (body) => { toolBodies.upload = body; return { ...browserState(), added: [{ name: "photo.jpg", cleaned: true }], errors: [] }; },
   "POST /api/tools/browser/save": (body) => { toolBodies.save = body; return { ...browserState(), saved: "/home/a/Documents/report.pdf" }; },
   "POST /api/tools/browser/outbox": (body) => { toolBodies.outbox = body; outboxOn = body.on; return browserState(); },
+  "POST /api/tools/browser/kept/delete": (body) => { toolBodies.keptDelete = body; browserKept = []; return { ...browserState(), deleted: true }; },
   "POST /api/tools/browser/dismiss": (body) => { if (body?.browser) { toolBodies.dismissed = body; browserStartError = null; return { ok: true }; }
                                                  browserJob = null; return { job: null }; },
   "GET /api/tools": () => ({ tools: [
@@ -882,8 +883,46 @@ check($$(".modal").at(-1).textContent.includes("Your proxy settings (HTTPS_PROXY
       && $$(".modal").at(-1).textContent.includes("dist.torproject.org see this computer's own address"),
       "a proxy set in the environment, which the download doesn't use, is named before it");
 browserProxy = [];
+{ const box = $$(".modal").at(-1).querySelector(".keep-download input");
+  const said = $$(".modal").at(-1).textContent;
+  check(box && !box.checked && said.includes("~/.cache/daprivacyscanner/browsers") && said.includes("on the disk")
+        && said.includes("tell anyone who looks at this computer that Tor Browser was set up here")
+        && said.includes("deleting them later doesn't erase them from the disk") && said.includes("only once its signature is verified"),
+        "keeping the download is offered unticked, saying where, what it tells, and that deleting doesn't erase it");
+  box.checked = true; }
 $$(".modal").at(-1).querySelectorAll(".buttons button")[1].click(); await tick(); await tick(); await tick();
 check(toolBodies.browser?.browser === "tor" && text(".modal .browser-tool").includes("50.0 MB of 100.0 MB"), "the download shows its progress");
+check(toolBodies.browser.keep === true, "the tick goes with the download");
+while ($$(".modal").length) { $$(".modal .buttons button").at(-1).click(); await tick(); }
+// a kept copy: set up from it beside Download, the index host named first; listed on its own, with Delete…
+browserJob = null; browserKept = [{ browser: "tor", name: "Tor Browser", version: "15.0.24", kept: 1790800000, size: 140e6,
+                                    file: "tor-browser-linux-x86_64-15.0.24.tar.xz" }];
+await window.openBrowserTool(); await tick(); await tick();
+{ const btn = $$(".modal .browser-tool .toolcard button").find(b => b.textContent.startsWith("Set up from the kept copy (version 15.0.24, kept "));
+  check(!!btn && text(".modal .browser-kept").includes("Tor Browser 15.0.24, kept"), "a kept copy is offered on its card and listed");
+  btn.click(); await tick();
+  const said = $$(".modal").at(-1).textContent;
+  check(said.includes("first asks aus1.torproject.org which version is the latest") && said.includes("the kept copy isn't used")
+        && said.includes("signature was made in the last 30 days"), "its dialog names the host it asks, and what it refuses");
+  $$(".modal").at(-1).querySelectorAll(".buttons button")[1].click(); await tick(); await tick();
+  check(toolBodies.browser?.kept === "tor", "and sets up from the kept copy: " + JSON.stringify(toolBodies.browser)); }
+while ($$(".modal").length) { $$(".modal .buttons button").at(-1).click(); await tick(); }
+browserJob = { state: "failed", browser: "tor", name: "Tor Browser", newer: "15.0.25", stopping: false,
+               error: "The kept copy is Tor Browser 15.0.24, and 15.0.25 is out: an old version has security holes the new one fixes, so the kept copy isn't used." };
+await window.openBrowserTool(); await tick(); await tick();
+{ const btn = $$(".modal .browser-tool button").find(b => b.textContent === "Download Tor Browser 15.0.25…");
+  check(!!btn, "a kept copy older than the latest offers the download of the new one");
+  btn.click(); await tick();
+  check($$(".modal").at(-1).textContent.includes("in place of the kept 15.0.24"), "which, kept, replaces the old one");
+  $$(".modal").at(-1).querySelectorAll(".buttons button")[0].click(); await tick(); }
+while ($$(".modal").length) { $$(".modal .buttons button").at(-1).click(); await tick(); }
+browserJob = null;
+await window.openBrowserTool(); await tick(); await tick();
+$$(".modal .browser-kept button").find(b => b.textContent === "Delete…").click(); await tick();
+check($$(".modal").at(-1).textContent.includes("Deleting doesn't erase it from the disk"), "deleting a kept copy says it doesn't erase it");
+$$(".modal").at(-1).querySelectorAll(".buttons button")[1].click(); await tick(); await tick(); await tick(); await tick();
+check(toolBodies.keptDelete?.browser === "tor", "Delete asks the server to delete it: " + JSON.stringify(toolBodies.keptDelete));
+check(!$(".modal .browser-kept"), "deleted, it is gone from the list");
 while ($$(".modal").length) { $$(".modal .buttons button").at(-1).click(); await tick(); }
 // Mullvad Browser's card offers to set it up for Mullvad VPN, on by default; the choice goes with the download
 browserJob = null;
