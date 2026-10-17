@@ -921,7 +921,7 @@ SNAPPER_ROOT = 'SUBVOLUME="/"\nFSTYPE="btrfs"\nNUMBER_LIMIT="50"\nTIMELINE_CREAT
 def test_snapshots_keep_fewer(cat, tmp_path, system, monkeypatch):
     host = rooted(make_host(tmp_path, files={"/etc/snapper/configs/root": SNAPPER_ROOT}), system, monkeypatch)
     g = build(cat, host, "enc.snapshots_retain_deleted")
-    plan = options(g)["Keep at most 10 of each"]
+    plan = options(g)["Keep at most 10 update snapshots, 5 hourly and 7 daily"]
     assert plan.irreversible                                     # the clean-up deletes snapshots
     log, res = apply(host, plan)
     text = (host.root / "etc/snapper/configs/root").read_text()
@@ -939,9 +939,9 @@ def test_snapshots_keep_count_is_an_input(cat, tmp_path, system, monkeypatch):
     scan = make_scan(host)
     scan.params = {"keep": 4}
     g = check.plan_guide(scan, check.detect(scan))
-    assert "Keep at most 4 of each" in options(g)
+    assert "Keep at most 4 update snapshots, 4 hourly and 4 daily" in options(g)
     scan.params = {"keep": 999}                                  # out of range: the default
-    assert "Keep at most 10 of each" in options(check.plan_guide(scan, check.detect(scan)))
+    assert "Keep at most 10 update snapshots, 5 hourly and 7 daily" in options(check.plan_guide(scan, check.detect(scan)))
 
 
 def test_snapshots_off_warns_and_names_the_hook(cat, tmp_path, system, monkeypatch):

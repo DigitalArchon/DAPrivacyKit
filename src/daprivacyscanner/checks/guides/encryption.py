@@ -113,9 +113,12 @@ def backups(check, scan, outcome):
                           "encrypted backup has finished, delete the old, unencrypted backup files yourself.",
                           commands=["deja-dup --backup"]))
     if "Timeshift" in labels:
+        # judged by its drive alone: leaving the home folder out (Users → Exclude All, its default) changes nothing
         steps.append(Step("Timeshift: keep its snapshots on an encrypted drive",
-                          "Timeshift doesn't encrypt. Point it at a LUKS-encrypted drive, or leave your home folder "
-                          "out of its snapshots (Settings → Users → Exclude All).",
+                          "Timeshift doesn't encrypt: its snapshots are only as safe as the drive they are on. In "
+                          "Timeshift's Settings → Location, choose a LUKS-encrypted drive (format one with a password "
+                          "in Disks or KDE Partition Manager first). Leave your home folder out of them, as Timeshift "
+                          "does unless told otherwise (Users → Exclude All).",
                           side_effects=["Timeshift is meant for system files; use an encrypting tool for your own "
                                         "files."]))
     steps.append(Step("Encrypting backup tools",
@@ -404,13 +407,15 @@ SNAPSHOT_HOOKS = (   # what makes a snapshot at every package change: (file it i
 def snapshots(check, scan, outcome):
     from ...fix import RootChange, RootClear
     from ...guide import Input
-    from ..encryption import snapper_configs, snapper_keeps, timeshift_keeps, timeshift_settings
+    from ..encryption import SNAPPER_SHORT_MAX, snapper_configs, snapper_keeps, timeshift_keeps, timeshift_settings
     from . import family, remove
     host = scan.host
-    keep = Input.read(scan.params, "keep", "number", 10, 2, 50)
-    pick = Input("keep", "Snapshots to keep", "number", keep, 10, min=2, max=50, unit="per kind",
-                 help="The most recent update snapshots, and at most this many hourly and daily ones (no weekly, "
-                      "monthly or yearly ones). Ten is enough to undo a bad update from the last few days.")
+    # no more than the check takes for short: a higher number was allowed, and the check then still failed
+    keep = Input.read(scan.params, "keep", "number", 10, 2, SNAPPER_SHORT_MAX)
+    pick = Input("keep", "Update snapshots to keep", "number", keep, 10, min=2, max=SNAPPER_SHORT_MAX,
+                 help="How many of the snapshots taken around updates to keep. Of the timeline's, at most 5 hourly and "
+                      "7 daily ones are kept, and no weekly, monthly or yearly ones. Ten is enough to undo a bad update "
+                      "from the last few days.")
     lose = ("A snapshot is how a bad update is undone: on CachyOS, openSUSE and Fedora with snapper, you can boot an "
             "earlier snapshot from the boot menu and roll back. Without them, a broken update means repairing from a "
             "live USB.")
@@ -427,7 +432,7 @@ def snapshots(check, scan, outcome):
                **{f"TIMELINE_LIMIT_{k}": "0" for k in ("HOURLY", "DAILY", "WEEKLY", "MONTHLY", "QUARTERLY", "YEARLY")}}
         cleanup = RootClear("snapper_cleanup", {}, "Run snapper's clean-up now, deleting the snapshots beyond the new limits")
         steps.append(Step(f"Snapper ({names}): keep fewer", f"Now: {now}.", inputs=[pick], options=[option(
-            check, f"Keep at most {keep} of each", [RootChange("edit_config", {"target": "snapper", "values": fewer},
+            check, f"Keep at most {keep} update snapshots, {min(keep, 5)} hourly and {min(keep, 7)} daily", [RootChange("edit_config", {"target": "snapper", "values": fewer},
                                                                 "Set snapper's limits in /etc/snapper/configs/*"), cleanup],
             recommended=True, side_effects=["Snapshots beyond the new limits are deleted now; they can't be brought "
                                             "back. Undoing a bad update still works within the ones kept."])]))

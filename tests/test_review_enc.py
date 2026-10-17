@@ -641,6 +641,37 @@ def test_a_masked_fstrim_timer_isnt_offered_enabling(cat, tmp_path, monkeypatch)
     assert not week.options and week.commands[0] == "sudo systemctl unmask fstrim.timer"
 
 
+# ------------------------------------------------------------------ snapshots and backups
+
+def test_the_snapshot_count_the_guide_allows_passes_the_check(cat, tmp_path, system, monkeypatch):
+    """The input allowed up to 50, the check wanted 20 or fewer: 30 still failed. And "at most N of each" was wrong:
+    hourly snapshots are capped at 5 and daily ones at 7."""
+    from daprivacyscanner.checks import load_all
+    from daprivacyscanner.checks.encryption import SNAPPER_SHORT_MAX
+    from test_guides import SNAPPER_ROOT, apply, options, rooted
+    host = rooted(make_host(tmp_path, files={"/etc/snapper/configs/root": SNAPPER_ROOT}), system, monkeypatch)
+    check = load_all()["enc.snapshots_retain_deleted"](cat["enc.snapshots_retain_deleted"])
+    scan = make_scan(host)
+    scan.params = {"keep": 30}                                       # over the most: the default, never a failing one
+    g = check.plan_guide(scan, check.detect(scan))
+    [pick] = [i for s in g.steps for i in s.inputs]
+    assert pick.max == SNAPPER_SHORT_MAX
+    scan.params = {"keep": SNAPPER_SHORT_MAX}
+    g = check.plan_guide(scan, check.detect(scan))
+    label = f"Keep at most {SNAPPER_SHORT_MAX} update snapshots, 5 hourly and 7 daily"
+    apply(host, options(g)[label])
+    assert check.detect(make_scan(host)).status is Status.PASS
+
+
+def test_timeshift_is_judged_by_its_drive_and_the_guide_says_only_that(cat, tmp_path):
+    from daprivacyscanner.checks import load_all
+    from daprivacyscanner.model import Evidence
+    check = load_all()["enc.backups_unencrypted"](cat["enc.backups_unencrypted"])
+    o = Outcome(Status.FAIL, "x", [Evidence.val("Timeshift", "rsync on unencrypted sdb1 (Timeshift doesn't encrypt)")])
+    step = next(s for s in check.plan_guide(make_scan(make_host(tmp_path)), o).steps if s.title.startswith("Timeshift"))
+    assert "LUKS-encrypted drive" in step.text and ", or leave your home folder" not in step.text
+
+
 def test_the_panels_say_what_the_scan_says(tmp_path):
     """The RAM disk and browser panels said "this computer can hibernate" where the scan said it can't."""
     from daprivacyscanner.tools import ramdisk as R

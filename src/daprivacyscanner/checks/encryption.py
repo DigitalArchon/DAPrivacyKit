@@ -1001,15 +1001,19 @@ def snapper_keeps(cfg: dict[str, str]) -> str:
     return "; ".join(parts)
 
 
+SNAPPER_SHORT_MAX = 20      # update snapshots kept at most for a short retention: the guide's input goes no higher
+
+
 def snapper_short(cfg: dict[str, str]) -> bool:
-    """Short retention: no weekly or longer timeline snapshots, and at most 20 update snapshots."""
+    """Short retention: no weekly or longer timeline snapshots, and at most SNAPPER_SHORT_MAX update snapshots."""
     cfg = {**SNAPPER_DEFAULTS, **cfg}
 
     def top(v: str) -> int:
         return int(v.split("-")[-1]) if re.fullmatch(r"\d+(-\d+)?", v) else 999
     long_timeline = cfg["TIMELINE_CREATE"].lower() == "yes" and any(
         top(cfg[f"TIMELINE_LIMIT_{k}"]) for k in ("WEEKLY", "MONTHLY", "QUARTERLY", "YEARLY"))
-    return not long_timeline and top(cfg["NUMBER_LIMIT"]) <= 20 and top(cfg["NUMBER_LIMIT_IMPORTANT"]) <= 20
+    return (not long_timeline and top(cfg["NUMBER_LIMIT"]) <= SNAPPER_SHORT_MAX
+            and top(cfg["NUMBER_LIMIT_IMPORTANT"]) <= SNAPPER_SHORT_MAX)
 
 
 def timeshift_short(ts: dict) -> bool:
