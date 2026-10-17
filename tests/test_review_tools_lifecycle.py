@@ -271,3 +271,38 @@ def test_a_starts_error_stays_until_dismissed_or_started_again(cat, host, monkey
     assert B.launch_problem(tor) is None
     B._LAUNCHED["tor"] = Ended(0)                                       # a clean exit is no error
     assert B.launch_problem(tor) is None and "tor" not in B._LAUNCHED
+
+
+# ------------------------------------------------------------------ A9: Stop while unpacking
+
+def test_stop_while_unpacking_stops_and_keeps_nothing(host):  # noqa: F811
+    """Stop during unpacking was ignored: the job went on to the end and said done."""
+    from test_browser_tool import TOR, tarball
+    disk = open_ramdisk(host)
+    archive = disk / "tor-browser-linux-x86_64-15.0.24.tar.xz"
+    archive.write_bytes(tarball(TOR))
+
+    class Job(dict):
+        def __setitem__(self, k, v):                                    # Stop pressed as the first file is written
+            super().__setitem__(k, v)
+            if k == "done":
+                super().__setitem__("cancel", True)
+    with pytest.raises(B.Stopped, match="while unpacking"):
+        B.unpack(host, archive, B.BROWSERS["tor"], Job())
+    assert not (disk / "tor-browser").exists() and not (disk / ".tor-browser.unpacking").exists()
+
+
+def test_stop_while_a_picked_archive_is_copied_in_leaves_no_copy(host):  # noqa: F811
+    disk = open_ramdisk(host)
+    mine = host.home / "Downloads/tor-browser-linux-x86_64-15.0.24.tar.xz"
+    mine.write_bytes(b"x" * 3_000_000)
+    mine.with_name(mine.name + ".asc").write_bytes(b"sig")
+
+    class Job(dict):
+        def __setitem__(self, k, v):
+            super().__setitem__(k, v)
+            if k == "done" and v > 1_000_000:
+                super().__setitem__("cancel", True)
+    with pytest.raises(B.Stopped):
+        B.copy_in(host, mine, Job())
+    assert not list((disk / ".downloads").iterdir()) and mine.exists()

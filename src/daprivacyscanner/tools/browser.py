@@ -631,33 +631,42 @@ def copy_in(host: Host, archive: Path, job: dict) -> Path:
     job.update(phase=f"Copying {archive.name} into ~/{DISK}", done=0, total=0)
     for src in (archive.with_name(archive.name + ".asc"), archive):
         (dest / src.name).unlink(missing_ok=True)       # nothing of an earlier copy stays, a signature included
-    for src in (archive.with_name(archive.name + ".asc"), archive):
-        try:
-            fd = os.open(src, os.O_RDONLY | os.O_CLOEXEC | os.O_NONBLOCK)
-        except FileNotFoundError:
-            continue                                    # no signature beside it: verifying says so
-        except OSError as e:
-            raise BrowserError(f"{src.name} can't be read: {e.strerror or e}.") from None
-        try:
-            st = os.fstat(fd)
-            if not stat.S_ISREG(st.st_mode) or st.st_size > MAX_ARCHIVE:
-                raise BrowserError(f"{src.name} isn't a browser archive (or its signature).")
-            if st.st_size + 64 * 1024 * 1024 > shutil.disk_usage(root(host)).free:
-                raise BrowserError(f"There isn't room for {src.name} in ~/{DISK}. Close it and open it again bigger.")
-            target = dest / src.name
-            out = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
-            with os.fdopen(out, "wb") as w, os.fdopen(os.dup(fd), "rb") as r:
-                job["total"], copied = st.st_size, 0
-                while chunk := r.read(1024 * 1024):
-                    copied += len(chunk)
-                    if copied > MAX_ARCHIVE:            # growing while it is read: not the file that was checked
-                        target.unlink(missing_ok=True)
-                        raise BrowserError(f"{src.name} grew past {MAX_ARCHIVE // 2**20} MB while it was copied: "
-                                           "it isn't a browser archive.")
-                    w.write(chunk)
-                    job["done"] = job.get("done", 0) + len(chunk)
-        finally:
-            os.close(fd)
+    try:
+        for src in (archive.with_name(archive.name + ".asc"), archive):
+            try:
+                fd = os.open(src, os.O_RDONLY | os.O_CLOEXEC | os.O_NONBLOCK)
+            except FileNotFoundError:
+                continue                                # no signature beside it: verifying says so
+            except OSError as e:
+                raise BrowserError(f"{src.name} can't be read: {e.strerror or e}.") from None
+            try:
+                st = os.fstat(fd)
+                if not stat.S_ISREG(st.st_mode) or st.st_size > MAX_ARCHIVE:
+                    raise BrowserError(f"{src.name} isn't a browser archive (or its signature).")
+                if st.st_size + 64 * 1024 * 1024 > shutil.disk_usage(root(host)).free:
+                    raise BrowserError(f"There isn't room for {src.name} in ~/{DISK}. Close it and open it again "
+                                       "bigger.")
+                target = dest / src.name
+                out = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+                with os.fdopen(out, "wb") as w, os.fdopen(os.dup(fd), "rb") as r:
+                    job["total"], copied = st.st_size, 0
+                    while chunk := r.read(1024 * 1024):
+                        copied += len(chunk)
+                        if job.get("cancel"):
+                            target.unlink(missing_ok=True)
+                            raise Stopped("Stopped: nothing was kept.")
+                        if copied > MAX_ARCHIVE:        # growing while it is read: not the file that was checked
+                            target.unlink(missing_ok=True)
+                            raise BrowserError(f"{src.name} grew past {MAX_ARCHIVE // 2**20} MB while it was copied: "
+                                               "it isn't a browser archive.")
+                        w.write(chunk)
+                        job["done"] = job.get("done", 0) + len(chunk)
+            finally:
+                os.close(fd)
+    except BaseException:                               # stopped, refused: no copy is left in the RAM disk
+        for src in (archive.with_name(archive.name + ".asc"), archive):
+            (dest / src.name).unlink(missing_ok=True)
+        raise
     return dest / archive.name
 
 
@@ -715,6 +724,8 @@ def unpack(host: Host, archive: Path, b: Browser, job: dict) -> Path:
         job["total"] = size
         try:
             for m in members:
+                if job.get("cancel"):                   # Stop: it went on to the end before (review of 2026-10-17)
+                    raise Stopped("Stopped while unpacking: nothing was kept.")
                 rel = Path(m.name).relative_to(b.folder) if m.name.rstrip("/") != b.folder else Path(".")
                 dest = staging / rel
                 if m.isdir():
