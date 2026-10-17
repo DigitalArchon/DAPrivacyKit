@@ -234,6 +234,27 @@ def gnome_lockscreen_details(scan: Scan) -> tuple[list[str], bool]:
 KEYRING_MAGIC = b"GnomeKeyring\n\r\0\n"
 
 
+def keyring_name(head: bytes) -> str | None:
+    """A GNOME keyring's name as Passwords and Keys (Seahorse) shows it ("Login", "Default keyring"), from the start of
+    its file: display-name in an unencrypted one; in an encrypted one the string after the header, version, cipher and
+    hash bytes (gnome-keyring's gkm-secret-binary.c: a 32-bit length, then UTF-8). None when it can't be read."""
+    if head.startswith(KEYRING_MAGIC):
+        pos = len(KEYRING_MAGIC) + 4
+        n = int.from_bytes(head[pos:pos + 4], "big")
+        raw = head[pos + 4:pos + 4 + n] if len(head) >= pos + 4 + n else b""
+    else:
+        m = re.search(rb"^display-name=([^\r\n]*)", head, re.M)
+        raw = m.group(1) if m else b""
+    name = raw.decode("utf-8", errors="replace").strip()
+    return name or None
+
+
+def keyring_label(path: Path, head: bytes) -> str:
+    """How a keyring is named in the evidence: its name and its file, "Default keyring (Default_keyring.keyring)"."""
+    name = keyring_name(head)
+    return f"{name} ({path.name})" if name else path.name
+
+
 @register
 class KeyringBlank(Check):
     id = "auth.keyring_blank"
@@ -247,19 +268,20 @@ class KeyringBlank(Check):
         ev, plain, unsure = [], [], []
         for r in rings:
             try:
-                head = host.read_head(r, 32) or b""
+                head = host.read_head(r, 512) or b""
             except Unreadable:
                 unsure.append(r.name)
                 ev.append(Evidence.val(r.name, "couldn't check: unreadable", named=True))
                 continue
+            label = keyring_label(r, head)
             if head.startswith(KEYRING_MAGIC):
-                ev.append(Evidence.val(r.name, "encrypted", named=True))
+                ev.append(Evidence.val(label, "encrypted", named=True))
             elif head.lstrip().startswith(b"[keyring]"):
-                plain.append(r.name)
-                ev.append(Evidence.val(r.name, "stored unencrypted (blank password)", named=True))
+                plain.append(label)
+                ev.append(Evidence.val(label, "stored unencrypted (blank password)", named=True))
             else:
-                unsure.append(r.name)
-                ev.append(Evidence.val(r.name, "couldn't check: not a format the app knows", named=True))
+                unsure.append(label)
+                ev.append(Evidence.val(label, "couldn't check: not a format the app knows", named=True))
         # a KDE wallet with a blank password is still encrypted, with a key made from the empty
         # password: the only test is to try it (in memory; nothing from inside is kept)
         for w in wallets:
@@ -293,21 +315,52 @@ class KeyringBlank(Check):
 V10 = "hex(substr({}, 1, 3)) = '763130'"
 
 
+def menu_dirs(scan: Scan) -> list[tuple[Path, bool]]:
+    """The folders menu entries are read from, in the order the desktop reads them ($XDG_DATA_HOME first, then the
+    data folders as Flatpak's profile script orders them: its exports before /usr/local/share and /usr/share), each
+    with whether it is the user's own. An entry is known by its file name, and the first folder that has one wins: a
+    file of the same name further down is hidden by it."""
+    host, paths = scan.host, scan.paths
+    return [(paths.data_home / "applications", True), (paths.data_home / "flatpak/exports/share/applications", False),
+            (host.sys_path("/var/lib/flatpak/exports/share/applications"), False),
+            (host.sys_path("/usr/local/share/applications"), False), (host.sys_path("/usr/share/applications"), False)]
+
+
 def basic_store_flags(scan: Scan) -> list[tuple[Path, bool]]:
     """Files that start a Chromium browser or an Electron app with --password-store=basic: any ~/.config/*-flags.conf
-    (Arch's chromium-flags.conf, code-flags.conf, electron*-flags.conf...) and any menu entry, the user's own, the
-    system's or a Flatpak's: (file, whether it is the user's own)."""
+    (Arch's chromium-flags.conf, code-flags.conf, electron*-flags.conf...) and any menu entry the desktop uses, the
+    user's own, the system's or a Flatpak's: (file, whether it is the user's own). An entry hidden by one of the same
+    name earlier in the menu's folders (the user's copy without the flag, which the guide writes) doesn't count."""
     host, paths = scan.host, scan.paths
     out = []
     for f in children(paths.config_home):
         if f.name.endswith("-flags.conf") and "--password-store=basic" in (read_text(host, f) or ""):
             out.append((f, True))
-    for d, own in ((paths.data_home / "applications", True), (host.sys_path("/usr/share/applications"), False),
-                   (host.sys_path("/var/lib/flatpak/exports/share/applications"), False),
-                   (paths.data_home / "flatpak/exports/share/applications", False)):
+    seen: set[str] = set()
+    for d, own in menu_dirs(scan):
         for f in children(d):
-            if f.suffix == ".desktop" and "--password-store=basic" in (read_text(host, f) or ""):
+            if f.suffix != ".desktop" or f.name in seen:
+                continue
+            seen.add(f.name)
+            if "--password-store=basic" in (read_text(host, f) or ""):
                 out.append((f, own))
+    return out
+
+
+def builtin_key_secrets(scan: Scan) -> list[tuple[str, str, int, int]]:
+    """(browser, profile, saved passwords, cookies) kept under Chromium's built-in key, for each profile that has any.
+    Counted, never read. Values saved before the keyring was used stay so: Chromium still reads them with its built-in
+    key and doesn't encrypt them again, so cookies stay until their site sets them anew (months, for one that keeps a
+    login) or they are deleted."""
+    out = []
+    for d in chromium_dirs(scan.paths):
+        for prof in chromium_profiles(d):
+            logins = sqlite_count(prof / "Login Data", f"SELECT count(*) FROM logins WHERE {V10.format('password_value')}")
+            cookies = sqlite_count(prof / "Network" / "Cookies",
+                                   f"SELECT count(*) FROM cookies WHERE {V10.format('encrypted_value')}") \
+                or sqlite_count(prof / "Cookies", f"SELECT count(*) FROM cookies WHERE {V10.format('encrypted_value')}")
+            if logins or cookies:
+                out.append((d.label, prof.name, logins or 0, cookies or 0))
     return out
 
 
@@ -347,18 +400,9 @@ class ChromiumBasicStore(Check):
             return absent("No Chromium-based browser or Electron app profiles were found.")
 
         v10 = 0
-        for d in dirs:
-            for prof in chromium_profiles(d):
-                counts = [sqlite_count(prof / "Login Data",
-                                        f"SELECT count(*) FROM logins WHERE {V10.format('password_value')}"),
-                          sqlite_count(prof / "Network" / "Cookies",
-                                        f"SELECT count(*) FROM cookies WHERE {V10.format('encrypted_value')}")
-                          or sqlite_count(prof / "Cookies",
-                                           f"SELECT count(*) FROM cookies WHERE {V10.format('encrypted_value')}")]
-                n = sum(c or 0 for c in counts)
-                if n:
-                    v10 += n
-                    ev.append(Evidence.count(f"Secrets under the built-in key ({d.label}, {prof.name})", n))
+        for browser, profile, logins, cookies in builtin_key_secrets(scan):
+            v10 += logins + cookies
+            ev.append(Evidence.count(f"Secrets under the built-in key ({browser}, {profile})", logins + cookies))
         notes = []
         if plain:
             ev += [Evidence.count(f"Cookies kept unencrypted by {name}", n) for name, n in plain[:10]]

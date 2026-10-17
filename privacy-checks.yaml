@@ -738,7 +738,11 @@ checks:
     detect:
       - 'GNOME Keyring: $XDG_DATA_HOME/keyrings/*.keyring; encrypted files begin with the binary magic "GnomeKeyring\n\r\0\n", unencrypted ones are plain-text INI starting with "[keyring]"'
       - 'KWallet: $XDG_DATA_HOME/kwalletd/*.kwl (+ .salt). A blank password still encrypts (with a key made from the empty password), so try that key in memory: PBKDF2-SHA512 with the salt (or the pre-4.13 SHA-1 key), Blowfish CBC (ECB for old wallets), then the size field and KWallet''s own SHA-1 must match (kwallet.py; checked against wallets made by KWallet 6.30). GPG wallets are protected by the GPG key.'
-    fix: Set a keyring password via Seahorse or KWalletManager; explain the trade-off with autologin.
+    fix: >
+      Set a password: one step per kind of store found blank, whatever the desktop (GNOME keyrings in Passwords and
+      Keys, Seahorse, by the name it shows them under: display-name, or the name in an encrypted file's header; KDE
+      wallets in KDE Wallet Manager), with the program, or its install command when it isn't installed (Fedora
+      Workstation and Omarchy have no Seahorse). Explain the trade-off with autologin.
     remedy: >
       Your keyring holds saved passwords and opens without one, so anyone who can read your files can
       read them. Guide… shows how to give it a password: your login password makes it unlock at login.
@@ -759,7 +763,9 @@ checks:
       hardcoded key, which is effectively plaintext.
     detect:
       - 'Launch flags: --password-store=basic in any ~/.config/*-flags.conf (browsers'', code-flags.conf, electron*-flags.conf)
-        and any menu entry (the user''s, the system''s, Flatpak exports), browsers and Electron apps alike'
+        and any menu entry the desktop uses, browsers and Electron apps alike: the first file of a name in
+        $XDG_DATA_HOME/applications, Flatpak''s exports (the user''s, then the system''s), /usr/local/share and /usr/share,
+        so an entry hidden by a copy of the user''s own (the guide''s, without the flag) doesn''t count'
       - 'Browser profiles: "Login Data" (SQLite) logins.password_value and "Cookies" encrypted_value: prefix "v10" =
         hardcoded key, "v11" = keyring key'
       - 'Electron apps (a ~/.config folder with GPUCache or Code Cache, native and Flatpak): their cookies are not a sign
@@ -767,7 +773,12 @@ checks:
         EnableCookieEncryption fuse; tested with Electron 44, the value in plain text with the keyring and with basic).
         Cookies kept unencrypted are counted, never read, in a note: not a finding, nothing here can change it'
       - 'Check that a Secret Service provider is on the session bus (org.freedesktop.secrets)'
-    fix: Ensure gnome-keyring or KWallet Secret Service is running; remove the flag; re-save credentials.
+    fix: >
+      Remove the flag (a menu entry of the system's: a copy of the user's own without it); a keyring for this desktop
+      (KDE Wallet on Plasma, turned on in kwalletrc; GNOME Keyring elsewhere, installed or started); re-save what is
+      stored: the step gives the counts of passwords and cookies still under the built-in key, which keep the check
+      failing (Chromium reads them with that key and doesn't encrypt them again; a cookie only when its site sets it
+      anew, or the browser's cookies are deleted).
     remedy: >
       This browser keeps passwords and cookies under a key built into the browser, which anything that
       reads your files can use. Guide… removes the setting that forces this, so the system keyring

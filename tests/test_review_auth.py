@@ -7,7 +7,8 @@ from daprivacyscanner.model import Status
 
 from conftest import detect, ev, make_host, make_scan
 from fakes import FakeGSettings, FakeKwriteconfig
-from test_guides import apply, revert
+from test_checks_auth import BUS, _wallets, chrome_profile
+from test_guides import apply, build, options, revert
 
 KDE = dict(desktop=("kde",), plasma_major=6)
 RELOAD = ("qdbus6", "org.kde.screensaver", "/ScreenSaver", "org.kde.screensaver.configure")
@@ -144,3 +145,100 @@ def test_no_desktop_session_is_said_in_words(cat, tmp_path):
     why = FIXES["auth.screen_lock"].can(scan)
     assert not why and "this scan ran without a desktop session" in why
     assert "this is Sway" in FIXES["auth.screen_lock"].can(make_scan(host, desktop=("sway",)))
+
+
+# ------------------------------------------------------------------ Chromium's basic store
+
+NO_BUS = {"busctl --user list": "NAME PID PROCESS\n"}
+
+
+def test_basic_store_guide_makes_the_check_pass(cat, tmp_path):
+    """The guide's copy of a system menu entry, without the flag, hides the system's: the check read the hidden one and
+    kept failing while the step showed done."""
+    host = make_host(tmp_path, commands=BUS, files={"/usr/share/applications/google-chrome.desktop":
+                                                    "[Desktop Entry]\nExec=/usr/bin/google-chrome-stable --password-store=basic %U\n"})
+    chrome_profile(host.home)
+    g = build(cat, host, "auth.chromium_basic_store")
+    log, res = apply(host, options(g)["Remove the flag"])
+    assert detect(cat, "auth.chromium_basic_store", make_scan(host)).status is Status.PASS
+    revert(host, log, res)
+    assert detect(cat, "auth.chromium_basic_store", make_scan(host)).status is Status.FAIL
+
+
+def test_basic_store_reads_the_entry_the_menu_uses(cat, tmp_path):
+    """The first file of a name wins, in the menu's order: the user's, Flatpak's exports, /usr/local/share, /usr/share."""
+    from daprivacyscanner.checks.auth import basic_store_flags
+    flagged = "[Desktop Entry]\nExec=app --password-store=basic\n"
+    host = make_host(tmp_path, commands=BUS,
+                     home_files={".local/share/flatpak/exports/share/applications/com.brave.Browser.desktop":
+                                 "[Desktop Entry]\nExec=brave\n"},
+                     files={"/var/lib/flatpak/exports/share/applications/com.brave.Browser.desktop": flagged,
+                            "/usr/local/share/applications/code.desktop": flagged,
+                            "/usr/share/applications/code.desktop": "[Desktop Entry]\nExec=code\n"})
+    found = [(f.relative_to(host.root).as_posix(), own) for f, own in basic_store_flags(make_scan(host))]
+    assert found == [("usr/local/share/applications/code.desktop", False)]
+
+
+def test_basic_store_keyring_step_is_the_desktops_own(cat, tmp_path):
+    host = make_host(tmp_path, commands=NO_BUS, files={"/etc/os-release": "ID=fedora\n"},
+                     home_files={".config/kwalletrc": "[Wallet]\nEnabled=false\n"})
+    chrome_profile(host.home)
+    g = build(cat, host, "auth.chromium_basic_store", **KDE)
+    step = next(s for s in g.steps if "KDE Wallet" in s.title)
+    assert "gnome-keyring" not in " ".join(step.commands) + step.text
+    assert step.commands == ["sudo dnf install kwalletmanager5     # KDE Wallet Manager isn't installed",
+                             "kwriteconfig6 --file kwalletrc --group Wallet --key Enabled true"]
+    g = build(cat, host, "auth.chromium_basic_store", desktop=("x-cinnamon",))
+    assert next(s for s in g.steps if "Keyring" in s.title).commands == ["sudo dnf install gnome-keyring"]
+    host.runner.installed.add("gnome-keyring-daemon")
+    g = build(cat, host, "auth.chromium_basic_store", desktop=("x-cinnamon",))
+    assert next(s for s in g.steps if "Keyring" in s.title).title == "Start GNOME Keyring"
+
+
+def test_basic_store_resave_step_counts_what_keeps_it_failing(cat, tmp_path):
+    """Values saved under the built-in key stay so once the keyring is used, cookies until their site sets them
+    again: the step says what the check counts, and how to be rid of each."""
+    host = make_host(tmp_path, commands=BUS)
+    chrome_profile(host.home, cookies_prefix=b"v10", login_prefix=b"v11")
+    g = build(cat, host, "auth.chromium_basic_store")
+    step = next(s for s in g.steps if s.title == "Re-save what is already stored")
+    assert step.text.startswith("The scan counts 2 cookies kept under the built-in key (Google Chrome).")
+    assert "Ctrl+Shift+Delete" in step.text and "Passwords:" not in step.text and not step.done
+
+
+# ------------------------------------------------------------------ blank keyrings
+
+def _blank_ring(host, file="Default_keyring.keyring", name="Default keyring"):
+    d = host.home / ".local/share/keyrings"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / file).write_text(f"[keyring]\ndisplay-name={name}\nctime=0\nmtime=0\nlock-on-idle=false\nlock-after=false\n")
+
+
+def test_keyring_guide_follows_the_store_found_not_the_desktop(cat, tmp_path):
+    """Plasma with a blank GNOME keyring was sent to KDE Wallet Manager; Cinnamon with both blank only to Seahorse."""
+    host = make_host(tmp_path, files={"/etc/os-release": "ID=fedora\n"})
+    _blank_ring(host)
+    g = build(cat, host, "auth.keyring_blank", **KDE)
+    assert [s.title for s in g.steps] == ["Set a password for the GNOME keyring"]
+    assert "“Default keyring”" in g.steps[0].text and "Default_keyring.keyring" not in g.steps[0].text
+    assert g.steps[0].commands == ["sudo dnf install seahorse     # Passwords and Keys isn't installed", "seahorse"]
+    assert "only the Login keyring" in g.steps[0].text and not g.steps[0].side_effects
+    _wallets(host, ("blank", "kdewallet"))
+    host.runner.installed.update({"seahorse", "kwalletmanager5"})
+    g = build(cat, host, "auth.keyring_blank", desktop=("x-cinnamon",))
+    assert [s.title for s in g.steps] == ["Set a password for the GNOME keyring", "Set a password for the KDE wallet"]
+    assert g.steps[0].commands == ["seahorse"] and g.steps[1].commands == ["kwalletmanager5"]
+    assert "“kdewallet”" in g.steps[1].text and g.steps[1].side_effects
+
+
+def test_keyring_evidence_names_the_keyring(cat, tmp_path):
+    from daprivacyscanner.checks.auth import KEYRING_MAGIC, keyring_name
+    host = make_host(tmp_path)
+    _blank_ring(host, "login.keyring", "Login")
+    o = detect(cat, "auth.keyring_blank", make_scan(host))
+    assert ev(o) == {"Login (login.keyring)": "stored unencrypted (blank password)"}
+    g = build(cat, host, "auth.keyring_blank")
+    assert "“Login”" in g.steps[0].text and "unlocks when you log in" in g.steps[0].text
+    # an encrypted keyring's name follows its header: version, cipher and hash bytes, then a length and the name
+    head = KEYRING_MAGIC + bytes(4) + len("Login").to_bytes(4, "big") + b"Login" + b"\x00" * 40
+    assert keyring_name(head) == "Login" and keyring_name(KEYRING_MAGIC + b"\x00\x01binary") is None

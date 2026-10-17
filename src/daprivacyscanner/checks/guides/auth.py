@@ -7,6 +7,7 @@ from pathlib import Path
 
 from ...fix import ChmodPath, ClearInFile, RootChange, WriteFile
 from ...guide import Guide, Input, Step
+from ...host import Unreadable
 from .._util import children, isdir, isfile, mode_of, read_text
 from ..fixes import gset
 from . import guide, option, evidence, service_off, install, dropin, remote_session
@@ -54,24 +55,66 @@ def empty_password(check, scan, outcome):
                  ])
 
 
+def _program(scan, names: tuple[str, ...], packages: dict[str, str], what: str) -> list[str]:
+    """The command that opens a program, or, when it isn't installed, the one that installs it first (Fedora
+    Workstation and Omarchy come without Seahorse)."""
+    have = next((n for n in names if scan.host.runner.which(n)), None)
+    if have:
+        return [have]
+    cmd = install(scan, **packages)
+    return [f"{cmd}     # {what} isn't installed", names[-1]] if cmd else []
+
+
 @guide("auth.keyring_blank")
 def keyring_blank(check, scan, outcome):
-    rings = evidence(outcome, value="stored unencrypted")
+    """One step per kind of store found blank, whatever the desktop: GNOME keyrings in Passwords and Keys, KDE wallets
+    in KDE Wallet Manager (a Plasma user can have a blank GNOME keyring, and Cinnamon both)."""
+    from ..auth import KEYRING_MAGIC, keyring_name
+    host = scan.host
+    rings = []                                          # (file, the name Passwords and Keys shows) of blank keyrings
+    for p in children(scan.paths.data_home / "keyrings"):
+        if p.suffix != ".keyring":
+            continue
+        try:
+            head = host.read_head(p, 512) or b""
+        except Unreadable:
+            continue
+        if not head.startswith(KEYRING_MAGIC) and head.lstrip().startswith(b"[keyring]"):
+            rings.append((p, keyring_name(head) or p.stem))
     wallets = [w.removesuffix(".kwl") for w in evidence(outcome, value="opens without a password")]
-    kde = scan.context.desktop.is_kde or bool(wallets) and not rings
+    autologin = ["With automatic login on, nothing types that password for you, so it is asked for after login. See "
+                 "auth.autologin."]
+    steps = []
+    if rings:
+        names = ", ".join(f"“{n}”" for _, n in rings)
+        login = any(p.name == "login.keyring" for p, _ in rings)
+        steps.append(Step(
+            f"Set a password for the GNOME keyring{'s' if len(rings) > 1 else ''}",
+            f"Open Passwords and Keys (Seahorse), right-click the keyring {names} under Passwords and choose Change "
+            "Password. Leave the old password empty and type the new one twice."
+            + (" For the Login keyring use your login password: it then unlocks when you log in." if login else
+               " Your login password unlocks only the Login keyring at login: this one asks for its own password when "
+               "an app first needs it."),
+            commands=_program(scan, ("seahorse",), dict(debian="seahorse", fedora="seahorse", arch="seahorse",
+                                                        suse="seahorse"), "Passwords and Keys"),
+            side_effects=autologin if login else []))
+    if wallets:
+        names = ", ".join(f"“{w}”" for w in wallets)
+        default = "kdewallet" in wallets
+        steps.append(Step(
+            f"Set a password for the KDE wallet{'s' if len(wallets) > 1 else ''}",
+            f"Open KDE Wallet Manager, select the wallet {names} and choose Change Password."
+            + (" For kdewallet use your login password: Plasma then opens it when you log in." if default
+               else " This wallet asks for its own password when an app first needs it."),
+            commands=_program(scan, ("kwalletmanager6", "kwalletmanager5"),
+                              dict(debian="kwalletmanager", fedora="kwalletmanager5", arch="kwalletmanager",
+                                   suse="kwalletmanager"), "KDE Wallet Manager"),
+            side_effects=autologin if default else []))
+    if not steps:
+        steps.append(Step("Your keyrings", "None opens without a password now.", done=True))
     return Guide(check.id, "Give your keyring a password",
                  "A keyring with a blank password is stored unencrypted: anyone who can read your files can read "
-                 "the passwords in it.", [
-                     Step("Set the password",
-                          (f"Open KDE Wallet Manager, select the wallet ({', '.join(wallets) or 'kdewallet'}) and "
-                           "choose Change Password." if kde else
-                           f"Open Passwords and Keys (Seahorse), right-click the keyring ({', '.join(rings) or 'Login'}) "
-                           "and choose Change Password.")
-                          + " Use your login password: the keyring then unlocks when you log in.",
-                          commands=["kwalletmanager6 || kwalletmanager5"] if kde else ["seahorse"],
-                          side_effects=["With automatic login on, nothing types that password for you, so the "
-                                        "keyring asks for it after login. See auth.autologin."]),
-                 ])
+                 "the passwords in it.", steps)
 
 
 @guide("auth.chromium_basic_store")
@@ -96,16 +139,65 @@ def chromium_basic_store(check, scan, outcome):
                                   side_effects=["Takes effect the next time the browser starts."])] if actions else [],
                   done=not actions)]
     if any(e.label == "Secret Service on the session bus" and e.value is False for e in outcome.evidence):
-        steps.append(Step("Run a keyring",
-                          "No Secret Service is running, so browsers fall back to the built-in key. GNOME, Cinnamon "
-                          "and MATE use GNOME Keyring; KDE uses KWallet.",
-                          commands=[c for c in [install(scan, debian="gnome-keyring", fedora="gnome-keyring",
-                                                         arch="gnome-keyring", suse="gnome-keyring")] if c]))
-    steps.append(Step("Re-save what is already stored",
-                      "Passwords and cookies saved so far stay under the built-in key. Cookies are replaced as sites "
-                      "set them again. For passwords: export them from the browser's password manager, delete them "
-                      "there, import the file again, then delete the exported file."))
+        steps.append(_keyring_step(scan))
+    steps.append(_resave_step(scan))
     return Guide(check.id, "Keep browser passwords in the keyring", "", steps)
+
+
+def _keyring_step(scan) -> Step:
+    """The keyring this desktop's browsers use: KDE Wallet on Plasma (Chromium uses it there, other apps reach it as the
+    Secret Service), GNOME Keyring elsewhere."""
+    if scan.context.desktop.is_kde:
+        off = scan.kde.get("kwalletrc", "Wallet", "Enabled") == "false"
+        # KDE Wallet Manager brings the settings page and the wallet's daemon with it
+        cmds = [c for c in _program(scan, ("kwalletmanager6", "kwalletmanager5"),
+                                    dict(debian="kwalletmanager", fedora="kwalletmanager5", arch="kwalletmanager",
+                                         suse="kwalletmanager"), "KDE Wallet Manager") if " install " in c]
+        if off:
+            cmds.append(f"{scan.kde.tool('kwriteconfig')} --file kwalletrc --group Wallet --key Enabled true")
+        return Step("Turn on KDE Wallet",
+                    "No keyring answered on the session bus, so browsers fall back to the built-in key. Plasma's "
+                    "keyring is KDE Wallet (KWallet): Chromium-based browsers use it on Plasma, and other apps reach it "
+                    "as the Secret Service. " + ("It is turned off here: turn it on in System Settings → KDE Wallet "
+                                                 "(Enable the KDE wallet subsystem), or with the command below, "
+                                                 if off else "Check that System Settings → KDE Wallet has Enable the "
+                                                 "KDE wallet subsystem ticked, ")
+                    + "then log out and back in.", commands=cmds)
+    if scan.host.runner.which("gnome-keyring-daemon"):
+        return Step("Start GNOME Keyring",
+                    "No keyring answered on the session bus, so browsers fall back to the built-in key. GNOME Keyring "
+                    "is installed but isn't running in this session: GNOME, Cinnamon and MATE start it at login. Log "
+                    "out and back in; on another desktop, start it at login with this command:",
+                    commands=["gnome-keyring-daemon --start --components=secrets"])
+    cmd = install(scan, debian="gnome-keyring", fedora="gnome-keyring", arch="gnome-keyring", suse="gnome-keyring")
+    return Step("Install GNOME Keyring",
+                "No keyring answered on the session bus, so browsers fall back to the built-in key. GNOME, Cinnamon "
+                "and MATE use GNOME Keyring, which isn't installed: install it, then log out and back in.",
+                commands=[cmd] if cmd else [])
+
+
+def _resave_step(scan) -> Step:
+    """What the check still counts once the flag is gone: values saved under the built-in key stay so (the browser
+    reads them with it and doesn't encrypt them again), and keep the check failing until they are gone."""
+    from ..auth import builtin_key_secrets
+    found = builtin_key_secrets(scan)
+    if not found:
+        return Step("Re-save what is already stored", "Nothing is stored under the built-in key now.", done=True)
+    pw, ck = sum(f[2] for f in found), sum(f[3] for f in found)
+    where = ", ".join(sorted({f[0] for f in found}))
+    counted = " and ".join(x for x in (f"{pw} saved password{'s' if pw != 1 else ''}" if pw else "",
+                                       f"{ck} cookie{'s' if ck != 1 else ''}" if ck else "") if x)
+    text = (f"The scan counts {counted} kept under the built-in key ({where}). The browser still reads them with it "
+            "and doesn't encrypt them again once the keyring is used, so this check keeps reporting them until they "
+            "are gone.")
+    if pw:
+        text += (" Passwords: export them from the browser's password manager, delete them there, import the file "
+                 "again (now under the keyring's key), then delete the exported file.")
+    if ck:
+        text += (" Cookies are replaced only when their site sets them again, which for one that keeps you signed in "
+                 "can take months. To be rid of them now, delete the browser's cookies: Ctrl+Shift+Delete in the "
+                 "browser, All time, Cookies and other site data. That signs you out of sites.")
+    return Step("Re-save what is already stored", text)
 
 
 REMOTE_SERVICES = {"xrdp": ("xrdp.service", "xrdp-sesman.service"), "TeamViewer": ("teamviewerd.service",),
