@@ -805,8 +805,10 @@ def sound(host: Host) -> tuple[str, str] | None:
 
 SESSION_DIRS = {"XDG_CONFIG_HOME": "config", "XDG_CACHE_HOME": "cache", "XDG_DATA_HOME": "data",
                 "XDG_STATE_HOME": "state", "TMPDIR": "tmp"}
-PASSED_ENV = ("LANG", "LANGUAGE", "LC_ALL", "LC_CTYPE", "LC_MESSAGES", "LC_NUMERIC", "LC_TIME", "LC_COLLATE",
-              "LC_MONETARY", "LC_PAPER", "LC_MEASUREMENT")        # the language; not TZ: the browser's clock is UTC
+# the language and the characters' encoding, nothing more: not the regional formats (LC_TIME, LC_NUMERIC,
+# LC_MONETARY, LC_PAPER, LC_MEASUREMENT…), which say the country where the language doesn't (a Romanian date
+# format under English, while the clock is UTC: seen on the lab), nor LC_ALL, which would carry them too, nor TZ
+PASSED_ENV = ("LANG", "LANGUAGE", "LC_CTYPE", "LC_MESSAGES")
 
 
 @dataclass

@@ -640,7 +640,8 @@ sandbox doesn't.
 HOME=/home/user  USER=user  LOGNAME=user  PATH=/usr/local/bin:/usr/bin:/bin
 XDG_RUNTIME_DIR=/run/user/1000  TZ=UTC
 XDG_CONFIG_HOME, XDG_CACHE_HOME, XDG_DATA_HOME, XDG_STATE_HOME, TMPDIR → /home/user/.session/…
-LANG, LANGUAGE, LC_* (from the host: the user's language)
+LANG, LANGUAGE, LC_CTYPE, LC_MESSAGES (from the host: the user's language; not the regional formats,
+  LC_TIME, LC_NUMERIC and the rest, nor LC_ALL: they say the country where the language doesn't)
 the display's variables (section 7.10); PULSE_SERVER when sound is allowed (section 7.11)
 ```
 
