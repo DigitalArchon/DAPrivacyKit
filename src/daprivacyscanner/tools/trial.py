@@ -60,7 +60,7 @@ APP_IN = "/app"
 COPY_MAX = 8 << 30                       # the largest file copied in
 UNPACK_MAX = 8 << 30                     # the most an archive may unpack to (and no more than there is room for)
 MEMBERS_MAX = 200000                     # the most files and folders it may unpack to
-ROOM_KEPT = 128 << 20                    # what unpacking leaves free where the trial lives (the runtime folder's for the session)
+ROOM_KEPT = 128 << 20                    # what unpacking leaves free where it unpacks (the runtime folder is the session's)
 CANDIDATES_MAX = 60
 OUTPUT_KEPT = 16000                      # the last of the program's own output, shown when it fails
 START_WAIT = 2.0
@@ -510,8 +510,8 @@ def prepare_file(host: Host, path: Path, where: str, run: Callable = subprocess.
         if sub.kind in ("archive", "deb"):
             if not sandbox.program(host, sandbox.BWRAP):
                 raise TrialError("Unpacking it safely needs bubblewrap (the bubblewrap package).")
-            r = run(unpack_argv(host, path, t.app, unpack_limit(place)), cwd="/", env=host_env(host.environ), stdin=subprocess.DEVNULL,
-                    stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=900)
+            r = run(unpack_argv(host, path, t.app, unpack_limit(place)), cwd="/", env=host_env(host.environ),
+                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=900)
             if r.returncode:
                 err = (r.stderr or b"").decode(errors="replace").strip().splitlines()
                 raise TrialError(f"{path.name} couldn't be unpacked: " + (err[-1][:300] if err else f"exit status {r.returncode}"))
@@ -1096,8 +1096,8 @@ def _nested(host: Host, t: Trial, spawn: Callable):
     nest = sandbox.nested(host, t.private, f"Try an app: {t.name}", sandbox.screen_size(host))
     if nest is None:
         raise TrialError("A display of its own works on this computer's own X11 display only. Untick it.")
-    proc = spawn(tethered(host, sandbox.fresh_keyring(host, nest.argv)), cwd="/", env=host_env(host.environ), stdin=subprocess.DEVNULL,
-                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    proc = spawn(tethered(host, sandbox.fresh_keyring(host, nest.argv)), cwd="/", env=host_env(host.environ),
+                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
     if not hasattr(proc, "poll"):
         return nest.display, proc
     deadline = time.monotonic() + NESTED_WAIT
