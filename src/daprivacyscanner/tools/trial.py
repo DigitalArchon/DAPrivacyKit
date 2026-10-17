@@ -562,9 +562,9 @@ def prepare_app(host: Host, app: menu.App, where: str) -> Trial:
                             "It can still ask the desktop through its portals, as every Flatpak app can: a file chooser "
                             "that you answer (a file you pick there is a real one), notifications, opening a link. And "
                             "it can ask Flatpak to start another copy of itself, as apps do to draw pictures: that copy "
-                            "isn't watched, and it gets the app's real data in ~/.var/app and the desktop services the app "
-                            "declares, though not your files or a network this trial doesn't give. It is ended with the "
-                            "trial."])
+                            "isn't watched, and it gets the app's real data in ~/.var/app, though not your files, the "
+                            "desktop services the app declares or a network this trial doesn't give (the versions of "
+                            "Flatpak tested refuse to start one at all). It is ended with the trial."])
     prog = _program(host, app.argv[0])
     if prog is None:
         raise TrialError(f"{app.name}'s program ({app.argv[0]}) isn't in the system's folders, so it can't be started "
@@ -827,7 +827,13 @@ class Flatpak(Engine):
         # on top, home meaning the real one (found in the 2026-10-17 review on Mint 22.3, Flatpak 1.14.6: a copy
         # of Text Editor listed the real home, which the app declares as host). So everything the app declares is
         # taken back here (`taken_back`), which the copy inherits, and the throwaway home is given by its path.
-        a = [sandbox.program(host, "flatpak") or "flatpak", "run", "--sandbox", "--session-bus", "--die-with-parent",
+        # Flatpak 1.14.6 and 1.17.6 then refuse to start such a copy at all (they pass a taken-away bus name or
+        # shared namespace on in a form their own `flatpak run` rejects); a sandboxed copy still starts (tested).
+        # --own-name: its own name on the bus, which --sandbox takes away too, and without which an app that runs one
+        # instance (a GApplication: GNOME Text Editor 51) ends at once, "Failed to register" (found by the review of
+        # View offline…, Flatpak 1.14.6)
+        a = [sandbox.program(host, "flatpak") or "flatpak", "run", "--sandbox", "--session-bus",
+             *([f"--own-name={t.flatpak}"] if t.flatpak and BUS_NAME.fullmatch(t.flatpak) else []), "--die-with-parent",
              *taken_back(host, t, parts.disp.kind), f"--filesystem={t.home}",
              "--share=network" if o.get("network") == "on" else "--unshare=network"]
         a += ["--socket=wayland"] if parts.disp.kind == "wayland" else ["--socket=x11", "--share=ipc"]
@@ -840,24 +846,33 @@ class Flatpak(Engine):
 
 
 FLATPAK_WORD = re.compile(r"[\w~/.@+-]+")
+BUS_NAME = re.compile(r"[\w-]+(\.[\w-]+)*(\.\*)?")
 
 
 def declared(host: Host, app: str) -> dict[str, list[str]]:
     """What a Flatpak app declares for itself, with the user's and the system's overrides: {"filesystems", "sockets",
-    "devices", "shared", "features"}, each a list (entries the overrides take away left out)."""
+    "devices", "shared", "features"}, each a list (entries the overrides take away left out), and "session_bus" and
+    "system_bus", the names it may talk to or own on each bus."""
     from types import SimpleNamespace
     from ..checks.sandbox import flatpak_permissions
     from ..paths import PathResolver
-    ctx = flatpak_permissions(SimpleNamespace(host=host, paths=PathResolver(host.home, host.environ)), app).get(("Context",), {})
-    return {k: [x.strip() for x in ctx.get(k, "").split(";") if x.strip() and not x.strip().startswith("!")]
-            for k in ("filesystems", "sockets", "devices", "shared", "features")}
+    perms = flatpak_permissions(SimpleNamespace(host=host, paths=PathResolver(host.home, host.environ)), app)
+    ctx = perms.get(("Context",), {})
+    out = {k: [x.strip() for x in ctx.get(k, "").split(";") if x.strip() and not x.strip().startswith("!")]
+           for k in ("filesystems", "sockets", "devices", "shared", "features")}
+    for key, group in (("session_bus", "Session Bus Policy"), ("system_bus", "System Bus Policy")):
+        out[key] = [name for name, policy in perms.get((group,), {}).items() if policy.strip() in ("see", "talk", "own")]
+    return out
 
 
 def taken_back(host: Host, t: Trial, display: str) -> list[str]:
     """Options that take away what the Flatpak app declares and the trial doesn't give: a copy of it started through
     Flatpak's portal gets the app's own permissions with these on top (Flatpak.command). Its real data folder in
-    ~/.var/app, which Flatpak gives every copy, and the desktop services it declares on the session bus stay (taking
-    those away (--no-talk-name) made Flatpak 1.14 refuse every such copy, the image loaders' too)."""
+    ~/.var/app, which Flatpak gives every copy, stays. The desktop services it declares go too, and GVFS always (it
+    fetches over the network for its callers: gio cat http:// worked with no network, found by the review of View
+    offline…). Flatpak 1.14 passes a taken-away name on to such a copy in a form its own `flatpak run` refuses
+    ("--none-name"), so there the copy isn't started at all; a sandboxed copy (flatpak-spawn --sandbox, as GTK 4's
+    image loaders start) doesn't take these options and still starts (tested on Mint 22.3, Flatpak 1.14.6)."""
     d = declared(host, t.flatpak or "")
     out = ["--nofilesystem=host", "--nofilesystem=home"]
     for fs in d["filesystems"]:
@@ -872,6 +887,9 @@ def taken_back(host: Host, t: Trial, display: str) -> list[str]:
     out += [f"--unshare={s}" for s in d["shared"] if FLATPAK_WORD.fullmatch(s)
             and not (s == "ipc" and display != "wayland") and not (s == "network" and t.options.get("network") == "on")]
     out += [f"--disallow={f}" for f in d["features"] if FLATPAK_WORD.fullmatch(f)]
+    out += [f"--no-talk-name={n}" for n in dict.fromkeys(["org.gtk.vfs.*", *d["session_bus"]])
+            if BUS_NAME.fullmatch(n) and n != t.flatpak]
+    out += [f"--system-no-talk-name={n}" for n in d["system_bus"] if BUS_NAME.fullmatch(n)]
     return out
 
 

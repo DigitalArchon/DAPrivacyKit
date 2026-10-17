@@ -231,6 +231,10 @@ filesystems=host;xdg-download;/run/media:ro;!xdg-music;
 
 [Session Bus Policy]
 org.gtk.vfs.*=talk
+org.mpris.MediaPlayer2.app=own
+
+[System Bus Policy]
+org.freedesktop.NetworkManager=talk
 """
 
 
@@ -261,7 +265,12 @@ def test_a_flatpak_trial_takes_back_what_the_app_declares(tmp_path):
         assert taken in a, taken
     assert "--nosocket=x11" not in a and "--unshare=ipc" not in a, "what the trial gives (an X11 display) stays"
     assert a.index("--nodevice=all") < a.index("--device=dri"), "the graphics card, ticked, is given back after"
-    assert "--nofilesystem=xdg-music" not in a and not any("talk-name" in x for x in a)
+    assert "--nofilesystem=xdg-music" not in a
+    # its declared bus names, and GVFS, which fetches over the network for its callers (the review of View offline…);
+    # a copy that GTK 4's image loaders start sandboxed doesn't take these and still starts (tested, Flatpak 1.14.6)
+    assert "--no-talk-name=org.gtk.vfs.*" in a and "--system-no-talk-name=org.freedesktop.NetworkManager" in a
+    assert a.count("--no-talk-name=org.gtk.vfs.*") == 1 and "--no-talk-name=org.mpris.MediaPlayer2.app" in a
+    assert a[4] == "--own-name=org.x.App", "a one-instance app must own its name, which --sandbox takes away"
 
 
 def test_the_copies_flatpak_started_for_a_trial_are_ended_with_it(tmp_path, monkeypatch):

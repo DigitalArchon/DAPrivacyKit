@@ -1577,9 +1577,16 @@ OACS, FNA and SANICAP via the helper's ioctl), read on request and kept for the 
     takes back on its command line everything the app declares (`taken_back`, from `flatpak info
     --show-permissions` and the overrides: filesystems, host and home, sockets, devices, shared, features; then
     what the trial gives), which the copy inherits, and gives the throwaway home by its path, not as "home"
-    (tested there: the copy saw the trial's home and not the real one). What Flatpak gives every copy stays: its
-    real data folder in `~/.var/app`, and the desktop services it declares on the session bus (`--no-talk-name`
-    made Flatpak 1.14 refuse every copy, the image loaders' too). Such copies are found by the options Flatpak
+    (tested there: the copy saw the trial's home and not the real one), and takes away the bus names it declares
+    and GVFS (`--no-talk-name`, `--system-no-talk-name`: GVFS fetches over the network for its callers, gio cat
+    http:// working with no network, found by the review of View offline…). What Flatpak gives every copy stays:
+    its real data folder in `~/.var/app`. Flatpak 1.14.6 (Mint 22.3) and 1.17.6 (Fedora 44) then refuse to start
+    such a copy at all: they pass a taken-away bus name or shared namespace on in a form their own `flatpak run`
+    rejects ("--none-name", "--noshare"), while a sandboxed copy (`flatpak-spawn --sandbox`, as GTK 4's image
+    loaders start one) takes none of these options and still starts (tested on both). `--own-name=<app id>`
+    gives back its own name on the bus, which `--sandbox` takes away: without it an app that runs one instance
+    (a GApplication) ends at once, "Failed to register" (GNOME Text Editor on Fedora 44, tested; found by the
+    review of View offline…). Such copies are found by the options Flatpak
     records for each instance (the trial's home's path in `extra-args`, checked against the sandbox's PID
     namespace) and ended with the trial (`end_flatpak_copies`), which the result says; the page says all this
     before the start, and the Box's guide too.
