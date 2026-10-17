@@ -169,33 +169,64 @@ def coredumps(check, scan, outcome):
 
 @guide("enc.journal_persistent", keys=("two_weeks",))
 def journal(check, scan, outcome):
-    from ..encryption import syslog_daemon
+    from ... import ini
+    from .._util import human_size
+    from ..encryption import (JOURNAL_LIMIT, _layered, journal_in_memory, journal_usage, plain_span, syslog_daemon,
+                              syslog_listed, syslog_names, timespan)
     path = "/etc/systemd/journald.conf.d/60-daprivacyscanner.conf"
-    steps = [Step("Choose how long to keep it", options=[
-                 option(check, "Keep two weeks", [dropin("journald", {"MaxRetentionSec": "2week"}, path)],
-                        detail="Roughly: journald deletes a whole file at a time, when it starts a new one "
-                               "(monthly by default), so some entries stay a while longer. The next step "
-                               "deletes the older ones now.", recommended=True, key="two_weeks"),
-                 option(check, "Keep one week", [dropin("journald", {"MaxRetentionSec": "1week"}, path)],
-                        detail="Roughly, as above: entries older than a week go when their file is rotated."),
-                 option(check, "Keep it in memory only (lost at every reboot)",
-                        [dropin("journald", {"Storage": "volatile"}, path)],
-                        side_effects=["Logs of a crash or failed boot are gone after the reboot that "
-                                      "follows, when you'd want them.",
-                                      "The logs already on the disk stay until deleted: afterwards, "
-                                      "sudo rm -r /var/log/journal removes them."]),
-             ], side_effects=["journald restarts to apply it; older logs are no longer there for "
-                              "troubleshooting."]),
-             Step("Delete older entries now", "Without this, old journal files stay until journald rotates "
-                  "them, which the time limit above only applies at.",
-                  options=[option(check, "Delete journal entries older than two weeks", [RootClear(
-                      "vacuum_journal", {"time": "2weeks"}, "journalctl --vacuum-time=2weeks")]),
-                           option(check, "Delete journal entries older than one week", [RootClear(
-                               "vacuum_journal", {"time": "1weeks"}, "journalctl --vacuum-time=1weeks")])])]
-    daemon, unit, logs = syslog_daemon(scan.host)
-    clear = RootClear("clear_syslog", {}, "Delete the text logs in /var/log the syslog daemon wrote (syslog, messages, "
-                      "auth.log, kern.log and the like, with their rotated copies)")
+    host = scan.host
+    in_memory = journal_in_memory(host)
+    retention = (ini.get(_layered(host, "journald.conf"), "Journal", "MaxRetentionSec") or "").strip()
+    span = timespan(retention) if retention else None
+    memory = option(check, "Keep it in memory only (lost at every reboot)",
+                    [dropin("journald", {"Storage": "volatile"}, path)],
+                    side_effects=["Logs of a crash or failed boot are gone after the reboot that follows, when you'd "
+                                  "want them.",
+                                  "The logs already on the disk stay until deleted: this guide then offers to delete "
+                                  "them."])
+    if in_memory:
+        # a time limit would only weaken it (one drop-in holds both: "two weeks" replaced Storage=volatile)
+        steps = [Step("Choose how long to keep it", "The journal is kept in memory only, and gone at every restart: a "
+                      "time limit has nothing to add.", done=True)]
+    else:
+        weaker = lambda limit: span is not None and span <= limit          # noqa: E731 - already as short, or shorter
+        opts = ([] if weaker(14 * 86400) else [option(
+                    check, "Keep two weeks", [dropin("journald", {"MaxRetentionSec": "2week"}, path)],
+                    detail="Roughly: journald deletes a whole file at a time, when it starts a new one (monthly by "
+                           "default), so some entries stay a while longer. The next step deletes the older ones now.",
+                    recommended=True, key="two_weeks")]) + \
+               ([] if weaker(7 * 86400) else [option(
+                    check, "Keep one week", [dropin("journald", {"MaxRetentionSec": "1week"}, path)],
+                    detail="Roughly, as above: entries older than a week go when their file is rotated.")]) + [memory]
+        done = span is not None and span <= JOURNAL_LIMIT
+        steps = [Step("Choose how long to keep it",
+                      f"It is kept for at most {plain_span(span)} now; keeping it in memory only goes further." if done
+                      else "", options=opts, done=done,
+                      side_effects=["journald restarts to apply it; older logs are no longer there for "
+                                    "troubleshooting."])]
+    files, used = journal_usage(host.sys_path("/var/log/journal"))
+    if in_memory and files:
+        steps.append(Step("Delete the journal files left on the disk",
+                          f"journald keeps the journal in memory now, but the files it wrote to the disk before are "
+                          f"still in /var/log/journal ({files} file{'s' if files != 1 else ''}, {human_size(used)}): "
+                          "logins, USB devices, Wi-Fi networks. journalctl --vacuum-time never deletes the files "
+                          "journald was last writing to, so this deletes them all. Its folders stay, so reverting the "
+                          "setting keeps the journal on the disk again.",
+                          options=[option(check, "Delete the journal files in /var/log/journal", [RootClear(
+                              "clear_journal_files", {}, "Delete the journal files in /var/log/journal")])]))
+    elif not in_memory:
+        steps.append(Step("Delete older entries now", "Without this, old journal files stay until journald rotates "
+                          "them, which the time limit above only applies at.",
+                          options=[option(check, "Delete journal entries older than two weeks", [RootClear(
+                              "vacuum_journal", {"time": "2weeks"}, "journalctl --vacuum-time=2weeks")]),
+                                   option(check, "Delete journal entries older than one week", [RootClear(
+                                       "vacuum_journal", {"time": "1weeks"}, "journalctl --vacuum-time=1weeks")])]))
+    daemon, unit, logs = syslog_daemon(host)
+    names = syslog_names(host)
+    clear = RootClear("clear_syslog", {}, f"Delete the text logs in /var/log the syslog daemon wrote "
+                      f"({syslog_listed(names, 4)}, with their rotated copies)")
     if daemon and logs.files:
+        readers = " or ".join(f"/var/log/{n}" for n in names[:2]) or "the text logs in /var/log"
         steps.append(Step(f"Stop {daemon} keeping a copy of its own",
                           f"{daemon} writes every message the journal gets to text files in /var/log, kept for weeks or "
                           "longer whatever the journal is set to. On a systemd system the journal already "
@@ -203,8 +234,8 @@ def journal(check, scan, outcome):
                           options=[option(check, f"Turn off {daemon} and delete its text logs",
                                           service_off(scan, unit) + [clear], recommended=True,
                                           side_effects=[
-                                              "Programs that read /var/log/syslog or /var/log/auth.log (fail2ban, "
-                                              "logwatch) need to read the journal instead (journalctl).",
+                                              f"Programs that read {readers} (fail2ban, logwatch) need to read the "
+                                              "journal instead (journalctl).",
                                               f"Reverting from History starts {daemon} again; the deleted logs stay "
                                               "deleted."])]))
     elif logs.files and not daemon:

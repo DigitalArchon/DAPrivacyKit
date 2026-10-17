@@ -452,13 +452,18 @@ checks:
         copies): a finding whatever the journal is set to. Running with none (Arch''s syslog-ng.conf ships with every
         destination commented out, tested) is not; text logs left with no daemon running are a warning'
     fix: >
-      Drop-in journald.conf.d with MaxRetentionSec=2week (or Storage=volatile); journalctl --vacuum-time=2weeks. Where a
-      syslog daemon writes text logs: stop and disable it, then delete them (the helper's clear_syslog, by fixed names,
-      refused while one runs). Tested on CachyOS with syslog-ng writing /var/log/messages and auth.log.
+      Drop-in journald.conf.d with MaxRetentionSec=2week (or Storage=volatile); journalctl --vacuum-time=2weeks. One
+      drop-in holds either, so a limit is never offered over Storage=volatile (the step is done), nor one longer than
+      the limit set. Once in memory, the files left in /var/log/journal (system.journal and user-*.journal, which
+      --vacuum-time never deletes) through the helper's clear_journal_files, its folders kept, refused while journald
+      has one open. Where a syslog daemon writes text logs: stop and disable it, then delete them (the helper's
+      clear_syslog, by fixed names, refused while one runs), named as this machine has them (Debian's syslog and
+      auth.log, Fedora's messages and secure). Tested on CachyOS with syslog-ng writing /var/log/messages and auth.log.
+      The size on the disk is what the files take (st_blocks), not their length.
     remedy: >
       The system log keeps a record of activity on disk with no time limit, and a syslog program may keep a
-      second copy in text files. Guide… limits it to two weeks, or keeps it in memory only, and turns off
-      the second copy.
+      second copy in text files. Guide… limits it to two weeks, or keeps it in memory only and deletes what is
+      left on the disk, and turns off the second copy.
     easy:
       option: two_weeks
       cost: "System log entries older than two weeks are deleted as they age."

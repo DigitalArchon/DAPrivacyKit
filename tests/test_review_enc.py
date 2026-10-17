@@ -300,6 +300,102 @@ def test_the_browser_panel_uses_the_same_answer(tmp_path):
     assert B.risks(_core_host(tmp_path, "core", "0"))["crash_dumps"]["kept"] is False
 
 
+# ------------------------------------------------------------------ the journal
+
+MID = "0123456789abcdef0123456789abcdef"
+VOLATILE = {"/etc/systemd/journald.conf.d/60-daprivacyscanner.conf": "[Journal]\nStorage=volatile\n"}
+
+
+def _journal_guide(cat, host):
+    from daprivacyscanner.checks import load_all
+    check = load_all()["enc.journal_persistent"](cat["enc.journal_persistent"])
+    scan = make_scan(host)
+    o = check.detect(scan)
+    return o, check.plan_guide(scan, o)
+
+
+def test_easy_never_turns_a_journal_in_memory_into_two_weeks(cat, tmp_path):
+    """After "Keep it in memory only", Easy fixes offered "Keep two weeks", which replaced Storage=volatile in the same
+    drop-in: a downgrade."""
+    host = make_host(tmp_path, files={**VOLATILE, f"/var/log/journal/{MID}/system.journal": "x"})
+    o, g = _journal_guide(cat, host)
+    first = g.steps[0]
+    assert first.done and not first.options
+    assert not any(opt.key == "two_weeks" for s in g.steps for opt in s.options)
+
+
+def test_a_shorter_limit_isnt_lengthened(cat, tmp_path):
+    host = make_host(tmp_path, files={"/etc/systemd/journald.conf.d/50-x.conf": "[Journal]\nMaxRetentionSec=1week\n"})
+    host.sys_path("/var/log/journal").mkdir(parents=True)
+    o, g = _journal_guide(cat, host)
+    assert o.status is Status.PASS and o.summary == "The journal is kept on disk for at most one week."
+    first = g.steps[0]
+    assert first.done and [opt.label for opt in first.options] == ["Keep it in memory only (lost at every reboot)"]
+
+
+def test_journal_files_left_on_disk_are_deleted_by_the_helper(cat, tmp_path, monkeypatch):
+    """Once in memory, the only deletion was --vacuum-time, which leaves system.journal and user-*.journal: the check
+    kept warning. The helper deletes them, keeps the folders, and refuses while journald still writes there."""
+    from daprivacyscanner import helper
+    from daprivacyscanner.fix import apply_plan
+    from daprivacyscanner.privileged import FakePrivileged
+    from daprivacyscanner.undo import UndoLog
+    from fakes import FakeSystem
+    host = make_host(tmp_path, files={**VOLATILE, f"/var/log/journal/{MID}/system.journal": "x" * 5000,
+                                      f"/var/log/journal/{MID}/user-1000.journal": "x",
+                                      f"/var/log/journal/{MID}/system@abc-0001-0002.journal~": "x",
+                                      f"/var/log/journal/{MID}/notes.txt": "kept"})
+    monkeypatch.setattr(helper, "ROOT", str(host.root))
+    monkeypatch.setattr(helper, "RUN", FakeSystem())
+    host.privileged = FakePrivileged()
+    o, g = _journal_guide(cat, host)
+    assert o.status is Status.WARN
+    step = next(s for s in g.steps if s.title == "Delete the journal files left on the disk")
+    plan = step.options[0].plan
+    assert plan.irreversible and plan.to_dict()["steps"][0]["commands"] == [
+        "rm -f /var/log/journal/*/*.journal /var/log/journal/*/*.journal~"]
+    # journald writing there: refused
+    host.sys_path("/proc/77/fd").mkdir(parents=True)
+    host.sys_path("/proc/77/comm").write_text("systemd-journal\n")
+    os_link = host.sys_path("/proc/77/fd/5")
+    os_link.symlink_to(f"/var/log/journal/{MID}/system.journal")
+    res = apply_plan(plan, host, UndoLog(host.home / ".local/state/daprivacyscanner"), confirmed_irreversible=True)
+    assert not res.ok and "journald is writing" in res.error
+    os_link.unlink()
+    res = apply_plan(plan, host, UndoLog(host.home / ".local/state/daprivacyscanner"), confirmed_irreversible=True)
+    assert res.ok, res.error
+    left = sorted(p.name for p in host.sys_path(f"/var/log/journal/{MID}").iterdir())
+    assert left == ["notes.txt"]
+    assert detect(cat, "enc.journal_persistent", make_scan(host)).status is Status.PASS
+
+
+def test_journal_size_is_what_it_takes_on_the_disk(cat, tmp_path):
+    host = make_host(tmp_path)
+    f = host.sys_path(f"/var/log/journal/{MID}/system.journal")
+    f.parent.mkdir(parents=True)
+    with open(f, "wb") as fh:
+        fh.seek(300 * 1024 * 1024)
+        fh.write(b"x")                                      # 300 MB long, a few KB on the disk
+    o = detect(cat, "enc.journal_persistent", make_scan(host))
+    assert "300" not in ev(o)["Journal on disk"] and ev(o)["Journal on disk"].endswith("on the disk")
+
+
+def test_syslog_files_are_named_as_this_machine_has_them(cat, tmp_path):
+    """"(syslog, auth.log and others)" is Debian's; Fedora's rsyslog writes messages, secure, maillog and cron."""
+    from daprivacyscanner.checks import load_all
+    host = make_host(tmp_path, files={"/var/log/messages": "x", "/var/log/secure": "x", "/var/log/messages-20261011": "x",
+                                      "/var/log/cron": "x", "/etc/systemd/journald.conf": "[Journal]\n"})
+    host.runner.handlers["systemctl"] = lambda argv: CommandResult(
+        argv, 0, "active\n" if argv[1:] == ("is-active", "rsyslog.service") else "inactive\n")
+    host.sys_path("/var/log/journal").mkdir(parents=True)
+    o = detect(cat, "enc.journal_persistent", make_scan(host))
+    assert "(messages, secure and cron)" in o.summary and "syslog" not in o.summary.replace("rsyslog", "")
+    check = load_all()["enc.journal_persistent"](cat["enc.journal_persistent"])
+    g = check.plan_guide(make_scan(host), o)
+    opt = next(opt for s in g.steps for opt in s.options if opt.label.startswith("Turn off rsyslog"))
+    assert "/var/log/messages or /var/log/secure" in " ".join(opt.plan.side_effects)
+
+
 def test_the_panels_say_what_the_scan_says(tmp_path):
     """The RAM disk and browser panels said "this computer can hibernate" where the scan said it can't."""
     from daprivacyscanner.tools import ramdisk as R

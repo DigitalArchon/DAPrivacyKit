@@ -100,6 +100,7 @@ Installing itself (for the AppImage, which has no source tree to run packaging/i
 Deleting (irreversible, the app confirms first):
     clear_crash_dumps               core dumps and crash reports in /var/lib/systemd/coredump and /var/crash
     vacuum_journal {time}           journalctl --vacuum-time
+    clear_journal_files             the journal files left in /var/log/journal once journald keeps it in memory
     clear_syslog                    the text logs a syslog daemon wrote in /var/log (SYSLOG_FILES), once it is stopped
     clear_opensnitch_log            OpenSnitch's log emptied and its rotated copies deleted
 """
@@ -4381,6 +4382,59 @@ def snapper_cleanup(args: dict) -> dict:
     return {"configs": names}
 
 
+JOURNAL_DIR = "/var/log/journal"
+_JOURNAL_FILE = re.compile(r"\.journal~?$")
+_JOURNAL_FOLDER = re.compile(r"^[0-9a-f]{32}(\.[A-Za-z0-9_.-]+)?$")     # the machine id, a namespace after a dot
+
+
+def _journald_writes_to(prefix: str) -> bool:
+    """Whether systemd-journald (its comm is "systemd-journal") has a file under `prefix` open."""
+    for pid in os.listdir(_p("/proc")):
+        if not pid.isdigit():
+            continue
+        try:
+            with open(_p(f"/proc/{pid}/comm")) as f:
+                if f.read().strip() != "systemd-journal":
+                    continue
+            fds = os.listdir(_p(f"/proc/{pid}/fd"))
+        except OSError:
+            continue
+        for fd in fds:
+            try:
+                if os.readlink(_p(f"/proc/{pid}/fd/{fd}")).startswith(prefix + "/"):
+                    return True
+            except OSError:
+                continue
+    return False
+
+
+def _journal_files_command() -> str:
+    return f"rm -f {JOURNAL_DIR}/*/*.journal {JOURNAL_DIR}/*/*.journal~"
+
+
+def clear_journal_files(args: dict) -> dict:
+    """The journal files left in /var/log/journal once the journal is kept in memory (Storage=volatile: journald then
+    writes only to /run/log/journal): its folders stay, so reverting that setting keeps the journal on the disk again.
+    --vacuum-time deletes archived files only, never system.journal or user-*.journal. Refused while journald has one
+    of them open: it is still writing there, so they are the journal itself."""
+    _must_be_root()
+    if _journald_writes_to(JOURNAL_DIR):
+        raise Refused("journald is writing to /var/log/journal: keep the journal in memory first")
+    real = _check_path(JOURNAL_DIR)
+    try:
+        folders = sorted(os.listdir(real))
+    except FileNotFoundError:
+        return {"deleted": 0}
+    n = 0
+    for name in folders:
+        p = os.path.join(real, name)
+        if _JOURNAL_FOLDER.match(name) and not os.path.islink(p) and os.path.isdir(p):
+            n += _delete_files(f"{JOURNAL_DIR}/{name}", _JOURNAL_FILE)
+    if n:
+        DID.append(_journal_files_command())
+    return {"deleted": n}
+
+
 _VACUUM = re.compile(r"^[1-9][0-9]{0,2}(weeks|days)$")
 
 
@@ -4529,6 +4583,8 @@ def planned(request: str, args: dict, home: str | None = None) -> list[str]:
             out += [q(["systemctl", "enable", SHIPPED_TMP_MOUNT]), q(["systemctl", "daemon-reload"])]
         elif request == "vacuum_journal":
             out.append(q(["journalctl", f"--vacuum-time={args['time']}"]))
+        elif request == "clear_journal_files":
+            out.append(_journal_files_command())
         elif request == "clear_crash_dumps":
             out += _crash_dump_commands()
         elif request == "clear_syslog":
@@ -5160,6 +5216,7 @@ ACTIONS = {"hello": hello, "ufw_status": ufw_status, "observe_traffic": observe_
            "erase_facts": erase_facts, "watch_begin": watch_begin, "watch_poll": watch_poll, "watch_end": watch_end,
            "revert": revert,
            "clear_crash_dumps": clear_crash_dumps, "vacuum_journal": vacuum_journal, "snapper_cleanup": snapper_cleanup,
+           "clear_journal_files": clear_journal_files,
            "clear_syslog": clear_syslog, "opensnitch_rules": opensnitch_rules,
            "clear_opensnitch_log": clear_opensnitch_log}
 

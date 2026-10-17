@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import fnmatch
 import json
+import os
 import posixpath
 import re
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -1071,6 +1073,61 @@ def syslog_daemon(host: Host) -> tuple[str | None, str | None, Tally]:
     return None, None, logs
 
 
+def syslog_names(host: Host) -> list[str]:
+    """The text logs a syslog daemon writes on this machine, by name, rotated copies left out: syslog and auth.log on
+    Debian and Ubuntu, messages, secure, maillog and cron on Fedora."""
+    from ..helper import SYSLOG_FILES, SYSLOG_NAMES
+    names = {m.group(1) for p in children(host.sys_path("/var/log")) if (m := SYSLOG_FILES.match(p.name)) and p.is_file()}
+    return sorted(names, key=SYSLOG_NAMES.index)
+
+
+def syslog_listed(names: list[str], most: int = 3) -> str:
+    """"syslog, auth.log and kern.log", or the first few "and others"."""
+    if not names:
+        return "the text logs"
+    if len(names) > most:
+        return ", ".join(names[:most]) + " and others"
+    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
+
+
+_NUMBER_WORDS = {1: "one", 2: "two", 3: "three", 4: "four", 5: "five", 6: "six", 7: "seven", 8: "eight", 9: "nine",
+                 10: "ten"}
+
+
+def plain_span(seconds: float) -> str:
+    """A systemd time span in words: "two weeks", "one month", "10 days", "12 hours"."""
+    for unit, size in (("year", _SPAN_UNITS["y"]), ("month", _SPAN_UNITS["M"]), ("week", _SPAN_UNITS["w"]),
+                       ("day", 86400), ("hour", 3600), ("minute", 60)):
+        n = seconds / size
+        if n >= 1 and abs(n - round(n)) < 1e-6:
+            n = round(n)
+            return f"{_NUMBER_WORDS.get(n, str(n))} {unit}{'s' if n != 1 else ''}"
+    return _days(seconds)
+
+
+def journal_usage(path: Path, pattern: re.Pattern = re.compile(r"\.journal~?$")) -> tuple[int, int]:
+    """(journal files, bytes they take on the disk) under `path`, links not followed: a journal file's size is mostly holes,
+    so its length says more than it holds (352 MB long, 219 MB on the disk, seen on Mint)."""
+    files = used = 0
+    for d, _, names in os.walk(path, followlinks=False):
+        for n in names:
+            try:
+                st = os.lstat(os.path.join(d, n))
+            except OSError:
+                continue
+            if stat.S_ISREG(st.st_mode) and pattern.search(n):
+                files += 1
+                used += st.st_blocks * 512
+    return files, used
+
+
+def journal_in_memory(host: Host) -> bool:
+    """journald keeps the journal in memory only: Storage=volatile or none, or auto without /var/log/journal."""
+    cfg = _layered(host, "journald.conf", "journald.conf.d")
+    storage = (ini.get(cfg, "Journal", "Storage") or "auto").lower()
+    return storage in ("volatile", "none") or (storage == "auto" and not isdir(host.sys_path("/var/log/journal")))
+
+
 @register
 class JournalPersistent(Check):
     id = "enc.journal_persistent"
@@ -1088,8 +1145,8 @@ class JournalPersistent(Check):
             ev.append(Evidence.val(daemon, "running, but no text logs of its own in /var/log"))
         elif daemon:
             ev.append(Evidence.val(f"{daemon} (writes text logs in /var/log)", f"running, {logs.describe()}"))
-            syslog_problem = (f"{daemon} also writes the system's messages to text files in /var/log (syslog, auth.log "
-                              "and others), whatever the journal is set to")
+            syslog_problem = (f"{daemon} also writes the system's messages to text files in /var/log "
+                              f"({syslog_listed(syslog_names(host))}), whatever the journal is set to")
             notes.append(Note("risk", f"{daemon} keeps its own copy",
                               "It reads every message the journal gets and writes them to text files: logins and sudo "
                               "commands, USB devices, Wi-Fi networks. logrotate keeps them for weeks where it runs (four "
@@ -1098,7 +1155,8 @@ class JournalPersistent(Check):
         elif logs.files:
             ev.append(Evidence.val("Text logs a syslog daemon left in /var/log", logs.describe()))
         if not on_disk:
-            old = tally(host.sys_path("/var/log/journal"))
+            files, used = journal_usage(host.sys_path("/var/log/journal"))
+            old = Tally(files=files, bytes=used)
             if old.files:
                 ev.append(Evidence.val("Old journal files on disk", old.describe()))
             if syslog_problem:
@@ -1114,17 +1172,18 @@ class JournalPersistent(Check):
         max_use = (ini.get(cfg, "Journal", "SystemMaxUse") or "").strip()
         ev.insert(1, Evidence.val("MaxRetentionSec", retention or "not set"))
         ev.insert(2, Evidence.val("SystemMaxUse", max_use or "default (10% of the filesystem, at most 4 GB)"))
-        size = tally(host.sys_path("/var/log/journal"))
-        if size.files:
-            ev.insert(3, Evidence.val("Journal on disk", size.describe()))
+        files, used = journal_usage(host.sys_path("/var/log/journal"))
+        if files:
+            ev.insert(3, Evidence.val("Journal on disk", Tally(files=files, bytes=used).describe() + " on the disk"))
         span = timespan(retention) if retention else None
         if retention and span is None:
             notes.append(Note("limitation", "MaxRetentionSec couldn't be read", f"\"{retention[:40]}\" isn't a time "
                               "span the app understands, so the journal is taken as kept until its size limit."))
         if span and span <= JOURNAL_LIMIT:
             if syslog_problem:
-                return failed(f"The journal is kept for at most {retention}, but {syslog_problem}.", *ev, notes=notes)
-            return passed(f"The journal is kept on disk for at most {retention}.", *ev, notes=notes)
+                return failed(f"The journal is kept for at most {plain_span(span)}, but {syslog_problem}.", *ev,
+                              notes=notes)
+            return passed(f"The journal is kept on disk for at most {plain_span(span)}.", *ev, notes=notes)
         kept = f"for {_days(span)}" if span else "until it reaches its size limit"
         return failed(f"The system journal is kept on disk {kept}" + (f", and {syslog_problem}." if syslog_problem else "."),
                       *ev, notes=notes)
