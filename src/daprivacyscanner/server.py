@@ -403,9 +403,9 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
         body = await body_of(request)
         if scan_lock.locked():
             return busy()
-        if trim_running():
-            return JSONResponse({"error": "A tool (the TRIM test, or Deleted file names) is using administrator "
-                                          "access: installing the helper would stop it."},
+        if trim_running() or keeps_running():
+            return JSONResponse({"error": "A tool (the TRIM test, Deleted file names, or What does this app keep?) is "
+                                          "using administrator access: installing the helper would stop it."},
                                 status_code=409)
         async with scan_lock:
             await asyncio.to_thread(admin.drop)
@@ -1516,6 +1516,13 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
         jobs = (app.state.trim_job, app.state.names_job, app.state.clean_job)
         return any(j is not None and j["state"] in ("asking", "running") for j in jobs)
 
+    # the TRIM test and Deleted file names don't start while an app is watched, nor the watch while they run: the
+    # helper does one call at a time, and a disk read for minutes held the watch's polling (and its End) behind it
+    def watching() -> JSONResponse:
+        return JSONResponse({"error": "An app is being watched (What does this app keep?): end the watch first. Both "
+                                      "need the administrator helper, which does one thing at a time."},
+                            status_code=409)
+
     def trim_view(job: dict | None) -> dict | None:
         if job is None:
             return None
@@ -1564,6 +1571,8 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
         body = await body_of(request)
         if trim_running():
             return JSONResponse({"error": "The TRIM test is already running."}, status_code=409)
+        if keeps_running():
+            return watching()
         mount = body.get("mount")
         if not isinstance(mount, str):
             return JSONResponse({"error": "Choose a filesystem to test."}, status_code=400)
@@ -1658,6 +1667,8 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
             return JSONResponse({"error": "Which disk?"}, status_code=400)
         if trim_running():
             return JSONResponse({"error": "The TRIM test or another listing is still running."}, status_code=409)
+        if keeps_running():
+            return watching()
         job = app.state.names_job = {"state": "asking", "phase": "Starting", "done": 0, "total": 0, "unit": "",
                                      "phase_started": time.time(), "result": None, "error": "", "cancel": False,
                                      "mount": mount, "trimmed": None}
@@ -1744,6 +1755,8 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
                                 status_code=400)
         if trim_running():
             return JSONResponse({"error": "The TRIM test or another listing is still running."}, status_code=409)
+        if keeps_running():
+            return watching()
         job = app.state.clean_job = {"state": "asking", "phase": "Starting", "steps": [], "result": None, "error": "",
                                      "cancel": False, "mount": mount, "started": time.time()}
         app.state.clean_task = asyncio.create_task(run_clean_job(job, mount, rels, again))
@@ -1918,6 +1931,10 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
         # made its job, and the first went on watching, administrator access held, out of the page's reach
         if keeps_running() or keeps_starting.locked():
             return JSONResponse({"error": "An app is already being watched: end that first."}, status_code=409)
+        if trim_running():
+            return JSONResponse({"error": "The TRIM test or Deleted file names is running: let it finish first. Both "
+                                          "need the administrator helper, which does one thing at a time."},
+                                status_code=409)
         async with keeps_starting:
             why = await asyncio.to_thread(appwatch.available, host)
             if why:

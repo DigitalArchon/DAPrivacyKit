@@ -361,7 +361,10 @@ is run again (`Runner.rescan`).
 - **Lifetime.** One authorisation covers a scan and the fixes after it. Access ends when the user drops
   it, after 5 idle minutes (`server.ADMIN_IDLE`), when the app quits, or straight after a scan that found
   nothing a root fix could act on. Long work holds it for as long as it runs (the TRIM test, a listing of deleted
-  names, a watch of an app, which says so before it starts and drops the access when it ends).
+  names, a watch of an app, which says so before it starts and drops the access when it ends). The watch and the
+  other two don't run at once, nor is the helper installed or removed while any of them runs: the helper does one
+  call at a time, so a disk read for minutes held the watch's polling and its End behind it, and installing the
+  helper ended the watch with everything it had seen.
 
 ---
 

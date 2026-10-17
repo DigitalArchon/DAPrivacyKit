@@ -326,3 +326,30 @@ def test_two_starts_at_once_make_one_watch(cat, menu_host, monkeypatch):
         c.post("/api/tools/keeps/stop", headers=H)
         _wait(c, lambda j: j["state"] == "done")
         assert fake.calls.count("watch_begin") == 1 and fake.calls.count("watch_end") == 1
+
+
+def test_the_watch_and_the_other_long_root_work_keep_apart(cat, menu_host, monkeypatch):
+    """Installing the helper during a watch dropped the access and lost the watch (D13); the TRIM test or Deleted
+    file names alongside it held its polling behind minutes-long disk reads (the suspicion, confirmed)."""
+    from daprivacyscanner import server
+    monkeypatch.setattr(server, "KEEPS_EVERY", 0.05)
+    monkeypatch.setattr(appwatch, "running", lambda h, a: False)
+    fake = FakeWatch()
+    with TestClient(create_app("t0ken", cat, make_host=lambda: menu_host, start_helper=lambda: fake,
+                               spawn_app=lambda argv, **kw: None)) as c:
+        assert c.post("/api/tools/keeps/start", headers=H, json={"app": "foo.desktop"}).status_code == 200
+        _wait(c, lambda j: j["state"] == "running")
+        r = c.post("/api/helper/install", headers=H, json={})
+        assert r.status_code == 409 and "What does this app keep?" in r.json()["error"]
+        for path, body in (("/api/tools/trim/start", {"mount": "/"}), ("/api/tools/names/start", {"mount": "/"}),
+                           ("/api/tools/names/clean", {"mount": "/", "folders": ["x"], "not_synced": True})):
+            r = c.post(path, headers=H, json=body)
+            assert r.status_code == 409 and "end the watch first" in r.json()["error"], path
+        assert c.app.state.trim_job is None and c.app.state.names_job is None and fake.open
+        c.post("/api/tools/keeps/stop", headers=H)
+        _wait(c, lambda j: j["state"] == "done")
+        c.post("/api/tools/keeps/dismiss", headers=H)
+        c.app.state.trim_job = {"state": "running", "cancel": False}             # the TRIM test, running
+        r = c.post("/api/tools/keeps/start", headers=H, json={"app": "foo.desktop"})
+        assert r.status_code == 409 and "TRIM test" in r.json()["error"] and fake.calls.count("watch_begin") == 1
+        c.app.state.trim_job = None
