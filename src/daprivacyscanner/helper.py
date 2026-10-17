@@ -5256,7 +5256,9 @@ class _Filesystems:
         now = {fs["dev"]: fs for fs in plan}
         for w in list(self.watched):
             fs = now.get(w.fs["dev"])
-            if fs is None:                           # unmounted: let go, so the disk can go too
+            # unmounted: let go, so the disk can go too; a btrfs whose top level is mounted elsewhere now (or no
+            # longer): let go, and taken up again below the way it can be reached now
+            if fs is None or fs.get("at") != w.fs.get("at"):
                 w.close()
                 self.watched.remove(w)
                 self.tried.discard(w.fs["dev"])

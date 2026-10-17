@@ -573,6 +573,20 @@ def test_a_disk_mounted_during_the_watch_is_watched_and_one_unmounted_let_go(mon
     assert len(fss.watched) == 4
 
 
+def test_a_btrfs_whose_top_level_is_unmounted_is_taken_up_again_through_its_own(monkeypatch):
+    table = [dict(m) for m in MOUNTS[:3]] + [dict(MOUNTS[8]), dict(MOUNTS[9])]   # the pool's top, and a subvolume
+    monkeypatch.setattr(helper, "_watch_mountinfo", lambda: table)
+    monkeypatch.setattr(helper, "_Watched", FakeWatched)
+    FakeWatched.closed = []
+    fss = helper._Filesystems(None, 1000, "/home/u", True)
+    fss.add(*helper._watch_plan(1000, "/home/u"))
+    assert [w.fs.get("at") for w in fss.watched if w.fs["dev"] == "0:27"] == ["/run/media/u/POOL"]
+    del table[3]                                                  # the top level unmounted; ~/Photos still there
+    fss.replan()
+    assert FakeWatched.closed == ["/home/u/Photos"]
+    assert [w.fs.get("at") for w in fss.watched if w.fs["dev"] == "0:27"] == [None]
+
+
 def test_the_result_and_the_page_follow_the_filesystems_watched(tmp_path):
     host = Host(home=tmp_path, environ={"HOME": str(tmp_path)}, runner=FakeRunner(), uid=1000)
     raw = {"files": [], "watched": ["/", "/home/u/RAMDisk"], "skipped": [["/run/user/1000/doc", "the portal"]]}
