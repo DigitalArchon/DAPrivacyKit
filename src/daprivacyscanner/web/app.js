@@ -2781,17 +2781,21 @@ function browserIntro(data) {
 function browserRamdisk(data, reload) {
   const rd = data.ramdisk;
   if (rd.other) return h("div", { class: "warnbox" }, `Something else (${rd.other}) is mounted on ~/TempBrowser.`);
+  // not while a browser is being set up in it: closing would wipe the download or the unpacking under it
+  const closeBtn = () => data.job?.state === "running"
+    ? h("span", { class: "muted" }, "It can be closed once the set-up has finished or been stopped.")
+    : h("button", { class: "small danger", onclick: () => closeRamdisk(rd, reload) }, "Close and overwrite…");
   if (rd.open && rd.noexec) {
     return h("div", { class: "notebox risk small" }, h("b", {}, "~/TempBrowser doesn't allow programs to run. "),
       "Close it (that overwrites what is in it) and open it again here, with programs allowed.",
-      h("div", { class: "orow" }, h("button", { class: "small danger", onclick: () => closeRamdisk(rd, reload) }, "Close and overwrite…")));
+      h("div", { class: "orow" }, closeBtn()));
   }
   if (rd.open) {
     const free = rd.total - rd.used;
     return h("div", { class: "orow small" }, h("span", { class: "badge st-pass" }, "~/TempBrowser open"),
       h("span", { class: "muted" }, `${fmtSize(free)} free of ${fmtSize(rd.total)}; programs can run from it.`),
       free < data.min_mb * 0.5 * 1048576 ? h("span", { class: "errmsg" }, "That may be too little: a browser needs about 500 MB.") : null,
-      h("button", { class: "small danger", onclick: () => closeRamdisk(rd, reload) }, "Close and overwrite…"));
+      closeBtn());
   }
   const want = Math.min(rd.max_mb, Math.max(data.min_mb, 1536));
   const size = h("input", { type: "number", class: "num", min: data.min_mb, max: rd.max_mb, value: want });

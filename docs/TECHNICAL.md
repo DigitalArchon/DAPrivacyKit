@@ -1142,7 +1142,19 @@ paths as the sandbox sees them). A running browser is named as the browser ("Clo
 together with the processes around it: its parents up through `bwrap`, `python3`, `sh`, `bash`, `env`,
 `pasta`, and what those started (tor, its transports), stopping at the app's own process. A viewer
 View offline… started is named "Firefox (opened by View offline…)" or similar. Any other program of the
-user's is named as itself.
+user's is named as itself. A display of its own (Xephyr in its sandbox) goes under the browser's name while the
+browser runs; once the browser has quit it still holds its socket folder for up to 18 seconds (`-terminate 10`, then
+the focus keeper's 8), and closing was refused meanwhile ("Close Xephyr, bwrap, python3 first") and quitting left
+the disk open (found in the review of 2026-10-17): the close now ends it (`end_display`: SIGTERM, then SIGKILL after
+3 seconds), the app having started it for a browser that is gone. Only Xephyr, the bubblewrap processes above it
+and the focus keeper's python3 inside are ended, never a python3 that isn't bubblewrap's child (a copy of the app).
+
+Closing is refused while a browser is being set up or started, in this copy (its job, a start under way) or in
+another (`owner.hold` on both browsers' keys, held for the length of the close, so none starts meanwhile): a close
+during a set-up wiped the download or the unpacking under it, and the job failed with an error naming neither
+(found in the review of 2026-10-17). The page hides the button while its own set-up runs. Quitting leaves the disk
+to a copy that is setting a browser up in it (that copy takes it over as it shows the panel), while its own set-up
+ends with it.
 
 When the app quits with the browser still running, `~/TempBrowser` stays open until it is closed from the
 app later or the computer restarts. What quitting did is printed only to a terminal: it names programs ("Tor

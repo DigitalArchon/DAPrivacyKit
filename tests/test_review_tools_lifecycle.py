@@ -20,6 +20,7 @@ from daprivacyscanner.tools import owner
 from daprivacyscanner.tools import ramdisk as R
 
 from test_browser_tool import open_ramdisk
+from test_review_tools_owner import other  # noqa: F401 - another copy of the app, a real process
 from test_server_tools import H, host  # noqa: F401 - the fixture
 
 
@@ -168,3 +169,75 @@ def test_a_leftover_is_put_back_from_the_page_without_administrator_access(cat, 
     folder.mkdir()
     folder.chmod(0o755)
     assert c.post("/api/tools/ramdisk/tidy", headers=H, json={"disk": "browser"}).status_code == 409 and folder.is_dir()
+
+
+# ------------------------------------------------------------------ A5: Xephyr after the browser has quit
+
+# the app (python3, its parent a shell), the display's sandbox: bwrap, bwrap, the focus keeper's python3, Xephyr; and a
+# python3 script of the user's
+PROCS = {10: (1, "bash"), 100: (10, "python3"), 200: (100, "bwrap"), 201: (200, "bwrap"), 202: (201, "python3"),
+         203: (202, "Xephyr"), 300: (10, "python3")}
+
+
+def test_a_display_of_its_own_is_ended_when_the_browser_has_quit(host, monkeypatch):  # noqa: F811
+    """Closing was refused for ~15-18 s after the browser quit ("Close Xephyr, bwrap, python3 first"), and quitting the
+    app then left ~/TempBrowser open: the display the app started for the browser is ended now."""
+    disk = open_ramdisk(host)
+    holders = {201: "bwrap", 202: "python3", 203: "Xephyr", 300: "python3"}
+    monkeypatch.setattr(B, "_procs", lambda host: dict(PROCS))
+    monkeypatch.setattr(R, "holders_on_device", lambda host, path: dict(holders))
+    monkeypatch.setattr(B, "running", lambda host, b: [])
+    monkeypatch.setattr(B, "DISPLAY_WAIT", 0.2)
+    assert B.disk_users(host, disk) == [B.DISPLAY_NAME, "python3"]       # the user's own script is named as itself
+    killed = []
+
+    def kill(pid, sig):
+        killed.append((pid, sig))
+        holders.pop(pid, None)
+    assert B.end_display(host, disk, kill=kill)
+    assert {pid for pid, _ in killed} == {200, 201, 202, 203}            # never the app (100) nor the script (300)
+    assert holders == {300: "python3"}
+    # while a browser runs, its display goes under its name, and nothing is ended
+    holders.update({203: "Xephyr", 400: "firefox.real"})
+    monkeypatch.setattr(B, "running", lambda host, b: [400] if b.id == "tor" else [])
+    monkeypatch.setattr(B, "_browser_tree", lambda host, procs=None: {400})
+    assert B.disk_users(host, disk) == ["Tor Browser", "python3"]
+    assert not B.end_display(host, disk, kill=lambda *a: pytest.fail("killed while the browser runs"))
+
+
+# ------------------------------------------------------------------ A6: closing during a set-up
+
+def test_closing_is_refused_while_a_browser_is_set_up_here_or_in_another_copy(cat, host, monkeypatch):  # noqa: F811
+    """"Close and overwrite…" was accepted during a set-up job: it wiped under the download, the job failed (LZMAError,
+    ENOENT), and the close answered 400 naming no program."""
+    from fastapi.testclient import TestClient
+    disk = open_ramdisk(host)
+    (disk / ".downloads").mkdir()
+    (disk / ".downloads/tor-browser-linux-x86_64-15.0.24.tar.xz.part").write_bytes(b"x" * 100)
+    quiet(monkeypatch)
+    c = TestClient(create_app("t0ken", cat, make_host=lambda: host, start_helper=lambda: Helper()))
+    c.app.state.browser_job = {"state": "running", "name": "Tor Browser"}
+    r = c.post("/api/tools/ramdisk/close", headers=H, json={"disk": "browser"})
+    assert r.status_code == 409 and "being set up" in r.json()["error"]
+    assert (disk / ".downloads/tor-browser-linux-x86_64-15.0.24.tar.xz.part").exists()
+    c.app.state.browser_job = None
+    held = owner.hold(host, "browser-mullvad")                          # a start under way in this copy
+    r = c.post("/api/tools/ramdisk/close", headers=H, json={"disk": "browser"})
+    assert r.status_code == 409 and "Mullvad Browser is being set up or started here" in r.json()["error"]
+    owner.let_go(held)
+    assert (disk / ".downloads/tor-browser-linux-x86_64-15.0.24.tar.xz.part").exists()
+
+
+def test_quitting_leaves_tempbrowser_to_the_copy_setting_a_browser_up_in_it(host, monkeypatch, other):  # noqa: F811
+    disk = open_ramdisk(host)
+    quiet(monkeypatch)
+    assert owner.claim(host, "TempBrowser", disk)
+    (disk / "page.html").write_text("visited")
+    assert other("hold", key="browser-tor")                             # another copy is downloading into it
+    h = Helper()
+    assert "another window of this app" in B.close_disk(host, lambda: h) and not h.calls
+    assert (disk / "page.html").exists()
+    other.end()
+    mine = owner.hold(host, "browser-tor")                              # this copy's own set-up: it ends with it
+    assert "closed" in B.close_disk(host, lambda: h) and h.calls
+    owner.let_go(mine)

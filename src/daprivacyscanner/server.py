@@ -1172,29 +1172,38 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
             return JSONResponse({"error": f"~/{name} isn't open, so there is nothing to close."}, status_code=409)
         if scan_lock.locked():
             return busy()
-        async with scan_lock:
-            wiped = None
-            if st.open:
-                from .tools.browser import disk_users
-                users = await asyncio.to_thread(disk_users, host, st.path)
+        from .tools import browser as B, owner
+        if name == ramdisk.BROWSER and browser_busy():   # a close wiped the download or unpacking under the job
+            return JSONResponse({"error": f"{app.state.browser_job['name']} is being set up in ~/{name}: wait until "
+                                 "that has finished, or stop it, then close."}, status_code=409)
+        held, why = (await asyncio.to_thread(B.hold_all, host)) if name == ramdisk.BROWSER else ([], "")
+        if why:
+            return JSONResponse({"error": why}, status_code=409)
+        try:
+            async with scan_lock:
+                wiped = None
+                if name == ramdisk.BROWSER:             # the browser has quit, and its own display not yet
+                    await asyncio.to_thread(B.end_display, host, st.path)
+                users = await asyncio.to_thread(B.disk_users, host, st.path)
                 if users:
                     return JSONResponse({"error": f"Close {', '.join(users)} first: "
                                          f"{'it is' if len(users) == 1 else 'they are'} using files in ~/{name}.",
                                          "users": users}, status_code=409)
-                from .tools.browser import wipe_disk
-                w = await asyncio.to_thread(wipe_disk if name == ramdisk.BROWSER else ramdisk.wipe, st.path)
+                w = await asyncio.to_thread(B.wipe_disk if name == ramdisk.BROWSER else ramdisk.wipe, st.path)
                 wiped = {"files": w.files, "bytes": w.bytes, "failed": w.failed[:20]}
-            problem = await with_root(host)
-            if problem:
-                return JSONResponse({"error": problem.replace("changed", "closed") + (
-                    " Its files have been overwritten and deleted already." if wiped else ""), "declined": True,
-                    "wiped": wiped}, status_code=403)
-            try:
-                await asyncio.to_thread(host.privileged.call, "ramdisk_close", {"name": name})
-            except HelperError as e:
-                return JSONResponse({"error": f"It couldn't be closed: {e}", "wiped": wiped}, status_code=400)
-            from .tools import owner
-            owner.release(host, name)
+                problem = await with_root(host)
+                if problem:
+                    return JSONResponse({"error": problem.replace("changed", "closed") + (
+                        " Its files have been overwritten and deleted already." if wiped else ""), "declined": True,
+                        "wiped": wiped}, status_code=403)
+                try:
+                    await asyncio.to_thread(host.privileged.call, "ramdisk_close", {"name": name})
+                except HelperError as e:
+                    return JSONResponse({"error": f"It couldn't be closed: {e}", "wiped": wiped}, status_code=400)
+                owner.release(host, name)
+        finally:
+            for fd in held:
+                owner.let_go(fd)
         return {"ramdisk": await asyncio.to_thread(ramdisk_view, host, name), "wiped": wiped,
                 "admin_active": admin.active()}
 

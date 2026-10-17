@@ -1565,16 +1565,75 @@ def _browser_tree(host: Host, procs: dict[int, tuple[int, str]] | None = None) -
     return _with_descendants(procs, tree)
 
 
+def _display_tree(host: Host, procs: dict[int, tuple[int, str]]) -> set[int]:
+    """A display of its own (Xephyr in its sandbox, _start_nested): Xephyr's processes, their parents up through the
+    sandbox (bubblewrap's, and the focus keeper's python3 inside it), and what they started. It holds its socket
+    folder in the browser's private folder on the RAM disk, and ends only 10 seconds after the browser's last window
+    (-terminate) and the focus keeper's 8 seconds. Never a copy of the app (a python3 too, but not bubblewrap's
+    child): end_display ends what this returns."""
+    me = os.getpid() if host.root == Path("/") else None
+
+    def sandbox_part(pid: int) -> bool:
+        name, parent = procs[pid][1], procs[pid][0]
+        return name == "bwrap" or (name == "python3" and procs.get(parent, (0, ""))[1] == "bwrap")
+    roots = {pid for pid, (_, name) in procs.items() if name == "Xephyr"}
+    tree = set(roots)
+    for pid in roots:
+        parent = procs[pid][0]
+        while parent in procs and parent not in tree and parent != me and sandbox_part(parent):
+            tree.add(parent)
+            parent = procs[parent][0]
+    return _with_descendants(procs, tree)
+
+
+DISPLAY_WAIT = 3.0                      # seconds a display of its own has to end once told to, before it is killed
+DISPLAY_NAME = "Xephyr (the browser's own display, which ends by itself within half a minute of the browser)"
+
+
+def end_display(host: Host, path: Path, kill: Callable[[int, int], None] = os.kill) -> bool:
+    """Closing ~/TempBrowser while no browser runs, but a display of its own still holds it (the browser has quit,
+    and Xephyr hasn't ended yet): the app started it for the browser, which is gone, so it is ended (SIGTERM, then
+    SIGKILL after DISPLAY_WAIT seconds), rather than the close being refused as \"Close Xephyr, bwrap, python3 first\"
+    for up to 18 seconds, and quitting the app leaving the disk open (found in the review of 2026-10-17). Whether it
+    ended one."""
+    import signal
+    if any(running(host, b) for b in BROWSERS.values()):
+        return False
+    held = ramdisk.holders_on_device(host, path)
+    if not held:
+        return False
+    tree = _display_tree(host, _procs(host))
+    if not tree & set(held):
+        return False
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        for pid in sorted(tree):
+            try:
+                kill(pid, sig)
+            except (ProcessLookupError, PermissionError):
+                pass
+        deadline = time.monotonic() + DISPLAY_WAIT
+        while time.monotonic() < deadline and set(ramdisk.holders_on_device(host, path)) & tree:
+            time.sleep(0.1)
+        if not set(ramdisk.holders_on_device(host, path)) & tree:
+            break
+    return True
+
+
 def disk_users(host: Host, path: Path) -> list[str]:
     """Programs using the RAM disk at `path`: a running browser named as the browser (its sandbox, tor and
-    content processes with it), a viewer View offline… started as that viewer, then every other program by
-    its own name."""
+    content processes with it, and a display of its own), a viewer View offline… started as that viewer, then every
+    other program by its own name."""
     from . import viewer
     held = ramdisk.holders_on_device(host, path)
     path_held = ramdisk.users_of(host, path) if not held else []
     procs = _procs(host) if held else {}
     tree = _browser_tree(host, procs) if held else set()
     named = [b.name for b in BROWSERS.values() if running(host, b)]
+    display = _display_tree(host, procs) - tree if held else set()
+    if display & set(held):
+        if not named:                                   # the browser has quit, and its display hasn't ended yet
+            named.append(DISPLAY_NAME)
+        tree |= display
     for pid, app in viewer.launched().items():
         vtree = _with_descendants(procs, {pid}) - tree
         if vtree & set(held):
@@ -1621,6 +1680,28 @@ def wipe_disk(path: Path) -> "ramdisk.Wipe":
     return w
 
 
+def hold_all(host: Host, quitting: bool = False) -> tuple[list[int], str]:
+    """Both browsers' locks for setting up and starting (owner.hold), for closing ~/TempBrowser: a close during a
+    set-up wiped the download or the unpacking under it (found in the review of 2026-10-17), and another copy's start
+    would run from a disk being emptied. ([descriptors], "") to let go of once closed, or ([], why not). `quitting`:
+    this copy's own set-up doesn't stop it (it ends with the copy)."""
+    held: list[int] = []
+    for b in BROWSERS.values():
+        key = f"browser-{b.id}"
+        here = owner.held_here(key)
+        if here and quitting:
+            continue
+        fd = None if here else owner.hold(host, key)
+        if fd is None:
+            for f in held:
+                owner.let_go(f)
+            return [], (f"{b.name} is being set up or started here: close ~/{DISK} once that has finished." if here else
+                        f"{b.name} is being set up or started in another window of this app: close ~/{DISK} once that "
+                        "has finished.")
+        held.append(fd)
+    return held, ""
+
+
 def close_disk(host: Host, helper: Callable[[], object]) -> str:
     """When the app quits: ~/TempBrowser closed like the RAM disk tool's (every file overwritten and
     deleted as the user, then the helper unmounts it, asking for administrator access if it has to), by the
@@ -1629,14 +1710,23 @@ def close_disk(host: Host, helper: Callable[[], object]) -> str:
     rd = ramdisk.status(host, DISK)
     if not rd.open or not owner.owns(host, DISK, rd.path):
         return ""
-    users = disk_users(host, rd.path)
-    if users:
-        return (f"~/{DISK} stays open: {', '.join(users)} still uses it. Close it in the app's "
-                "Tools panel later, or restart the computer.")
-    w = wipe_disk(rd.path)
-    h = helper()
-    if h is None:
-        return f"~/{DISK}'s files were overwritten and deleted, but it couldn't be unmounted without administrator access."
-    h.call("ramdisk_close", {"name": DISK})
-    owner.release(host, DISK)
-    return f"~/{DISK} was closed: {w.files} file{'' if w.files == 1 else 's'} overwritten and deleted."
+    held, why = hold_all(host, quitting=True)
+    if why:                                             # another copy sets a browser up in it: that copy takes it over
+        return f"~/{DISK} stays open: {why}"
+    try:
+        end_display(host, rd.path)                      # the browser has quit, and its own display not yet
+        users = disk_users(host, rd.path)
+        if users:
+            return (f"~/{DISK} stays open: {', '.join(users)} still uses it. Close it in the app's "
+                    "Tools panel later, or restart the computer.")
+        w = wipe_disk(rd.path)
+        h = helper()
+        if h is None:
+            return (f"~/{DISK}'s files were overwritten and deleted, but it couldn't be unmounted without administrator "
+                    "access.")
+        h.call("ramdisk_close", {"name": DISK})
+        owner.release(host, DISK)
+        return f"~/{DISK} was closed: {w.files} file{'' if w.files == 1 else 's'} overwritten and deleted."
+    finally:
+        for fd in held:
+            owner.let_go(fd)

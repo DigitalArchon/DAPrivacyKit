@@ -138,9 +138,13 @@ def owner_running(host: Host, path: Path) -> bool:
     return False
 
 
+_BUSY: dict[int, str] = {}                  # lock's descriptor -> key, for what this copy holds now
+
+
 def hold(host: Host, key: str) -> int | None:
     """Work one copy of the app at a time may do (setting a browser up or starting it): the lock's descriptor
-    while this copy holds it, None while another does. let_go() ends it; so does the copy ending."""
+    while this copy holds it, None while another does (or this one, in another thread). let_go() ends it; so does
+    the copy ending."""
     try:
         fd = os.open(_locks(host) / f"{key}.busy", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
     except OSError:
@@ -150,9 +154,19 @@ def hold(host: Host, key: str) -> int | None:
     except OSError:
         os.close(fd)
         return None
+    with _LOCK:
+        _BUSY[fd] = key
     return fd
 
 
 def let_go(fd: int | None) -> None:
     if fd is not None and fd >= 0:
+        with _LOCK:
+            _BUSY.pop(fd, None)
         os.close(fd)
+
+
+def held_here(key: str) -> bool:
+    """Whether this copy holds `key` now (a set-up or a start of its own under way)."""
+    with _LOCK:
+        return key in _BUSY.values()
