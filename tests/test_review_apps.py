@@ -210,6 +210,149 @@ def test_an_extension_the_policy_blocks_is_not_offered_again(cat, tmp_path, syst
     assert [s.title for s in g.steps] == ["Nothing to go through"]
 
 
+# ------------------------------------------------------------------ thumbnails as Qt writes them (zTXt, iTXt)
+
+def _chunk(kind: bytes, data: bytes) -> bytes:
+    import struct
+    import zlib
+    return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+
+
+def qt_png(uri: str, itxt: bool = False) -> bytes:
+    """A thumbnail as Qt's PNG writer makes one: text over 40 characters compressed, zTXt (iTXt when not Latin-1)."""
+    import struct
+    import zlib
+    text = (_chunk(b"iTXt", b"Thumb::URI\0\x01\x00\0\0" + zlib.compress(uri.encode())) if itxt else
+            _chunk(b"zTXt", b"Thumb::URI\0\0" + zlib.compress(uri.encode())))
+    return (b"\x89PNG\r\n\x1a\n" + _chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0))
+            + _chunk(b"tEXt", b"Thumb::MTime\0" + b"1792247823") + text
+            + _chunk(b"IDAT", zlib.compress(b"\0\0\0\0")) + _chunk(b"IEND", b""))
+
+
+def test_png_text_reads_what_qt_writes():
+    import zlib
+    from pathlib import Path
+    from daprivacyscanner.checks._util import png_text
+    real = (Path(__file__).parent / "samples/thumbnails/kde-dolphin-ztxt.png").read_bytes()     # made by Dolphin
+    assert png_text(real)["Thumb::URI"] == ("file:///home/test/Downloads/LongFolderNameForThumbnailTesting/"
+                                            "a-picture-with-quite-a-long-name.png")
+    uri = "file:///home/alice/Pictures/%C3%A9t%C3%A9/a%20long%20name%20for%20a%20picture.jpg"
+    assert png_text(qt_png(uri))["Thumb::URI"] == uri
+    assert png_text(qt_png("file:///home/alice/été/photo.jpg", itxt=True))["Thumb::URI"] == "file:///home/alice/été/photo.jpg"
+    assert png_text(b"\x89PNG\r\n\x1a\n" + _chunk(b"iTXt", b"Thumb::URI\0\0\0\0\0file:///a.png"))["Thumb::URI"] == "file:///a.png"
+    bomb = b"\x89PNG\r\n\x1a\n" + _chunk(b"zTXt", b"Thumb::URI\0\0" + zlib.compress(b"a" * (10 * 1024 * 1024)))
+    assert png_text(bomb) == {}                          # inflated only so far: a path, never megabytes
+
+
+def test_kde_thumbnails_are_seen_and_deleted_before_the_cache_goes_into_memory(cat, tmp_path):
+    host = make_host(tmp_path)
+    cache = host.home / ".cache/thumbnails/normal"
+    cache.mkdir(parents=True)
+    gone = f"file://{host.home}/Downloads/a-picture-deleted-since-with-a-long-name.png"
+    (cache / "0123.png").write_bytes(qt_png(gone))
+    (host.home / "Downloads").mkdir()
+    o = detect(cat, "desk.thumbnails", make_scan(host, desktop=("kde",), plasma_major=6))
+    assert o.status is Status.FAIL and "of deleted files" in o.summary
+    assert detect(cat, "br.private_download_leak", make_scan(host)).status is Status.FAIL
+    g = build(cat, host, "desk.thumbnails", desktop=("kde",), plasma_major=6)
+    plan = options(g)["Mount ~/.cache/thumbnails in memory (needs administrator access)"]
+    deletions = [a for a in plan.actions if a.kind == "delete"]
+    assert [f.name for d in deletions for f in d.files] == ["0123.png"]
+
+
+# ------------------------------------------------------------------ KDE apps' lists: a lock that lasts
+
+def test_a_lock_in_the_apps_own_file_isnt_taken_for_stopped(cat, tmp_path):
+    """Gwenview and Okular 26.08 drop an empty [Recent Files][$i] group as they rewrite their own file (live), so
+    only a lock beneath it (kdedefaults, or the system's /etc/xdg) counts as stopped."""
+    host = make_host(tmp_path, home_files={".config/gwenviewrc": "[MainWindow]\nMenuBar=Disabled\n\n[Recent Files][$i]\n"})
+    o = detect(cat, "app.kde_recent_files", make_scan(host, desktop=("kde",), plasma_major=6))
+    assert o.status is Status.WARN and "Gwenview will list" in o.summary
+    g = build(cat, host, "app.kde_recent_files", desktop=("kde",), plasma_major=6)
+    log, res = apply(host, options(g)["Stop these apps keeping lists"])
+    assert (host.home / ".config/kdedefaults/gwenviewrc").read_text() == "[Recent Files][$i]\n"
+    (host.home / ".config/gwenviewrc").write_text("[MainWindow]\nMenuBar=Disabled\n")         # Gwenview, closing
+    o = detect(cat, "app.kde_recent_files", make_scan(host, desktop=("kde",), plasma_major=6))
+    assert o.status is Status.PASS and ev(o) == {"Gwenview: ~/.config/gwenviewrc": "stopped"}
+    revert(host, log, res)
+
+
+def test_a_flatpak_apps_list_is_cleared_only(cat, tmp_path):
+    rc = "[Recent Files]\nFile1[$e]=$HOME/Downloads/a.pdf\nName1[$e]=a.pdf\n"
+    host = make_host(tmp_path, home_files={".var/app/org.kde.okular/config/okularrc": rc})
+    o = detect(cat, "app.kde_recent_files", make_scan(host, desktop=("kde",), plasma_major=6))
+    assert o.status is Status.FAIL and o.summary.startswith("1 file or folder you opened is listed")
+    assert any("Okular (flatpak)" in n.text for n in o.notes)
+    g = build(cat, host, "app.kde_recent_files", desktop=("kde",), plasma_major=6)
+    assert set(options(g)) == {"Clear them"} and _step(g, "Stop them").done
+    assert "Okular (flatpak) can't be stopped this way" in _step(g, "Stop them").text
+    apply(host, options(g)["Clear them"])
+    o = detect(cat, "app.kde_recent_files", make_scan(host, desktop=("kde",), plasma_major=6))
+    assert o.status is Status.PASS and o.summary == "Nothing is listed now."
+
+
+def test_private_downloads_in_kde_records(cat, tmp_path):
+    import sqlite3
+    host = make_host(tmp_path, home_files={
+        ".config/gwenviewrc": "[Recent Files]\nFile1[$e]=$HOME/Downloads/photo.png\nName1[$e]=photo.png\n",
+        ".local/share/gwenview/recentfolders/gvhistoryA.rc": f"[general]\nurl=file://{tmp_path}/home/alice/Downloads/\n"})
+    (host.home / "Downloads").mkdir()
+    db = host.home / ".local/share/kactivitymanagerd/resources/database"
+    db.parent.mkdir(parents=True)
+    c = sqlite3.connect(db)
+    c.execute("CREATE TABLE ResourceEvent (usedActivity TEXT, initiatingAgent TEXT, targettedResource TEXT, start "
+              "INTEGER, end INTEGER)")
+    c.execute("CREATE TABLE ResourceScoreCache (usedActivity TEXT, initiatingAgent TEXT, targettedResource TEXT, "
+              "scoreType INTEGER, cachedScore FLOAT, firstUpdate INTEGER, lastUpdate INTEGER)")
+    for path in (f"{host.home}/Downloads/photo.png", f"{host.home}/Documents/kept.odt", f"{host.home}/Downloads/it's.pdf"):
+        c.execute("INSERT INTO ResourceEvent VALUES ('a', 'org.kde.gwenview', ?, 1, 2)", (path,))
+    c.commit()
+    c.close()
+    o = detect(cat, "br.private_download_leak", make_scan(host, desktop=("kde",), plasma_major=6))
+    e = ev(o)
+    assert o.status is Status.FAIL and e["Downloads in KDE apps' lists of what they opened"] == 2
+    assert e["Downloads in KDE's activity history"] == 2
+
+
+# ------------------------------------------------------------------ clipboard history
+
+def test_klipper_off_with_its_old_history_is_said_as_it_is(cat, tmp_path):
+    from test_fixes import plasma6, run_fix
+    host, shell = plasma6(tmp_path)
+    plan, res, log = run_fix(cat, host, "desk.clipboard_history", desktop=("kde",), plasma_major=6)
+    assert any("old copies stay in that file until Plasma restarts at your next login" in e for e in plan.side_effects)
+    o = detect(cat, "desk.clipboard_history", make_scan(host, desktop=("kde",), plasma_major=6))
+    assert o.status is Status.FAIL and o.summary == "Klipper is off; its old history is still on the disk."
+    # Plasma writes klipperrc's Version itself meanwhile: no "settings added since" for that
+    rc = host.home / ".config/klipperrc"
+    rc.write_text(rc.read_text() + "\n[General]\nVersion=6.7.5\n" if "[General]" not in rc.read_text()
+                  else rc.read_text().replace("[General]\n", "[General]\nVersion=6.7.5\n"))
+    results = revert(host, log, res)
+    assert not rc.exists() and not any("added since" in r.message for r in results)
+
+
+def test_gpaste_stops_saving_and_its_file_goes_while_it_runs(cat, tmp_path):
+    from fakes import FakeGSettings
+    from test_fixes import revert as fix_revert, run_fix
+    host = make_host(tmp_path, files={"/proc/9/comm": "gpaste-daemon\n"},
+                     home_files={".local/share/gpaste/history.xml": "<history>secret</history>"})
+    gs = host.runner.handlers["gsettings"] = FakeGSettings({("org.gnome.GPaste", "save-history"): "true"})
+    plan, res, log = run_fix(cat, host, "desk.clipboard_history")
+    assert [a.kind for a in plan.actions] == ["gsettings", "delete"] and not plan.blockers
+    assert res.ok and gs.values[("org.gnome.GPaste", "save-history")] == "false"
+    assert detect(cat, "desk.clipboard_history", make_scan(host)).status is Status.PASS
+    fix_revert(host, log, res)
+    assert gs.values[("org.gnome.GPaste", "save-history")] == "true"
+
+
+def test_a_clipboard_manager_that_saves_again_says_so(cat, tmp_path):
+    host = make_host(tmp_path, home_files={".cache/clipboard-indicator@tudmotu.com/registry.txt": "x"})
+    check = load_all()["desk.clipboard_history"](cat["desk.clipboard_history"])
+    plan = check.plan_fix(make_scan(host), None)
+    assert [a.kind for a in plan.actions] == ["delete"]
+    assert any("saves its history again as you copy" in e for e in plan.side_effects)
+
+
 # ------------------------------------------------------------------ Baloo: stopped, waited for, started detached
 
 def test_baloo_rebuild_waits_for_the_indexer_and_starts_it_through_its_unit(cat, tmp_path):

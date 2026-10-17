@@ -689,9 +689,24 @@ def dig(data, *keys, default=None):
 
 # ------------------------------------------------------------------ thumbnails and recent files
 
+PNG_TEXT_MAX = 64 * 1024              # what a compressed text chunk may inflate to: a path, not a bomb
+
+
+def _inflate(data: bytes) -> bytes | None:
+    import zlib
+    try:
+        d = zlib.decompressobj()
+        out = d.decompress(data, PNG_TEXT_MAX)
+        return None if d.unconsumed_tail else out
+    except zlib.error:
+        return None
+
+
 def png_text(head: bytes) -> dict[str, str]:
-    """tEXt chunks from the start of a PNG (thumbnails put Thumb::URI there, before the image
-    data). `head` only needs the first few KB."""
+    """The text chunks from the start of a PNG (thumbnails put Thumb::URI there, before the image data): tEXt, and
+    zTXt and iTXt, compressed or not. Qt (KIO's thumbnailer: Dolphin, Gwenview) writes any text longer than 40
+    characters as zTXt, so on KDE nearly every Thumb::URI is one (seen with Dolphin 26.08), and iTXt for text that
+    isn't Latin-1. `head` only needs the first few KB."""
     out: dict[str, str] = {}
     if not head.startswith(b"\x89PNG\r\n\x1a\n"):
         return out
@@ -702,9 +717,21 @@ def png_text(head: bytes) -> dict[str, str]:
         data = head[i + 8:i + 8 + length]
         if kind == b"IDAT" or len(data) < length:
             break
-        if kind == b"tEXt" and b"\0" in data:
-            k, v = data.split(b"\0", 1)
-            out[k.decode("latin-1")] = v.decode("utf-8", errors="replace")
+        if kind in (b"tEXt", b"zTXt", b"iTXt") and b"\0" in data:
+            k, rest = data.split(b"\0", 1)
+            value: bytes | None = None
+            if kind == b"tEXt":
+                out[k.decode("latin-1")] = rest.decode("utf-8", errors="replace")
+            elif kind == b"zTXt" and rest[:1] == b"\0":                     # compression method 0: zlib
+                value = _inflate(rest[1:])
+                if value is not None:
+                    out[k.decode("latin-1")] = value.decode("latin-1")
+            elif kind == b"iTXt" and len(rest) >= 2 and rest.count(b"\0", 2) >= 2:
+                flag, method = rest[0], rest[1]
+                _lang, _translated, text = rest[2:].split(b"\0", 2)
+                value = text if flag == 0 else _inflate(text) if method == 0 else None
+                if value is not None:
+                    out[k.decode("latin-1")] = value.decode("utf-8", errors="replace")
         i += 12 + length
     return out
 
@@ -742,7 +769,11 @@ def thumbnail_entries(paths: PathResolver, limit: int = WALK_LIMIT) -> tuple[lis
                     count += 1
                     try:
                         with open(p, "rb") as f:
-                            uri = png_text(f.read(4096)).get("Thumb::URI")
+                            head = f.read(4096)
+                            uri = png_text(head).get("Thumb::URI")
+                            if uri is None and len(head) == 4096:
+                                # a colour profile (iCCP, Qt writes one for a picture that has it) can come first
+                                uri = png_text(head + f.read(60 * 1024)).get("Thumb::URI")
                     except OSError:
                         continue
                     if uri:

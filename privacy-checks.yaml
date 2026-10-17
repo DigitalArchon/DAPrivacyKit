@@ -2036,11 +2036,16 @@ checks:
     why: The browser forgets them, but thumbnails, recent-file lists and indexers still record them.
     detect:
       - 'Cross-reference files in the Downloads directory with desk.thumbnails, desk.recent_files and desk.indexers'
+      - 'KDE: the apps'' own lists of what they opened (app.kde_recent_files: gwenviewrc [Recent Files], Gwenview''s
+        recentfolders, Kate''s sessions, Ark''s list) and kactivitymanagerd''s resources database (ResourceEvent and
+        ResourceScoreCache, targettedResource: a plain path), counted under the Downloads folder (seen with Gwenview
+        26.08 on Plasma 6.7)'
     fix: Point to the related clean-ups.
     remedy: >
       Files downloaded in private windows are still recorded by thumbnails, recent files and file
-      search. How to… points to the clean-ups that cover them.
-    related: [desk.thumbnails, desk.recent_files, desk.indexers]
+      search, and on KDE by the apps that open them and the activity history. How to… points to the clean-ups that
+      cover them.
+    related: [desk.thumbnails, desk.recent_files, desk.indexers, app.kde_recent_files, desk.kde_activities]
 
   - id: br.disk_cache
     title: Disk cache and session store on persistent storage
@@ -2401,8 +2406,10 @@ checks:
       Klipper on Plasma 6: KeepClipboardContents off, its history cleared through Klipper itself
       (clearClipboardHistory over D-Bus, while it still runs), then the Clipboard entry turned off in the
       system tray through plasmashell's evaluateScript (PlasmaTraySet: Klipper stops at once and stays off;
-      reverting turns it back on). Plasma may keep the emptied database open until logout: a second Fix…
-      after logging back in deletes it ("Log out and back in first" until then). A Clipboard widget of its own
+      reverting turns it back on). Plasma keeps the emptied database open until logout, and the copied text stays in
+      its write-ahead log (history3.sqlite-wal) until then (live on Plasma 6.7): a second Fix… after logging back in
+      deletes it ("Log out and back in first" until then); the check says Klipper is off and its old history is still
+      on the disk meanwhile, never that Klipper saves it. A Clipboard widget of its own
       blocks the fix (it would keep Klipper running); outside Plasma, only the setting and the files. Plasma 5:
       the setting and the files, with how to turn it off by hand. CopyQ, while closed: the clipboard tab's
       "Save Items" off in copyq.conf (CopyQTabSet: that one setting, since CopyQ rewrites the rest of the file
@@ -2411,12 +2418,16 @@ checks:
       (taken only while the clipboard is empty; from Plasma 6.8 only once its app has quit; passwords marked with
       x-kde-passwordManagerHint are never kept by CopyQ, so never put back); its file and item files deleted when no other tab could
       own them (else CopyQ deletes them at its next start and quit); the user's other tabs are never
-      touched. Suggests CopyQ, kept in memory, where Klipper was turned off. Others: cleared; a manager
-      holding its history open blocks the fix ("Close X first"). Pano runs inside GNOME Shell: its history is
-      cleared from its own menu (a note, not a step).
+      touched. Suggests CopyQ, kept in memory, where Klipper was turned off. GPaste: save-history off (gsettings),
+      then its file deleted (gpaste-daemon always runs, and doesn't hold the file open); xfce4-clipman: save-on-quit
+      off (xfconf, xfce4-panel /plugins/clipman/settings/save-on-quit), then its file deleted; the Clipboard
+      Indicator extension and Diodon: cleared, and the plan says their history comes back and how to turn their
+      saving off (the extension's cache; Diodon has no setting). A manager holding its history open blocks the fix
+      ("Close X first"). Pano runs inside GNOME Shell: its history is cleared from its own menu (a note, not a step).
     remedy: >
       Everything you copy is kept on disk, passwords included, where it outlasts a restart. Fix… deletes it and
-      stops it being saved: KDE's Klipper is turned off, and CopyQ is set to keep its history in memory only.
+      stops it being saved where the clipboard manager has a setting for it: KDE's Klipper is turned off, CopyQ is
+      set to keep its history in memory only, and GPaste and Clipman stop saving theirs.
       If you want a clipboard history, CopyQ set up that way is the one to use.
     verify: >
       Plasma 5: whether Klipper writes history2.lst during a session with KeepClipboardContents off, and a way
@@ -2787,9 +2798,15 @@ checks:
     fix: >
       Guided: clear the lists (ClearInFile on the group's entries; DeleteFiles for Ark's, Kate's and KWrite's files and
       Gwenview's records), while the app is closed. Stop them: the group marked immutable, [Recent Files][$i]
-      (KConfigLock, only the header line, reverted alone: KConfig's Kiosk marker, which the app can't write past), and
-      for Ark, Kate, KWrite and Gwenview an empty 0500 folder where the list goes (MakeDir phase 4, after the
-      deletions). Tested: nothing recorded afterwards, the apps open files as before and show no error.
+      (KConfigLock: KConfig's Kiosk marker, which the app can't write past) in a file of the app's name in
+      ~/.config/kdedefaults, which Plasma 6 puts in XDG_CONFIG_DIRS beneath the user's own folder: the app reads it and
+      never writes it. In the app's own file the marker didn't last: Gwenview, and Okular 26.08 when anything else in
+      its file changed, rewrote the file without the empty group and listed again at the next start (live, 2026-10-17);
+      in kdedefaults it held through those rewrites and a new session (Gwenview 26.08.2, Okular 26.08.2, Plasma 6.7),
+      and reverting removes the file the fix made. Only that marker counts as stopped (or one in /etc/xdg). Flatpak
+      apps (their XDG_CONFIG_DIRS is the runtime's) and lists in <app>staterc (read alone) can't be locked: cleared
+      only, said so. For Ark, Kate, KWrite and Gwenview's records an empty 0500 folder where the list goes (MakeDir phase
+      4, after the deletions). Tested: nothing recorded afterwards, the apps open files as before and show no error.
     remedy: >
       These KDE apps each keep their own list of the files you opened, with full paths, apart from the system's
       recent files list. Guide… clears the lists and can stop the apps keeping them; Open Recent then stays empty in

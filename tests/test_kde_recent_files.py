@@ -53,7 +53,9 @@ def test_clear_then_stop_then_revert(cat, tmp_path):
     assert "Kate" not in str(stop.side_effects) and any("KWrite no longer reopen" in x for x in stop.side_effects)
     log, res = apply(host, stop)
     rc = (host.home / ".config/kolourpaintrc").read_text()
-    assert "[Recent Files][$i]" in rc and "secret" not in rc and "Last Used Tool=5" in rc and "First Time=false" in rc
+    assert "secret" not in rc and "Last Used Tool=5" in rc and "First Time=false" in rc
+    # the lock goes beneath the app's own file, where it can't drop it (the review of 2026-10-17)
+    assert "[$i]" not in rc and (host.home / ".config/kdedefaults/kolourpaintrc").read_text() == "[Recent Files][$i]\n"
     for rel in ("ark/ark_recentfiles", "kwrite/anonymous.katesession", "gwenview/recentfolders"):
         p = host.home / ".local/share" / rel
         assert p.is_dir() and not any(p.iterdir()) and (p.stat().st_mode & 0o777) == 0o500, rel
@@ -62,25 +64,32 @@ def test_clear_then_stop_then_revert(cat, tmp_path):
     # the log holds no file names: the lists were cleared, not backed up
     kept = [f for f in (host.home / ".local/state/daprivacyscanner").rglob("*") if f.is_file()]
     assert kept and not [f for f in kept if b"secret" in f.read_bytes()]
-    # the app writes the rest of its file meanwhile: the revert puts back only the header
-    (host.home / ".config/kolourpaintrc").write_text(rc.replace("Last Used Tool=5", "Last Used Tool=7"))
+    # the app rewrites its own file meanwhile (dropping the empty group, as Gwenview does): the lock holds, and the
+    # revert removes the lock it made, leaving the app's file as the app left it
+    (host.home / ".config/kolourpaintrc").write_text("[General Settings]\nFirst Time=false\n\n[Tool Settings]\n"
+                                                     "Last Used Tool=7\n")
+    assert detect(cat, "app.kde_recent_files", make_scan(host, desktop=("kde",))).status is Status.PASS
     revert(host, log, res)
     rc = (host.home / ".config/kolourpaintrc").read_text()
-    assert "[Recent Files]\n" in rc and "[$i]" not in rc and "Last Used Tool=7" in rc
+    assert "[$i]" not in rc and "Last Used Tool=7" in rc
+    assert not (host.home / ".config/kdedefaults").exists()  # the folder the fix made goes with the lock
     assert not (host.home / ".local/share/ark/ark_recentfiles").exists()
     assert not (host.home / ".local/share/gwenview/recentfolders").exists()
 
 
 def test_an_app_never_run_is_stopped_before_it_lists_anything(cat, tmp_path):
     host = host_with(tmp_path, installed=("okular", "ark"))
+    (host.home / ".config/kdedefaults").mkdir(parents=True)          # Plasma makes it
     g = build(cat, host, "app.kde_recent_files", desktop=("kde",))
     log, res = apply(host, options(g)["Stop these apps keeping lists"])
-    assert (host.home / ".config/okularrc").read_text() == "[Recent Files][$i]\n"
+    assert (host.home / ".config/kdedefaults/okularrc").read_text() == "[Recent Files][$i]\n"
+    assert not (host.home / ".config/okularrc").exists()
     assert (host.home / ".local/share/ark/ark_recentfiles").is_dir()
-    # Okular writes its settings into the file meanwhile; reverting removes only the group the fix added
-    (host.home / ".config/okularrc").write_text("[General]\nShowSidebar=true\n\n[Recent Files][$i]\n")
+    # Okular writes its own settings file meanwhile; reverting removes only the lock
+    (host.home / ".config/okularrc").write_text("[General]\nShowSidebar=true\n")
     revert(host, log, res)
     assert (host.home / ".config/okularrc").read_text() == "[General]\nShowSidebar=true\n"
+    assert not (host.home / ".config/kdedefaults/okularrc").exists() and (host.home / ".config/kdedefaults").is_dir()
     assert not (host.home / ".local/share/ark").exists()      # the folders the fix made go with it
 
 

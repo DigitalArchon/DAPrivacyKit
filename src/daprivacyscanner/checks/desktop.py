@@ -609,7 +609,7 @@ class ClipboardHistory(Check):
     id = "desk.clipboard_history"
 
     def detect(self, scan: Scan) -> Outcome:
-        ev, found = [], []
+        ev, found, left = [], [], []         # saving it now; off, but an old history is still on the disk
         k = klipper(scan)
         if k.records:
             found.append("Klipper")
@@ -617,7 +617,7 @@ class ClipboardHistory(Check):
                                                if k.plasma6 else "on, saving its history across sessions")
                                    + (f" ({k.files.describe()})" if k.files.files else "")))
         elif k.files.files and k.files.bytes:
-            found.append("Klipper")
+            left.append("Klipper is off" if not k.on else "Klipper keeps no history across sessions")
             ev.append(Evidence.val("Klipper", ("history isn't kept across sessions, but" if k.on else "off, but")
                                    + f" its old history is still on disk ({k.files.describe()})"))
         elif k.on:
@@ -629,7 +629,7 @@ class ClipboardHistory(Check):
                 ev.append(Evidence.val(label, f"saves what you copy to disk (its tab \"{q.tab}\")"
                                        + (f", {human_size(q.tab_bytes)} so far" if q.tab_bytes else "")))
             elif q.tab_bytes:
-                found.append("CopyQ")
+                left.append("CopyQ keeps its history in memory")
                 ev.append(Evidence.val(label, f"keeps its history in memory, but its old file is still on disk "
                                               f"({human_size(q.tab_bytes)})"))
             else:
@@ -640,8 +640,11 @@ class ClipboardHistory(Check):
             if t.files and t.bytes:
                 found.append(label)
                 ev.append(Evidence.val(label, t.describe()))
-        if found:
-            return failed(f"Clipboard history is saved to disk by {', '.join(dict.fromkeys(found))}.", *ev)
+        # said as it is: a manager turned off whose old history is still there isn't saving anything
+        parts = ([f"Clipboard history is saved to disk by {', '.join(dict.fromkeys(found))}."] if found else []) + \
+            [f"{x}; its old history is still on the disk." for x in left]
+        if parts:
+            return failed(" ".join(parts), *ev)
         return passed("No clipboard history is saved to disk.", *ev)
 
 

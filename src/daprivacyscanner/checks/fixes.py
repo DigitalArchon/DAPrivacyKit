@@ -629,8 +629,11 @@ def _klipper(scan: Scan, a: list, effects: list, blockers: list) -> None:
     effects.append("Klipper stops at once and stays off. What you copy still pastes, but it goes when the app you "
                    "copied it from closes, and Meta+V no longer shows a history.")
     if files:
-        effects.append("Plasma may keep Klipper's emptied history file open until you log out: if it is still there "
-                       "then, Fix… deletes it after you log back in.")
+        # live on Plasma 6.7: after clearClipboardHistory the copied text was still in history3.sqlite-wal, which
+        # plasmashell holds open
+        effects.append("Klipper empties its history, but Plasma keeps its history file open, and the old copies stay in "
+                       "that file until Plasma restarts at your next login: scan again after logging back in, and Fix… "
+                       "deletes it.")
 
 
 def _copyq(scan: Scan, a: list, effects: list, blockers: list) -> None:
@@ -670,6 +673,37 @@ def _copyq(scan: Scan, a: list, effects: list, blockers: list) -> None:
                        "restarts. Your other CopyQ tabs are kept as they are.")
 
 
+GPASTE_SCHEMA = "org.gnome.GPaste"
+CLIPMAN_SAVE = ("xfce4-panel", "/plugins/clipman/settings/save-on-quit")
+
+
+def _clipboard_saving_off(scan: Scan, label: str) -> tuple[list, str | None]:
+    """(the change that stops a clipboard manager saving its history, or none if it doesn't any more; None, or what to
+    tell the user when it saves it again whatever the fix does). VERIFY on a GNOME and an Xfce system: GPaste's
+    save-history and Clipman's save-on-quit (their schemas and settings pages)."""
+    if label == "GPaste":
+        saves = scan.gnome.gsettings(GPASTE_SCHEMA, "save-history")
+        if saves is False:
+            return [], None
+        if saves is True:
+            return gset(scan, GPASTE_SCHEMA, "save-history", "false"), None
+        return [], ("GPaste saves its history again as you copy: turn off \"Save history\" in GPaste's settings "
+                    "(its setting couldn't be read here).")
+    if label == "Clipman":
+        if scan.host.runner.which("xfconf-query"):
+            r = scan.host.run("xfconf-query", "-c", CLIPMAN_SAVE[0], "-p", CLIPMAN_SAVE[1])
+            if r.ok and r.stdout.strip().lower() == "false":
+                return [], None
+            return [XfconfSet(*CLIPMAN_SAVE, "bool", "false")], None
+        return [], ("Clipman saves its history again when it quits: untick \"Save on quit\" in its settings (right-click "
+                    "its icon → Clipman Settings).")
+    if label == "Clipboard Indicator":
+        return [], ("The Clipboard Indicator extension saves its history again as you copy: turn its cache off in its "
+                    "settings (Extensions → Clipboard Indicator → Settings).")
+    return [], (f"{label} keeps its history again as you copy, and has no setting that stops it saving it: to stop "
+                f"it, quit {label} and take it out of the apps that start when you log in.")
+
+
 @fix("desk.clipboard_history")
 def clipboard(check, scan, outcome):
     from .desktop import CLIPBOARD_FILES, COPYQ_FLATPAK, copyq
@@ -684,13 +718,17 @@ def clipboard(check, scan, outcome):
         files = files_under(root, pattern=CLIPBOARD_FILES)[0]
         if not files:
             continue
-        users = in_use(scan, root, *procs)
+        # stop it saving first, where it has a setting: then a manager that runs on (gpaste-daemon always does, and
+        # doesn't hold the file open) writes no history again, and its file can go while it runs
+        stop, comes_back = _clipboard_saving_off(scan, label)
+        a += stop
+        users = sorted(holders(scan, root)) if stop or comes_back is None else in_use(scan, root, *procs)
         if users:
             blockers.append(f"Close {', '.join(users)} first: it keeps {label}'s history open.")
             continue
         a.append(DeleteFiles(root, files, f"{label} clipboard history", scan.host.display(root)))
-        if label == "Clipboard Indicator":
-            effects.append("Turn off the extension's \"cache\" option too, or it saves its history again.")
+        if comes_back:
+            effects.append(comes_back)
     if files_under(p.data_home / "pano@elhan.io", pattern=CLIPBOARD_FILES)[0]:
         # it runs inside GNOME Shell, which holds its database open and can't be closed
         effects.append("Pano runs inside GNOME Shell, so its history can't be deleted from outside: clear it from "

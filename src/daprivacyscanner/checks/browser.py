@@ -436,11 +436,23 @@ class PrivateDownloadLeak(Check):
         ev = [Evidence.path("Downloads folder", host.display(downloads)),
               Evidence.count("Downloads in the recent files list", recent),
               Evidence.count("Thumbnails of downloads", thumbs)]
+        # KDE's own records: each app's list of what it opened (Gwenview, Okular, Kate…), and the activity manager's
+        from .apps import kde_activity_count, kde_recent_paths
+        apps = sum(1 for p in kde_recent_paths(scan) if p.startswith(prefix))
+        activity = kde_activity_count(scan, prefix) or 0
+        related = ("desk.recent_files", "desk.thumbnails", "desk.indexers")
+        if apps:
+            ev.append(Evidence.count("Downloads in KDE apps' lists of what they opened", apps))
+            related += ("app.kde_recent_files",)
+        if activity:
+            ev.append(Evidence.count("Downloads in KDE's activity history", activity))
+            related += ("desk.kde_activities",)
         note = Note("info", "Private windows don't cover the rest of the system",
                     "A browser forgets a private window's downloads, but opening one leaves its name in the recent "
-                    "files list, a thumbnail of it, and possibly an entry in the search index.",
-                    ("desk.recent_files", "desk.thumbnails", "desk.indexers"))
-        if recent or thumbs:
+                    "files list, a thumbnail of it, and possibly an entry in the search index"
+                    + (", and KDE apps and KDE's activity history note it too." if scan.context.desktop.is_kde or apps
+                       or activity else "."), related)
+        if recent or thumbs or apps or activity:
             return failed("Files in Downloads are recorded outside the browser.", *ev, notes=[note])
         return passed("Files in Downloads aren't recorded in the recent files list or thumbnails.", *ev, notes=[note])
 

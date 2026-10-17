@@ -406,10 +406,16 @@ class PdfReaders(Check):
 # they last closed, in anonymous.katesession; Gwenview a file for each folder browsed, in recentfolders. None has a
 # setting that turns it off. A group marked [$i] (KConfig's Kiosk marker) is never written; an empty read-only folder
 # where Ark's, Kate's or KWrite's file goes, or as Gwenview's folder, stops those (all tested: nothing recorded, the
-# apps open files as before, no error shown).
+# apps open files as before, no error shown). The marker in the app's own file doesn't last: an app that rewrites its
+# file drops an empty group, marker and all (Gwenview at every close, Okular 26.08 when anything else in the file
+# changed; tested, the list was back at the next start). It goes in ~/.config/kdedefaults instead, a folder Plasma puts
+# in XDG_CONFIG_DIRS beneath the user's own (Plasma 6.7): KConfig honours a group locked in a file there, and never
+# writes that file (tested with Gwenview and Okular 26.08 rewriting their own files: nothing listed). Flatpak apps and
+# lists kept in a state file (<app>staterc, which KConfig reads alone) can't be locked that way: cleared only.
 KDE_RECENT_GROUPS = ("Recent Files", "RecentFiles")
 # apps with a KRecentFilesAction list, stopped before they list anything when installed: (name, program, Flatpak id)
-KDE_LIST_APPS = (("KolourPaint", "kolourpaint", "org.kde.kolourpaint"), ("Okular", "okular", OKULAR_FLATPAK))
+KDE_LIST_APPS = (("KolourPaint", "kolourpaint", "org.kde.kolourpaint"), ("Okular", "okular", OKULAR_FLATPAK),
+                 ("Gwenview", "gwenview", "org.kde.gwenview"))
 # apps with a list of their own: (name, program, Flatpak id, its path under the data folder, a folder of files)
 KDE_OWN_LISTS = (("Ark", "ark", "org.kde.ark", "ark/ark_recentfiles", False),
                  ("Gwenview", "gwenview", "org.kde.gwenview", "gwenview/recentfolders", True),
@@ -430,10 +436,33 @@ class KdeList:
     entries: int = 0
     stopped: bool = False
     install: str = "native"
+    lock: Path | None = None    # kconfig: where the lasting lock goes (in ~/.config/kdedefaults); None when it can't
 
     @property
     def label(self) -> str:
         return self.app + ("" if self.install == "native" else f" ({self.install})")
+
+    @property
+    def stoppable(self) -> bool:
+        """Whether something lasting stops it (a lock Plasma reads, a read-only folder), not only clearing it."""
+        return self.kind != "kconfig" or self.lock is not None
+
+
+def kde_lock_dir(scan: Scan) -> Path | None:
+    """~/.config/kdedefaults, where it is among the folders Plasma's apps read settings from (XDG_CONFIG_DIRS in a
+    Plasma 6 session), beneath the user's own; None elsewhere (another desktop, a Flatpak app)."""
+    d = scan.paths.config_home / "kdedefaults"
+    dirs = [x.rstrip("/") for x in (scan.host.environ.get("XDG_CONFIG_DIRS") or "").split(":")]
+    return d if str(d) in dirs or (scan.context.desktop.is_kde and (scan.context.desktop.plasma_major or 6) >= 6) else None
+
+
+def _locked_beneath(scan: Scan, lock_dir: Path | None, name: str, group: str) -> bool:
+    """Whether a file the app reads beneath its own locks the group: in kdedefaults, or the system's (/etc/xdg)."""
+    from ..fix import KConfigLock
+    for f in ([lock_dir / name] if lock_dir else []) + [scan.host.sys_path(f"/etc/xdg/{name}")]:
+        if KConfigLock.state(read_text(scan.host, f), group) == "locked":
+            return True
+    return False
 
 
 def _kconfig_entries(text: str, group: str) -> int:
@@ -459,23 +488,29 @@ def kde_recent_lists(scan: Scan) -> list[KdeList]:
         if app.startswith("org.kde."):
             places += [(paths.flatpak_root / app / "config", "rc", "flatpak"),
                        (paths.flatpak_root / app / ".local/state", "staterc", "flatpak")]
+    lock_dir = kde_lock_dir(scan)
     for folder, suffix, how in places:
-        for f in children(folder):
-            if not f.name.endswith(suffix) or f.name == "kdeglobals" or not f.is_file():
-                continue
+        lasting = how == "native" and suffix == "rc" and lock_dir is not None
+        names = {f.name for f in children(folder) if f.name.endswith(suffix) and f.name != "kdeglobals" and f.is_file()}
+        if lasting:                         # locked beneath, its own file holding no group (an app drops an empty one)
+            names |= {f.name for f in children(lock_dir) if f.name.endswith(suffix) and f.name != "kdeglobals"}
+        for fname in sorted(names):
+            f = folder / fname
             text = read_text(host, f) or ""
             for group in KDE_RECENT_GROUPS:
-                state = KConfigLock.state(text, group)
-                if state == "absent":
+                locked = lasting and _locked_beneath(scan, lock_dir, fname, group)
+                # a marker in the app's own file doesn't last (it drops it as it rewrites the file): not stopped
+                if KConfigLock.state(text, group) == "absent" and not locked:
                     continue
-                program = f.name[:-len(suffix)]
+                program = fname[:-len(suffix)]
                 out.append(KdeList(KDE_APP_NAMES.get(program, program), program, f, "kconfig", group,
-                                   _kconfig_entries(text, group), state == "locked", how))
+                                   _kconfig_entries(text, group), locked, how, lock_dir / fname if lasting else None))
     for name, program, fid, rcname in ((n, p, f, f"{p}rc") for n, p, f in KDE_LIST_APPS):
         for how in _kde_app_installed(scan, program, fid):
-            if not any(x.program == program and x.install == how for x in out):
-                base = paths.config_home if how == "native" else paths.flatpak_root / fid / "config"
-                out.append(KdeList(name, program, base / rcname, "kconfig", "Recent Files", 0, False, how))
+            # one that can't be stopped for good isn't listed before it lists anything
+            if not any(x.program == program and x.install == how for x in out) and how == "native" and lock_dir:
+                out.append(KdeList(name, program, paths.config_home / rcname, "kconfig", "Recent Files", 0, False, how,
+                                   lock_dir / rcname))
     for name, program, fid, rel, folder in KDE_OWN_LISTS:
         wheres = _kde_app_installed(scan, program, fid)
         for loc in paths.locate(Base.DATA, rel, flatpak=[fid], existing=False):
@@ -500,6 +535,42 @@ def kde_recent_lists(scan: Scan) -> list[KdeList]:
     return out
 
 
+_LISTED_PATH = re.compile(r"^(?:File\d+|URL|url|files\\\d+\\[^=]*)(?:\[\$e\])?=(.+)$", re.M)
+
+
+def kde_recent_paths(scan: Scan) -> list[str]:
+    """The paths in KDE apps' own lists of what was opened (kde_recent_lists): KConfig's File<n> entries, Kate's and
+    Gwenview's url entries, Ark's files array; $HOME and file:// addresses turned into paths. Read here only, never
+    kept or shown."""
+    from urllib.parse import unquote
+    home = str(scan.host.home)
+    out = []
+    for x in kde_recent_lists(scan):
+        files = [f for f in children(x.path) if f.is_file()] if x.kind == "folder" else [x.path]
+        for f in files:
+            text = read_text(scan.host, f) or ""
+            if x.kind == "kconfig":                             # the list's own group only
+                m = re.search(rf"^\[{re.escape(x.group)}\](?:\[\$i\])?[ \t]*$\n((?:(?!\[).*\n?)*)", text, re.M)
+                text = m.group(1) if m else ""
+            for v in _LISTED_PATH.findall(text):
+                v = v.strip().strip('"').replace("${HOME}", home).replace("$HOME", home)
+                if v.startswith("file://"):
+                    v = unquote(v[len("file://"):])
+                if v.startswith("/"):
+                    out.append(v)
+    return out
+
+
+def kde_activity_count(scan: Scan, prefix: str) -> int | None:
+    """How many files under `prefix` KDE's activity manager remembers (its resources database: what each app opened,
+    by path); None without the database."""
+    db = scan.paths.data_home / "kactivitymanagerd" / "resources" / "database"
+    quoted = prefix.replace("'", "''")
+    return sqlite_count(db, "SELECT count(*) FROM (SELECT targettedResource FROM ResourceScoreCache UNION SELECT "
+                            f"targettedResource FROM ResourceEvent) WHERE substr(targettedResource, 1, {len(prefix)}) = "
+                            f"'{quoted}'", optional=True)
+
+
 @register
 class KdeRecentFiles(Check):
     id = "app.kde_recent_files"
@@ -512,16 +583,26 @@ class KdeRecentFiles(Check):
                            f"{x.entries} listed" + (", stopped" if x.stopped else "") if x.entries
                            else "stopped" if x.stopped else "nothing listed yet") for x in lists]
         listed = [x for x in lists if x.entries]
-        recording = list(dict.fromkeys(x.app for x in lists if not x.stopped))
+        recording = list(dict.fromkeys(x.app for x in lists if not x.stopped and x.stoppable))
+        unstoppable = list(dict.fromkeys(x.label for x in lists if not x.stoppable))
+        notes = [Note("limitation", "Some lists can only be cleared",
+                      f"{', '.join(unstoppable)} keep{'s' if len(unstoppable) == 1 else ''} a list nothing stops from "
+                      "outside the app: a Flatpak app reads no settings of yours beneath its own, and a list kept in a "
+                      "state file is read alone. Clearing it is all there is; it fills again as you open files.")] \
+            if unstoppable else []
         if listed:
             total = sum(x.entries for x in listed)
-            return failed(f"{total} file{'s' if total != 1 else ''} and folder{'s' if total != 1 else ''} you opened "
+            return failed(f"{total} {'files and folders' if total != 1 else 'file or folder'} you opened "
                           f"{'are' if total != 1 else 'is'} listed by {', '.join(dict.fromkeys(x.app for x in listed))}.",
-                          *ev)
+                          *ev, notes=notes)
         if recording:
             return warned(f"Nothing listed yet, but {', '.join(recording)} will list the files you open until "
-                          f"{'it is' if len(recording) == 1 else 'they are'} stopped.", *ev)
-        return passed("These KDE apps are stopped from listing the files you open.", *ev)
+                          f"{'it is' if len(recording) == 1 else 'they are'} stopped.", *ev, notes=notes)
+        if not any(x.stoppable for x in lists):
+            return passed("Nothing is listed now.", *ev, notes=notes)
+        return passed("These KDE apps are stopped from listing the files you open." if not unstoppable else
+                      "Nothing is listed, and the apps that can be are stopped from listing the files you open.",
+                      *ev, notes=notes)
 
 
 ELECTRON_CACHES = ("Cache", "Code Cache", "GPUCache", "DawnCache", "DawnGraphiteCache", "DawnWebGPUCache",

@@ -11,6 +11,7 @@ Fixtures for the parsers. Each file is the output of one command, used through `
 | `kwallet/blank.*`, `kwallet/protected.*` | **Made by KWallet 6.30** (Arch, its own backend library: `kwallet/make-wallet.cpp`, `kwallet/build.sh`): a wallet with an empty password and one with a password, each with its `.salt`. The only entry is a made-up one. |
 | `verify/*` | **Downloaded** 2026-10-04 from the projects' own servers: Linux Mint 22.3's sha256sum.txt and its .gpg (mirrors.edge.kernel.org/linuxmint), Fedora 44 Workstation's clearsigned CHECKSUM (dl.fedoraproject.org), Ubuntu 24.04's SHA256SUMS and .gpg (releases.ubuntu.com), Debian's current SHA512SUMS and .sign (cdimage.debian.org). Real signatures, for Verify a download. |
 | `gpg/list-keys.txt` | **Made by GnuPG 2.4.4** (Mint 22, throwaway keyring, 2026-10-05): `gpg --with-colons --with-keygrip --fixed-list-mode --list-keys` over an Ed25519, an RSA 1024, a DSA 2048 and an expired key (made with --faked-system-time); user ids replaced, and a weak subkey and someone else's key added by hand. |
+| `thumbnails/kde-dolphin-ztxt.png` | **Made by Dolphin** (KDE Gear 26.08.2, KIO's thumbnailer, Plasma 6.7, CachyOS VM, 2026-10-17) for a picture the app's test made, its text chunks kept and the image data cut: Qt writes a `Thumb::URI` longer than 40 characters, and `Software`, as zTXt. |
 | everything else | **Hand-written** in each tool's format, modelled on the distro's default install. Replace with real captures. |
 
 The aim is captured samples from Ubuntu, Fedora, Debian, Arch and openSUSE, on both

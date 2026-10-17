@@ -643,9 +643,12 @@ def http_repos(check, scan, outcome):
 
 @guide("br.private_download_leak")
 def private_download_leak(check, scan, outcome):
+    kde = scan.context.desktop.is_kde or any(e.label.startswith("Downloads in KDE") for e in outcome.evidence)
     return Guide(check.id, "Leave no trace of private downloads", "", [
         Step("Clear what is already recorded", "Thumbnails (desk.thumbnails), recent files (desk.recent_files) and "
-             "file search (desk.indexers) each have a guide that clears them and stops them coming back."),
+             "file search (desk.indexers) each have a guide that clears them and stops them coming back."
+             + (" On KDE, so do the apps' own lists of what they opened (app.kde_recent_files) and the activity "
+                "history (desk.kde_activities)." if kde else "")),
         Step("Download private files somewhere that is forgotten",
              "Save them to ~/Ephemeral (desk.ephemeral_folder): a folder in memory, emptied at logout or restart. "
              "Leave it out of file search."),

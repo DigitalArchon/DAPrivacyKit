@@ -376,6 +376,10 @@ class XfconfSet(Action):
         return RevertResult(True, f"{record['channel']} {record['property']} back to {record['before']}")
 
 
+# keys KDE writes into a settings file on its own: the version that last wrote it, and kconf_update's record
+KDE_OWN_KEYS = frozenset({("General", "Version"), ("$Version", "update_info")})
+
+
 @action
 class KConfigSet(Action):
     """A KDE setting, written with kwriteconfig so running apps are notified. "Before" is the
@@ -448,7 +452,9 @@ class KConfigSet(Action):
         if record.get("created_file"):                  # kwriteconfig made the file: it goes, unless it holds more now
             p = Path(record["path"])
             left = ini.parse(Host.read_file(p) or "", kde=True)
-            if any(keys for keys in left.values()):
+            # what KDE writes into a settings file by itself isn't a setting of the user's: Plasma 6.7 left klipperrc
+            # holding [General] Version=6.7.5 alone, which made this say "settings added since"
+            if any(k for g, keys in left.items() for k in keys if (g[-1] if g else "", k) not in KDE_OWN_KEYS):
                 notes.append(f"{_shown(str(p))} was left: the fix made it, but it now holds settings added since")
             elif p.is_file() and not p.is_symlink():
                 p.unlink()

@@ -521,7 +521,9 @@ def kde_recent_files(check, scan, outcome):
 
     def stop(x) -> list:
         if x.kind == "kconfig":
-            return clear(x) + [KConfigLock(x.path, host.display(x.path), x.group, f"Stop {x.label} listing what you open")]
+            # the lock goes beneath the app's own file (kdedefaults), which it reads but never writes: in its own file,
+            # the app dropped the marker as it rewrote the file, and the list came back (Gwenview, Okular 26.08)
+            return clear(x) + [KConfigLock(x.lock, host.display(x.lock), x.group, f"Stop {x.label} listing what you open")]
         acts = []
         if x.kind == "folder" and x.path.is_dir():
             acts.append(DeleteFiles(x.path, [f for f in children(x.path) if f.is_file()], f"{x.label}'s recent folders",
@@ -541,7 +543,8 @@ def kde_recent_files(check, scan, outcome):
                       x.program in ("kate", "kwrite") and x.entries for x in listed) else ""),
                   options=[option(check, "Clear them", cleared, blockers=blockers)] if cleared else [],
                   done=not cleared)]
-    todo = [x for x in lists if not x.stopped]
+    todo = [x for x in lists if not x.stopped and x.stoppable]
+    unstoppable = list(dict.fromkeys(x.label for x in lists if not x.stoppable))
     acts = [a for x in todo for a in stop(x)]
     effects = [f"Open Recent stays empty in {', '.join(dict.fromkeys(x.app for x in todo))}."]
     if sessions:
@@ -553,10 +556,15 @@ def kde_recent_files(check, scan, outcome):
                    "after installing one. Reverting lets them keep lists again.")
     steps.append(Step("Stop them listing what you open",
                       "None of these apps has a setting for it, and System Settings' \"Do not remember\" doesn't reach "
-                      "them. For apps that keep the list in their settings file, its group is marked so the app can't "
-                      "write it ([Recent Files][$i], KDE's own way of locking a setting); for Ark, Kate, KWrite and "
-                      "Gwenview, which keep a file of their own, an empty read-only folder goes where it would be. "
-                      "Anything already listed is cleared first.",
+                      "them. For apps that keep the list in their settings file, the list's group is locked ([Recent "
+                      "Files][$i], KDE's own way of locking a setting) in a file of the same name in "
+                      "~/.config/kdedefaults: Plasma has its apps read that folder beneath your own settings, and they "
+                      "never write to it, so the lock holds however often the app rewrites its own file. For Ark, "
+                      "Kate, KWrite and Gwenview's folders, which are files of their own, an empty read-only folder "
+                      "goes where they would be. Anything already listed is cleared first."
+                      + (f" {', '.join(unstoppable)} can't be stopped this way (a Flatpak app reads no settings of yours "
+                         "beneath its own, and a list in a state file is read alone): clear it from time to time."
+                         if unstoppable else ""),
                       options=[option(check, "Stop these apps keeping lists", acts, blockers=blockers, recommended=True,
                                       side_effects=effects)] if acts else [], done=not acts))
     return Guide(check.id, "KDE apps' lists of what you opened",
