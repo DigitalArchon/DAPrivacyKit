@@ -520,6 +520,16 @@ def test_a_newer_copy_of_a_boxs_program_replaces_the_old_one_and_reverts(cat, tm
         trial.discard(host, t3)
 
 
+def test_sound_says_all_the_sound_server_gives(cat, tmp_path):
+    """The review's suspicion: the sound tick said only "the microphone", while the browser panel lists more for the
+    same socket (the user's and computer's names, other programs, and modules that connect out or listen, past the
+    sandbox's network). The Box's guide says it all; the page's tick lists soundRisks (the web test)."""
+    from test_guides import build
+    g = build(cat, _box_host(tmp_path), "app.boxes")
+    sound = next(i for s in g.steps for i in s.inputs if i.name == "sound")
+    assert "microphone" in sound.help and "computer's name" in sound.help and "even with no network of its own" in sound.help
+
+
 def test_what_a_program_printed_never_goes_to_the_journal(monkeypatch, capsys):
     from daprivacyscanner import app
     monkeypatch.delenv("DISPLAY", raising=False)

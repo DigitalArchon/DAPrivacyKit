@@ -1544,8 +1544,12 @@ OACS, FNA and SANICAP via the helper's ioctl), read on request and kept for the 
     loaders mount no `/proc` and worked either way). The program can read the kernel command line (often the
     disks' UUIDs), the boot id and the rest of what `/proc` tells any program, and the page and the Box's guide
     say so. (WebKitGTK's sandbox also binds `/sys/block` and more of `/sys`, which a trial isn't given, since it
-    would show the drives' serial numbers: its web pages don't load in a trial as it is, tested the same day.) The graphics card when ticked (on by default: the owner's decision, so that a trial
-    feels as the app would) and sound when ticked. Its command is `STAY`, a subreaper that waits for everything
+    would show the drives' serial numbers: its web pages don't load in a trial as it is, tested the same day.)
+    The graphics card when ticked (on by default: the owner's decision, so that a trial feels as the app would)
+    and sound when ticked (PulseAudio's socket, which gives a program what it gives the browser: the page lists it
+    under the tick, `soundRisks`, and the Box's guide in its help, both saying the sound server can be made to
+    connect out past a trial's network; they said only "the microphone" until the 2026-10-17 review). Its
+    command is `STAY`, a subreaper that waits for everything
     the program starts (a launcher that starts the real program and ends) but not for the session's own helpers
     once the program has ended (`HELPERS`: a D-Bus daemon started on demand stays for good, and the trial would
     never end by itself: seen with Xed). The whole command (and Xephyr's) runs under `TETHER`, the computer's

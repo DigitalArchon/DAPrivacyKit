@@ -445,7 +445,10 @@ of yours. **Try something…**, then choose:
 
 Before it starts you choose its **network** (none, or its own with your local network fenced off and the
 hosts it contacts listed; the second needs the `passt` package) and what it gets (the graphics card, sound,
-on X11 a display of its own). Then **Start the trial**, use the program, and close it or **End the trial**.
+on X11 a display of its own). Sound gives it this computer's sound server, which runs outside the sandbox:
+with it the program could also record from the microphone, read your user and computer names, and have the
+sound server connect anywhere, even with no network of its own. The window lists this when you tick it. Then
+**Start the trial**, use the program, and close it or **End the trial**.
 
 You see:
 

@@ -502,7 +502,12 @@ def boxes(check, scan, outcome):
                                                     else [("observed", "Its own, observed")]), help=net_help),
                 Input("gpu", "The graphics card", "bool", gpu, True,
                       help="So it draws as it would outside. Its drivers then handle what the app sends them."),
-                Input("sound", "Sound", "bool", sound, False, help="This also gives it the microphone.")],
+                Input("sound", "Sound", "bool", sound, False,
+                      help="This computer's sound server, which runs outside the sandbox: with it the app could also "
+                           "record from the microphone, read your user name, this computer's name and which other "
+                           "programs use sound, and ask the server to connect to any address or listen for "
+                           "connections, on this computer's own network, so it could reach the internet and your local "
+                           "network even with no network of its own.")],
         options=[option(check, f"Set up a Box for {box.name}", acts, blockers=blockers, recommended=True,
                         side_effects=effects)],
         done=not acts and not blockers))

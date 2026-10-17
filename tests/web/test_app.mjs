@@ -1445,6 +1445,13 @@ check(text(".modal .trial .notebox.risk").includes("This is an X11 session") && 
   const ticks = $$(".modal .trial input[type=checkbox]");
   check(ticks.length === 4 && ticks[0].checked && ticks[1].checked && !ticks[2].checked && !ticks[3].checked,
         "decoys and the graphics card are on, sound and a display of its own off");
+  const soundNote = () => $$(".modal .trial .warnbox").find(n => n.textContent.includes("With sound"));
+  check(soundNote()?.hidden === true, "what sound gives isn't listed while it is off");
+  ticks[2].click();
+  check(!soundNote().hidden && soundNote().textContent.includes("record from the microphone")
+        && soundNote().textContent.includes("even with no network of its own"),
+        "ticked, sound lists what the sound server gives, as the browser panel does (the 2026-10-17 review)");
+  ticks[2].click();
   $$(".modal .trial input[name=trial-prog]")[1].click();
   $(".modal .trial input.path").value = "--demo";
   $$(".modal .trial button").find(b => b.textContent === "Start the trial").click(); await tick(); await tick(); }

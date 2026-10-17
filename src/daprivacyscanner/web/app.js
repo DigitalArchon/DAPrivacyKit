@@ -3363,13 +3363,17 @@ function confirmModal(title, body, yes) {
 
 // What the sound server's socket gives a browser a website took over (tested from a sandbox holding only that
 // socket, with PipeWire's PulseAudio server): the microphone, the user's and computer's names and the other
-// programs using sound, and modules it loads on request: a connection out to any address, or a listener.
-function soundRisks(list = false) {
+// programs using sound, and modules it loads on request: a connection out to any address, or a listener. `trial`:
+// the same said of a program on trial, or in a Box, which the sound server then reaches past its network's limits.
+function soundRisks(list = false, trial = false) {
   const items = [
     "record from the microphone;",
     "read your user name and this computer's name (the sound server tells any program that asks), and which other "
       + "programs are using sound;",
-    "ask the sound server to connect to any address on the internet, or to listen for connections: it runs outside the "
+    trial ? "ask the sound server to connect to any address on the internet, or to listen for connections: it runs "
+      + "outside the sandbox, on this computer's own network, so the program could reach the internet and your local "
+      + "network that way, even with no network of its own."
+    : "ask the sound server to connect to any address on the internet, or to listen for connections: it runs outside the "
       + "sandbox, on this computer's own network, so under Tor Browser that connection reveals your real address, and "
       + "under Mullvad Browser it can reach your local network.",
   ];
@@ -3776,8 +3780,12 @@ function trialReady(data, t, call) {
   const radio = (value, label, note, disabled) => h("label", { class: "check" },
     h("input", { type: "radio", name: "trial-net", checked: o.network === value, disabled, onchange: () => { o.network = value; } }),
     h("span", {}, label), note ? h("span", { class: "small muted" }, ` ${note}`) : null);
+  // what sound gives it, listed under the tick while it is ticked (as the browser panel lists it)
+  const soundNote = h("div", { class: "warnbox small", hidden: true }, "With sound, the program could also:",
+    h("ul", {}, soundRisks(true, true).map(x => h("li", {}, x))));
   const tick = (key, label, note, shown = true) => shown ? h("label", { class: "check" },
-    h("input", { type: "checkbox", checked: o[key], onchange: (e) => { o[key] = e.target.checked; } }),
+    h("input", { type: "checkbox", checked: o[key], onchange: (e) => { o[key] = e.target.checked;
+      if (key === "sound") soundNote.hidden = !e.target.checked; } }),
     h("span", {}, label), note ? h("span", { class: "small muted" }, ` ${note}`) : null) : null;
   const start = h("button", { class: "primary" }, "Start the trial");
   start.addEventListener("click", () => call("/api/tools/trial/start", { ...o, program, args: args.value }, start, "Starting…"));
@@ -3801,7 +3809,8 @@ function trialReady(data, t, call) {
     h("h4", {}, "What it gets"),
     tick("decoys", "Decoy files in its home", "made-up SSH keys, browser profiles, wallets and documents: a program that opens them has gone looking"),
     tick("gpu", "The graphics card", "so it draws as it would outside; its drivers then handle what the program sends them", !!st.gpu),
-    tick("sound", "Sound", "this also gives it the microphone", !!st.sound),
+    tick("sound", "Sound", "this computer's sound server, outside the sandbox", !!st.sound),
+    st.sound ? soundNote : null,
     tick("nested", "A display of its own", "it can't see or type into your other windows (needs Xephyr); no copy and paste with them",
       st.display === "x11" && !flat && !!st.xephyr?.available),
     st.display === "x11" ? h("div", { class: "notebox risk small" }, h("b", {}, "This is an X11 session. "),
