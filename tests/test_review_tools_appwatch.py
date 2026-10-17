@@ -476,6 +476,113 @@ def test_what_other_programs_write_in_the_users_folders_doesnt_crowd_out_the_rec
     assert "r.others_left ?" in js and "o.changes" in js
 
 
+MOUNTS = [
+    {"dev": "252:1", "root": "/", "mount": "/", "fstype": "ext4", "source": "/dev/mapper/vgmint-root"},
+    {"dev": "0:30", "root": "/", "mount": "/dev/shm", "fstype": "tmpfs", "source": "tmpfs"},
+    {"dev": "0:50", "root": "/", "mount": "/run/user/1000", "fstype": "tmpfs", "source": "tmpfs"},
+    {"dev": "8:17", "root": "/", "mount": "/home/u/Data", "fstype": "ext4", "source": "/dev/sdb1"},
+    {"dev": "0:60", "root": "/", "mount": "/home/u/.cache/thumbnails", "fstype": "tmpfs", "source": "tmpfs"},
+    {"dev": "0:61", "root": "/", "mount": "/home/u/RAMDisk", "fstype": "tmpfs", "source": "tmpfs"},
+    {"dev": "0:62", "root": "/", "mount": "/run/user/1000/doc", "fstype": "fuse.portal", "source": "portal"},
+    {"dev": "0:63", "root": "/", "mount": "/tmp/.mount_DAPrivXy", "fstype": "fuse.DAPrivacyKit", "source": "x"},
+    {"dev": "0:27", "root": "/", "mount": "/run/media/u/POOL", "fstype": "btrfs", "source": "/dev/sdc1"},
+    {"dev": "0:27", "root": "/photos", "mount": "/home/u/Photos", "fstype": "btrfs", "source": "/dev/sdc1"},
+    {"dev": "0:28", "root": "/", "mount": "/run/daprivacyscanner-watch/0", "fstype": "btrfs", "source": "/dev/sda3"},
+    {"dev": "0:28", "root": "/@home", "mount": "/home/other", "fstype": "btrfs", "source": "/dev/sda3"},
+]
+
+
+def test_whats_mounted_in_the_home_and_the_runtime_folder_is_watched_or_said_not_to_be(monkeypatch):
+    """A disk at ~/Data, a tmpfs at ~/.cache/thumbnails (the app's own fix), ~/RAMDisk and the document portal were
+    neither watched nor listed as not watched (D7)."""
+    monkeypatch.setattr(helper, "_watch_mountinfo", lambda: MOUNTS)
+    plan, skipped = helper._watch_plan(1000, "/home/u")
+    mounts = {p["mount"]: p for p in plan}
+    assert {"/home/u/Data", "/home/u/.cache/thumbnails", "/home/u/RAMDisk", "/run/user/1000/doc",
+            "/tmp/.mount_DAPrivXy"} <= set(mounts) and not skipped
+    assert all(p["dev"] for p in plan) and len({p["dev"] for p in plan}) == len(plan)
+    # a btrfs whose top level the system mounted is looked through there; its own private mount is never planned
+    pool = next(p for p in plan if p["dev"] == "0:27")
+    assert pool["top"] and pool["at"] == "/run/media/u/POOL" and ["/photos", "/home/u/Photos"] in pool["subvolumes"]
+    assert "0:28" not in {p["dev"] for p in plan}                 # /home/other isn't the caller's; ours is filtered
+    why = helper._watch_why(mounts["/run/user/1000/doc"], 1000, OSError(13, "Permission denied"))
+    assert "document portal" in why and "aren't counted as the app's" in why
+    assert "AppImage" in helper._watch_why(mounts["/tmp/.mount_DAPrivXy"], 1000, OSError(13, "Permission denied"))
+    assert helper._watch_why(mounts["/home/u/Data"], 1000, OSError(22, "no")) == "no (EINVAL)"
+
+
+def test_a_btrfs_looked_through_its_system_mount_maps_paths_back():
+    w = helper._Watched.__new__(helper._Watched)
+    w.strip, w.fs = "/", {"subvolumes": [["/@home", "/home"], ["/", "/"]]}
+    assert w._mapped("/@home/u/x") == "/home/u/x" and w._mapped("/etc/fstab") == "/etc/fstab"
+    w.strip, w.fs = "/run/media/u/POOL", {"subvolumes": [["/photos", "/home/u/Photos"], ["/", "/run/media/u/POOL"]]}
+    assert w._mapped("/run/media/u/POOL/photos/a.jpg") == "/home/u/Photos/a.jpg"
+    assert w._mapped("/run/media/u/POOL/other/b") == "/run/media/u/POOL/other/b"
+
+
+def test_a_disks_mount_isnt_held_open_and_one_replaced_isnt_looked_through(tmp_path):
+    """A descriptor of each disk's mount was held for the whole watch: the disk couldn't be unmounted until it ended.
+    It is opened for each look-up now, and only while it is still that filesystem."""
+    import os
+    w = helper._Watched.__new__(helper._Watched)
+    w.mfd, w.at, w.dev = -1, str(tmp_path), os.stat(tmp_path).st_dev
+    fd = w._mount_fd()
+    assert fd >= 0
+    os.close(fd)
+    w.dev = w.dev + 1                                             # something else is mounted there now
+    assert w._mount_fd() == -1
+    w.at = str(tmp_path / "gone")
+    assert w._mount_fd() == -1
+
+
+class FakeWatched:
+    closed: list = []
+
+    def __init__(self, libc, fs, index, private=True):
+        if fs["fstype"].startswith("fuse"):
+            raise OSError(13, "Permission denied")
+        self.fs, self.paths, self.fan, self.dirs = fs, {"x": "y"}, index + 100, -1
+
+    def close(self):
+        FakeWatched.closed.append(self.fs["mount"])
+
+
+def test_a_disk_mounted_during_the_watch_is_watched_and_one_unmounted_let_go(monkeypatch):
+    """Mounts added mid-watch weren't watched, nor listed (D7). The mount table is read again every few seconds."""
+    table = [dict(m) for m in MOUNTS[:3]]
+    monkeypatch.setattr(helper, "_watch_mountinfo", lambda: table)
+    monkeypatch.setattr(helper, "_Watched", FakeWatched)
+    FakeWatched.closed = []
+    fss = helper._Filesystems(None, 1000, "/home/u", True)
+    fss.add(*helper._watch_plan(1000, "/home/u"))
+    assert fss.names() == {"watched": ["/", "/dev/shm", "/run/user/1000"], "skipped": []}
+    table += [MOUNTS[5], MOUNTS[6]]                               # ~/RAMDisk opened, a Flatpak app's portal
+    fss.replan()
+    names = fss.names()
+    assert names["watched"][-1] == "/home/u/RAMDisk"
+    assert names["skipped"] == [["/run/user/1000/doc", helper._watch_why(MOUNTS[6], 1000, OSError(13, "x"))
+                                 + ", mounted during the watch"]]
+    fss.replan()                                                  # nothing new: nothing added twice
+    assert fss.names() == names and len(fss.watched) == 4
+    del table[3]                                                  # ~/RAMDisk closed: let go, still named as watched
+    fss.replan()
+    assert FakeWatched.closed == ["/home/u/RAMDisk"] and len(fss.watched) == 3
+    assert "/home/u/RAMDisk" in fss.names()["watched"]
+    table.insert(3, dict(MOUNTS[5], dev="0:70"))                  # opened again: watched again
+    fss.replan()
+    assert len(fss.watched) == 4
+
+
+def test_the_result_and_the_page_follow_the_filesystems_watched(tmp_path):
+    host = Host(home=tmp_path, environ={"HOME": str(tmp_path)}, runner=FakeRunner(), uid=1000)
+    raw = {"files": [], "watched": ["/", "/home/u/RAMDisk"], "skipped": [["/run/user/1000/doc", "the portal"]]}
+    out = appwatch.report(host, menu.App("x.desktop", "X", ["x"], "native"), raw, {"watched": ["/"], "skipped": []})
+    assert out["watched"] == ["/", "/home/u/RAMDisk"] and out["not_watched"] == [["/run/user/1000/doc", "the portal"]]
+    assert any("document portal" in t for t in appwatch.LIMITS)
+    src = (Path(__file__).parent.parent / "src/daprivacyscanner/server.py").read_text()
+    assert 'job["not_watched"] = job["counts"].pop("skipped", [])' in src
+
+
 def test_the_helper_ends_a_watch_when_its_input_ends(monkeypatch):
     """Dropping the access (or the app going) closes the helper's input: the watch ends through its clean-up."""
     import io

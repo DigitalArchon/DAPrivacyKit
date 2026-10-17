@@ -1869,6 +1869,9 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
                             raise appwatch.WatchError("Administrator access ended, so the watch ended with it. "
                                                       "Nothing of what it saw is left.")
                         job["counts"] = await asyncio.to_thread(h.call, "watch_poll", {})
+                        if "watched" in job["counts"]:          # a disk mounted or unmounted meanwhile
+                            job["watched"] = job["counts"].pop("watched")
+                            job["not_watched"] = job["counts"].pop("skipped", [])
                         job["alive"] = await asyncio.to_thread(appwatch.alive, host, units)
                         seen = seen or job["alive"] > 0
                         job["closed"] = seen and not job["alive"]                 # the app has ended: time to end

@@ -1439,17 +1439,27 @@ OACS, FNA and SANICAP via the helper's ioctl), read on request and kept for the 
   programs wrote meanwhile" (per program and folder, counted) is where a copy already open, or a background
   service of the app's own, shows.
   - **The watch** (in the helper, a child process of its own): `FAN_MARK_FILESYSTEM` on the filesystems holding
-    the caller's home, `/tmp`, `/var/tmp`, `/dev/shm`, the runtime folder and `/`, and what is mounted under
-    `/media`, `/mnt` and `/run/media`, each once (by the device number in mountinfo: every tmpfs is its own, a
-    btrfs's subvolumes are one). A filesystem mark sees every mount namespace, so a Flatpak app is seen too.
-    Events carry the folder's handle and the file's name (`FAN_REPORT_DIR_FID | FAN_REPORT_NAME`), turned into a
-    path of this namespace with `open_by_handle_at`. The kernel refuses a filesystem mark made through a btrfs
-    subvolume (EXDEV, on Linux 7.2 too), so the child takes a mount namespace of its own and mounts the top level
-    (`subvolid=5`) there, seen by nothing else, then maps each path back through where the subvolumes are
-    mounted; a subvolume mounted nowhere gives no path. However the watch ends (`watch_end`, the access dropped,
-    the app quitting: the helper's input ends, or the helper is gone and the child gets SIGTERM), the child
-    unmounts what it mounted and removes its folders in `/run/daprivacyscanner-watch` (they were left behind). Opens, executions, changes, creations, deletions and
-    renames are watched; not each read (an open is the read), nor folders being listed. The kernel's queue keeps
+    the caller's home, `/tmp`, `/var/tmp`, `/dev/shm`, the runtime folder and `/`, and whatever is mounted inside
+    any of those or under `/media`, `/mnt` and `/run/media` (a disk at `~/Data`, a tmpfs at `~/.cache/thumbnails`,
+    `~/RAMDisk`: before, they were neither watched nor said not to be), each once (by the device number in
+    mountinfo: every tmpfs is its own, a btrfs's subvolumes are one). The mount table is read again every 3
+    seconds (`_Filesystems.replan`): a disk mounted during the watch is watched from then on, one unmounted is let
+    go. What can't be watched is listed with why, in words (`_watch_why`): a FUSE filesystem can't be looked into
+    as root, among them the document portal, through which a Flatpak app opens the files the user chooses (the
+    portal opens them for it, so they aren't the app's: said in the limits too) and GVFS's. A filesystem mark sees
+    every mount namespace, so a Flatpak app is seen too. Events carry the folder's handle and the file's name
+    (`FAN_REPORT_DIR_FID | FAN_REPORT_NAME`), turned into a path of this namespace with `open_by_handle_at`
+    through the filesystem's mount, opened for each look-up and only while it is still that filesystem (held open,
+    it kept a disk from being unmounted until the watch ended). The kernel refuses a filesystem mark made through
+    a btrfs subvolume (EXDEV, on Linux 7.2 too), so a btrfs is looked through its top level: where the system
+    mounted it, there; otherwise the child mounts it (`subvolid=5`) in a mount namespace of its own, a slave of the
+    system's (what is mounted later shows in it; what it mounts never goes the other way), then maps each path
+    back through where the subvolumes are mounted; a subvolume mounted nowhere gives no path. Tried on Mint (ext4)
+    and CachyOS (btrfs): a tmpfs mounted in the home during the watch was watched, a file written in it by the app
+    recorded, and it could be unmounted while the watch went on. However the watch ends (`watch_end`, the access
+    dropped, the app quitting: the helper's input ends, or the helper is gone and the child gets SIGTERM), the
+    child unmounts what it mounted and removes its folders in `/run/daprivacyscanner-watch` (they were left
+    behind). Opens, executions, changes, creations, deletions and renames are watched; not each read (an open is the read), nor folders being listed. The kernel's queue keeps
     its own limit (never `FAN_UNLIMITED_QUEUE`, with which a reader behind six busy programs let it grow from 470 MB
     to 1.7 GB of kernel memory in 25 seconds, the events' processes long gone by the time they were read): when it
     is full the kernel drops what comes next and says so, which is counted, and the page says that some of what

@@ -48,6 +48,8 @@ LIMITS = [
     "under your home folder is counted, per folder.",
     "An app that was already running, or that passes its work to a background service of its own, does that "
     "work outside what is watched: it shows under what your other programs wrote, when it wrote something.",
+    "A Flatpak app opens the files you choose for it through the document portal, which opens them on its behalf: "
+    "those files aren't counted as the app's, nor looked for in what was written.",
 ]
 
 
@@ -275,7 +277,9 @@ def report(host: Host, app: menu.App, raw: dict, started: dict) -> dict:
                          key=lambda s: -s["events"])[:40]
     out["folded"] = sum((raw.get("folded") or {}).values())
     out.update({k: raw.get(k, 0) for k in ("events", "foreign", "overflow", "unresolved", "others_left")})
-    out.update({"app": app.name, "watched": started.get("watched") or [], "not_watched": started.get("skipped") or [],
+    # the filesystems as they were at the end (one mounted during the watch, watched or not), else at the start
+    out.update({"app": app.name, "watched": raw.get("watched") or started.get("watched") or [],
+                "not_watched": raw.get("skipped") if "skipped" in raw else started.get("skipped") or [],
                 "limits": LIMITS})
     return out
 

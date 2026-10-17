@@ -4725,6 +4725,7 @@ WATCH_OTHER_TTL = 2.0                          # and when it isn't: a program is
 WATCH_HANDLES_MAX = 20000                      # folder handles remembered as paths
 WATCH_MOUNT_DIR = "/run/daprivacyscanner-watch"
 WATCH_START_WAIT = 20.0
+WATCH_REPLAN = 3.0                             # seconds between reads of the mount table
 WATCH_FSTYPES_TOP = ("btrfs",)                 # reached through a private mount of the top level
 W_OPENED, W_WRITTEN, W_CREATED, W_DELETED, W_RAN, W_MOVED, W_DIR = 1, 2, 4, 8, 16, 32, 64
 FAN_CLOEXEC, FAN_NONBLOCK, FAN_UNLIMITED_QUEUE, FAN_UNLIMITED_MARKS = 0x1, 0x2, 0x10, 0x20
@@ -4971,12 +4972,15 @@ def _watch_mountinfo() -> list[dict]:
 
 def _watch_plan(uid: int, home: str) -> tuple[list[dict], list[list[str]]]:
     """The filesystems to watch: those holding the caller's home, the temporary folders, the caller's runtime
-    folder and /, and what is mounted under /media, /mnt and /run/media; each once. A btrfs one is reached through
-    its top level (`top`), with where each of its subvolumes is mounted (`subvolumes`); any other through a mount
-    that shows all of it. Returns (the plan, [[mount point, why not]])."""
-    table = _watch_mountinfo()
+    folder and /, and whatever is mounted inside any of those or under /media, /mnt and /run/media (a disk at
+    ~/Data, a tmpfs at ~/.cache/thumbnails, ~/RAMDisk, the document portal in the runtime folder: they weren't
+    watched, nor said not to be); each once, by its device number (`dev`). A btrfs one is reached through its top
+    level (`top`: through the system's own mount of it, `at`, or a private one), with where each of its subvolumes
+    is mounted (`subvolumes`); any other through a mount that shows all of it. Returns (the plan, [[mount point,
+    why not]])."""
+    table = [m for m in _watch_mountinfo() if not _watch_inside(m["mount"], (WATCH_MOUNT_DIR,))]   # not its own
     wanted = [home, "/", "/tmp", "/var/tmp", "/dev/shm", f"/run/user/{uid}"]
-    wanted += [m["mount"] for m in table if _watch_inside(m["mount"], ("/media", "/mnt", "/run/media"))]
+    wanted += [m["mount"] for m in table if _watch_inside(m["mount"], _watch_keep(uid, home))]
     plan, skipped, seen = [], [], set()
     for path in wanted:
         held = [m for m in table if path == m["mount"] or path.startswith(m["mount"].rstrip("/") + "/")]
@@ -4988,20 +4992,38 @@ def _watch_plan(uid: int, home: str) -> tuple[list[dict], list[list[str]]]:
             continue
         seen.add(key)
         same = [x for x in table if x["dev"] == key]
+        whole = next((x for x in same if x["root"] == "/"), None)
         if m["fstype"] in WATCH_FSTYPES_TOP:
-            if not _DEVICE.match(m["source"]):
+            if whole is None and not _DEVICE.match(m["source"]):
                 skipped.append([m["mount"], "its device can't be told"])
                 continue
-            # named by the shortest place it is mounted at (/ rather than /home, when both are subvolumes of it)
-            plan.append({"mount": min((x["mount"] for x in same), key=len), "fstype": m["fstype"], "source": m["source"], "top": True,
+            # named by the shortest place it is mounted at (/ rather than /home, when both are subvolumes of it);
+            # where its top level is mounted already (a disk at /run/media/…), through that: nothing of its own to
+            # mount, which would keep the disk busy after it is unmounted
+            plan.append({"mount": min((x["mount"] for x in same), key=len), "fstype": m["fstype"], "source": m["source"],
+                         "top": True, "at": whole["mount"] if whole else None, "dev": key,
                          "subvolumes": sorted(([x["root"], x["mount"]] for x in same), key=lambda s: -len(s[0]))})
             continue
-        whole = next((x for x in same if x["root"] == "/"), None)
         if whole is None:
             skipped.append([m["mount"], "only part of that filesystem is mounted here"])
             continue
-        plan.append({"mount": whole["mount"], "fstype": m["fstype"], "source": m["source"], "top": False})
+        plan.append({"mount": whole["mount"], "fstype": m["fstype"], "source": m["source"], "top": False, "dev": key})
     return plan, skipped
+
+
+def _watch_why(fs: dict, uid: int, e: OSError) -> str:
+    """Why a filesystem can't be watched, in words."""
+    mount, kind = fs["mount"], fs["fstype"]
+    if mount == f"/run/user/{uid}/doc" or kind == "fuse.portal":
+        return ("the document portal, through which Flatpak apps open the files you choose: the portal opens them for "
+                "the app, so those files aren't counted as the app's")
+    if mount == f"/run/user/{uid}/gvfs" or kind.startswith("fuse.gvfs"):
+        return "the desktop's view of network shares and devices (GVFS), which administrator access can't look into"
+    if kind.startswith("fuse") and os.path.basename(mount).startswith(".mount_"):
+        return "a running AppImage's own files (read-only)"
+    if kind.startswith("fuse"):
+        return "a filesystem run by a program of yours (FUSE), which administrator access can't look into"
+    return f"{e.strerror} ({errno.errorcode.get(e.errno, e.errno)})"
 
 
 class _FileHandle(ctypes.Structure):
@@ -5009,28 +5031,34 @@ class _FileHandle(ctypes.Structure):
 
 
 class _Watched:
-    """One filesystem under watch: its fanotify descriptor, a descriptor of its mount to open handles through,
-    and how to turn what that gives into a path of the caller's (a btrfs subvolume's mount point)."""
+    """One filesystem under watch: its fanotify descriptors, the mount to open handles through (`at`), and how to
+    turn what that gives into a path of the caller's (a btrfs subvolume's mount point)."""
 
-    def __init__(self, libc, fs: dict, index: int):
+    def __init__(self, libc, fs: dict, index: int, private: bool = True):
         self.libc, self.fs, self.paths = libc, fs, {}
         self.fan = self.dirs = self.mfd = -1
-        self.strip = self.made = ""
+        self.strip = self.made = self.at = ""
+        self.dev = -1
         try:
-            self._start(fs, index)
+            self._start(fs, index, private)
         except OSError:
             self.close()
             raise
 
-    def _start(self, fs: dict, index: int) -> None:
+    def _start(self, fs: dict, index: int, private: bool) -> None:
         libc, at = self.libc, fs["mount"]
-        if fs["top"]:
+        if fs["top"] and fs.get("at"):
+            at = self.strip = fs["at"]                  # its top level is mounted: looked through there
+        elif fs["top"]:
+            if not private:
+                raise OSError(errno.EXDEV, "its top level can't be reached here")
             at = self.made = f"{WATCH_MOUNT_DIR}/{index}"
             os.makedirs(at, mode=0o700, exist_ok=True)
             # nosuid, nodev, noexec, noatime: it is only looked through
             if libc.mount(fs["source"].encode(), at.encode(), fs["fstype"].encode(), 2 | 4 | 8 | 1024, b"subvolid=5"):
                 raise OSError(ctypes.get_errno(), "its top level couldn't be mounted")
             self.strip = at
+        self.at, self.dev = at, os.stat(at).st_dev
         # the kernel's own queue limit (fs.fanotify.max_queued_events), never FAN_UNLIMITED_QUEUE: with it, a
         # reader that fell behind under six busy programs let the kernel's queue grow from 470 MB to 1.7 GB in 25
         # seconds, never said so, and by the time the events were read their processes had ended (tested on
@@ -5050,7 +5078,23 @@ class _Watched:
                                                  -100, at.encode()):
             os.close(self.dirs)
             self.dirs = -1
-        self.mfd = os.open(at, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        if self.made:                                   # its own mount: held open (nothing else uses it)
+            self.mfd = os.open(at, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+
+    def _mount_fd(self) -> int:
+        """A descriptor of the mount to open handles through: its own private mount's, or the system's mount opened
+        for the moment (held open, it kept a disk from being unmounted until the watch ended), and only while that
+        is still this filesystem (-1 once it is gone or something else is mounted there)."""
+        if self.mfd >= 0:
+            return os.dup(self.mfd)
+        try:
+            fd = os.open(self.at, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        except OSError:
+            return -1
+        if os.fstat(fd).st_dev != self.dev:
+            os.close(fd)
+            return -1
+        return fd
 
     def close(self) -> None:
         """Its descriptors closed, and a top level it mounted unmounted and its folder removed (it was left in /run
@@ -5093,10 +5137,12 @@ class _Watched:
         if key in self.paths:
             return self.paths[key]
         path = None
-        if len(handle) <= 128:
+        mfd = self._mount_fd() if len(handle) <= 128 else -1
+        if mfd >= 0:
             fh = _FileHandle(len(handle), htype)
             ctypes.memmove(fh.f_handle, handle, len(handle))
-            fd = self.libc.open_by_handle_at(self.mfd, ctypes.byref(fh), os.O_PATH | os.O_CLOEXEC)
+            fd = self.libc.open_by_handle_at(mfd, ctypes.byref(fh), os.O_PATH | os.O_CLOEXEC)
+            os.close(mfd)
             if fd >= 0:
                 try:
                     path = self._mapped(os.readlink(f"/proc/self/fd/{fd}"))
@@ -5114,7 +5160,7 @@ class _Watched:
             return None
         if not self.strip:
             return path
-        rel = path[len(self.strip):] or "/"
+        rel = path if self.strip == "/" else path[len(self.strip):] or "/"
         if not path.startswith(self.strip) or not rel.startswith("/"):
             return None
         for root, mount in self.fs["subvolumes"]:   # the deepest subvolume first
@@ -5152,43 +5198,98 @@ def _watch_child() -> None:
         import signal
         signal.signal(signal.SIGTERM, lambda _sig, _frame: sys.exit(0))
         libc.prctl(1, 15, 0, 0, 0)                  # PR_SET_PDEATHSIG, SIGTERM: never outlives the helper
-        if any(fs["top"] for fs in plan):
-            # a mount namespace of its own: the top-level mounts are seen by nothing else and end with this process
-            if libc.unshare(0x20000) or libc.mount(b"none", b"/", None, 0x4000 | (1 << 18), None):
-                raise Refused("a mount namespace of its own couldn't be made")
-        watched = []
-        for i, fs in enumerate(plan):
-            try:
-                watched.append(_Watched(libc, fs, i))
-            except OSError as e:
-                skipped.append([fs["mount"], f"{e.strerror} ({errno.errorcode.get(e.errno, e.errno)})"])
-        if not watched:
-            raise Refused("no filesystem here can be watched: " + "; ".join(f"{m}: {why}" for m, why in skipped))
+        # a mount namespace of its own, for the top-level mounts of btrfs filesystems: seen by nothing else, gone
+        # with this process. A slave of the system's, so what is mounted later (a USB disk, ~/RAMDisk) shows here
+        # too, and is watched (it wasn't before); what it mounts itself never goes the other way.
+        private = not (libc.unshare(0x20000) or libc.mount(b"none", b"/", None, 0x4000 | (1 << 19), None))
+        fss = _Filesystems(libc, uid, home, private)
+        fss.add(plan, skipped)
+        if not fss.watched:
+            raise Refused("no filesystem here can be watched: " + "; ".join(f"{m}: {why}" for m, why in fss.skipped))
     except Refused as e:
         out.write(json.dumps({"error": str(e)}) + "\n")
         out.flush()
         return
     try:
-        out.write(json.dumps({"watched": [w.fs["mount"] for w in watched], "skipped": skipped}) + "\n")
+        out.write(json.dumps(fss.names()) + "\n")
         out.flush()
-        _watch_loop(watched, _Tally(uid, home, units), out, pending)
+        _watch_loop(fss, _Tally(uid, home, units), out, pending)
     finally:
-        for w in watched:
+        fss.close()
+
+
+class _Filesystems:
+    """The filesystems under watch, as the mount table changes: one mounted during the watch is added (or said not
+    to be), one unmounted is let go (closed, so nothing of it is held), a btrfs's subvolumes followed."""
+
+    def __init__(self, libc, uid: int, home: str, private: bool):
+        self.libc, self.uid, self.home, self.private = libc, uid, home, private
+        self.watched: list[_Watched] = []
+        self.names_watched: list[str] = []           # every filesystem watched at some point, by its mount point
+        self.skipped: list[list[str]] = []
+        self.tried: set[str] = set()                 # devices already watched or said not to be
+        self.index = 0
+
+    def add(self, plan: list[dict], skipped: list[list[str]], late: bool = False) -> None:
+        for fs in plan:
+            if fs["dev"] in self.tried:
+                continue
+            self.tried.add(fs["dev"])
+            try:
+                w = _Watched(self.libc, fs, self.index, self.private)
+            except OSError as e:
+                if not any(s[0] == fs["mount"] for s in self.skipped):
+                    why = _watch_why(fs, self.uid, e)
+                    self.skipped.append([fs["mount"], why + (", mounted during the watch" if late else "")])
+                continue
+            finally:
+                self.index += 1
+            self.watched.append(w)
+            if fs["mount"] not in self.names_watched:
+                self.names_watched.append(fs["mount"])
+        for mount, why in skipped:
+            if not any(s[0] == mount for s in self.skipped):
+                self.skipped.append([mount, why])
+
+    def replan(self) -> None:
+        plan, skipped = _watch_plan(self.uid, self.home)
+        now = {fs["dev"]: fs for fs in plan}
+        for w in list(self.watched):
+            fs = now.get(w.fs["dev"])
+            if fs is None:                           # unmounted: let go, so the disk can go too
+                w.close()
+                self.watched.remove(w)
+                self.tried.discard(w.fs["dev"])
+            elif fs.get("subvolumes") != w.fs.get("subvolumes"):
+                w.fs["subvolumes"] = fs["subvolumes"]
+                w.paths.clear()
+        self.tried &= set(now) | {w.fs["dev"] for w in self.watched}   # mounted again later: tried again
+        self.add(plan, skipped, late=True)
+
+    def names(self) -> dict:
+        return {"watched": list(self.names_watched), "skipped": [list(s) for s in self.skipped]}
+
+    def close(self) -> None:
+        for w in self.watched:
             w.close()
+        self.watched = []
         try:
             os.rmdir(WATCH_MOUNT_DIR)
         except OSError:
             pass
 
 
-def _watch_loop(watched: list, tally: _Tally, out, pending: bytes) -> None:
+def _watch_loop(fss: _Filesystems, tally: _Tally, out, pending: bytes) -> None:
     """Reads the filesystems' events into the tally and answers the helper's words, until "end" or the end of
-    its input."""
+    its input. Every WATCH_REPLAN seconds, the mount table is read again."""
     import select
-    started = time.monotonic()
-    by_fd = {w.fan: w for w in watched}
+    started = replanned = time.monotonic()
     while True:
-        dirs = {w.dirs: w for w in by_fd.values() if w.dirs >= 0}
+        if time.monotonic() - replanned > WATCH_REPLAN:
+            fss.replan()
+            replanned = time.monotonic()
+        by_fd = {w.fan: w for w in fss.watched}
+        dirs = {w.dirs: w for w in fss.watched if w.dirs >= 0}
         try:
             ready = select.select([0, *by_fd, *dirs], [], [], 1.0)[0]
         except InterruptedError:
@@ -5206,7 +5307,8 @@ def _watch_loop(watched: list, tally: _Tally, out, pending: bytes) -> None:
             except BlockingIOError:
                 continue
             except OSError:
-                del by_fd[fd]
+                w.close()
+                fss.watched.remove(w)
                 continue
             for mask, pid, infos in _fan_events(buf):
                 if mask & FAN_Q_OVERFLOW:
@@ -5232,13 +5334,15 @@ def _watch_loop(watched: list, tally: _Tally, out, pending: bytes) -> None:
                 line, pending = pending.split(b"\n", 1)
                 word = line.strip()
                 if word == b"poll":
-                    for w in by_fd.values():
+                    for w in fss.watched:
                         if w.dirs < 0:                  # no word of folders renamed: what is remembered may be old
                             w.paths.clear()
-                    out.write(json.dumps({**tally.counts(), "seconds": time.monotonic() - started}) + "\n")
+                    out.write(json.dumps({**tally.counts(), **fss.names(), "seconds": time.monotonic() - started})
+                              + "\n")
                     out.flush()
                 elif word == b"end":
-                    out.write(json.dumps({**tally.result(), "seconds": time.monotonic() - started}) + "\n")
+                    out.write(json.dumps({**tally.result(), **fss.names(), "seconds": time.monotonic() - started})
+                              + "\n")
                     out.flush()
                     return
 
