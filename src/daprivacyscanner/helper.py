@@ -30,7 +30,8 @@ Detection (read-only):
 Changes (each returns {"changed": bool, "change_id"}; the journal keeps what was there before):
     write_dropin {name, settings}   a config drop-in of the app's own, from DROPINS (settings null removes it)
     edit_config  {target, values}   targeted line edits in a distro config file, from EDITS
-    set_service  {unit, enable, start}   systemctl enable/disable, start/stop, for SERVICES only
+    set_service  {unit|units, enable, start}   systemctl enable/disable, start/stop, for SERVICES only (units together
+                                    in one call; a change that fails part way is journalled first)
     set_sysctl   {key, value}       a live kernel setting, from SYSCTLS
     ufw_enable   {allow}            turn ufw on, first allowing the given ports, and ufw.service with it (boot)
     browser_policy {browser, settings}   enterprise policies, from POLICIES

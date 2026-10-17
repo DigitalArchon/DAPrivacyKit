@@ -237,7 +237,14 @@ Settings are changed through reversible actions that record before and after: `G
 `FileCommand` (a command whose only lasting effect is one of the user's files, backed up first, such as
 `flatpak override --user`), `HashKnownHosts` (`ssh-keygen -H`, the original kept in the backups) and
 `FirefoxPref` (one pref at a time in `prefs.js`, with the browser closed; never `user.js`, which would pin
-it). A file write that would leave the file as it is (`WriteFile.noop`, an option applied before) is no
+it). `SettingLines` changes the lines of one setting in a file its program rewrites as it exits (LibreOffice's
+`registrymodifications.xcu`, `gimprc`), recording and putting back those lines alone: a whole-file backup would
+undo everything the program saved since. `KConfigSet` takes a `then` command as `WriteFile` does (the screen
+locker's configure call). A daemon stopped as a listed step is waited for (`Command(wait_gone=…)`) before what it
+holds is deleted; a process's name is at most 15 characters (`zeitgeist-daemo`). `DeleteFiles(whole=True)`
+deletes each listed entry whole (a trashed folder, a link as a link, never through it). `MakeDir(owned=…)` names
+what the app itself puts in a folder it made, removed with it. A file write that would leave the file as it is
+(`WriteFile.noop`, an option applied before) is no
 step: the plan leaves it out, so a guide doesn't offer it again and History doesn't record a change that
 changed nothing. A `WriteFile` may name a command run after writing and again after reverting (`then`):
 `bus_reload` has the session bus read its service files again, which dbus-broker needs before it sees a user
@@ -255,7 +262,10 @@ never written to the log.
 
 `undo.py` keeps `$XDG_STATE_HOME/daprivacyscanner/undo.json` (directory 0700, written atomically). Revert
 refuses to overwrite a value changed since the fix, unless forced; a value already back where it was before
-(put back by hand) is no conflict. Every action carries an `undo_hint`
+(put back by hand) is no conflict. A root change that fails part way is journalled by the helper before its error
+goes back, and kept as the failed step's record, so it can be put back. systemctl's exit status never decides a
+unit's or a mount's state (`disable --now` answers 0 when the stop job failed): the unit's state and the mount
+table do. Every revert says what it put back. Every action carries an `undo_hint`
 (how to undo it by hand). History shows, for each step, exactly what it did: the commands it ran
 (`Action.ran`, rebuilt from the record, so older entries show theirs too), the lines it wrote into a file
 (`changed_lines`: "+ added", "- removed", at most 40; never known_hosts', whose lines are the server names
@@ -331,7 +341,7 @@ is run again (`Runner.rescan`).
   `empty_password_accounts` (names, never hashes), `sshd_settings`, `firewall_summary`, `ufw_status`,
   `observe_traffic`, `erase_facts`); changes (`write_dropin`, `edit_config`, `set_service`, `set_sysctl`,
   `ufw_enable`, `browser_policy`, `block_extensions`, `mount_tmpfs`, `enable_tmp_mount`, `revert`,
-  `clear_crash_dumps`, `vacuum_journal`, `snapper_cleanup`); tools (`ramdisk_open`, `ramdisk_close`,
+  `clear_crash_dumps`, `vacuum_journal`, `clear_journal_files`, `snapper_cleanup`); tools (`ramdisk_open`, `ramdisk_close`,
   `swap_off`, `swap_on`, `trim_*`, `names_*`, `watch_*`); and `install_self` / `uninstall_self`. What
   `install_self` installs is the source the helper read as it started (`own_source`), never the file as it is
   when the request comes: the helper that isn't installed yet runs from a copy in the user's runtime folder,
