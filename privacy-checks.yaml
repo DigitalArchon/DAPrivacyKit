@@ -1207,7 +1207,10 @@ checks:
       - 'ufw status; firewall-cmd --state; nft list ruleset: only chains hooked on input that drop or reject
         (policy drop, or drop/reject rules) count; Docker, libvirt and Tailscale add NAT and forward rules that
         filter nothing coming in'
-    fix: Enable ufw or firewalld with a default-deny inbound policy.
+    fix: >
+      Enable ufw or firewalld with a default-deny inbound policy. ufw: the helper's ufw_enable runs ufw --force enable
+      and, where ufw.service isn't enabled and running (Arch's package enables nothing), enables and starts it, which
+      loads the rules at boot; both are journalled and reverted.
     remedy: >
       Nothing filters incoming connections. Guide… turns on a firewall that blocks them by default.
 

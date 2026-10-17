@@ -32,7 +32,7 @@ Changes (each returns {"changed": bool, "change_id"}; the journal keeps what was
     edit_config  {target, values}   targeted line edits in a distro config file, from EDITS
     set_service  {unit, enable, start}   systemctl enable/disable, start/stop, for SERVICES only
     set_sysctl   {key, value}       a live kernel setting, from SYSCTLS
-    ufw_enable   {allow}            turn ufw on, first allowing the given ports
+    ufw_enable   {allow}            turn ufw on, first allowing the given ports, and ufw.service with it (boot)
     browser_policy {browser, settings}   enterprise policies, from POLICIES
     mount_tmpfs  {target, size_mb, noexec, until}   keep one of the calling user's folders (IN_MEMORY) in memory
                                     with a systemd mount unit of the helper's own
@@ -1133,14 +1133,33 @@ def _ufw_added() -> set[str]:
     return {m.group(1) for m in re.finditer(r"^ufw allow (\S+)$", out, re.M)}
 
 
+UFW_UNIT = "ufw.service"
+
+
+def _ufw_unit_state() -> tuple[str, str] | None:
+    """ufw.service's (enabled, active) state, or None when there is no such unit (no systemd, or ufw without it)."""
+    try:
+        return _unit_state(UFW_UNIT)
+    except Refused:
+        return None
+
+
 def ufw_enable(args: dict) -> dict:
+    """ufw turned on, the given ports allowed first. `ufw enable` writes ENABLED=yes and loads the rules, but at boot
+    ufw.service loads them: Arch's package enables no unit, so there the rules were gone after a restart (and
+    `systemctl is-active ufw` said inactive). The unit is enabled and started too where it isn't, journalled as a
+    service change, which the revert puts back."""
     _must_be_root()
     allow = args.get("allow") or []
     if not isinstance(allow, list) or len(allow) > 20 or not all(isinstance(a, str) and _PORT.match(a) for a in allow):
         raise Refused("bad port list")
     active = _run(["ufw", "status"]).strip().startswith("Status: active")
     existing = _ufw_added()
-    added = []
+    unit_before = _ufw_unit_state()
+    # a unit that is masked, static or generated is left as it is: only one that can be enabled is
+    unit_needed = unit_before is not None and unit_before[0] in ("enabled", "disabled") and unit_before != ("enabled", "active")
+    had = _unit_dirs()
+    added, turned_on = [], False
     try:
         for a in allow:
             if a not in existing:
@@ -1148,13 +1167,28 @@ def ufw_enable(args: dict) -> dict:
                 added.append(a)
         if not active:
             _do(["ufw", "--force", "enable"])
+            turned_on = True
+        if unit_needed:
+            _set_unit(UFW_UNIT, True, True, unit_before)
     except Refused:
+        now = _ufw_unit_state()
+        if unit_needed and now is not None and now != unit_before:
+            _set_unit(UFW_UNIT, unit_before[0] == "enabled", unit_before[1] == "active", now)
+        if turned_on:
+            _do_code(["ufw", "--force", "disable"])
         for a in added:
             _do_code(["ufw", "delete", "allow", a])
+        _remove_dirs(sorted(_unit_dirs() - had))
         raise
-    if active and not added:
+    unit_after = _ufw_unit_state() if unit_needed else unit_before
+    unit_changed = unit_needed and unit_after != unit_before
+    if active and not added and not unit_changed:
         return {"changed": False}
-    return {"changed": True, "change_id": _journal({"ufw": {"was_active": active, "added": added}}), "warnings": []}
+    made = sorted(_unit_dirs() - had)
+    change = {"ufw": {"was_active": active, "added": added},
+              **({"service": {"unit": UFW_UNIT, "before": unit_before, "after": unit_after}} if unit_changed else {}),
+              **({"dirs": made} if made else {})}
+    return {"changed": True, "change_id": _journal(change), "warnings": [], "dirs": made}
 
 
 # ------------------------------------------------------------------ browser policies
@@ -4337,6 +4371,10 @@ def planned(request: str, args: dict, home: str | None = None) -> list[str]:
             out.append(q(["sysctl", "-w", f"{args['key']}={args['value']}"]))
         elif request == "ufw_enable":
             out += [q(["ufw", "allow", a]) for a in args.get("allow") or []] + [q(["ufw", "--force", "enable"])]
+            # ufw.service, where it is installed and not enabled (read from its .wants link: no root, no systemctl)
+            if any(os.path.exists(_p(f"{d}/{UFW_UNIT}")) for d in ("/usr/lib/systemd/system", "/lib/systemd/system")) \
+                    and not os.path.lexists(_p(f"/etc/systemd/system/multi-user.target.wants/{UFW_UNIT}")):
+                out += [q(["systemctl", "enable", UFW_UNIT]), q(["systemctl", "start", UFW_UNIT])]
         elif request == "mount_tmpfs" and home:
             target = args.get("target", "thumbnails")
             path = in_memory_path(home, target)

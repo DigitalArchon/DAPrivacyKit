@@ -264,14 +264,22 @@ def firewall_off(check, scan, outcome):
         if has_firewalld:
             effects.append("firewalld is installed too, but off: leave it off. Two firewalls with different "
                            "defaults get in each other's way.")
-        opts = [option(check, "Turn on ufw", [RootChange("ufw_enable", {"allow": []}, "ufw --force enable")],
+        # ufw's rules are loaded at boot by ufw.service; Arch's package enables nothing, so the helper enables it too
+        enabled = systemctl_state(host, "is-enabled", "ufw.service")      # "" without systemd or the unit
+        unit = (", and start ufw.service now and at every boot (systemctl enable --now ufw), which loads its rules"
+                if enabled == "disabled" or (enabled == "enabled"
+                                             and systemctl_state(host, "is-active", "ufw.service") != "active") else "")
+        if unit:
+            effects.append("ufw.service isn't set to start at boot here: without it ufw's rules are gone after a "
+                           "restart, so it is turned on too, and turned off again by a revert.")
+        opts = [option(check, "Turn on ufw", [RootChange("ufw_enable", {"allow": []}, "ufw --force enable" + unit)],
                        side_effects=effects + ([f"These stop being reachable: {', '.join(s.label() for s in exposed)}."]
                                                if exposed else []), recommended=not exposed)]
         if exposed:
             allow = [f"{s.port}/{s.proto}" for s in exposed][:20]
             opts.append(option(check, "Turn on ufw, still allowing " + ", ".join(s.label() for s in exposed),
                                [RootChange("ufw_enable", {"allow": allow},
-                                           f"ufw allow {', '.join(allow)}, then ufw --force enable")],
+                                           f"ufw allow {', '.join(allow)}, then ufw --force enable" + unit)],
                                side_effects=effects, recommended=True))
         steps.append(Step("Turn on ufw", options=opts))
     elif firewalld_first:
