@@ -523,7 +523,19 @@ class BrowserDir:
         return f"{self.browser}{how}"
 
 
-def chromium_dirs(paths: PathResolver) -> list[BrowserDir]:
+def chromium_used(p: Path) -> bool:
+    """Whether a browser has run in this user data folder: it has its Local State, or a profile folder (Default,
+    Profile N). Other programs make the folder too, with nothing of the browser's in it: Omarchy's packages a
+    NativeMessagingHosts folder for browsers that aren't installed, and Plasma Browser Integration one under
+    ~/.var/app/com.google.Chrome without Flatpak installed (seen on both)."""
+    if isfile(p / "Local State"):
+        return True
+    return any(c.name == "Default" or c.name.startswith("Profile ") for c in children(p) if isdir(c))
+
+
+def chromium_dirs(paths: PathResolver, any_folder: bool = False) -> list[BrowserDir]:
+    """Each Chromium-based browser's user data folder, native, Flatpak and Snap, where the browser has run
+    (chromium_used); with `any_folder`, every folder of the name (crash reports are looked for in each)."""
     out = []
     for name, native, fp_id, fp_dir, snap, snap_dir in CHROMIUM_BROWSERS:
         for loc in paths.config(native):
@@ -536,7 +548,7 @@ def chromium_dirs(paths: PathResolver) -> list[BrowserDir]:
                 p = root.path / snap_dir
                 if isdir(p):
                     out.append(BrowserDir(name, Location(p, "snap", snap, root.revision, root.current)))
-    return out
+    return out if any_folder else [d for d in out if chromium_used(d.root.path)]
 
 
 def chromium_profiles(d: BrowserDir) -> list[Path]:

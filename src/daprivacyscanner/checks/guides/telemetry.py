@@ -47,31 +47,43 @@ def crash_reporters(check, scan, outcome):
         if acts:
             steps.append(Step("GNOME's problem reporting", options=[option(check, "Turn it off", acts, key="turn_off")]))
     if scan.context.desktop.is_kde:
-        steps.append(Step("KDE", "System Settings → Privacy → User Feedback: set it to Disabled. DrKonqi asks before "
-                          "sending a crash report."))
+        steps.append(Step("KDE", "System Settings → Security & Privacy → User Feedback: set it to Disabled. DrKonqi "
+                          "asks before sending a crash report."))
     return Guide(check.id, "Turn off crash reporting and usage surveys", "", steps)
 
 
 @guide("tel.browser_telemetry", keys=("profile",))
 def browser_telemetry(check, scan, outcome):
+    from .._util import chromium_dirs, firefox_policies, firefox_prefs
+    from ..telemetry import mozilla_telemetry_on
     steps = []
-    ff = ff_prefs(check, scan, "Turn off telemetry and studies",
-                  {"datareporting.healthreport.uploadEnabled": False, "app.shield.optoutstudies.enabled": False,
-                   "datareporting.usage.uploadEnabled": False},
-                  only=("Firefox", "Thunderbird"), key="profile")
-    native_ff = any(p.install == "native" for p in mozilla_profiles(scan.host, scan.paths, ("Firefox",)))
-    if native_ff:
+    policies = firefox_policies(scan.host)
+    # per profile, only what the check counts as on there (Thunderbird: telemetry alone; what the policy turns
+    # off is left), so an option is never one that changes nothing the check sees
+    off = lambda p, prefs: {k: False for k in mozilla_telemetry_on(p.app, prefs, policies)}  # noqa: E731
+    ff = ff_prefs(check, scan, "Turn off telemetry and studies", off, only=("Firefox", "LibreWolf"), key="profile")
+    tb = ff_prefs(check, scan, "Turn off telemetry", off, only=("Thunderbird",), key="profile")
+    native_on = [p for p in mozilla_profiles(scan.host, scan.paths, ("Firefox",)) if p.install == "native"
+                 and mozilla_telemetry_on(p.app, firefox_prefs(scan.host, p.path), policies)]
+    settings = {k: True for k in ("DisableTelemetry", "DisableFirefoxStudies") if policies.get(k) is not True}
+    if native_on and settings:
         ff.append(option(check, "Firefox, for every user (policy)", [RootChange(
-            "browser_policy", {"browser": "firefox", "settings": {"DisableTelemetry": True, "DisableFirefoxStudies": True}},
-            "Set DisableTelemetry and DisableFirefoxStudies in /etc/firefox/policies/policies.json (DisableTelemetry also "
-            "turns off the daily usage ping)")],
+            "browser_policy", {"browser": "firefox", "settings": settings},
+            f"Set {' and '.join(settings)} in /etc/firefox/policies/policies.json"
+            + (" (DisableTelemetry also turns off the daily usage ping)" if "DisableTelemetry" in settings else ""))],
             side_effects=["Firefox shows \"Your browser is being managed by your organization\"."]))
     if ff:
         steps.append(Step("Firefox", options=ff))
+    if tb:
+        steps.append(Step("Thunderbird", "Settings → Privacy & Security → \"Allow Thunderbird to send technical and "
+                          "interaction data to Mozilla\" does the same from inside Thunderbird.", options=tb))
+    on = {e.label for e in outcome.evidence if str(e.value).endswith(" on")}
+    flagged = {d.label for d in chromium_dirs(scan.paths)} & on
     chromium = chromium_policy_options(check, scan, {"MetricsReportingEnabled": False, "BraveP3AEnabled": False,
-                                                      "BraveStatsPingEnabled": False}, "Turn off usage statistics")
+                                                      "BraveStatsPingEnabled": False}, "Turn off usage statistics",
+                                       skip=lambda d: d.label not in flagged)
     steps.append(Step("Chromium-based browsers",
                       "Per profile: Settings → Privacy → \"Help improve…\" / \"Send usage statistics\" off (in Brave also "
                       "\"Privacy-preserving product analytics\" and \"Automatically send daily usage ping\").",
-                      options=chromium))
+                      options=chromium, done=not flagged))
     return Guide(check.id, "Turn off browser telemetry", "", steps)

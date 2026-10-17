@@ -138,22 +138,25 @@ def remote_session(scan: Scan) -> set[str]:
         ({"ssh"} if env.get("SSH_CONNECTION") or env.get("SSH_TTY") else set())
 
 
-def ff_prefs(check: Check, scan: Scan, label: str, prefs: dict, side_effects=(), only=("Firefox", "LibreWolf"),
+def ff_prefs(check: Check, scan: Scan, label: str, prefs: dict | Callable, side_effects=(), only=("Firefox", "LibreWolf"),
              want: Callable | None = None, recommended: bool = False, key: str = "") -> list[Option]:
     """One option per Firefox-family profile that doesn't have these prefs yet (prefs.js,
-    changed while the browser is closed)."""
+    changed while the browser is closed). `prefs` may be a function of the profile and its prefs
+    giving the ones that matter for it (Thunderbird's differ from Firefox's). An option is blocked
+    only while its own program runs: a running Thunderbird doesn't hold up Firefox's profiles."""
     from .._util import firefox_prefs
     out = []
     running = mozilla_open(scan, only)
-    blockers = [f"Close {' and '.join(running)} first: it rewrites its settings as it exits."] if running else []
     for p in mozilla_profiles(scan.host, scan.paths, only):
         current = firefox_prefs(scan.host, p.path)
         if want is not None and not want(current, p):
             continue
+        wanted = prefs(p, current) if callable(prefs) else prefs
         actions = [FirefoxPref(p.path, p.label, k, v, scan.host.display(p.path))
-                   for k, v in prefs.items() if current.get(k) != v]
+                   for k, v in wanted.items() if current.get(k) != v]
+        blockers = [f"Close {p.app} first: it rewrites its settings as it exits."] if p.app in running else []
         user_js = read_text(scan.host, p.path / "user.js") or ""
-        clash = [k for k in prefs if f'"{k}"' in user_js]
+        clash = [k for k in wanted if f'"{k}"' in user_js]
         effects = list(side_effects) + ([f"user.js in this profile also sets {', '.join(clash)}, and wins at "
                                          "startup: edit it there too."] if clash else [])
         if actions:
@@ -169,7 +172,10 @@ POLICY_KEYS = {"Google Chrome": "chrome", "Chromium": "chromium", "Brave": "brav
 def chromium_policy_options(check: Check, scan: Scan, settings: dict, label: str, skip=None,
                             side_effects=()) -> list[Option]:
     """A policy file per natively installed Chromium-based browser (Flatpak and Snap installs
-    don't read /etc)."""
+    don't read /etc), with only the settings its policies don't have yet: a browser whose policies
+    already have them all (applied before, or set by someone else) gets no option, so a step is
+    offered once, not again after it was applied. `skip` leaves out browsers that don't need it."""
+    from .._util import chromium_policies
     out, seen = [], set()
     for d in chromium_dirs(scan.paths):
         key = next((v for k, v in POLICY_KEYS.items() if d.browser == k), None)
@@ -179,6 +185,10 @@ def chromium_policy_options(check: Check, scan: Scan, settings: dict, label: str
         s = dict(settings)
         if key != "brave":
             s = {k: v for k, v in s.items() if not k.startswith("Brave")}
+        have = chromium_policies(scan.host, d.browser)
+        s = {k: v for k, v in s.items() if have.get(k) != v}
+        if not s:
+            continue
         from ...helper import POLICY_FILES
         out.append(option(check, f"{label}: {d.browser}, for every user (policy)",
                           [RootChange("browser_policy", {"browser": key, "settings": s},

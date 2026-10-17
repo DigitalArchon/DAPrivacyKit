@@ -4,6 +4,7 @@ browser's user data directory, native, Flatpak and Snap alike."""
 from __future__ import annotations
 
 import html
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -52,7 +53,7 @@ def crash_dumps(scan: Scan) -> list[CrashDumps]:
     a minidump of the process's memory and its notes; tested on Firefox 157), and Electron apps' Crashpad folders."""
     from ._util import files_under
     out = []
-    for d in chromium_dirs(scan.paths):
+    for d in chromium_dirs(scan.paths, any_folder=True):
         files = []
         for sub in ("pending", "completed", "new", "attachments"):       # not Crashpad's own settings.dat
             files += files_under(d.root.path / "Crash Reports" / sub)[0]
@@ -137,12 +138,14 @@ class ExtensionsBroad(Check):
         firefox, chromium = _browsers(scan)
         if not firefox and not chromium:
             return absent("No browser profiles were found.")
-        broad = broad_extensions(scan, firefox, chromium)
+        pending: list[Extension] = []
+        broad = broad_extensions(scan, firefox, chromium, pending=pending)
         ev = [Evidence.val(e.name[:120], e.where) for e in broad[:30]]
+        notes = pending_note(pending)
         if broad:
             return failed(f"{len(broad)} extension{'s' if len(broad) > 1 else ''} can read and change every site you "
-                          "visit.", *ev)
-        return passed("No extension has access to all sites.")
+                          "visit.", *ev, notes=notes)
+        return passed("No extension has access to all sites.", notes=notes)
 
 
 @dataclass(frozen=True)
@@ -187,13 +190,46 @@ def _chromium_disabled(st: dict) -> bool:
     return st.get("state") == 0 or bool(reasons) and reasons != [0]
 
 
-def broad_extensions(scan: Scan, firefox, chromium, every: bool = False) -> list[Extension]:
+def _removed_from_profile(p: MozProfile, a: dict) -> bool:
+    """An add-on of the profile's own whose file is gone (deleted while Firefox was closed, as the guide does):
+    Firefox drops it from extensions.json only at its next start. Judged by the file extensions.json names when it
+    is in this profile, else by the profile's extensions folder (an add-on is its .xpi there, or a folder)."""
+    if a.get("location") != "app-profile":
+        return False
+    folder = p.path / "extensions"
+    path = a.get("path")
+    if isinstance(path, str) and path.startswith("/"):
+        f = Path(path)
+        try:
+            ours = f.parent.resolve() == folder.resolve()
+        except OSError:
+            return False
+        return ours and not os.path.lexists(f)
+    aid = str(a.get("id", ""))
+    return bool(aid) and "/" not in aid and isdir(folder) and not os.path.lexists(folder / f"{aid}.xpi") \
+        and not os.path.lexists(folder / aid)
+
+
+def _firefox_blocked(scan: Scan) -> set[str]:
+    """Add-on ids Firefox's policies block (ExtensionSettings, installation_mode blocked, as the guide writes): Firefox
+    removes them from every profile when it next starts."""
+    settings = firefox_policies(scan.host).get("ExtensionSettings")
+    return {k for k, v in settings.items() if isinstance(v, dict) and v.get("installation_mode") == "blocked"} \
+        if isinstance(settings, dict) else set()
+
+
+def broad_extensions(scan: Scan, firefox, chromium, every: bool = False,
+                     pending: list[Extension] | None = None) -> list[Extension]:
     """Enabled extensions that can read and change every site (with `every`, all enabled extensions,
-    whatever their site access)."""
+    whatever their site access). Those already removed, which the browser still lists until it next starts (an add-on
+    deleted from a Firefox profile, one a policy blocks), aren't counted: they go in `pending`."""
     out = []
+    blocked_ff = _firefox_blocked(scan) if firefox else set()
     for p in firefox:
         data = read_json(scan.host, p.path / "extensions.json") or {}
         granted = read_json(scan.host, p.path / "extension-preferences.json")
+        # Firefox reads the policies in /etc (native installs, and the Snap); LibreWolf has its own
+        reads_policy = p.app == "Firefox" and p.install in ("native", "snap")
         for a in data.get("addons") or []:
             if a.get("type") != "extension" or not a.get("active") or a.get("location") in BUILTIN_LOCATIONS \
                     or a.get("signedState") in MOZILLA_SIGNED:
@@ -201,12 +237,20 @@ def broad_extensions(scan: Scan, firefox, chromium, every: bool = False) -> list
             if every or any(BROAD.match(o) for o in _granted(a, granted if isinstance(granted, dict) else None)):
                 aid = str(a.get("id", ""))
                 xpi = p.path / "extensions" / f"{aid}.xpi"
-                out.append(Extension(
+                e = Extension(
                     str(dig(a, "defaultLocale", "name", default=aid or "?")), aid, p.label, p.app, p.install, p.path,
                     xpi if a.get("location") == "app-profile" and "/" not in aid and xpi.is_file() else None,
                     a.get("manifestVersion") == 3,
-                    system=str(a.get("path") or a.get("location")) if a.get("location") in SYSTEM_LOCATIONS else ""))
+                    system=str(a.get("path") or a.get("location")) if a.get("location") in SYSTEM_LOCATIONS else "")
+                if _removed_from_profile(p, a) or (reads_policy and aid in blocked_ff):
+                    if pending is not None:
+                        pending.append(e)
+                    continue
+                out.append(e)
     for d, profiles in chromium:
+        policy = chromium_policies(scan.host, d.browser) if d.root.install == "native" else {}
+        blocklist = policy.get("ExtensionInstallBlocklist")
+        blocklist = {x for x in blocklist if isinstance(x, str)} if isinstance(blocklist, list) else set()
         for prof in profiles:
             settings = _chromium_settings(scan, prof)
             for ext in children(prof / "Extensions"):
@@ -225,17 +269,37 @@ def broad_extensions(scan: Scan, firefox, chromium, every: bool = False) -> list
                     for cs in m.get("content_scripts") or []:
                         patterns += cs.get("matches") or []
                 if every or any(isinstance(x, str) and BROAD.match(x) for x in patterns):
-                    out.append(Extension(_chromium_ext_name(versions[-1], m), ext.name, f"{d.label}, {prof.name}",
-                                         d.browser, d.root.install, prof, mv3=m.get("manifest_version") == 3,
-                                         managed=st.get("location") in CHROMIUM_POLICY))
+                    e = Extension(_chromium_ext_name(versions[-1], m), ext.name, f"{d.label}, {prof.name}",
+                                  d.browser, d.root.install, prof, mv3=m.get("manifest_version") == 3,
+                                  managed=st.get("location") in CHROMIUM_POLICY)
+                    if ext.name in blocklist and not e.managed:     # the browser removes it as it loads the policy
+                        if pending is not None:
+                            pending.append(e)
+                        continue
+                    out.append(e)
     return out
 
 
-def vpn_extensions(scan: Scan, firefox, chromium) -> list[tuple[Extension, object]]:
-    """Enabled extensions of VPN providers in vpn-providers.yaml: (extension, provider)."""
+def pending_note(pending: list[Extension]) -> list[Note]:
+    """What was removed but is still listed by its browser, until the browser next starts."""
+    if not pending:
+        return []
+    names = "; ".join(dict.fromkeys(f"{e.name[:60]} ({e.where})" for e in pending[:10]))
+    return [Note("info", "Removed, until the browser next starts",
+                 f"{names}: removed from the profile, or blocked by a policy, so not counted. The browser still lists "
+                 "it until it next starts, and then forgets it.")]
+
+
+def vpn_extensions(scan: Scan, firefox, chromium, pending: list[Extension] | None = None) -> list[tuple[Extension, object]]:
+    """Enabled extensions of VPN providers in vpn-providers.yaml: (extension, provider). Those removed but still listed
+    until the browser starts go in `pending`."""
     from ..vpn import load
     by_id = {x: p for p in load() for x in p.extensions}
-    return [(e, by_id[e.id]) for e in broad_extensions(scan, firefox, chromium, every=True) if e.id in by_id]
+    gone: list[Extension] = []
+    found = [(e, by_id[e.id]) for e in broad_extensions(scan, firefox, chromium, every=True, pending=gone) if e.id in by_id]
+    if pending is not None:
+        pending += [e for e in gone if e.id in by_id]
+    return found
 
 
 @register
@@ -248,14 +312,15 @@ class VpnExtensions(Check):
         firefox, chromium = _browsers(scan)
         if not firefox and not chromium:
             return absent("No browser profiles were found.")
+        pending: list[Extension] = []
         try:
-            found = vpn_extensions(scan, firefox, chromium)
+            found = vpn_extensions(scan, firefox, chromium, pending)
         except DataError as e:
             return unknown(f"The app's list of VPN providers couldn't be read: {e}")
         if not found:
-            return passed("No VPN extension from a provider the app knows of is installed.")
-        ev, notes, bad, findings = [], [], [], {"vpn_avoid": False, "vpn_closed_client": False,
-                                                 "vpn_ownership_concerns": False}
+            return passed("No VPN extension from a provider the app knows of is installed.", notes=pending_note(pending))
+        ev, notes, bad, findings = [], pending_note(pending), [], {"vpn_avoid": False, "vpn_closed_client": False,
+                                                                     "vpn_ownership_concerns": False}
         for e, p in found:
             r = rate(p)
             ev.append(Evidence.val(f"{e.name[:80]} ({e.where})"[:150], f"{p.name}: {r.label}"))
@@ -267,7 +332,8 @@ class VpnExtensions(Check):
             return failed(f"{len(bad)} VPN extension{'s' if len(bad) > 1 else ''} from providers with a record of harm "
                           "or that can't be checked: " + ", ".join(dict.fromkeys(e.name[:60] for e in bad)) + ".",
                           *ev, notes=notes, findings=findings)
-        return passed("The VPN extensions installed come from providers rated well.", *ev, findings=findings)
+        return passed("The VPN extensions installed come from providers rated well.", *ev, findings=findings,
+                      notes=notes)
 
 
 def _ff_clears_history(prefs: dict, policies: dict) -> bool:
@@ -303,6 +369,8 @@ class HistoryRetention(Check):
                 prefs = read_json(scan.host, prof / "Preferences") or {}
                 if policy.get("ClearBrowsingDataOnExitList"):
                     state = "cleared when it closes (policy)"
+                elif policy.get("DefaultCookiesSetting") == 4:            # the policy wins over the profile's own
+                    state = "cookies cleared when it closes (policy), history kept"
                 elif dig(prefs, "profile", "default_content_setting_values", "cookies") == 4:
                     state = "cookies cleared when it closes, history kept"
                 else:
@@ -689,11 +757,12 @@ class AccountSync(Check):
 # The Privacy Sandbox keys are only written once the user answers Chrome's ad privacy notice, so
 # an absent key means the feature was never turned on (and Chromium, Edge, Vivaldi and Opera
 # builds don't offer it). VERIFY: the privacy_sandbox keys on current Chrome releases.
+ENHANCED_SAFE_BROWSING = "enhanced Safe Browsing (sends URLs)"     # the profile's own setting: no policy option
 CHROMIUM_AD_PREFS = (("privacy_sandbox.m1.topics_enabled", "ad topics from your history", False, "PrivacySandboxAdTopicsEnabled"),
                      ("privacy_sandbox.m1.fledge_enabled", "site-suggested ads", False, "PrivacySandboxSiteEnabledAdsEnabled"),
                      ("privacy_sandbox.m1.ad_measurement_enabled", "ad measurement", False, "PrivacySandboxAdMeasurementEnabled"),
                      ("search.suggest_enabled", "search suggestions as you type", True, "SearchSuggestEnabled"),
-                     ("safebrowsing.enhanced", "enhanced Safe Browsing (sends URLs)", False, None))
+                     ("safebrowsing.enhanced", ENHANCED_SAFE_BROWSING, False, None))
 REGION = "region"           # on by default in some countries only (Firefox Suggest, sponsored shortcuts)
 FIREFOX_AD_PREFS = (("browser.search.suggest.enabled", "search suggestions as you type", True, None),
                     ("browser.urlbar.suggest.quicksuggest.sponsored", "sponsored address bar suggestions", REGION, None),
@@ -720,6 +789,20 @@ def _ad_settings(prefs: dict, table, policy: dict, get) -> tuple[list[str], list
     return on, defaults
 
 
+def chromium_ad_states(scan: Scan, chromium) -> list[tuple[BrowserDir, Path, list[str], list[str]]]:
+    """(browser folder, profile, features turned on, features on as the browser's default) of each Chromium-based
+    profile but Brave's, which ships with the Privacy Sandbox and suggestions off."""
+    out = []
+    for d, profiles in chromium:
+        if d.browser.startswith("Brave"):
+            continue
+        policy = chromium_policies(scan.host, d.browser)
+        for prof in profiles:
+            out.append((d, prof, *_ad_settings(read_json(scan.host, prof / "Preferences") or {}, CHROMIUM_AD_PREFS,
+                                               policy, lambda prefs, key: dig(prefs, *key.split(".")))))
+    return out
+
+
 @register
 class AdFeatures(Check):
     id = "br.ad_features"
@@ -740,14 +823,8 @@ class AdFeatures(Check):
         for p in firefox:
             add(p.label, *_ad_settings(firefox_prefs(scan.host, p.path), FIREFOX_AD_PREFS, {},
                                        lambda prefs, key: prefs.get(key)))
-        for d, profiles in chromium:
-            if d.browser.startswith("Brave"):
-                continue                                    # Brave ships without the Privacy Sandbox and suggestions off
-            policy = chromium_policies(scan.host, d.browser)
-            for prof in profiles:
-                add(f"{d.label}, {prof.name}", *_ad_settings(read_json(scan.host, prof / "Preferences") or {},
-                                                             CHROMIUM_AD_PREFS, policy,
-                                                             lambda prefs, key: dig(prefs, *key.split("."))))
+        for d, prof, active, defaults in chromium_ad_states(scan, chromium):
+            add(f"{d.label}, {prof.name}", active, defaults)
         notes = []
         if by_default:
             notes.append(Note("info", "Some are on as the browser's default",

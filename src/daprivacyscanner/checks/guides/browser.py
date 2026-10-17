@@ -6,7 +6,7 @@ from ...fix import DeleteFiles
 from ...guide import Guide, Step
 from .._util import chromium_dirs, files_under, mozilla_cache, mozilla_profiles
 from ...helper import CLEAR_ON_EXIT
-from . import guide, option, evidence, firefox_open, ff_prefs, chromium_policy_options, mozilla_open
+from . import guide, option, evidence, ff_prefs, chromium_policy_options, mozilla_open
 
 
 SESSION_LOST = "Firefox no longer reopens the tabs you had open: restoring them needs the history it clears."
@@ -17,8 +17,19 @@ def _ff_keeping(prefs, p) -> bool:
     return not _ff_clears_history(prefs, {})
 
 
+def _chromium_flagged(scan, outcome, bad) -> set[str]:
+    """The Chromium-based browser folders (by label) with a profile whose evidence value `bad` accepts: those a policy
+    option is offered for."""
+    from ..browser import _browsers
+    values = {e.label: e.value for e in outcome.evidence}
+    return {d.label for d, profiles in _browsers(scan)[1] for prof in profiles
+            if f"{d.label}, {prof.name}" in values and bad(values[f"{d.label}, {prof.name}"])}
+
+
 @guide("br.history_retention")
 def history_retention(check, scan, outcome):
+    from .._util import chromium_policies
+    from ..browser import _browsers
     opts = ff_prefs(check, scan, "Clear history, cookies and site data when Firefox closes",
                     {"privacy.sanitize.sanitizeOnShutdown": True}, want=_ff_keeping,
                     side_effects=["You're logged out of sites each time; keep the ones you want under Settings → "
@@ -28,20 +39,26 @@ def history_retention(check, scan, outcome):
                      {"privacy.sanitize.sanitizeOnShutdown": True, "privacy.clearOnShutdown_v2.cookiesAndStorage": False,
                       "privacy.clearOnShutdown.cookies": False, "privacy.clearOnShutdown.offlineApps": False},
                      want=_ff_keeping, side_effects=[SESSION_LOST])
+    # the check counts a Chromium-based profile as clearing only with the policy's list: those without it
+    keeping = {d.label for d, profiles in _browsers(scan)[1]
+               if not chromium_policies(scan.host, d.browser).get("ClearBrowsingDataOnExitList")}
+    skip = lambda d: d.label not in keeping  # noqa: E731
     return Guide(check.id, "Clear browsing data when the browser closes", "", [
-        Step("Firefox", options=opts, done=not opts and not any("Firefox" in e.label for e in outcome.evidence)),
+        Step("Firefox", options=opts, done=not opts),
         Step("Chromium-based browsers",
              "Settings → Privacy and security → Site settings → On-device site data → \"Delete data sites have saved "
              "to your device when you close all windows\" (Brave: Settings → Privacy → Clear browsing data → On exit). "
              "Or, for every user:",
              options=chromium_policy_options(check, scan, {"DefaultCookiesSetting": 4},
-                                             "Keep site data only until the browser closes", side_effects=[
+                                             "Keep site data only until the browser closes", skip=skip, side_effects=[
                                                  "Every site, your Google or Microsoft account included, signs you out "
                                                  "each time the browser closes."])
              + chromium_policy_options(check, scan, {"SyncDisabled": True, "ClearBrowsingDataOnExitList": CLEAR_ON_EXIT},
                                        "Turn off sync, and clear history, downloads and cache when the browser closes",
+                                       skip=skip,
                                        side_effects=["Sync stops for every profile (bookmarks, passwords, history): "
-                                                     "Chromium only clears data at exit with sync off."])),
+                                                     "Chromium only clears data at exit with sync off."]),
+             done=not keeping),
         Step("About the cache", "Cleared at exit, cached pages are deleted, not wiped: they can still be recovered "
              "from the disk for a while (see enc.deleted_data_recoverable). Private windows never write their cache "
              "to the disk; for normal browsing, keeping the cache in memory (Firefox's option in the disk cache "
@@ -58,13 +75,14 @@ def tracking_protection(check, scan, outcome):
                     side_effects=["A few sites break (sign-in through another site, some embedded videos); turn it "
                                   "off for one site with the shield icon in the address bar."], recommended=True)
     weak = evidence(outcome, value="third-party cookies allowed")
+    flagged = _chromium_flagged(scan, outcome, lambda v: v == "third-party cookies allowed")
     chromium = chromium_policy_options(check, scan, {"BlockThirdPartyCookies": True}, "Block third-party cookies",
-                                       skip=lambda d: d.browser.startswith("Brave"))
+                                       skip=lambda d: d.browser.startswith("Brave") or d.label not in flagged)
     return Guide(check.id, "Strengthen tracking protection", "", [
         Step("Firefox", options=opts, done=not opts),
         Step("Chromium-based browsers", "Settings → Privacy and security → Third-party cookies → Block third-party "
              "cookies." + (f" Allowed now in: {'; '.join(weak)}." if weak else ""), options=chromium,
-             done=not weak and not chromium),
+             done=not weak),
     ])
 
 
@@ -97,40 +115,51 @@ def disk_cache(check, scan, outcome):
 
 @guide("br.ad_features")
 def ad_features(check, scan, outcome):
+    from ..browser import ENHANCED_SAFE_BROWSING, _browsers, chromium_ad_states
     opts = ff_prefs(check, scan, "Turn off sponsored suggestions and search suggestions",
                     {"browser.search.suggest.enabled": False, "browser.urlbar.suggest.quicksuggest.sponsored": False,
                      "browser.newtabpage.activity-stream.showSponsoredTopSites": False},
                     side_effects=["The address bar no longer suggests searches as you type (history and bookmarks "
                                   "still are)."], recommended=True)
+    states = chromium_ad_states(scan, _browsers(scan)[1])
+    # what the policy turns off; Enhanced Safe Browsing only the profile's own settings page does
+    flagged = {d.label for d, _, active, _ in states if any(a != ENHANCED_SAFE_BROWSING for a in active)}
+    enhanced = [f"{d.label}, {prof.name}" for d, prof, active, _ in states if ENHANCED_SAFE_BROWSING in active]
     chromium = chromium_policy_options(check, scan, {"PrivacySandboxAdTopicsEnabled": False,
                                                       "PrivacySandboxSiteEnabledAdsEnabled": False,
                                                       "PrivacySandboxAdMeasurementEnabled": False,
                                                       "SearchSuggestEnabled": False},
                                        "Turn off ad topics, site-suggested ads, ad measurement and search suggestions",
-                                       skip=lambda d: d.browser.startswith("Brave"))
-    return Guide(check.id, "Turn off features that report what you browse", "", [
-        Step("Firefox", options=opts, done=not opts),
-        Step("Chromium-based browsers", "Settings → Privacy and security → Ads privacy: turn off Ad topics, "
-             "Site-suggested ads and Ad measurement; Settings → You and Google → Sync and Google services → "
-             "\"Make searches and browsing better\" and \"Autocomplete searches and URLs\" off. Or, for every user:",
-             options=chromium),
-    ])
+                                       skip=lambda d: d.browser.startswith("Brave") or d.label not in flagged)
+    steps = [Step("Firefox", options=opts, done=not opts),
+             Step("Chromium-based browsers", "Settings → Privacy and security → Ads privacy: turn off Ad topics, "
+                  "Site-suggested ads and Ad measurement; Settings → You and Google → Sync and Google services → "
+                  "\"Make searches and browsing better\" and \"Autocomplete searches and URLs\" off. Or, for every user:",
+                  options=chromium, done=not flagged)]
+    if enhanced:
+        steps.append(Step("Enhanced Safe Browsing",
+                          "It sends the address of each page you open to Google, to be checked as you browse. Standard "
+                          "protection still warns about dangerous sites, from a list the browser downloads: Settings → "
+                          "Privacy and security → Security → Standard protection. On now in: " + "; ".join(enhanced) + "."))
+    return Guide(check.id, "Turn off features that report what you browse", "", steps)
 
 
 @guide("br.webrtc")
 def webrtc(check, scan, outcome):
+    from ..browser import SAFE_WEBRTC
     opts = ff_prefs(check, scan, "Limit WebRTC to the default route",
                     {"media.peerconnection.ice.default_address_only": True},
                     side_effects=["Video calls still work; peer-to-peer connections may go through a relay more "
                                   "often."], recommended=True)
+    flagged = _chromium_flagged(scan, outcome, lambda v: v not in SAFE_WEBRTC)
     chromium = chromium_policy_options(check, scan, {"WebRtcIPHandling": "default_public_interface_only"},
-                                       "Limit WebRTC to the default route")
+                                       "Limit WebRTC to the default route", skip=lambda d: d.label not in flagged)
     return Guide(check.id, "Stop WebRTC revealing local addresses",
                  "Mostly matters with a split-tunnel VPN, where WebRTC could show your real address.", [
                      Step("Firefox", options=opts, done=not opts),
                      Step("Chromium-based browsers", "Brave: Settings → Privacy → WebRTC IP handling policy → Default "
                           "public interface only. Others: the WebRTC Network Limiter extension, or a policy:",
-                          options=chromium),
+                          options=chromium, done=not flagged),
                  ])
 
 
@@ -200,7 +229,7 @@ def _package_owner(scan, path: str) -> str | None:
     return f"{cmd} {path}" if cmd else None
 
 
-def _extension_step(check, scan, e, closed: list[str], blocked: set) -> Step:
+def _extension_step(check, scan, e, blocked: set) -> Step:
     """Limit or remove one extension: from the profile (Firefox), or by policy for every account."""
     from ...fix import RootChange
     from ...helper import POLICY_FILES
@@ -208,6 +237,9 @@ def _extension_step(check, scan, e, closed: list[str], blocked: set) -> Step:
     owner = _package_owner(scan, e.system) if e.system else None
     opts = []
     if e.file is not None:
+        # only its own browser holds it up (Thunderbird running doesn't)
+        closed = [f"Close {e.browser} first: it only forgets an extension as it starts."] \
+            if mozilla_open(scan, (e.browser,)) else []
         opts.append(option(check, "Remove it from this profile", [DeleteFiles(
             e.file.parent, [e.file], f"the extension {e.name}", scan.host.display(e.file.parent), prune=False)],
             blockers=closed, recommended=True, side_effects=[
@@ -233,9 +265,8 @@ def vpn_extensions(check, scan, outcome):
     from ...vpn import rate
     from ..browser import _browsers, vpn_extensions as found_vpn
     firefox, chromium = _browsers(scan)
-    closed = [] if not firefox_open(scan) else ["Close Firefox first: it only forgets an extension as it starts."]
     blocked: set = set()
-    steps = [_extension_step(check, scan, e, closed, blocked)
+    steps = [_extension_step(check, scan, e, blocked)
              for e, p in found_vpn(scan, firefox, chromium) if rate(p).concern]
     if not steps:
         steps.append(Step("Nothing to remove", "No VPN extension from a provider rated low is installed now.",
@@ -251,9 +282,8 @@ def extensions_broad(check, scan, outcome):
     from ..browser import _browsers, broad_extensions
     firefox, chromium = _browsers(scan)
     found = broad_extensions(scan, firefox, chromium)
-    closed = [] if not firefox_open(scan) else ["Close Firefox first: it only forgets an extension as it starts."]
     blocked: set = set()
-    steps = [_extension_step(check, scan, e, closed, blocked) for e in found]
+    steps = [_extension_step(check, scan, e, blocked) for e in found]
     if not steps:
         steps.append(Step("Nothing to go through", "No enabled extension has access to every site now.", done=True))
     return Guide(check.id, "Go through extensions that can read every site",
@@ -274,14 +304,14 @@ def _content_page(browser: str, what: str) -> str:
 @guide("br.site_permissions")
 def site_permissions(check, scan, outcome):
     from .._util import chromium_dirs, chromium_profiles
-    from ..browser import _permission_summary, chromium_site_permissions, firefox_site_permissions
+    from ..browser import BLOCK, _permission_summary, chromium_site_permissions, firefox_site_permissions
     review = []
     for p in mozilla_profiles(scan.host, scan.paths, ("Firefox", "LibreWolf")):
         counts, defaults = firefox_site_permissions(scan, p)
         review.append(f"{p.label} ({_permission_summary(counts, defaults)}): Settings → Privacy & Security → "
                       "Permissions; Camera, Microphone and Location each have a Settings… button listing the sites. "
                       "Select one and choose Remove Website.")
-    chromium = []
+    chromium, asking, located = [], set(), set()
     for d in chromium_dirs(scan.paths):
         profiles = chromium_profiles(d)
         for prof in profiles:
@@ -289,6 +319,10 @@ def site_permissions(check, scan, outcome):
             review.append(f"{d.label}, {prof.name} ({_permission_summary(counts, defaults)}): "
                           f"{_content_page(d.browser, 'camera')}, {_content_page(d.browser, 'microphone')} and "
                           f"{_content_page(d.browser, 'location')}; remove a site with the bin icon beside it.")
+            if any(v != BLOCK for v in defaults.values()):
+                asking.add(d.label)               # sites can still ask for one of them (or have it without asking)
+            if defaults.get("location") != BLOCK:
+                located.add(d.label)
         if profiles:
             chromium.append(d)
     blocked = ["Sites you have allowed keep their permission: remove them in the step above.",
@@ -311,6 +345,8 @@ def site_permissions(check, scan, outcome):
                           "for the microphone and location). Location can also be blocked by a policy, for every "
                           "account on this computer:",
                           options=chromium_policy_options(check, scan, {"DefaultGeolocationSetting": 2},
-                                                          "Block location requests")))
+                                                          "Block location requests",
+                                                          skip=lambda d: d.label not in located),
+                          done=not asking))
     return Guide(check.id, "Review the sites that can use your camera, microphone or location",
                  "A site you allowed once can use them again whenever it is open, without asking.", steps)

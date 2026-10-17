@@ -217,12 +217,14 @@ def office(check, scan, outcome):
 
 @guide("app.mail_remote_content")
 def mail_remote_content(check, scan, outcome):
+    # only profiles that load it: a missing pref is Thunderbird's default, blocked
     opts = ff_prefs(check, scan, "Block remote content in Thunderbird",
                     {"mailnews.message_display.disable_remote_image": True}, only=("Thunderbird",),
+                    want=lambda prefs, p: prefs.get("mailnews.message_display.disable_remote_image", True) is False,
                     side_effects=["Images in mail show after you click \"Show remote content\"; senders you trust can "
                                   "be allowed one by one."], recommended=True)
     evo = gset(scan, "org.gnome.evolution.mail", "image-loading-policy", "'never'")
-    steps = [Step("Thunderbird", options=opts, done=not opts and not any("Thunderbird" in e.label for e in outcome.evidence))]
+    steps = [Step("Thunderbird", options=opts, done=not opts)]
     if any(e.label == "Evolution" for e in outcome.evidence):
         steps.append(Step("Evolution", options=[option(check, "Never load remote images", evo, recommended=True,
                                                        side_effects=["Load them per message with the bar above it."])]

@@ -425,7 +425,7 @@ def devtools(check, scan, outcome):
 def kde_feedback(check, scan, outcome):
     return FixPlan(check.id, "Turn off Plasma's user feedback",
                    kset(scan, "PlasmaUserFeedback", "Global", "FeedbackLevel", "0", default="0"),
-                   side_effects=["System Settings → Privacy → User Feedback shows Disabled."])
+                   side_effects=["System Settings → Security & Privacy → User Feedback shows Disabled."])
 
 
 @fix("tel.countme", needs_root=True)

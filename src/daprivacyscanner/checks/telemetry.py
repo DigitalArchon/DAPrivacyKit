@@ -97,6 +97,28 @@ class Location(Check):
         return passed("GeoClue's Wi-Fi lookup is off.", *ev)
 
 
+MOZILLA_TELEMETRY_APPS = ("Firefox", "LibreWolf", "Thunderbird")
+
+
+def mozilla_telemetry_on(app: str, prefs: dict, policies: dict) -> dict[str, str]:
+    """{the pref that turns it off: what it is} for each kind of telemetry on in a Firefox-family profile (the guide
+    sets those prefs to false, and only those)."""
+    default = app != "LibreWolf"            # LibreWolf ships with telemetry off; Firefox and Thunderbird on
+    # Firefox's policies.json doesn't govern Thunderbird, and Thunderbird runs no studies
+    policy = policies if app != "Thunderbird" else {}
+    out = {}
+    if not policy.get("DisableTelemetry") and prefs.get("datareporting.healthreport.uploadEnabled", default) is True:
+        out["datareporting.healthreport.uploadEnabled"] = "telemetry"
+    if app != "Thunderbird" and not policy.get("DisableFirefoxStudies") and \
+            prefs.get("app.shield.optoutstudies.enabled", default) is True:
+        out["app.shield.optoutstudies.enabled"] = "studies"
+    # the daily usage ping, a separate switch (on by default in Firefox 157, greprefs.js; the DisableTelemetry
+    # policy locks it off too, its Policies.sys.mjs)
+    if app == "Firefox" and not policy.get("DisableTelemetry") and prefs.get("datareporting.usage.uploadEnabled", True) is True:
+        out["datareporting.usage.uploadEnabled"] = "the daily usage ping"
+    return out
+
+
 @register
 class BrowserTelemetry(Check):
     id = "tel.browser_telemetry"
@@ -104,20 +126,8 @@ class BrowserTelemetry(Check):
     def detect(self, scan: Scan) -> Outcome:
         host, ev, on = scan.host, [], []
         policies = firefox_policies(host)
-        for p in mozilla_profiles(host, scan.paths, ("Firefox", "LibreWolf", "Thunderbird")):
-            prefs = firefox_prefs(host, p.path)
-            default = p.app != "LibreWolf"          # LibreWolf ships with telemetry off; Firefox and Thunderbird on
-            # Firefox's policies.json doesn't govern Thunderbird, and Thunderbird runs no studies
-            policy = policies if p.app != "Thunderbird" else {}
-            telemetry = not policy.get("DisableTelemetry") and prefs.get("datareporting.healthreport.uploadEnabled", default)
-            studies = p.app != "Thunderbird" and not policy.get("DisableFirefoxStudies") and \
-                prefs.get("app.shield.optoutstudies.enabled", default)
-            # the daily usage ping, a separate switch (on by default in Firefox 157, greprefs.js; the DisableTelemetry
-            # policy locks it off too, its Policies.sys.mjs)
-            usage = p.app == "Firefox" and not policy.get("DisableTelemetry") and \
-                prefs.get("datareporting.usage.uploadEnabled", True)
-            what = [w for w, v in (("telemetry", telemetry), ("studies", studies), ("the daily usage ping", usage))
-                    if v is True]
+        for p in mozilla_profiles(host, scan.paths, MOZILLA_TELEMETRY_APPS):
+            what = list(mozilla_telemetry_on(p.app, firefox_prefs(host, p.path), policies).values())
             ev.append(Evidence.val(p.label, ", ".join(what) + " on" if what else "off"))
             if what:
                 on.append(p.app)
@@ -128,8 +138,12 @@ class BrowserTelemetry(Check):
             if policy.get("MetricsReportingEnabled") is not False and dig(state, "user_experience_metrics", "reporting_enabled"):
                 what.append("usage statistics and crash reports")
             if d.browser.startswith("Brave"):
-                # both are on unless turned off in Brave Browser. VERIFY the defaults of other Brave editions.
-                for label, keys in (("P3A analytics", ("p3a", "enabled")), ("daily usage ping", ("stats", "reporting_enabled"))):
+                # both are on unless turned off in Brave Browser, or by its policy (which the guide offers): the policy
+                # wins over the profile's own switch. VERIFY the defaults of other Brave editions.
+                for label, keys, name in (("P3A analytics", ("p3a", "enabled"), "BraveP3AEnabled"),
+                                          ("daily usage ping", ("stats", "reporting_enabled"), "BraveStatsPingEnabled")):
+                    if policy.get(name) is False:
+                        continue
                     v = dig(state, "brave", *keys)
                     if v is True or (v is None and d.browser == "Brave"):
                         what.append(label)

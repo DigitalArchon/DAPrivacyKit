@@ -287,10 +287,15 @@ def test_firefox_blocker_names_the_program_that_is_running(cat, tmp_path):
     g = build(cat, host, "br.disk_cache")
     plan = next(p for k, p in options(g).items() if k.startswith("Keep the cache"))
     assert not plan.blockers
+    # each profile is held up by its own program only (review of 2026-10-17): LibreWolf doesn't rewrite Firefox's prefs
     (host.root / "proc/4242/comm").write_text("librewolf\n")
     g = build(cat, host, "br.disk_cache")
     plan = next(p for k, p in options(g).items() if k.startswith("Keep the cache"))
-    assert plan.blockers == ["Close LibreWolf first: it rewrites its settings as it exits."]
+    assert not plan.blockers
+    (host.root / "proc/4242/comm").write_text("firefox\n")
+    g = build(cat, host, "br.disk_cache")
+    plan = next(p for k, p in options(g).items() if k.startswith("Keep the cache"))
+    assert plan.blockers == ["Close Firefox first: it rewrites its settings as it exits."]
 
 
 def build_status(cat, host, check_id):
