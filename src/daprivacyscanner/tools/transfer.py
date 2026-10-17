@@ -1,9 +1,9 @@
 """Files in and out of the browser in the RAM disk (docs/TECHNICAL.md, Tools). The sandboxed browser sees
 only its own folder, so the app moves files across, and the browser never learns where yours are:
 
-- Uploads: a file the user chooses is copied (never moved, never linked) into the browser's
-  "To upload" folder, which the sandbox gives it read-only: it can pick the file in its own Browse…
-  dialog, but can't change or replace anything there. Photos and documents can be cleaned of their
+- Uploads: a file the user chooses is copied (never moved, never linked, never reached through a link
+  inside ~/TempBrowser, which the browser could have planted) into the browser's "To upload" folder,
+  which the sandbox gives it read-only: it can pick the file in its own Browse… dialog, but can't change or replace anything there. Photos and documents can be cleaned of their
   metadata on the way (mat2, as Remove metadata does), so a picture uploaded through Tor doesn't
   give away where it was taken; the cleaning happens in a folder of the app's own, out of the
   browser's sight, and only the cleaned copy goes into To upload. The file's name goes with it
@@ -345,12 +345,16 @@ def save(host: Host, folder: str, name: str, dest: Path, check: str | None) -> P
     """Copies the finished download `name` into the folder `dest`, from a copy made out of the browser's
     reach and judged again (snapshot): only when it is what the page showed (`check`). Returns the new
     file's path."""
+    from .pick import PathRefused, resolved
+    try:
+        real = resolved(dest, host.home)                # a folder link the browser planted isn't followed either
+    except PathRefused as e:
+        raise TransferError(str(e)) from None
     snap = snapshot(host, folder, name, check)
     try:
-        real = Path(os.path.realpath(dest))
         try:
-            out_dir = os.open(real, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
-        except OSError:
+            out_dir = _open_chosen(host, real, folder=True)
+        except TransferError:
             raise TransferError(f"{dest} isn't a folder you can open.") from None
         try:
             if not os.access(".", os.W_OK, dir_fd=out_dir):
@@ -367,15 +371,53 @@ def save(host: Host, folder: str, name: str, dest: Path, check: str | None) -> P
     return real / target
 
 
+def _open_chosen(host: Host, path: Path, folder: bool = False) -> int:
+    """A file (or, with `folder`, a folder) the user chose, opened without following a link the browser could have
+    planted: its path is resolved one name at a time and refused when it goes through a link inside ~/TempBrowser
+    (pick.resolved); a real path there is then opened one name at a time from the RAM disk, never through a link
+    (the browser could plant one between the two), and a file there must be a plain one with one link, on the RAM
+    disk's own device, as a finished download must. Elsewhere, links are the user's own: the real path is opened,
+    never through a link at its end."""
+    from .pick import PathRefused, resolved
+    try:
+        real = resolved(path, host.home)
+    except PathRefused as e:
+        raise TransferError(str(e)) from None
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC | (os.O_DIRECTORY if folder else 0)
+    top = Path(os.path.realpath(host.home)) / ramdisk.BROWSER
+    if real != top and top not in real.parents:
+        try:
+            return os.open(real, flags)
+        except OSError as e:
+            raise TransferError(f"{path.name} can't be {'opened' if folder else 'read'}: {e.strerror or e}.") from None
+    rel = real.relative_to(top).parts
+    if not rel:
+        if not folder:
+            raise TransferError(f"{path.name} isn't a file.")
+        return _open_dir(host, ramdisk.folder(host, ramdisk.BROWSER))
+    dfd = _open_dir(host, ramdisk.folder(host, ramdisk.BROWSER).joinpath(*rel[:-1]))
+    try:
+        fd = os.open(rel[-1], flags, dir_fd=dfd)
+    except OSError as e:
+        raise TransferError(f"{path.name} can't be {'opened' if folder else 'read'} (or is a link): "
+                            f"{e.strerror or e}.") from None
+    finally:
+        os.close(dfd)
+    st = os.fstat(fd)
+    if st.st_dev != _ramdisk_dev(host) or (not folder and (not stat.S_ISREG(st.st_mode) or st.st_nlink != 1)):
+        os.close(fd)
+        raise TransferError(f"{path.name} isn't a plain file in ~/{ramdisk.BROWSER} (it has another name there too, "
+                            "or isn't on it), so it isn't used.")
+    return fd
+
+
 def add(host: Host, folder: str, src: Path, clean: bool) -> dict:
     """Copies `src` into the browser's "To upload" folder, cleaned of metadata first when asked
-    (mat2, on the copy). The original is never changed."""
+    (mat2, on the copy). The original is never changed, and never reached through a link the browser
+    could have planted (_open_chosen)."""
     if clean and not host.runner.which("mat2"):
         raise TransferError("Removing metadata needs mat2, which isn't installed.")
-    try:
-        sfd = os.open(src, os.O_RDONLY | os.O_CLOEXEC | os.O_NONBLOCK)
-    except OSError as e:
-        raise TransferError(f"{src.name} can't be read: {e.strerror or e}.") from None
+    sfd = _open_chosen(host, src)
     try:
         return _add_fd(host, folder, sfd, src.name, clean)
     finally:

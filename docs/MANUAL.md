@@ -386,7 +386,8 @@ lower it with the shield button in the browser's toolbar. Mullvad Browser starts
   instead, and to copy the clean files from `~/Outbox/Cleaned` into *To upload*.
 - **Add a file to upload…** copies one of your files into the browser's *To upload* folder, cleaned of
   metadata first by default. The file's name goes with it. A file you drag into *To upload* yourself goes
-  as it is.
+  as it is. A link inside `~/TempBrowser` is never followed (the browser could have made one that points at a
+  file of yours): choose the file itself.
 - Finished downloads are listed in the panel. The app says what each really is, whatever its name (a
   program disguised as a PDF is named as a program). **Save…** copies one out to a folder you choose.
   **View offline…** opens a document or picture in your usual viewer with no network, so the document

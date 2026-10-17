@@ -91,7 +91,7 @@ Tools are what the user starts on files, folders or drives they choose, where ch
 - They use the system's own programs (gpgv, mat2, exiftool, bubblewrap…), never bundled ones, and say which is
   missing and how to install it.
 - They take paths from the file chooser or from `--tool`, and the server accepts only absolute paths of files
-  the user can read.
+  the user can read, never reached through a link inside `~/TempBrowser`, which the browser there could have made.
 
 ---
 
@@ -1015,7 +1015,12 @@ The panel checks, and offers a fix for, what can write the session to disk howev
 **Add a file to upload…** copies the user's file (never moves or links it) into `Browser/To upload`, which
 the sandbox sees read-only. With mat2 installed, the copy is cleaned of metadata first by default, in a
 staging folder at the RAM disk's top that no sandbox is given; only the cleaned copy goes in. The page
-says the file's name goes with it.
+says the file's name goes with it. The file is never reached through a link the browser could have planted
+(`transfer._open_chosen`): its path is refused when it goes through a link inside `~/TempBrowser`
+(`pick.resolved`), and a file there is opened one name at a time from the RAM disk's top, without following
+links (the browser could plant one between the check and the open), and only as a plain file with one link on
+the RAM disk's own device, as a finished download. Save…'s folder is reached the same way (a folder link the
+browser planted could lead to an autostart folder).
 
 **The TempOutbox** (`transfer.run_outbox`) does the same for files the user copies in with the file
 manager. Each browser has its own, `~/TempBrowser/Outbox for Tor Browser` or `… for Mullvad Browser`, at the
@@ -1397,7 +1402,10 @@ OACS, FNA and SANICAP via the helper's ioctl), read on request and kept for the 
 - **File chooser** (`tools/pick.py`): pywebview's dialog in the window (GTK's recent-files recording
   turned off for the app, which outranks the desktop's setting), zenity or kdialog in a browser, else a
   typed path. The server accepts only absolute paths of regular files the user can read (and, for Remove
-  metadata, folders they can open).
+  metadata, folders they can open), resolved one name at a time (`pick.resolved`) and refused when the way goes
+  through a link inside `~/TempBrowser`: the browser writes there, and a link it planted (`Downloads/notes.txt`
+  pointing at `~/.ssh/id_ed25519`) made Add a file to upload… copy the key where the browser reads it (found in the
+  2026-10-17 review). Links anywhere else are the user's own, and followed.
 - **Try an app** (`tools/trial.py`, with `tools/homewatch.py`, `tools/bait.py`, `tools/pcap.py` and
   `tools/sandbox.py`'s pieces): a program the user doesn't know yet, run in a sandbox with a throwaway home, and
   a report of what it did. One trial at a time; no administrator access.

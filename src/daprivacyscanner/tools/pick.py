@@ -6,6 +6,7 @@ are typed, are checked before a tool reads them (`checked`)."""
 from __future__ import annotations
 
 import os
+import stat
 from pathlib import Path
 from typing import Callable
 
@@ -59,9 +60,56 @@ class PathRefused(ValueError):
     pass
 
 
+MAX_LINKS = 40                          # as the kernel's limit on links followed in one path
+
+
+def _within(path: Path, top: Path) -> bool:
+    return path == top or top in path.parents
+
+
+def resolved(p: Path, home: Path) -> Path:
+    """`p`'s real path, resolved one name at a time as the kernel would. Refuses (PathRefused) a path that goes
+    through a link inside ~/TempBrowser: the browser in memory writes there (its Downloads folder, its profile),
+    and a link it planted, Downloads/notes.txt pointing at ~/.ssh/id_ed25519, made Add a file to upload… copy the
+    key into To upload, where the browser reads it (found in the 2026-10-17 review, live on Mint). Links anywhere
+    else are the user's own, and followed. A name that isn't there ends the walk: the rest is returned as it is,
+    for the caller to find missing."""
+    from .ramdisk import BROWSER
+    browser = Path(os.path.realpath(home)) / BROWSER
+    todo = [x for x in str(p).split("/") if x][::-1]          # the names still to walk, the next one last
+    cur, links = Path("/"), 0
+    while todo:
+        name = todo.pop()
+        if name == ".":
+            continue
+        if name == "..":
+            cur = cur.parent
+            continue
+        nxt = cur / name
+        try:
+            st = os.lstat(nxt)
+        except OSError:
+            return nxt.joinpath(*reversed(todo))
+        if not stat.S_ISLNK(st.st_mode):
+            cur = nxt
+            continue
+        if _within(nxt, browser):
+            raise PathRefused(f"{p} is reached through a link in ~/{BROWSER} ({nxt.name}), which the browser there "
+                              "could have made to point at a file of yours: it isn't used. Choose the file itself.")
+        links += 1
+        if links > MAX_LINKS:
+            raise PathRefused(f"{p} goes through too many links.")
+        target = os.readlink(nxt)
+        if target.startswith("/"):
+            cur = Path("/")
+        todo.extend(x for x in reversed(target.split("/")) if x)
+    return cur
+
+
 def checked(raw, home: Path, folders: bool = False) -> Path:
     """A path the page sent: absolute (or ~/...), an existing regular file the user can read (or, with
-    `folders`, a folder they can open and list), not under /proc, /sys or /dev."""
+    `folders`, a folder they can open and list), not under /proc, /sys or /dev, and not reached through a link
+    inside ~/TempBrowser (`resolved`)."""
     if not isinstance(raw, str) or not raw.strip() or "\0" in raw:
         raise PathRefused("No file given.")
     text = raw.strip()
@@ -73,8 +121,9 @@ def checked(raw, home: Path, folders: bool = False) -> Path:
     p = Path(text)
     if not p.is_absolute():
         raise PathRefused("Give the whole path of the file, starting with / or ~/.")
-    real = Path(os.path.realpath(p))
-    if any(str(real) == d or str(real).startswith(d + "/") for d in ("/proc", "/sys", "/dev")):
+    real = resolved(p, home)
+    if any(str(x) == d or str(x).startswith(d + "/") for x in (real, Path(os.path.normpath(p)))
+           for d in ("/proc", "/sys", "/dev")):
         raise PathRefused("That isn't a file the tools work on.")
     if folders and real.is_dir():
         if not os.access(real, os.R_OK | os.X_OK):
