@@ -954,6 +954,10 @@ check(text(".modal .browser-tool").includes("Without swap, when memory runs out 
       "turning swap off says what it costs, and warns when the browser and its RAM disk won't fit in what is free");
 check(text(".modal .browser-tool").includes("Unless you allow it below, it has no graphics card: pages draw with the processor"),
       "the sandbox says what it doesn't hide, and that pages draw without the graphics card");
+check(text(".modal .browser-tool").includes("when the computer was started")
+      && text(".modal .browser-tool").includes("Restart between sessions you want kept apart")
+      && text(".modal .browser-tool").includes("the names this computer gives the disks its programs come from"),
+      "it says the boot time, the login session's number and the disks' names stay readable (no time namespace in bubblewrap)");
 check(text(".modal .browser-tool").includes("this computer can hibernate")
       && text(".modal .browser-tool").includes("though it is kept out of swap")
       && $$(".modal .browser-tool button").some(b => b.textContent === "Hibernation…"),

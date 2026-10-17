@@ -402,6 +402,10 @@ lower it with the shield button in the browser's toolbar. Mullvad Browser starts
   `passt` with the command shown.
 - **X11 desktop**: the sandbox protects your files but not your screen. Wayland is safer.
 
+**What the sandbox can't hide** from a website that got past the browser's own protections is listed in the
+panel: among it, when the computer was started, which stays the same until you restart. Restart between
+sessions you want kept apart.
+
 **It is for one session, or a few over a day.** It doesn't update itself. If you start it more than 24
 hours after setting it up, it first checks for a newer version and won't start if one is out: save what
 you need, close `~/TempBrowser`, and set it up again.

@@ -629,7 +629,13 @@ credentials, a Firefox policy of the computer's). So `/etc` is an empty tmpfs ho
 
 **`/proc` masks**, in the innermost sandbox only: `/proc/cmdline` is covered with `ro quiet` (the real one
 names the disks' UUIDs), and `/proc/sys/kernel/random/boot_id` with a new random UUID at every start (the
-real one is the same for every session until a restart, which would let sessions be linked). Only the
+real one is the same for every session until a restart, which would let sessions be linked);
+`/proc/partitions` and `/proc/swaps` with their header line only (the disks' names and sizes, swap's file or
+device); `/proc/bus` (the input devices' list, with a Bluetooth keyboard's or mouse's hardware address and
+devices' serial numbers; PCI's), `/proc/scsi` (the disks' models) and, unless the graphics card is given,
+`/proc/driver` (`nvidia/gpus/*/information` holds the card's serial number, readable whether or not the card
+was given: matched `nvidia-smi` on the lab) with an empty tmpfs made read-only; each only where this kernel
+has it (`proc_masks`, a mount point must already be there). Only the
 innermost sandbox gets these: once a file of a procfs is covered, the kernel refuses to let anything
 inside mount a procfs of its own (tested), which Tor Browser's inner sandbox needs to do. Firefox's own
 sandbox doesn't.
@@ -1091,6 +1097,23 @@ Said on the page: the kernel's version and build (any program can ask `uname`), 
 (`os-release`, which libraries read), and the processor's model and known flaws
 (`/sys/devices/system/cpu`). With no `/dev/dri`, pages render on the processor (WebGL and video work,
 slower): this also keeps the GPU drivers, a large part of the kernel, out of reach.
+
+Also said on the page, since the sandbox can't cover them (found in the review of 2026-10-17):
+
+- **When the computer was started.** `/proc/stat`'s `btime`, `/proc/uptime`, and the clocks every program
+  reads (`CLOCK_BOOTTIME`, `CLOCK_MONOTONIC`) stay the same for every session until a restart, like the boot
+  id (which is covered). A time namespace would shift them (Linux 7.0 applies its offset to `btime` and
+  `uptime` too: tested), but bubblewrap has none (0.9, 0.11 and 0.13, the lab's), and covering the files alone
+  would leave the clocks. The page says to restart between sessions that should be kept apart.
+- **The login session's number** (`/proc/self/sessionid`, 235 on the lab's Mint; and `loginuid`, the
+  computer's own user id), the same until the user logs out: the kernel's audit fields, which no sandbox can
+  change.
+- **The names of the devices the sandbox's folders come from**, in `/proc/self/mountinfo` (`/usr` is bound from
+  the root filesystem): `/dev/mapper/vgmint-root` on Mint, `luks-<UUID>` on Fedora, `<hostname>-vg` on Debian. A
+  per-process file, which can't be covered.
+- **With the graphics card given**, `/proc/driver` (NVIDIA's driver reads its files there) and so the card's
+  serial number (`/proc/driver/nvidia/gpus/*/information`; NVIDIA's driver gives it to any program that may use
+  the card anyway): said under the box (`gpuRisks`).
 
 ---
 

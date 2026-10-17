@@ -10,7 +10,10 @@ from pathlib import Path
 import pytest
 
 from daprivacyscanner.host import CommandResult, FakeRunner, Host
+from daprivacyscanner.tools import browser as B
 from daprivacyscanner.tools import sandbox as S
+
+from test_browser_sandbox import bwrap_ok, host, identity_etc, installed, layout, pairs, wayland  # noqa: F401 (host: a fixture)
 
 DOCS = Path(__file__).resolve().parents[1] / "docs"
 
@@ -248,3 +251,60 @@ def test_dns_over_tcp_is_let_through_only_where_pasta_s_forwarder_takes_it(tmp_p
     assert S.FORWARD_RESOLV == f"nameserver {S.DNS_FORWARD}\noptions edns0\n"
     etc = S.identity_files(tmp_path / "etc", S.FORWARD_RESOLV)
     assert "options edns0" in etc["resolv.conf"].read_text()
+
+
+# ------------------------------------------------------------------ B3: /proc says less about the computer
+
+def proc_tree(host, *names):
+    for name in names:
+        p = host.root / "proc" / name
+        if name in ("bus", "scsi", "driver"):
+            (p / "x").mkdir(parents=True, exist_ok=True)
+        else:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text("real\n")
+
+
+def test_proc_masks_cover_the_disks_swap_input_devices_and_drivers(host, tmp_path):
+    """B3: /proc/driver/nvidia/gpus/*/information (the graphics card's serial number, whether or not the card was
+    given), /proc/bus/input/devices (a Bluetooth device's hardware address, serial numbers), /proc/partitions,
+    /proc/scsi (the disks' models) and /proc/swaps were readable inside. Covered: by empty files, or an empty folder
+    made read-only; /proc/driver only while the card isn't given (NVIDIA's driver reads its files there)."""
+    proc_tree(host, "partitions", "swaps", "bus", "scsi", "driver")
+    m = S.proc_masks("/src", host=host)
+    binds = [(m[i + 1], m[i + 2]) for i, a in enumerate(m) if a == "--ro-bind"]
+    assert binds == [("/src/cmdline", "/proc/cmdline"), ("/src/boot_id", "/proc/sys/kernel/random/boot_id"),
+                     ("/src/partitions", "/proc/partitions"), ("/src/swaps", "/proc/swaps")]
+    covered = [m[i + 1] for i, a in enumerate(m) if a == "--tmpfs"]
+    assert covered == ["/proc/bus", "/proc/scsi", "/proc/driver"]
+    assert [m[i + 1] for i, a in enumerate(m) if a == "--remount-ro"] == covered
+    assert "/proc/driver" not in S.proc_masks("/src", gpu=True, host=host)
+    # only what this kernel has: bubblewrap can't make a mount point in /proc
+    (host.root / "proc/scsi/x").rmdir()
+    (host.root / "proc/scsi").rmdir()
+    assert "/proc/scsi" not in S.proc_masks("/src", host=host)
+    etc = S.identity_files(tmp_path / "etc", None)
+    assert etc["partitions"].read_text() == "major minor  #blocks  name\n\n"
+    assert etc["swaps"].read_text().split() == ["Filename", "Type", "Size", "Used", "Priority"]
+
+
+def test_both_browsers_innermost_sandboxes_get_them(host):
+    proc_tree(host, "partitions", "swaps", "bus", "scsi", "driver")
+    installed(host, "mullvad")
+    bwrap_ok(host)
+    wayland(host)
+    identity_etc(host)
+    lay, private = layout(host, B.BROWSERS["mullvad"])
+    disp = S.display(host, private, landlock=False)
+    etc = S.identity_files(private / "etc", None)
+    a = S.browser_argv(host, lay, disp, False, False, etc, None)
+    assert (str(etc["partitions"]), "/proc/partitions") in pairs(a, "--ro-bind") and a.index("/proc/bus") > a.index("--proc")
+    assert "/proc/driver" in a and "/proc/driver" not in S.browser_argv(host, lay, disp, False, False, etc, None,
+                                                                        gpu=("/dev/nvidia0",))
+    installed(host, "tor")
+    lay, private = layout(host, B.BROWSERS["tor"])
+    (private / "tor").mkdir(exist_ok=True)
+    argv = S.tor_argv(host, lay, private / "tor", disp, False, False, etc, "GATE")
+    inner = json.loads(argv[-1])["inner"]
+    assert ("/run/identity/swaps", "/proc/swaps") in pairs(inner, "--ro-bind") and "/proc/bus" in inner
+    assert "/proc/bus" not in argv[:argv.index("--")]                # never the outer one: its /proc stays whole

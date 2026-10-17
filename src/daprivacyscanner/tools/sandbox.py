@@ -20,8 +20,9 @@ Inside it the browser sees:
   (/etc/firefox). The computer's own files are never changed;
 - in /proc, a kernel command line and a boot id of the sandbox's own (proc_masks): the real ones name
   the disks' UUIDs and stay the same for every session (the boot id until a restart), which could link
-  sessions. Only in the innermost sandbox: the kernel lets nothing inside mount a /proc of its own once
-  a file of one is covered (tested; Firefox's own sandbox doesn't);
+  sessions; and nothing of the disks, swap, input devices or drivers (PROC_OWN, PROC_EMPTIED). Only in
+  the innermost sandbox: the kernel lets nothing inside mount a /proc of its own once a file of one is
+  covered (tested; Firefox's own sandbox doesn't);
 - its own folder in the RAM disk at /home/user/<folder>, read-only, except its profile and its
   Downloads folder: a browser that was taken over can't change its own program files, which it would
   otherwise run again (unsandboxed, if the user unticked the sandbox later); its "To upload" folder is
@@ -190,7 +191,21 @@ ETC_KEPT = ("ld.so.cache", "ld.so.conf", "ld.so.conf.d", "nsswitch.conf", "host.
 ETC_OWN = ("passwd", "group", "hostname", "hosts", "machine-id", "timezone")
 UTC = ("/usr/share/zoneinfo/Etc/UTC", "/usr/share/zoneinfo/UTC")
 IDENTITY_IN = "/run/identity"           # in Tor Browser's outer sandbox: the sandbox's own files, for the inner one
-PROC_OWN = {"cmdline": "/proc/cmdline", "boot_id": "/proc/sys/kernel/random/boot_id"}
+# /proc's files that say whose computer it is, covered in the innermost sandbox (proc_masks): the kernel command line
+# (the disks' UUIDs) and the boot id (the same for every session until a restart) by files of the sandbox's own; the
+# disks' names, sizes and models (/proc/partitions, /proc/scsi), and swap's file or device and its size (/proc/swaps)
+# by empty ones; the input devices' list (/proc/bus/input/devices: a Bluetooth keyboard's or mouse's hardware address,
+# a device's serial number), PCI's, and the drivers' files (/proc/driver/nvidia/gpus/*/information: the graphics
+# card's serial number, readable whether or not the card was given; matched nvidia-smi's on the lab) by an empty
+# folder, /proc/driver only while the card isn't given (NVIDIA's driver reads its files there). Found in the review of
+# 2026-10-17. Not hidden, and said on the page: when the computer was started (/proc/stat's btime, /proc/uptime, and
+# the clocks every program reads, which a time namespace would shift; bubblewrap has none, 0.9 to 0.13), the names of
+# the devices the sandbox's folders come from (/proc/self/mountinfo: vgmint-root, Fedora's luks-<UUID>, Debian's
+# <hostname>-vg), and the login session's number (/proc/self/sessionid), all three the same for every session until a
+# restart or a new login.
+PROC_OWN = {"cmdline": "/proc/cmdline", "boot_id": "/proc/sys/kernel/random/boot_id", "partitions": "/proc/partitions",
+            "swaps": "/proc/swaps"}
+PROC_EMPTIED = ("bus", "scsi")                # folders of /proc covered by an empty one; "driver" too without the card
 
 # runs inside the sandbox: Landlock's scopes (abstract Unix sockets, signals), then the program
 LANDLOCK = """\
@@ -424,7 +439,8 @@ def identity_files(etc: Path, resolv: str | None) -> dict[str, Path]:
              "group": f"root:x:0:\n{USER_IN}:x:{UID_IN}:\nnogroup:x:65534:\n",
              "hostname": "localhost\n", "hosts": "127.0.0.1 localhost\n::1 localhost\n",
              "machine-id": MACHINE_ID + "\n", "timezone": "Etc/UTC\n", "empty": "",
-             "cmdline": "ro quiet\n", "boot_id": f"{uuid.uuid4()}\n"}
+             "cmdline": "ro quiet\n", "boot_id": f"{uuid.uuid4()}\n", "partitions": "major minor  #blocks  name\n\n",
+             "swaps": "Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority\n"}
     if resolv is not None:
         files["resolv.conf"] = resolv
     out = {}
@@ -495,12 +511,19 @@ def etc_argv(host: Host, files: dict[str, Path], resolv: str | None, inner: bool
     return argv + ["--remount-ro", "/etc"]
 
 
-def proc_masks(src: str) -> list[str]:
-    """The kernel command line and boot id covered by the sandbox's own (PROC_OWN), from the folder `src`
-    holding identity_files' files. After --proc, in the innermost sandbox only (see the module's notes)."""
+def proc_masks(src: str, gpu: bool = False, host: Host | None = None) -> list[str]:
+    """/proc's identifying files covered (PROC_OWN, from the folder `src` holding identity_files' files; PROC_EMPTIED,
+    and /proc/driver unless `gpu`: the graphics card was given), each where this kernel has it (a mount point must
+    be there already: bubblewrap can't make one in /proc), as `host` sees /proc (the computer's when None). After
+    --proc, in the innermost sandbox only (see the module's notes)."""
+    exists = (lambda path: host.sys_path(path).exists()) if host is not None else os.path.exists  # noqa: E731
     out: list[str] = []
     for name, target in PROC_OWN.items():
-        out += ["--ro-bind", f"{src}/{name}", target]
+        if name in ("cmdline", "boot_id") or exists(target):
+            out += ["--ro-bind", f"{src}/{name}", target]
+    for name in (*PROC_EMPTIED, *(() if gpu else ("driver",))):
+        if exists(f"/proc/{name}"):
+            out += ["--tmpfs", f"/proc/{name}", "--remount-ro", f"/proc/{name}"]
     return out
 
 
@@ -1104,7 +1127,7 @@ def browser_argv(host: Host, lay: Layout, disp: Display, with_sound: bool, landl
     itself is then left without pasta's network)."""
     bwrap = _need(host, BWRAP)
     a = [bwrap, *namespaces(True), *system(host, etc=False), *etc_argv(host, etc, "own" if "resolv.conf" in etc else "host"),
-         *proc_masks(str(etc["cmdline"].parent)), *_gpu_argv(gpu)]
+         *proc_masks(str(etc["cmdline"].parent), bool(gpu), host), *_gpu_argv(gpu)]
     a += _folder(lay, outer=False, inside=False)
     a += ["--bind", str(lay.session), SESSION_IN, "--perms", "0700", "--dir", RUNTIME_IN]
     a += _desktop(disp, sound(host) if with_sound else None, inside=False)
@@ -1148,7 +1171,7 @@ def tor_argv(host: Host, lay: Layout, tor_dir: Path, disp: Display, with_sound: 
            "CookieAuthentication", "1", "CookieAuthFile", f"{TOR_DIR_IN}/control_auth_cookie",
            "__OwningControllerProcess", "@PID@"]
     inner = [bwrap, "--die-with-parent", *namespaces(False), *system(host, etc=False),
-             *etc_argv(host, etc, None, inner=True), *proc_masks(IDENTITY_IN), *_gpu_argv(gpu)]
+             *etc_argv(host, etc, None, inner=True), *proc_masks(IDENTITY_IN, bool(gpu), host), *_gpu_argv(gpu)]
     inner += _folder(lay, outer=False, inside=True)
     inner += ["--bind", SESSION_IN, SESSION_IN, "--perms", "0700", "--dir", RUNTIME_IN,
               "--ro-bind", SOCKS_IN, SOCKS_IN, "--ro-bind", CONTROL_IN, CONTROL_IN]

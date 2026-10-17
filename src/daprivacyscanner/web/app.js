@@ -2838,8 +2838,12 @@ function browserSandbox(data, opts) {
         : " shares this computer's network: see the warning below.",
       " Files go in and out through each browser's To upload and Downloads folders, below.",
       h("div", { class: "muted" }, "What it doesn't hide from a website that got past the browser: the kernel's version and "
-        + "build (any program can ask the kernel), the distribution (its name file, which libraries read), and the "
-        + "processor's model and its known flaws (/sys/devices/system/cpu, which the browser reads). Unless you allow it "
+        + "build (any program can ask the kernel), the distribution (its name file, which libraries read), the "
+        + "processor's model and its known flaws (/sys/devices/system/cpu, which the browser reads), the names this "
+        + "computer gives the disks its programs come from (on Fedora a disk encryption's id, on Debian often the "
+        + "computer's name), and when the computer was started (every program can read its clock), which stays the same "
+        + "until you restart, as does your login session's number: in two sessions before a restart, a website that got "
+        + "that far could tell they were on the same computer. Restart between sessions you want kept apart. Unless you allow it "
         + "below, it has no graphics card: pages draw with the processor (WebGL and video work, more slowly and with more of the processor), which "
         + "keeps the graphics drivers, a large part of the kernel, out of its reach. A website can see one detail of that: "
         + "WebGL answers as drawing in software does, which differs in one value from what the graphics card would give "
@@ -3344,6 +3348,8 @@ function gpuRisks() {
     + "often flawed parts, and its driver in the browser itself (NVIDIA's closed one, on a computer with NVIDIA). A website "
     + "that got past the browser's own protections could use a flaw in them to get out of the sandbox: to your files, or "
     + "the whole computer.",
+    "It also lets the browser read the card's own serial number (NVIDIA's driver gives it to every program that may use "
+    + "the card), the same in every session.",
     "Leave it off unless a site you need is too slow without it, above all in Tor Browser. With a display of its own "
     + "(Xephyr, on X11) it isn't given the card: it would draw in software there anyway."];
 }
