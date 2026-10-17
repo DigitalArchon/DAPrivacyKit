@@ -754,25 +754,29 @@ def fence_check(host: Host, also: tuple[str, ...] = (), dns_tcp: bool = False) -
 def probe_fence(host: Host) -> str | None:
     """Why pasta's namespace can't be fenced off from the local network here (fence), or None: tried
     around a sandbox like the browser's, which then checks from inside that the fence refuses what it
-    should (fence_check: route lookups, no packets), the computer's own networks included."""
+    should (fence_check: route lookups, no packets), the computer's own networks included; and, the first
+    time for this pasta, whether its forwarder takes DNS over TCP (_DNS_TCP: up to 2 seconds where it doesn't,
+    so not at every trial's start)."""
     import ipaddress
     pasta, bwrap = program(host, PASTA), program(host, BWRAP)
     if not (pasta and bwrap):
         return "pasta or bubblewrap isn't installed."
     if not program(host, "ip"):
         return "iproute2's ip isn't installed."
+    known = _DNS_TCP.get(pasta)
     try:
         c = computer(host)
         host4, host6 = host_networks(host, c)
-        f = fence(host, networks=(host4, host6), dns_tcp=True) or []
+        f = fence(host, networks=(host4, host6), dns_tcp=True if known is None else known) or []
     except SandboxError as e:
         return str(e)
     also = tuple(str(next(iter(ipaddress.ip_network(nets[0]).hosts()), ipaddress.ip_network(nets[0]).network_address))
                  for nets in (host4, host6) if nets)
     r = host.run(pasta, *pasta_opts(host, c), "--", *f, bwrap, *namespaces(True), *system(host), "--",
-                 *fence_check(host, also, dns_tcp=True), timeout=25)
+                 *fence_check(host, also, dns_tcp=known is None), timeout=25)
     if r.ok:
-        _DNS_TCP[pasta] = DNS_TCP_MARK in (r.stdout or "").split()
+        if known is None:
+            _DNS_TCP[pasta] = DNS_TCP_MARK in (r.stdout or "").split()
         return None
     err = [ln for ln in (r.stderr or r.stdout).strip().splitlines() if not quiet_line(ln)]
     return f"its rules couldn't be set ({err[-1][:200] if err else f'exit status {r.returncode}'})."

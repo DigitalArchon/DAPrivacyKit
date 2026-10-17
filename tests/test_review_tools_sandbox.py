@@ -247,6 +247,11 @@ def test_dns_over_tcp_is_let_through_only_where_pasta_s_forwarder_takes_it(tmp_p
     assert f'socket.create_connection(("{S.DNS_FORWARD}", 53), 2)' in probe[-1] and S.DNS_TCP_MARK in probe[-1]
     script = S.fence(host)[2]
     assert ("ipproto tcp dport 53 pref 50" in script) is forwards and "ipproto udp dport 53 pref 50" in script
+    # asked once per pasta: a trial's probe at each start doesn't wait the 2 seconds again
+    calls.clear()
+    assert S.probe_fence(host) is None
+    again = next(c for c in calls if c[0] == "pasta")
+    assert S.DNS_TCP_MARK not in again[-1] and ("ipproto tcp dport 53" in again[again.index("-c") + 1]) is forwards
     # an answer too large for 512 bytes then comes over UDP: the sandbox's resolver asks with EDNS0
     assert S.FORWARD_RESOLV == f"nameserver {S.DNS_FORWARD}\noptions edns0\n"
     etc = S.identity_files(tmp_path / "etc", S.FORWARD_RESOLV)

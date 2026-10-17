@@ -105,9 +105,10 @@ def test_pasta_is_tried_around_a_sandbox(host):
     assert "Couldn't open tun device" in S.probe_pasta(host)
 
 
-def test_pasta_s_namespace_is_fenced_off_from_the_local_network(host):
+def test_pasta_s_namespace_is_fenced_off_from_the_local_network(host, monkeypatch):
     """pasta connects anywhere the computer can: the router, printers, Docker's bridge. Rules set as root
     of pasta's namespace, before bubblewrap, refuse the local and private ranges."""
+    monkeypatch.setattr(S, "_DNS_TCP", {})                  # not yet asked whether pasta forwards DNS over TCP
     bwrap_ok(host)
     calls = []
     host.runner.handlers["pasta"] = lambda argv: calls.append(argv) or CommandResult(tuple(argv), 0)
