@@ -237,7 +237,14 @@ Settings are changed through reversible actions that record before and after: `G
 `FileCommand` (a command whose only lasting effect is one of the user's files, backed up first, such as
 `flatpak override --user`), `HashKnownHosts` (`ssh-keygen -H`, the original kept in the backups) and
 `FirefoxPref` (one pref at a time in `prefs.js`, with the browser closed; never `user.js`, which would pin
-it). Root changes are
+it). A file write that would leave the file as it is (`WriteFile.noop`, an option applied before) is no
+step: the plan leaves it out, so a guide doesn't offer it again and History doesn't record a change that
+changed nothing. A `WriteFile` may name a command run after writing and again after reverting (`then`):
+`bus_reload` has the session bus read its service files again, which dbus-broker needs before it sees a user
+service file (an override starting `/bin/false`) in a folder made since it started. KDE settings are compared
+with the value the program reads, the user's file over the distribution's in `/etc/xdg` (`kset`), as the
+checks read them. The dry run lists a folder's `mkdir` once, at the first step that makes it
+(`FixPlan.step_commands`). Root changes are
 `RootChange` actions: the helper makes them and keeps the previous state in its own journal
 (`/var/lib/daprivacyscanner/changes`); the undo log holds only the change id. The irreversible actions are
 `DeleteFiles`, `ClearInFile`, `Command` and `RootClear` (deleting as root: old crash dumps, journal files):
@@ -247,7 +254,8 @@ never written to the log.
 ### The undo log
 
 `undo.py` keeps `$XDG_STATE_HOME/daprivacyscanner/undo.json` (directory 0700, written atomically). Revert
-refuses to overwrite a value changed since the fix, unless forced. Every action carries an `undo_hint`
+refuses to overwrite a value changed since the fix, unless forced; a value already back where it was before
+(put back by hand) is no conflict. Every action carries an `undo_hint`
 (how to undo it by hand). History shows, for each step, exactly what it did: the commands it ran
 (`Action.ran`, rebuilt from the record, so older entries show theirs too), the lines it wrote into a file
 (`changed_lines`: "+ added", "- removed", at most 40; never known_hosts', whose lines are the server names
