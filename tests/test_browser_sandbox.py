@@ -707,7 +707,7 @@ def test_the_tempoutbox_cleans_into_to_upload_and_keeps_the_originals(host):
     assert v["on"] and v["folder"] == "~/TempBrowser/Outbox for Tor Browser" and v["originals"] == 1
     assert v["not_cleaned"] == ["notes.xyz"] and v["waiting"] == 2 and not v["permanent"]
     assert [(r["what"], r["name"]) for r in v["recent"]] == [("cleaned", "photo.jpg"), ("not_cleaned", "notes.xyz")]
-    assert "not supported" in v["recent"][1]["detail"]                      # newest first
+    assert "can't clean this kind of file" in v["recent"][1]["detail"]          # newest first
     # a second photo of the same name: To upload keeps both, the originals too
     (box / "photo.jpg").write_bytes(b"two+gps")
     old(box / "photo.jpg")

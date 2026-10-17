@@ -1892,7 +1892,8 @@ function verdictBox(v) {
     " ", h("code", {}, s.path.split("/").pop()), s.inside ? ` (inside it: ${s.inside})` : "",
     s.project ? ` by ${s.project}'s key (${s.key_name})` : s.key_name ? ` by ${s.key_name}` : "",
     s.fingerprint_grouped || s.issuer ? h("div", { class: "fpr" }, s.fingerprint_grouped || s.issuer) : null,
-    s.detail ? h("div", { class: "small muted" }, s.detail) : null);
+    s.detail ? h("div", { class: "small muted" }, s.detail) : null,
+    s.install ? commandBlock([s.install]) : null);
   const sigs = [...v.signatures, ...v.lists.filter(l => l.signature).map(l => l.signature)];
   return h("div", { class: `verdict ${VERDICT_CLASS[v.level] || "warn"}` },
     h("div", { class: "vtitle" }, v.title),

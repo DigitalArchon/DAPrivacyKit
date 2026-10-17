@@ -169,6 +169,7 @@ class Signature:
     signed_at: int | None = None
     detail: str = ""
     inside: str = ""                     # a signature inside the package: where ("_gpgorigin")
+    install: str = ""                    # no_tool: the command that installs the program it needs, on this system
 
     @property
     def good(self) -> bool:
@@ -181,7 +182,26 @@ class Signature:
                 "issuer": self.issuer, "project": self.project.name if self.project else None,
                 "project_signs": self.project.signs if self.project else None, "key_name": self.key_name,
                 "source": self.source, "expired": self.expired, "signed_at": self.signed_at, "detail": self.detail,
-                "inside": self.inside}
+                "inside": self.inside, "install": self.install, "status_words": STATUS_WORDS.get(self.status, self.status)}
+
+
+# a signature's status in words, for the terminal's report (the page has its own badges)
+STATUS_WORDS = {"good": "good signature", "bad": "bad signature", "no_key": "the key that made it isn't available",
+                "revoked": "made with a revoked key", "error": "couldn't be checked",
+                "no_tool": "can't be checked: a program it needs isn't installed", "unsupported": "a kind this can't check"}
+# the packages that hold the programs that check signatures, by distribution family (checks.guides.install)
+TOOL_PACKAGES = {"gpgv": {"debian": "gpgv", "fedora": "gnupg2", "arch": "gnupg", "suse": "gpg2"},
+                 "ssh-keygen": {"debian": "openssh-client", "fedora": "openssh-clients", "arch": "openssh",
+                                "suse": "openssh-clients"},
+                 "minisign": {"debian": "minisign", "fedora": "minisign", "arch": "minisign", "suse": "minisign"}}
+
+
+def install_command(host: Host, program: str) -> str:
+    """The command that installs `program` here, or "" where the distribution isn't one the app knows."""
+    from types import SimpleNamespace
+
+    from ..checks.guides import install
+    return install(SimpleNamespace(host=host), **TOOL_PACKAGES[program]) or ""
 
 
 def sig_kind(data: bytes) -> str | None:
@@ -326,7 +346,7 @@ def check_openpgp(host: Host, keyset: KeySet, sig: Path, data: Path | None) -> S
     issuers = _issuers(sig)
     return Signature(sig, over, "openpgp", "no_tool", issuer=issuers[0] if issuers else "",
                      detail="Checking OpenPGP signatures needs gpgv" + (" (or sqv)" if data is not None else "")
-                     + ", which isn't installed.")
+                     + ", which isn't installed.", install=install_command(host, "gpgv"))
 
 
 def keyring_args(keyset: KeySet) -> list[Path]:
@@ -401,7 +421,8 @@ def check_ssh(host: Host, sig: Path, data: Path) -> Signature:
     """An SSH signature (ssh-keygen -Y sign), namespace "file": checked for being good, and the
     key's fingerprint shown; no list of SSH keys exists, so it is never "verified"."""
     if not host.runner.which("ssh-keygen"):
-        return Signature(sig, data, "ssh", "no_tool", detail="Checking SSH signatures needs ssh-keygen (OpenSSH).")
+        return Signature(sig, data, "ssh", "no_tool", detail="Checking SSH signatures needs ssh-keygen (OpenSSH), which "
+                         "isn't installed.", install=install_command(host, "ssh-keygen"))
     r = host.run("ssh-keygen", "-Y", "check-novalidate", "-n", "file", "-s", str(sig), timeout=600, stdin=data)
     m = _SSH_GOOD.search(r.stdout + r.stderr)
     if r.ok and m:
@@ -419,7 +440,8 @@ def check_minisign(host: Host, keyset: KeySet, sig: Path, data: Path) -> Signatu
                          detail="A minisign signature: choose the project's minisign public key (a .pub file, or "
                                 "the key from its site saved to a file) as the key file.")
     if not host.runner.which("minisign"):
-        return Signature(sig, data, "minisign", "no_tool", issuer=keyid, detail="Checking it needs minisign.")
+        return Signature(sig, data, "minisign", "no_tool", issuer=keyid,
+                         detail="Checking it needs minisign, which isn't installed.", install=install_command(host, "minisign"))
     for pub in pubs:
         r = host.run("minisign", "-V", "-q", "-m", str(data), "-x", str(sig), "-p", str(pub), timeout=600)
         if r.ok:
@@ -548,8 +570,8 @@ class Verdict:
                 lines.append(f"  {ALGO_TITLE[a]}: {self.hashes[a]}")
         for s in self.signatures + [l.signature for l in self.lists if l.signature]:
             who = s.project.name if s.project else (s.key_name or s.issuer or "an unknown key")
-            lines.append(f"  Signature {s.path.name}: {s.status} ({who}" + (f", {K.group(s.fingerprint)}" if
-                         re.fullmatch(r"[0-9A-F]{40}", s.fingerprint) else "") + ")")
+            lines.append(f"  Signature {s.path.name}: {STATUS_WORDS.get(s.status, s.status)} ({who}"
+                         + (f", {K.group(s.fingerprint)}" if re.fullmatch(r"[0-9A-F]{40}", s.fingerprint) else "") + ")")
         for l in self.lists:
             for e, ok in l.matched:
                 lines.append(f"  {l.path.name}: {ALGO_TITLE[e.algo]} {'matches' if ok else 'DOES NOT MATCH'}")
@@ -574,9 +596,9 @@ def _who(s: Signature) -> str:
 
 
 def verify(host: Host, path: Path, key_files: list[Path] = (), expected: str = "", use_keyring: bool = True,
-           projects=None) -> Verdict:
+           projects=None, given: bool = False) -> Verdict:
     """Everything that can be checked about the file now. Reads the file and the companions next to
-    it; changes nothing."""
+    it; changes nothing. `given`: the checksum came with the command (--checksum), not pasted into the page."""
     path = target_of(Path(path))
     size = path.stat().st_size
     projects = K.load() if projects is None else projects
@@ -633,19 +655,21 @@ def verify(host: Host, path: Path, key_files: list[Path] = (), expected: str = "
 
     paste_info = None
     if expected and not paste:
-        key_problems.append("What was pasted isn't a checksum (32 to 128 hexadecimal digits).")
+        key_problems.append(f"What was {'given with --checksum' if given else 'pasted'} isn't a checksum (32 to 128 "
+                            "hexadecimal digits).")
     elif paste:
         ok = any(hashes.get(a) == paste[0] for a in paste[1])
         algo = next((a for a in paste[1] if hashes.get(a) == paste[0]), paste[1][0])
-        paste_info = {"digest": paste[0], "algo": algo, "algo_title": ALGO_TITLE[algo], "matches": ok}
+        paste_info = {"digest": paste[0], "algo": algo, "algo_title": ALGO_TITLE[algo], "matches": ok,
+                      "said": "given" if given else "you pasted"}
 
-    v = decide(path, size, hashes, signatures, lists, paste_info, projects)
+    v = decide(path, size, hashes, signatures, lists, paste_info, projects, given)
     v.notes = key_problems + v.notes + package_notes
     return v
 
 
 def decide(path: Path, size: int, hashes: dict, signatures: list[Signature], lists: list[SumsList],
-           paste_info: dict | None, projects) -> Verdict:
+           paste_info: dict | None, projects, given: bool = False) -> Verdict:
     hint = K.for_file(projects, path.name)
     v = Verdict(path, size, "unchecked", "", "", hashes, signatures, lists, paste_info, project_hint=hint)
     all_sigs = signatures + [l.signature for l in lists if l.signature]
@@ -673,7 +697,8 @@ def decide(path: Path, size: int, hashes: dict, signatures: list[Signature], lis
             v.text = (f"Its {ALGO_TITLE[e.algo]} checksum doesn't match the one in {l.path.name}: the download is "
                       "damaged or not the file that list describes.")
         else:
-            v.text = (f"Its {paste_info['algo_title']} checksum doesn't match the one you pasted: the download is "
+            v.text = (f"Its {paste_info['algo_title']} checksum doesn't match the one {paste_info.get('said', 'you pasted')}: "
+                      "the download is "
                       "damaged, or not the file that checksum is for.")
         v.steps = ["Delete it and download it again, from the project's own site.",
                    "If it fails again, don't use it: tell the project, and check where the download came from."]
@@ -688,7 +713,7 @@ def decide(path: Path, size: int, hashes: dict, signatures: list[Signature], lis
     if trusted:
         s = trusted[0]
         via = (" (the signature inside the package)" if s.inside else
-               "" if s.over == path else f", through the checksum list {s.over.name}")
+               "" if s.over == path else f", through the checksum list {s.over.name},")
         v.level, v.title = "verified", f"Verified: made by {s.project.name}"
         v.text = (f"It is signed{via} by {s.project.name}'s release key ({s.key_name}), whose fingerprint the app "
                   f"checked on {s.project.name}'s own site on {s.project.checked.isoformat()}. "
@@ -727,7 +752,8 @@ def decide(path: Path, size: int, hashes: dict, signatures: list[Signature], lis
     unchecked = [s for s in all_sigs if s.status in ("no_key", "no_tool", "error", "unsupported")]
     if intact:
         v.level, v.title = "intact", "Not damaged, but not verified"
-        what = (f"the {paste_info['algo_title']} checksum you pasted" if paste_info and paste_info["matches"] else
+        what = (f"the {paste_info['algo_title']} checksum {paste_info.get('said', 'you pasted')}"
+                if paste_info and paste_info["matches"] else
                 f"the checksum in {next(l.path.name for l in lists if any(ok for _, ok in l.matched))}")
         v.text = (f"It matches {what}, so it wasn't damaged on the way. That doesn't show who made it: anyone "
                   "who could change the file could have changed a checksum published beside it.")
@@ -750,7 +776,8 @@ def decide(path: Path, size: int, hashes: dict, signatures: list[Signature], lis
         else:
             v.steps.append("Look on the download page for a signature (.asc, .sig, .gpg or .sign) or a signed list "
                            "of checksums (SHA256SUMS with SHA256SUMS.gpg, for example), and save it next to the "
-                           "file." + ("" if paste_info else " A checksum shown on the page can be pasted here to "
+                           "file." + ("" if paste_info else " A checksum shown on the page can be "
+                                      + ("given with --checksum" if given else "pasted here") + " to "
                                       "check the file isn't damaged."))
     return v
 
@@ -759,7 +786,7 @@ def _unchecked_step(s: Signature, path: Path) -> str:
     who = (f"{s.project.name}'s key" if s.project else
            f"key {K.group(s.issuer) if len(s.issuer) == 40 else s.issuer}" if s.issuer else "a key")
     if s.status == "no_tool":
-        return f"{s.path.name}: {s.detail}"
+        return f"{s.path.name}: {s.detail}" + (f" Install it with: {s.install}" if s.install else "")
     if s.status == "no_key":
         if s.kind == "minisign":
             return f"{s.path.name}: {s.detail}"

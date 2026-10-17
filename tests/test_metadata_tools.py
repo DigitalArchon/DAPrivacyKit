@@ -161,9 +161,9 @@ def test_a_pdfs_creator_is_its_program_and_complaints_name_the_file():
     items, _, _ = M.parse_mat2_show("[+] Metadata for /h/r.pdf:\n    creator: Writer\n    dc:creator: Bo\n", "/h/r.pdf")
     assert {i.key: i.group for i in items} == {"creator": "software", "dc:creator": "people"}
     _, ok, err = M.parse_mat2_show("[-] /h/dir/n.xyz's format (x) is not supported\n", "/h/dir/n.xyz")
-    assert not ok and err == "n.xyz's format (x) is not supported"
+    assert not ok and err == "mat2 can't clean this kind of file (x)." and "/h/dir" not in err   # mat2's words, no path
     got = M.parse_mat2_show_files("[-] /h/dir/n.xyz's format (x) is not supported\n", ["/h/dir/n.xyz"])
-    assert got["/h/dir/n.xyz"][2] == "n.xyz's format (x) is not supported"
+    assert got["/h/dir/n.xyz"][2] == "mat2 can't clean this kind of file (x)."
 
 
 def test_cleanable_goes_by_the_name_as_mat2_does():
@@ -190,7 +190,7 @@ def test_a_folder_is_cleaned_into_a_new_folder_beside_it(tmp_path, monkeypatch):
     assert (host.home / "lone.cleaned.jpg").read_text() == "clean:l"
     assert (d / "a.jpg").read_text() == "a" and (host.home / "Holiday (cleaned)/mine.txt").exists()
     bad = [r for r in run.results if not r.ok]
-    assert [r.chosen.rel for r in bad] == ["Day 2/c.xyz"] and "c.xyz's format" in bad[0].message
+    assert [r.chosen.rel for r in bad] == ["Day 2/c.xyz"] and "can't clean this kind of file" in bad[0].message
     assert all(not a.startswith(str(d) + "/") for argv in calls for a in argv[2:])   # mat2 only saw the copies
     view = run.to_dict(host)
     assert view["cleaned"] == 3 and view["failed"] == 1 and view["folders"][0]["output"] == "~/Holiday (cleaned 2)"

@@ -173,3 +173,95 @@ def test_a_leftover_is_only_a_folder_an_open_left(tmp_path):
     except OSError:
         pytest.skip("no user extended attributes on this filesystem")
     assert R.status(host).leftover is True                               # the helper's record of an open
+
+
+# ------------------------------------------------------------------ 3. Remove metadata
+
+@skip_if_root
+def test_a_single_file_in_a_folder_the_user_cant_write_to_says_so(tmp_path):
+    from daprivacyscanner.tools import metadata as M
+    host = make_host(tmp_path, home_files={"Shared/photo.jpg": "img"})
+    calls = []
+    host.runner.handlers["mat2"] = lambda argv: calls.append(argv) or CommandResult(argv, 0, "")
+    folder = host.home / "Shared"
+    folder.chmod(0o555)
+    try:
+        r = M.clean(host, folder / "photo.jpg")
+        assert not r.ok and r.message == "You can't write to ~/Shared, where the cleaned copy would go."
+        run = M.clean_many(host, M.collect([folder / "photo.jpg"]).files, check_after=False)
+        assert run.results[0].message == "You can't write to ~/Shared, where the cleaned copy would go."
+        assert calls == []                                               # mat2 isn't run for nothing
+    finally:
+        folder.chmod(0o755)
+
+
+@pytest.mark.parametrize("said, sentence", [
+    ("something went wrong when cleaning /h/a b/broken.jpg: ",
+     "mat2 couldn't read it: it may be damaged, or not the kind of file its name says."),
+    ("something went wrong when cleaning /h/a b/broken.jpg: Couldn't recognize the image file format for file "
+     "'/h/a b/broken.jpg'",
+     "mat2 couldn't read it: it may be damaged, or not the kind of file its name says (Couldn't recognize the image "
+     "file format for file 'broken.jpg')."),
+    ("something went wrong when processing /h/a b/broken.jpg: ",
+     "mat2 couldn't read it: it may be damaged, or not the kind of file its name says."),
+    ("/h/a b/broken.jpg's format (application/x-thing) is not supported", "mat2 can't clean this kind of file "
+                                                                           "(application/x-thing)."),
+    ("/h/a b/broken.jpg can't be cleaned: no space left", "mat2 couldn't clean it (no space left)."),
+    ("/h/a b/broken.jpg is not r nor e nor a nor d.", "It can't be read."),
+    ("odd thing about /h/a b/broken.jpg:", "Odd thing about broken.jpg."),
+])
+def test_mat2s_half_sentences_become_sentences_without_the_path(said, sentence):
+    from daprivacyscanner.tools import metadata as M
+    assert M._sentence(said, "/h/a b/broken.jpg") == sentence
+    assert M._problems(f"[-] {said}\n", "/h/a b/broken.jpg") == sentence
+
+
+# ------------------------------------------------------------------ 4. Verify a download
+
+def debian_host(tmp_path, **kw):
+    return make_host(tmp_path, files={"/etc/os-release": 'ID=linuxmint\nID_LIKE="ubuntu debian"\n'}, **kw)
+
+
+def test_a_missing_minisign_gets_its_install_command(tmp_path):
+    from daprivacyscanner.tools import verify as V
+    host = debian_host(tmp_path)
+    sig, data = tmp_path / "f.minisig", tmp_path / "f"
+    sig.write_text("untrusted comment: signature\nRWQBAgMEBQYHCAkKCwwNDg8Q\n")
+    data.write_text("x")
+    keys = SimpleNamespace(minisign_keys=lambda: [tmp_path / "key.pub"])
+    s = V.check_minisign(host, keys, sig, data)
+    assert s.status == "no_tool" and s.install == "sudo apt install minisign" and s.to_dict()["install"] == s.install
+    assert V._unchecked_step(s, data) == ("f.minisig: Checking it needs minisign, which isn't installed. Install it "
+                                          "with: sudo apt install minisign")
+    assert V.check_ssh(host, sig, data).install == "sudo apt install openssh-client"
+
+
+def test_the_terminal_report_says_a_signatures_state_in_words(tmp_path):
+    from daprivacyscanner.tools import verify as V
+    v = V.Verdict(tmp_path / "f.iso", 1, "unchecked", "Nothing to check it against", "x", {}, [
+        V.Signature(tmp_path / "f.iso.sig", tmp_path / "f.iso", "openpgp", "no_tool"),
+        V.Signature(tmp_path / "f.iso.asc", tmp_path / "f.iso", "openpgp", "no_key")], [], None)
+    text = v.text_report()
+    assert "no_tool" not in text and "no_key" not in text
+    assert "can't be checked: a program it needs isn't installed" in text and "the key that made it isn't available" in text
+
+
+def test_a_signed_list_has_its_comma_and_a_checksum_given_is_given(tmp_path):
+    from daprivacyscanner.tools import keys as K
+    from daprivacyscanner.tools import verify as V
+    projects = K.load()
+    mint = next(p for p in projects if p.id == "linuxmint")
+    entry = V.Entry("sha256", "ab" * 32, "linuxmint.iso")
+    s = V.Signature(tmp_path / "sha256sum.txt.gpg", tmp_path / "sha256sum.txt", "openpgp", "good", mint.keys[0][0],
+                    project=mint, key_name="Linux Mint ISO Signing Key")
+    sl = V.SumsList(tmp_path / "sha256sum.txt", [entry], signature=s, matched=[(entry, True)])
+    v = V.decide(tmp_path / "linuxmint.iso", 1, {"sha256": "ab" * 32}, [], [sl], None, projects)
+    assert v.text.startswith("It is signed, through the checksum list sha256sum.txt, by Linux Mint's release key")
+    f = tmp_path / "notes.txt"
+    f.write_text("hello\n")
+    host = make_host(tmp_path)
+    digest = "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03"
+    assert "the SHA-256 checksum given" in V.verify(host, f, expected=digest, given=True).text
+    assert "the SHA-256 checksum you pasted" in V.verify(host, f, expected=digest).text
+    assert "doesn't match the one given" in V.verify(host, f, expected="00" * 32, given=True).text
+    assert any("given with --checksum" in n for n in V.verify(host, f, expected="zz", given=True).notes)

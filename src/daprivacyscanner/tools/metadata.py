@@ -166,23 +166,22 @@ _SHOW_HEAD = re.compile(r"^\[(\++)\] Metadata for (.*):$")
 
 def parse_mat2_show(out: str, filename: str) -> tuple[list[Item], bool, str]:
     """(items, whether mat2 supports the format, its complaint) from `mat2 --show FILE`."""
-    items, member, error = [], "", ""
+    items, member, error, raw = [], "", "", ""
     for line in out.splitlines():
         m = _SHOW_HEAD.match(line.strip())
         if m:
             member = "" if len(m.group(1)) == 1 else m.group(2)
             continue
         if line.startswith("[-] "):
-            error = line[4:].strip()
-            if filename.startswith("/"):
-                error = error.replace(filename, os.path.basename(filename))    # the page shows the file's name
+            raw = line[4:].strip()
+            error = _sentence(raw, filename)                              # in words of the app's own, without the path
             continue
         if "No metadata found" in line:
             continue
         k, sep, v = line.strip().partition(": ")
         if sep and k:
             items.append(Item(k, _short(v), group_of(k, member, "mat2"), member))
-    return items, "is not supported" not in error, error
+    return items, "is not supported" not in raw, error
 
 
 def parse_mat2_show_files(out: str, paths: list[str]) -> dict[str, tuple[list[Item], bool, str]]:
@@ -208,7 +207,7 @@ def parse_mat2_show_files(out: str, paths: list[str]) -> dict[str, tuple[list[It
             body = line[4:].strip()
             p = next((n for n in longest if body.startswith(n) or f" {n}" in body), None)
             if p is not None:
-                said = body.replace(p, os.path.basename(p))                  # the page shows the file's name
+                said = _sentence(body, p)                                    # the page shows the file's name beside it
                 out_[p] = (out_.get(p, ([], True, ""))[0], "is not supported" not in body, said)
             cur = None
             continue
@@ -309,17 +308,18 @@ def clean(host: Host, path: Path, lightweight: bool = False, check_after: bool =
     if out.exists() or out.is_symlink():
         return CleanResult(path, False, message=f"{out.name} is already there: rename or delete it first, so it "
                                                 "isn't overwritten.")
+    if not os.access(path.parent, os.W_OK | os.X_OK):
+        return CleanResult(path, False, message=cant_write(host, path.parent))
     with _tmp_beside(path.parent, host.environ.get("XDG_RUNTIME_DIR")) as env:
         r = host.run("mat2", *(["--lightweight"] if lightweight else []), "--", str(path), timeout=TIMEOUT, env=env)
-    problems = [ln[4:].strip().replace(str(path), path.name)            # the page shows the file's name
-                for ln in (r.stdout + r.stderr).splitlines() if ln.startswith("[-] ")]
+    problems = _sentences(r.stdout + r.stderr, str(path))
     if not out.is_file():
         said = (r.stderr or r.stdout).strip()
         if "Traceback (most recent call last)" in said:             # mat2 itself failed: its last line says how
             said = "mat2 stopped with an error: " + said.splitlines()[-1].strip()
         return CleanResult(path, False, message=problems[0] if problems else
                            said[:300] or "mat2 didn't make a cleaned copy.")
-    res = CleanResult(path, True, out, "; ".join(problems))
+    res = CleanResult(path, True, out, " ".join(problems))
     if check_after:
         res.remaining = show(host, out)
     return res
@@ -555,10 +555,49 @@ class CleanRun:
             "cleaned": sum(r.ok for r in self.results), "failed": sum(not r.ok for r in self.results)}
 
 
+def _sentence(line: str, path: str) -> str:
+    """One of mat2's "[-] …" lines about `path` as a sentence of the app's own. mat2's are half sentences that name
+    the file (the page shows its name beside them), some lowercase and ending in a colon with nothing after it
+    ("something went wrong when cleaning broken.jpg:", when the file can't be parsed)."""
+    p = re.escape(path)
+
+    def detail(rest: str) -> str:
+        rest = rest.strip().rstrip(":").strip().replace(path, os.path.basename(path)).rstrip(".")
+        return f" ({rest})" if rest else ""
+
+    m = re.fullmatch(rf"something went wrong when (?:cleaning|processing) {p}:\s*(.*)", line, re.S | re.I)
+    if m:
+        return ("mat2 couldn't read it: it may be damaged, or not the kind of file its name says"
+                + detail(m.group(1)) + ".")
+    m = re.fullmatch(rf"{p}'s format \((.*)\) is not supported", line, re.S)
+    if m:
+        return f"mat2 can't clean this kind of file ({m.group(1)})." if m.group(1).strip() else \
+            "mat2 can't clean this kind of file."
+    m = re.fullmatch(rf"{p} can't be cleaned:\s*(.*)", line, re.S)
+    if m:
+        return "mat2 couldn't clean it" + detail(m.group(1)) + "."
+    if re.fullmatch(rf"{p} doesn't exist\.", line):
+        return "It is no longer there."
+    if re.fullmatch(rf"{p} is not a regular file\.", line):
+        return "It isn't a regular file."
+    if re.fullmatch(rf"{p} is not .*\.", line, re.S):              # "is not r nor e nor a…": mat2 0.13's own slip
+        return "It can't be read."
+    said = line.replace(path, os.path.basename(path)).strip().rstrip(":").strip().rstrip(".")
+    return (said[:1].upper() + said[1:] + ".") if said else ""
+
+
+def _sentences(text: str, path: str) -> list[str]:
+    """mat2's complaints about `path`, as sentences (_sentence)."""
+    out = [_sentence(ln[4:].strip(), path) for ln in text.splitlines() if ln.startswith("[-] ") and path in ln]
+    return [s for s in dict.fromkeys(out) if s]
+
+
 def _problems(text: str, path: str) -> str:
-    lines = [ln[4:].strip().replace(path, os.path.basename(path)) for ln in text.splitlines()
-             if ln.startswith("[-] ") and path in ln]
-    return "; ".join(lines)
+    return " ".join(_sentences(text, path))
+
+
+def cant_write(host: Host, folder: Path) -> str:
+    return f"You can't write to {host.display(folder)}, where the cleaned copy would go."
 
 
 def _mat2(host: Host, lightweight: bool, files: list[Path]):
@@ -599,6 +638,8 @@ def clean_many(host: Host, files: list[Chosen], lightweight: bool = False, progr
             if out.exists() or out.is_symlink():
                 run.results.append(Cleaned(c, False, message=f"{out.name} is already there: rename or delete it "
                                                              "first, so it isn't overwritten."))
+            elif not os.access(c.path.parent, os.W_OK | os.X_OK):     # its copy goes beside it
+                run.results.append(Cleaned(c, False, message=cant_write(host, c.path.parent)))
             else:
                 todo.append(c)
         r = _mat2(host, lightweight, [c.path for c in todo]) if todo else None
