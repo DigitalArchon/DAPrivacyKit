@@ -56,7 +56,7 @@ carried out.
    argument itself, reads only the files on its list and never writes content the app sends. Declined, system
    checks say what they couldn't see ([section 5](#5-the-privileged-helper)). What it reads beyond files is for the
    caller alone: a watch of one app returns what the caller's own processes did, never another account's.
-4. **Read-only by default.** A scan changes nothing.
+4. **Read-only by default.** A scan changes nothing, the user's home folder included: programs that write as they read (dnf5 copying the system's metadata, flatpak making an installation) get folders of their own in the runtime folder, removed at once, and nothing a scan runs starts a socket-activated service.
 5. **Fix tiers.** `auto`: applied after one confirmation, and reversible. `guided`: step by step, each step
    explained with its side effects and confirmed on its own. `advice`: explained, with the commands for this
    machine where that helps; the app never makes the change. `feature`: an optional set-up, not a finding
@@ -265,7 +265,10 @@ refuses to overwrite a value changed since the fix, unless forced; a value alrea
 (put back by hand) is no conflict. A root change that fails part way is journalled by the helper before its error
 goes back, and kept as the failed step's record, so it can be put back. systemctl's exit status never decides a
 unit's or a mount's state (`disable --now` answers 0 when the stop job failed): the unit's state and the mount
-table do. Every revert says what it put back. Every action carries an `undo_hint`
+table do. Every revert says what it put back, and a value already put back by hand (a file, a unit's state, a kernel
+setting) is no conflict. A root change the helper found already so leaves no History entry. `set_service` can mask
+the units it turns off (`mask`), for a unit another one wants and would start again at boot (cups-browsed's
+`Wants=avahi-daemon.service`); reverting unmasks them first. Every action carries an `undo_hint`
 (how to undo it by hand). History shows, for each step, exactly what it did: the commands it ran
 (`Action.ran`, rebuilt from the record, so older entries show theirs too), the lines it wrote into a file
 (`changed_lines`: "+ added", "- removed", at most 40; never known_hosts', whose lines are the server names
