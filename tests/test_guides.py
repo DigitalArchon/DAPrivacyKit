@@ -431,7 +431,10 @@ def test_baloo_off_and_index_deleted(cat, tmp_path):
     assert g.steps[0].options[0].recommended and g.steps[0].options[0].label == "Turn indexing off and delete the index"
     log, res = apply(host, opts["Index file names only, and rebuild the index without contents"])
     assert "only basic indexing=true" in (host.home / ".config/baloofilerc").read_text()
-    assert not (host.home / ".local/share/baloo/index").exists() and [c[1] for c in calls] == ["disable", "enable"]
+    # not `disable` (it turns indexing off outside the plan's record), and `enable` detached from the app's output,
+    # here without the systemd unit (the review of 2026-10-17: enable held the app's pipe until its timeout)
+    assert not (host.home / ".local/share/baloo/index").exists() and calls == []
+    assert ("sh", "-c", 'exec "$0" enable </dev/null >/dev/null 2>&1', "balooctl6") in host.runner.calls
     revert(host, log, res)
     assert not (host.home / ".config/baloofilerc").exists()                   # the fix made it: it goes
     (host.home / ".local/share/baloo/index").write_text("x" * 100)

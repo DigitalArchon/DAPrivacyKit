@@ -706,27 +706,40 @@ def clipboard(check, scan, outcome):
 
 
 ZEITGEIST_SERVICES = ("org.gnome.zeitgeist.Engine", "org.gnome.zeitgeist.SimpleIndexer")
+# its processes by name as the kernel keeps it (comm: at most 15 characters)
+ZEITGEIST_DAEMON, ZEITGEIST_DATAHUB, ZEITGEIST_FTS = "zeitgeist-daemo", "zeitgeist-datah", "zeitgeist-fts"
 
 
 @fix("desk.zeitgeist")
 def zeitgeist(check, scan, outcome):
+    from ..fix import bus_reload
+    host = scan.host
     a = delete(scan, scan.paths.data_home / "zeitgeist", "Zeitgeist activity log", re.compile(r"^activity\.sqlite"))
-    system = scan.host.sys_path("/etc/xdg/autostart/zeitgeist-datahub.desktop")
+    system = host.sys_path("/etc/xdg/autostart/zeitgeist-datahub.desktop")
     if isfile(system):
         override = scan.paths.config_home / "autostart" / "zeitgeist-datahub.desktop"
-        text = read_text(scan.host, system) or ""
+        text = read_text(host, system) or ""
         a.append(WriteFile(override, lambda old: text.rstrip("\n") + "\nHidden=true\n",
-                           "Stop the Zeitgeist logger from starting at login", scan.host.display(override)))
+                           "Stop the Zeitgeist logger from starting at login", host.display(override)))
     # the daemon is started over D-Bus whenever something asks for it (apps with Zeitgeist plugins log to it
     # directly): a service file of the user's own, which wins over the system's, starts /bin/false instead
-    # (tested with dbus-broker on CachyOS: a user file overrides a system one, picked up without a restart)
+    # (tested with dbus-broker on CachyOS: a user file overrides a system one), and the bus reads its service files
+    # again (dbus-broker doesn't see a folder made since it started)
     for name in ZEITGEIST_SERVICES:
         f = scan.paths.data_home / "dbus-1" / "services" / f"{name}.service"
-        if "Exec=/bin/false" not in (read_text(scan.host, f) or ""):
+        if "Exec=/bin/false" not in (read_text(host, f) or ""):
             a.append(WriteFile(f, lambda old, n=name: f"[D-BUS Service]\nName={n}\nExec=/bin/false\n",
-                               f"Don't start {name} when something asks for it", scan.host.display(f)))
-    if "zeitgeist-daemon" in processes(scan.host):
-        a.append(Command(["zeitgeist-daemon", "--quit"], "it holds the log open", check_ok=False))
+                               f"Don't start {name} when something asks for it", host.display(f), then=bus_reload(host)))
+    # what runs now: the logger started at login (it would ask for the daemon again, and keeps the check failing until
+    # logout), the search indexer, then the daemon, which holds the log open; each waited for before the log goes
+    procs = processes(host, own=True)
+    for comm, why in ((ZEITGEIST_DATAHUB, "the logger started at login; it runs until logout otherwise"),
+                      (ZEITGEIST_FTS, "Zeitgeist's search indexer, started on demand")):
+        if comm in procs:
+            a.append(Command(["pkill", "-TERM", "-x", "-u", str(host.uid), comm], why, check_ok=False, wait_gone=comm))
+    if ZEITGEIST_DAEMON in procs:
+        a.append(Command(["zeitgeist-daemon", "--quit"], "it holds the log open", check_ok=False,
+                         wait_gone=ZEITGEIST_DAEMON))
     return FixPlan(check.id, "Clear and turn off the Zeitgeist activity log", a, side_effects=[
         "Apps that show recent activity through Zeitgeist (some docks and launchers) show none. Reverting from "
         "History lets it start again."])

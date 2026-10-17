@@ -650,8 +650,10 @@ class Zeitgeist(Check):
     id = "desk.zeitgeist"
 
     def detect(self, scan: Scan) -> Outcome:
+        from .fixes import ZEITGEIST_DAEMON, ZEITGEIST_DATAHUB
         db = scan.paths.data_home / "zeitgeist" / "activity.sqlite"
-        running = "zeitgeist-daemon" in processes(scan.host) or "zeitgeist-datah" in processes(scan.host)
+        procs = processes(scan.host, own=True)         # names as the kernel keeps them: at most 15 characters
+        running = ZEITGEIST_DAEMON in procs or ZEITGEIST_DATAHUB in procs
         if not isfile(db) and not running:
             return absent("Zeitgeist isn't in use.")
         ev = [Evidence.val("Activity log", human_size(db.stat().st_size) if isfile(db) else "none"),

@@ -208,3 +208,95 @@ def test_an_extension_the_policy_blocks_is_not_offered_again(cat, tmp_path, syst
     assert o.status is Status.PASS and len(o.notes) == 1 and "Grammar Helper" in o.notes[0].text
     g = _guide(cat, host, "br.extensions_broad")
     assert [s.title for s in g.steps] == ["Nothing to go through"]
+
+
+# ------------------------------------------------------------------ Baloo: stopped, waited for, started detached
+
+def test_baloo_rebuild_waits_for_the_indexer_and_starts_it_through_its_unit(cat, tmp_path):
+    """Live on Plasma 6.7: `balooctl6 disable` returned before baloo_file exited (the index was deleted under it), and
+    `balooctl6 enable` started it holding the app's captured output, so the app waited 15 s and rolled back."""
+    import shutil
+    from daprivacyscanner.context import ContextValue
+    from daprivacyscanner.fix import Command
+    from daprivacyscanner.host import CommandResult
+    from fakes import FakeKwriteconfig
+    host = make_host(tmp_path, files={"/proc/5/comm": "baloo_file\n"},
+                     home_files={".local/share/baloo/index": "x" * 100, ".local/share/baloo/index-lock": ""})
+    host.runner.handlers["kwriteconfig6"] = FakeKwriteconfig(host.home / ".config")
+    host.runner.handlers["balooctl6"] = lambda argv: CommandResult(argv, 0, "")
+    calls = []
+
+    def systemctl(argv):
+        calls.append(argv[1:])
+        if argv[2] == "show":
+            return CommandResult(argv, 0, "loaded\n")
+        if argv[2] == "is-active":
+            return CommandResult(argv, 0, "active\n")
+        if argv[2] == "stop":
+            shutil.rmtree(host.root / "proc/5")
+        return CommandResult(argv, 0, "")
+    host.runner.handlers["systemctl"] = systemctl
+    g = build(cat, host, "desk.indexers", desktop=("kde",), plasma_major=6, fde=ContextValue("fde", "none", [], ""))
+    plan = options(g)["Index file names only, and rebuild the index without contents"]
+    cmds = [a for a in plan.actions if isinstance(a, Command)]
+    assert [c.argv for c in cmds] == [["systemctl", "--user", "stop", "kde-baloo.service"],
+                                      ["systemctl", "--user", "start", "kde-baloo.service"]]
+    assert cmds[0].wait_gone == "baloo_file" and not cmds[1].check_ok
+    log, res = apply(host, plan)
+    assert not (host.home / ".local/share/baloo/index").exists()
+    assert [c for c in calls if c[1] in ("stop", "start")] == [("--user", "stop", "kde-baloo.service"),
+                                                               ("--user", "start", "kde-baloo.service")]
+    revert(host, log, res)
+    off = options(build(cat, host, "desk.indexers", desktop=("kde",), plasma_major=6,
+                        fde=ContextValue("fde", "none", [], "")))
+    assert not (host.home / ".local/share/baloo/index").exists()       # nothing to delete: no stop, no wait
+    assert "Turn indexing off and delete the index" in off
+
+
+# ------------------------------------------------------------------ Zeitgeist
+
+def _zeitgeist_host(tmp_path, exits=True):
+    from fakes import OK
+    host = make_host(tmp_path, files={"/proc/9/comm": "zeitgeist-daemo\n", "/proc/10/comm": "zeitgeist-datah\n"},
+                     home_files={".local/share/zeitgeist/activity.sqlite": "x"})
+    import shutil
+
+    def stops(pid):
+        def run(argv):
+            if exits:
+                shutil.rmtree(host.root / f"proc/{pid}")
+            return OK
+        return run
+    host.runner.handlers["zeitgeist-daemon"] = stops(9)
+    host.runner.handlers["pkill"] = stops(10)
+    return host
+
+
+def test_zeitgeist_stops_the_logger_and_waits_for_the_daemon(cat, tmp_path):
+    from daprivacyscanner.fix import Command, WriteFile
+    from daprivacyscanner.undo import UndoLog
+    from daprivacyscanner.fix import apply_plan
+    host = _zeitgeist_host(tmp_path)
+    check = load_all()["desk.zeitgeist"](cat["desk.zeitgeist"])
+    scan = make_scan(host)
+    plan = check.plan_fix(scan, check.detect(scan))
+    cmds = [a.argv for a in plan.actions if isinstance(a, Command)]
+    assert cmds == [["pkill", "-TERM", "-x", "-u", "1000", "zeitgeist-datah"], ["zeitgeist-daemon", "--quit"]]
+    assert all(a.then for a in plan.actions if isinstance(a, WriteFile))          # the bus reads the overrides
+    res = apply_plan(plan, host, UndoLog(host.home / ".local/state/daprivacyscanner"), confirmed_irreversible=True)
+    assert res.ok and not (host.home / ".local/share/zeitgeist/activity.sqlite").exists()
+    assert detect(cat, "desk.zeitgeist", make_scan(host)).status is Status.NOT_APPLICABLE
+
+
+def test_zeitgeist_log_is_left_when_the_daemon_doesnt_stop(cat, tmp_path, monkeypatch):
+    from daprivacyscanner.fix import Command, apply_plan
+    from daprivacyscanner.undo import UndoLog
+    monkeypatch.setattr(Command, "WAIT", 0.3)
+    host = _zeitgeist_host(tmp_path, exits=False)
+    check = load_all()["desk.zeitgeist"](cat["desk.zeitgeist"])
+    scan = make_scan(host)
+    res = apply_plan(check.plan_fix(scan, check.detect(scan)), host, UndoLog(host.home / ".local/state/x"),
+                     confirmed_irreversible=True)
+    assert not res.ok and "zeitgeist-datah was still running" in res.error
+    assert (host.home / ".local/share/zeitgeist/activity.sqlite").exists()
+    assert not (host.home / ".local/share/dbus-1/services/org.gnome.zeitgeist.Engine.service").exists()   # rolled back

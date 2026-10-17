@@ -396,10 +396,17 @@ def test_clipboard_copyq_revert_ignores_what_copyq_rewrote(cat, tmp_path):
 
 def test_zeitgeist(cat, tmp_path):
     calls = []
+    # the kernel keeps 15 characters of a process's name: zeitgeist-daemon runs as "zeitgeist-daemo" (the review of
+    # 2026-10-17: the 16-character name here never matched a real process, so --quit never ran)
     host = make_host(tmp_path, files={"/etc/xdg/autostart/zeitgeist-datahub.desktop": "[Desktop Entry]\nExec=zeitgeist-datahub\n",
-                                      "/proc/9/comm": "zeitgeist-daemon\n"},
+                                      "/proc/9/comm": "zeitgeist-daemo\n"},
                      home_files={".local/share/zeitgeist/activity.sqlite": "x", ".local/share/zeitgeist/activity.sqlite-wal": "x"})
-    host.runner.handlers["zeitgeist-daemon"] = recorder(calls)
+
+    def quit_daemon(argv):
+        import shutil
+        shutil.rmtree(host.root / "proc/9")          # it exits
+        return recorder(calls)(argv)
+    host.runner.handlers["zeitgeist-daemon"] = quit_daemon
     plan, res, log = run_fix(cat, host, "desk.zeitgeist")
     override = host.home / ".config/autostart/zeitgeist-datahub.desktop"
     assert res.ok and "Hidden=true" in override.read_text() and calls == [("zeitgeist-daemon", "--quit")]

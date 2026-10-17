@@ -2356,7 +2356,11 @@ checks:
       ~/.local/share/baloo; LocalSearch: no folders to index, no removable drives, its service stopped while its
       database is deleted, then started again empty; Recoll: its index deleted, and its real-time indexer's autostart
       entry hidden, while recollindex isn't running). Alternatives: Baloo's basic indexing (file names only), with
-      the index deleted so it is rebuilt without contents. Never excluding folders as a fix: Baloo isn't trusted to
+      the index deleted so it is rebuilt without contents: baloo_file stopped through kde-baloo.service (or by
+      name) and waited for, never with balooctl disable, which turns indexing off outside the plan's record, then
+      started again through the unit (balooctl enable started it holding the app's captured output, and the app
+      waited until its timeout: tested on Plasma 6.7). balooctl disable returns before baloo_file has exited, so the
+      off option waits for it too before deleting. Never excluding folders as a fix: Baloo isn't trusted to
       forget (tested on Plasma 6.7: a RAM disk under the home folder is indexed, contents included; excluded
       afterwards, its files stayed in the index across a restart). The browser panel offers turning it off and
       deleting the index on its own (option key baloo_off).
@@ -2433,8 +2437,11 @@ checks:
     fix: >
       Clear and disable: the datahub's autostart entry hidden, and the daemon (org.gnome.zeitgeist.Engine, with its
       indexer) kept from starting on demand over D-Bus by service files of the user's own that run /bin/false (a user
-      file wins over the system's, tested with dbus-broker on CachyOS), since apps with Zeitgeist plugins log to it
-      directly.
+      file wins over the system's, tested with dbus-broker on CachyOS; the bus reloads its configuration after, since
+      dbus-broker doesn't see a folder made since it started), since apps with Zeitgeist plugins log to it
+      directly. What runs now is stopped first and waited for, by its name as the kernel keeps it (15 characters):
+      the datahub (zeitgeist-datah, a logger started at login that runs until logout), the indexer (zeitgeist-fts)
+      and the daemon (zeitgeist-daemo, through zeitgeist-daemon --quit), which holds the log open.
     remedy: >
       Fix… clears the activity log and stops it.
     easy:

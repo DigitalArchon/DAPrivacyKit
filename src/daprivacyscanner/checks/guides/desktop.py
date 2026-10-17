@@ -10,10 +10,11 @@ from ...guide import Guide, Input, Step
 from .._util import (files_under, isdir, isfile, processes, read_text, recent_files, recent_hrefs,
                      systemctl_state)
 from ..fixes import _gnome_family, gset, kset, thumbnail_deletions
-from . import evidence, guide, option, expire_actions, tmpfiles_available, tmpfiles_path
+from . import evidence, guide, option, expire_actions, tmpfiles_available, tmpfiles_path, unit_exists
 
 
 THUMBNAILS_IN_MEMORY_MB = 200
+BALOO_UNIT, BALOO_PROCESS = "kde-baloo.service", "baloo_file"       # Plasma 6 starts the indexer through the unit
 METADATA_IN_MEMORY_MB = 50
 EPHEMERAL_MB = 500
 THUMBNAIL_SCHEMAS = {"gnome": "org.gnome.desktop.thumbnail-cache", "cinnamon": "org.cinnamon.desktop.thumbnail-cache",
@@ -97,7 +98,9 @@ def indexers(check, scan, outcome):
     if state:
         index = files_under(baloo, pattern=re.compile(r"^index"))[0]
         delete = [DeleteFiles(baloo, index, "Baloo's index", host.display(baloo))] if index else []
-        stop = [Command([tool, "disable"], "stop the indexer, which holds the index open", check_ok=False)]
+        # disable returns before baloo_file has exited (tested on Plasma 6.7): the index is deleted only once it has
+        stop = [Command([tool, "disable"], "stop the indexer, which holds the index open", check_ok=False,
+                        wait_gone=BALOO_PROCESS)]
         off = kset(scan, "baloofilerc", "Basic Settings", "Indexing-Enabled", "false", default="true")
         opts = [option(check, "Turn indexing off and delete the index", off + (stop + delete if off or delete else []),
                        recommended=True, key="baloo_off", side_effects=[
@@ -111,9 +114,23 @@ def indexers(check, scan, outcome):
                            "to rebuild the index, which takes a while."])]
         if state.startswith("file contents"):
             names = kset(scan, "baloofilerc", "General", "only basic indexing", "true", default="false")
-            # what it has indexed stays in the index until it is rebuilt, without contents this time
-            rebuild = stop + delete + [Command([tool, "enable"], "start it again; it rebuilds the index with names only",
-                                               after=True)] if delete else []
+            # what it has indexed stays in the index until it is rebuilt, without contents this time. Stopped without
+            # `disable` (which turns indexing off, outside this plan's record), and started again detached from this
+            # app: `balooctl6 enable` starts baloo_file holding the app's captured output, and the app waited for it
+            # until its timeout (both tested on Plasma 6.7). The unit starts it as at login.
+            unit = unit_exists(scan, BALOO_UNIT, user=True)
+            halt = []
+            if BALOO_PROCESS in processes(host, own=True):
+                halt = [Command(["systemctl", "--user", "stop", BALOO_UNIT], "stop the indexer, which holds the index "
+                                "open", check_ok=False, wait_gone=BALOO_PROCESS)] \
+                    if unit and systemctl_state(host, "is-active", BALOO_UNIT, user=True) == "active" else \
+                    [Command(["pkill", "-TERM", "-x", "-u", str(host.uid), BALOO_PROCESS], "stop the indexer, which "
+                             "holds the index open", check_ok=False, wait_gone=BALOO_PROCESS)]
+            # a failed start isn't rolled back (the index is gone by then): Baloo starts at the next login, names only
+            start = Command(["systemctl", "--user", "start", BALOO_UNIT] if unit else
+                            ["sh", "-c", 'exec "$0" enable </dev/null >/dev/null 2>&1', tool],
+                            "start it again; it rebuilds the index with names only", check_ok=False, after=True)
+            rebuild = halt + delete + [start] if delete else []
             opts.append(option(check, "Index file names only, and rebuild the index without contents", names + rebuild,
                                side_effects=["Searching inside documents stops working; KRunner and Dolphin still find "
                                              "files by name. The index still lists every file name in your home folder.",

@@ -1325,9 +1325,16 @@ class Command(Action):
     kind = "command"
     reversible = False
 
-    def __init__(self, argv: list[str], why: str, check_ok: bool = True, after: bool = False):
+    WAIT = 20.0                         # seconds a stopped program is given to exit (wait_gone)
+
+    def __init__(self, argv: list[str], why: str, check_ok: bool = True, after: bool = False,
+                 wait_gone: str | None = None):
         self.argv, self.why, self.check_ok = argv, why, check_ok
         self.phase = 3 if after else 1
+        # a process name (comm, at most 15 characters) of the user's that must have exited before the plan goes on:
+        # a daemon told to stop (balooctl6 disable, zeitgeist-daemon --quit) returns before it has, and what comes
+        # next deletes the files it holds
+        self.wait_gone = wait_gone
 
     def describe(self) -> str:
         return f"{shell(self.argv)}   ({self.why})"
@@ -1337,7 +1344,20 @@ class Command(Action):
         if self.check_ok and not r.ok:
             raise FixError(f"{shell(self.argv)} failed: {(r.stderr or r.stdout).strip()[:200]}")
         did(shell(self.argv))
+        if self.wait_gone:
+            self._wait(ctx.host, self.wait_gone, self.WAIT)
         return {"kind": self.kind, "argv": self.argv, "text": f"Ran {shell(self.argv)} ({self.why})"}
+
+    @staticmethod
+    def _wait(host: Host, name: str, seconds: float) -> None:
+        from .checks._util import processes
+        deadline = time.monotonic() + seconds
+        while name in processes(host, own=True):
+            if time.monotonic() > deadline:
+                raise FixError(f"{name} was still running {seconds:g} seconds after it was asked to stop, so nothing "
+                               "after this step was done (what it holds open would have been deleted under it). Try "
+                               "again in a moment.")
+            time.sleep(0.2)
 
     @staticmethod
     def ran(record: dict) -> list[str]:
