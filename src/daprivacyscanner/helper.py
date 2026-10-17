@@ -128,7 +128,7 @@ import uuid
 # Bumped whenever the actions or their arguments change: an installed (root-owned) copy from an
 # older version is then refused with a clear message instead of failing on an unknown action. Also
 # bumped when an action's answer is corrected, so an installed copy is named out of date and replaced.
-PROTOCOL = 28
+PROTOCOL = 29
 # Prefix for every path the helper writes or journals. Empty in use; tests point it at a fixture
 # tree (and replace RUN), so nothing in the test suite touches the real system.
 ROOT = ""
