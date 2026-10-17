@@ -1795,7 +1795,10 @@ class HashKnownHosts(Action):
         if record.get("backup_dropped"):
             return "Can't be undone: the plain copy kept for revert was deleted, and hashed names can't be turned back."
         until = time.strftime("%Y-%m-%d", time.localtime(record["backup_expires"])) if record.get("backup_expires") else ""
-        return WriteFile.undo_hint(record) + (f"   (until {until}, when the copy is deleted)" if until else "")
+        if not until or not record.get("backup"):
+            return WriteFile.undo_hint(record)
+        # said once: the plain copy is kept only until then (not "until the entry is forgotten", as other backups are)
+        return f"{shell(['cp', record['backup'], record['path']])}   (the plain copy is kept until {until}, then deleted)"
 
     def apply(self, ctx: FixContext) -> dict:
         old = _read_bytes(self.path)

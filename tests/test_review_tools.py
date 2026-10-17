@@ -578,3 +578,14 @@ def test_each_revert_says_what_it_put_back(system_root):
     c = helper_call("write_dropin", name="sleep", settings={"AllowHibernation": "no"})
     assert helper_call("revert", change_id=c["change_id"])["message"] == \
         "/etc/systemd/sleep.conf.d/60-daprivacyscanner.conf put back as it was"
+
+
+# ------------------------------------------------------------------ 11. the known_hosts undo hint
+
+def test_the_known_hosts_undo_hint_says_once_how_long_the_copy_is_kept():
+    from daprivacyscanner.fix import ACTION_KINDS
+    when = time.mktime((2026, 10, 24, 12, 0, 0, 0, 0, -1))
+    hint = ACTION_KINDS["hashkh"].undo_hint({"path": "/h/.ssh/known_hosts", "backup": "/b/x-known_hosts",
+                                            "backup_expires": when})
+    assert hint == "cp /b/x-known_hosts /h/.ssh/known_hosts   (the plain copy is kept until 2026-10-24, then deleted)"
+    assert "forgotten" not in hint
