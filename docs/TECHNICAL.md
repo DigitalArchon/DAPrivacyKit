@@ -881,7 +881,8 @@ Mullvad Browser needs ordinary internet access. Where pasta (the `passt` package
 ```
 host
 └─ python3 KEYRING wrapper
-   └─ pasta --config-net --quiet --no-map-gw -t none -u none -T none -U none --dns-forward 169.254.0.1 --
+   └─ pasta --config-net --quiet --no-map-gw -t none -u none -T none -U none --dns-forward 169.254.0.1
+            -M 9a:55:9a:55:9a:55 -I eth0 -a 10.0.2.15 -n 24 -g 10.0.2.2 [-a fd00::15 -g fe80::9855:9aff:fe55:9a55 | -4] --
       └─ /bin/sh -c '<fence rules> ; exec "$0" "$@"'      (as root of pasta's namespace)
          └─ bwrap --unshare-all --share-net …              (pasta's namespace, not the computer's)
             /etc/resolv.conf: nameserver 169.254.0.1
@@ -892,6 +893,19 @@ host
   are forwarded in either direction (`-t/-u/-T/-U none`).
 - DNS goes to pasta's forwarder at 169.254.0.1, which forwards to the computer's resolver.
 - Abstract Unix sockets belong to the network namespace, so the session's are out of reach.
+- **Addresses of its own** (`sandbox.pasta_opts`). By default pasta copies the computer's interface name, its
+  addresses (the global IPv6 address, which a VPN hides and whose EUI-64 form holds the hardware address), its
+  routes and its gateway, and shows the gateway's hardware address inside: the computer's own (pasta 2024-02-20,
+  Mint 22.3) or, since newer pasta mirrors the computer's neighbour table, the router's (2026-01-20, Fedora 44),
+  which public Wi-Fi maps can place; all of it readable without privileges (netlink). So the namespace has
+  `eth0`, pasta's hardware address the same for everyone (`-M`, newer pasta's own default), IPv4 10.0.2.15/24
+  through 10.0.2.2 (what VirtualBox and QEMU give their guests) and IPv6 fd00::15/64 through the link-local
+  address of that hardware address. The gateways must be addresses the computer has no neighbour at, or newer
+  pasta shows that neighbour's hardware address (tested with fe80::1, a common router address, and with
+  10.0.2.2): the IPv4 network moves to 10.0.3.0/24 (then 172.31.250.0/24) when one of the computer's networks
+  overlaps it, and only pasta's own hardware address makes the IPv6 gateway. An IP version the computer has no
+  default route for is left out (`-4`, `-6`): newer pasta otherwise made up an IPv6 network through fe80::1. With
+  `-a` and `-g` pasta copies no routes or addresses (2024-02-20 and 2026-01-20, tested).
 
 **The fence** (`sandbox.fence`, needs iproute2's `ip`). pasta connects anywhere the computer can, so before
 bubblewrap starts, policy-routing rules are added inside pasta's namespace (as its root; the sandbox inside

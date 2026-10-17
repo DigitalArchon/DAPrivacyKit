@@ -57,11 +57,14 @@ The network:
   bridges instead.
 - Mullvad Browser needs the network. With pasta (the passt package) it gets a network namespace of
   its own, connected to the internet through pasta: not to services on this computer's loopback
-  (--no-map-gw, no ports forwarded), and not to the session's abstract sockets. pasta connects anywhere
-  the computer can, so before bubblewrap starts, routing rules in that namespace refuse the local and
-  private ranges (FENCE: the router, printers, a NAS, and this computer's other addresses, Docker's and
-  libvirt's bridges, Tailscale's), as root of pasta's namespace, which the sandbox inside isn't (tested:
-  the local network refused, the internet reached). Mullvad VPN's own SOCKS5 proxies inside its tunnel are
+  (--no-map-gw, no ports forwarded), and not to the session's abstract sockets; with addresses, an
+  interface name and a gateway of its own, never the computer's nor its router's hardware address
+  (pasta_opts). pasta connects anywhere the computer can, so before bubblewrap starts, routing rules in
+  that namespace refuse the local and private ranges (FENCE: the router, printers, a NAS, Docker's and
+  libvirt's bridges, Tailscale's) and the computer's own networks, listed on the computer just before
+  (host_networks: its addresses on every interface, the networks they are on, a VPN's routes), as root
+  of pasta's namespace, which the sandbox inside isn't (tested: the local network refused, the internet
+  reached). Mullvad VPN's own SOCKS5 proxies inside its tunnel are
   let through (FENCE_ALLOWED, TCP to port 1080 only): Mullvad Browser's extension uses them to change the
   browser's country while the VPN stays where it is. Its DNS goes to pasta's forwarder (DNS_FORWARD),
   named in a resolv.conf of the sandbox's own. Without pasta it shares the computer's network, which
@@ -113,8 +116,22 @@ TOR_DIR_IN = f"{RUNTIME_IN}/tor"
 SOCKS_IN, CONTROL_IN = f"{TOR_DIR_IN}/socks", f"{TOR_DIR_IN}/control"
 MACHINE_ID = "b08dfa6083e7567a1921a715000001fb"     # Whonix's, the same for everyone: it says nothing
 DNS_FORWARD = "169.254.0.1"                          # pasta forwards DNS sent here to the computer's resolver
+# pasta's namespace gets addresses of its own, never the computer's (pasta_opts). By default pasta copies the
+# computer's: its interface's name, its addresses (the global IPv6 one, which a VPN hides and whose EUI-64 form
+# holds the hardware address), its routes, and the gateway's address, whose hardware address it then shows: the
+# computer's own (pasta 2024-02-20, Mint 22.3) or, mirroring the computer's neighbour table, the router's (pasta
+# 2026-01-20, Fedora 44), which public Wi-Fi maps can place (both tested). So: pasta's hardware address the same for
+# everyone (PASTA_MAC, newer pasta's own default), the interface eth0, IPv4 10.0.2.15/24 through 10.0.2.2 (what
+# VirtualBox and QEMU give their guests: common), IPv6 fd00::15/64 through the link-local address of PASTA_MAC. The
+# gateways must be addresses the computer has no neighbour at, or newer pasta shows that neighbour's hardware address
+# (tested, with fe80::1, a common router address, and 10.0.2.2): the IPv4 network moves to the next of PASTA_V4 where
+# one of the computer's networks overlaps it, and only pasta's own MAC makes the IPv6 one.
+PASTA_MAC = "9a:55:9a:55:9a:55"
+PASTA_IF = "eth0"
+PASTA_V4 = (("10.0.2.15", "10.0.2.2"), ("10.0.3.15", "10.0.3.2"), ("172.31.250.15", "172.31.250.2"))   # each a /24
+PASTA_V6 = ("fd00::15", "fe80::9855:9aff:fe55:9a55")
 PASTA_OPTS = ("--config-net", "--quiet", "--no-map-gw", "-t", "none", "-u", "none", "-T", "none", "-U", "none",
-              "--dns-forward", DNS_FORWARD)
+              "--dns-forward", DNS_FORWARD, "-M", PASTA_MAC, "-I", PASTA_IF)
 # refused inside pasta's namespace (prohibit rules ahead of the main table, so no route can be more specific):
 # this network, private and shared address space (CGNAT, Tailscale), link-local, benchmarking, multicast and
 # reserved; IPv6 unique local, link-local and multicast; then, at each start, the computer's own networks
@@ -532,58 +549,108 @@ def probe_pasta(host: Host) -> str | None:
         return "pasta isn't installed (the passt package)."
     if not bwrap:
         return "bubblewrap isn't installed."
-    r = host.run(pasta, *PASTA_OPTS, "--", bwrap, *namespaces(True), *system(host), "--", "/usr/bin/true", timeout=20)
+    r = host.run(pasta, *pasta_opts(host), "--", bwrap, *namespaces(True), *system(host), "--", "/usr/bin/true", timeout=20)
     if r.ok:
         return None
     err = [ln for ln in (r.stderr or r.stdout).strip().splitlines() if not quiet_line(ln)]
     return f"pasta couldn't start a sandbox here ({err[-1][:200] if err else f'exit status {r.returncode}'})."
 
 
-def host_networks(host: Host) -> tuple[list[str], list[str]]:
-    """The computer's own networks for the fence to refuse (see INTERNET_SHARE): (IPv4, IPv6) prefixes, merged,
-    those inside FENCE_V4 and FENCE_V6 left out. Listed with iproute2's ip, on the computer, as the app runs:
-    every address on every interface (but loopback's) and the network it is on, a point-to-point link's far end,
-    and the unicast routes of every table but the default ones and those carrying the internet. Raises
-    SandboxError when they can't be listed or read, or are more than FENCE_MAX: the fence fails closed."""
+@dataclass
+class Computer:
+    """The computer's own networks, as `ip -j` lists them on the computer (computer())."""
+    addresses: list = field(default_factory=list)       # ipaddress interfaces: every address but loopback's
+    peers: list = field(default_factory=list)           # ipaddress networks: point-to-point links' far ends
+    routes: list = field(default_factory=list)          # (ipaddress network, interface): unicast, every table
+    defaults: set = field(default_factory=set)          # the IP versions with a default route, in any table
+
+
+def computer(host: Host) -> Computer:
+    """The computer's addresses and routes, listed with iproute2's ip as the app runs (on the computer: pasta's
+    namespace has only its own). Raises SandboxError when ip isn't installed, or its listing fails or can't be
+    read: whatever relies on it fails closed."""
     import ipaddress
     import json
     ip = program(host, "ip")
     if not ip:
         raise SandboxError("iproute2's ip isn't installed.")
 
-    def listing(*args: str) -> list:
+    def listing(*args: str, optional: bool = False) -> list:
         r = host.run(ip, "-j", *args, timeout=10)
+        if not r.ok and optional:
+            return []
         try:
             data = json.loads(r.stdout) if r.ok else None
         except ValueError:
             data = None
         if not isinstance(data, list):
-            why = (r.stderr or "").strip()[:200] or f"exit status {r.returncode}" if not r.ok else "not in the form expected"
+            why = ((r.stderr or "").strip()[:200] or f"exit status {r.returncode}") if not r.ok else "not in the form expected"
             raise SandboxError(f"this computer's networks couldn't be listed ({why}).")
         return data
 
-    nets: set = set()
+    c = Computer()
     try:
         for link in listing("address", "show"):
             for a in (link.get("addr_info") or []) if isinstance(link, dict) else []:
                 if not isinstance(a, dict) or not a.get("local") or a.get("scope") == "host":
                     continue
-                iface = ipaddress.ip_interface(f"{a['local']}/{a.get('prefixlen', 128 if ':' in a['local'] else 32)}")
-                nets |= {ipaddress.ip_network(iface.ip), iface.network}
+                c.addresses.append(ipaddress.ip_interface(f"{a['local']}/{a.get('prefixlen', 128 if ':' in a['local'] else 32)}"))
                 if a.get("address"):                           # the far end of a point-to-point link
-                    nets.add(ipaddress.ip_network(a["address"], strict=False))
-        through: dict[tuple[str, int], list] = {}              # (interface, IP version) -> its routes
-        for r in listing("route", "show", "table", "all", "type", "unicast"):
-            dst = r.get("dst") if isinstance(r, dict) else None
-            if not dst or dst == "default":
-                continue
-            net = ipaddress.ip_network(dst, strict=False)
-            if net.prefixlen == 0:
-                continue
-            dev = r.get("dev") or ",".join(sorted(str(h.get("dev")) for h in r.get("nexthops") or [] if isinstance(h, dict)))
-            through.setdefault((dev, net.version), []).append(net)
-    except (ValueError, TypeError, KeyError) as e:
+                    c.peers.append(ipaddress.ip_network(a["address"], strict=False))
+        # IPv6's listing is let off only where the kernel has no IPv6 at all
+        no_ipv6 = not host.sys_path("/proc/net/if_inet6").exists()
+        for version in (4, 6):
+            for r in listing(f"-{version}", "route", "show", "table", "all", "type", "unicast",
+                             optional=version == 6 and no_ipv6):
+                dst = r.get("dst") if isinstance(r, dict) else None
+                if not dst:
+                    continue
+                net = None if dst == "default" else ipaddress.ip_network(dst, strict=False)
+                if net is None or net.prefixlen == 0:
+                    c.defaults.add(version)
+                    continue
+                dev = r.get("dev") or ",".join(sorted(str(h.get("dev")) for h in r.get("nexthops") or []
+                                                      if isinstance(h, dict)))
+                c.routes.append((net, dev))
+    except (ValueError, TypeError, KeyError, AttributeError) as e:
         raise SandboxError(f"this computer's networks couldn't be read ({e}).") from None
+    return c
+
+
+def pasta_opts(host: Host, c: Computer | None = None) -> list[str]:
+    """pasta's options (PASTA_OPTS) with the namespace's own addresses: IPv4 from the first of PASTA_V4 that no
+    network of the computer's overlaps, IPv6 PASTA_V6. Only the IP versions the computer has a default route for:
+    without one, newer pasta makes a network up for its namespace (IPv6 through fe80::1, a common router address,
+    tested on Fedora 44), so -4 or -6 leaves it out. Where the computer's networks can't be listed, the first
+    candidate and both versions (pasta leaves out one it has no route for)."""
+    import ipaddress
+    try:
+        c = c or computer(host)
+    except SandboxError:
+        c = None
+    taken = [a.network for a in c.addresses if a.version == 4] if c else []
+    addr, gw = next(((a, g) for a, g in PASTA_V4
+                     if not any(ipaddress.ip_network(f"{a}/24", strict=False).overlaps(n) for n in taken)), PASTA_V4[0])
+    four, six = ["-a", addr, "-n", "24", "-g", gw], ["-a", PASTA_V6[0], "-g", PASTA_V6[1]]
+    if c is not None and c.defaults == {4}:
+        return [*PASTA_OPTS, *four, "-4"]
+    if c is not None and c.defaults == {6}:
+        return [*PASTA_OPTS, *six, "-6"]
+    return [*PASTA_OPTS, *four, *six]
+
+
+def host_networks(host: Host, c: Computer | None = None) -> tuple[list[str], list[str]]:
+    """The computer's own networks for the fence to refuse (see INTERNET_SHARE): (IPv4, IPv6) prefixes, merged,
+    those inside FENCE_V4 and FENCE_V6 left out: every address on every interface (but loopback's) and the network
+    it is on, a point-to-point link's far end, and the unicast routes of every table but the default ones and those
+    carrying the internet. Raises SandboxError when they can't be listed or read (computer()), or are more than
+    FENCE_MAX: the fence fails closed."""
+    import ipaddress
+    c = c or computer(host)
+    nets = {n for a in c.addresses for n in (ipaddress.ip_network(a.ip), a.network)} | set(c.peers)
+    through: dict[tuple[str, int], list] = {}                  # (interface, IP version) -> its routes
+    for net, dev in c.routes:
+        through.setdefault((dev, net.version), []).append(net)
     for (_dev, version), routes in through.items():
         merged = list(ipaddress.collapse_addresses(routes))
         if sum(n.num_addresses for n in merged) < INTERNET_SHARE[version]:
@@ -620,15 +687,15 @@ def fence(host: Host, proxies: bool = True, networks: tuple[list[str], list[str]
     allowed = "; ".join(f"{ip} rule add lookup main to {n} ipproto tcp dport {port} pref 40 2>/dev/null"
                         for n, port in FENCE_ALLOWED) if proxies else ":"   # an iproute2 without dport: they stay fenced off
     # the computer's own networks (prefixes ipaddress wrote: digits, dots, colons and a slash, nothing a shell reads)
-    computer = lambda family, nets: (f"for n in {' '.join(nets)}; do {ip} -{family} rule add prohibit to \"$n\" "  # noqa: E731
-                                     f"pref 100 || {fail}; done; ") if nets else ""
+    refuse = lambda family, nets: (f"for n in {' '.join(nets)}; do {ip} -{family} rule add prohibit to \"$n\" "  # noqa: E731
+                                   f"pref 100 || {fail}; done; ") if nets else ""
     own = (f'own() {{ routes=$({ip} -"$1" -o route show table main type unicast) || return 1; '
            f'printf "%s\\n" "$routes" | while read -r net rest; do '
            f'[ -z "$net" ] || [ "$net" = default ] && continue; '
            f'out=$({ip} -"$1" rule add prohibit to "$net" pref 100 2>&1) || case "$out" in *"File exists"*) ;; '
            f'*) echo "$out" >&2; exit 1;; esac; done; }}')
-    script = (f"{dns} && {v4} || {fail}; {allowed}; {own}; {computer(4, host4)}own 4 || {fail}; "
-              f"if [ -e /proc/net/if_inet6 ]; then {v6} || {fail}; {computer(6, host6)}own 6 || {fail}; fi; "
+    script = (f"{dns} && {v4} || {fail}; {allowed}; {own}; {refuse(4, host4)}own 4 || {fail}; "
+              f"if [ -e /proc/net/if_inet6 ]; then {v6} || {fail}; {refuse(6, host6)}own 6 || {fail}; fi; "
               'exec "$0" "$@"')
     return ["/bin/sh", "-c", script]
 
@@ -654,13 +721,14 @@ def probe_fence(host: Host) -> str | None:
     if not program(host, "ip"):
         return "iproute2's ip isn't installed."
     try:
-        host4, host6 = host_networks(host)
+        c = computer(host)
+        host4, host6 = host_networks(host, c)
         f = fence(host, networks=(host4, host6)) or []
     except SandboxError as e:
         return str(e)
     also = tuple(str(next(iter(ipaddress.ip_network(nets[0]).hosts()), ipaddress.ip_network(nets[0]).network_address))
                  for nets in (host4, host6) if nets)
-    r = host.run(pasta, *PASTA_OPTS, "--", *f, bwrap, *namespaces(True), *system(host), "--",
+    r = host.run(pasta, *pasta_opts(host, c), "--", *f, bwrap, *namespaces(True), *system(host), "--",
                  *fence_check(host, also), timeout=20)
     if r.ok:
         return None
@@ -1032,7 +1100,7 @@ def browser_argv(host: Host, lay: Layout, disp: Display, with_sound: bool, landl
     if fenced and f is None:
         raise SandboxError("The local network can't be fenced off (iproute2's ip isn't installed), as the panel said "
                            "it would be: Mullvad Browser wasn't started. Open the panel again to see what changed.")
-    return [pasta, *PASTA_OPTS, "--", *(f or []), *a]
+    return [pasta, *pasta_opts(host), "--", *(f or []), *a]
 
 
 TOR_ENV = {"TOR_SKIP_LAUNCH": "1", "TOR_SOCKS_IPC_PATH": SOCKS_IN, "TOR_CONTROL_IPC_PATH": CONTROL_IN}

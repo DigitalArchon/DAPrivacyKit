@@ -62,7 +62,12 @@ def computer(tmp_path, addresses=ADDRESSES, routes=ROUTES, fails=False):
             return CommandResult(tuple(argv), 0)
         if fails:
             return CommandResult(tuple(argv), 1, "", "Cannot open netlink socket: Address family not supported\n")
-        return CommandResult(tuple(argv), 0, json.dumps(addresses if "address" in argv else routes))
+        if "address" in argv:
+            return CommandResult(tuple(argv), 0, json.dumps(addresses))
+        if not isinstance(routes, list):
+            return CommandResult(tuple(argv), 0, json.dumps(routes))
+        v6 = [r for r in routes if ":" in r.get("dst", "") + r.get("gateway", "")]
+        return CommandResult(tuple(argv), 0, json.dumps(v6 if "-6" in argv else [r for r in routes if r not in v6]))
     ok = lambda argv: calls.append(argv) or CommandResult(tuple(argv), 0)      # noqa: E731
     host = Host(home=tmp_path, environ={}, runner=FakeRunner(handlers={"ip": ip, "pasta": ok, "bwrap": ok}),
                 root=tmp_path, uid=1000)
@@ -105,7 +110,8 @@ def test_the_computer_s_own_networks_are_listed_on_every_interface_and_table(tmp
     assert v4 == ["192.0.2.0/24", "192.88.99.1/32", "198.51.100.0/24", "203.0.113.0/24"]
     assert v6 == ["2001:db8:1::/64", "2001:db8:d0c::/64"]
     # listed from every table, by iproute2's JSON, on the computer
-    assert ("ip", "-j", "route", "show", "table", "all", "type", "unicast") in calls
+    assert ("ip", "-j", "-4", "route", "show", "table", "all", "type", "unicast") in calls
+    assert ("ip", "-j", "-6", "route", "show", "table", "all", "type", "unicast") in calls
     assert ("ip", "-j", "address", "show") in calls
     # an OpenVPN that redirects everything with 0.0.0.0/1 and 128.0.0.0/1 carries the internet: not refused
     host, _ = computer(tmp_path, routes=[{"dst": "0.0.0.0/1", "gateway": "10.8.0.1", "dev": "tun0"},
@@ -155,3 +161,66 @@ def test_the_probe_checks_from_inside_that_the_computer_s_networks_are_refused(t
     pasta = next(c for c in calls if c[0] == "pasta")
     check = pasta[-1]
     assert "192.0.2.1" in check and "2001:db8:1::1" in check and "the fence is not in place" in check
+
+
+# ------------------------------------------------------------------ B4: pasta's namespace has addresses of its own
+
+def opts_of(argv):
+    """pasta's options as {flag: [values]}."""
+    out: dict[str, list[str]] = {}
+    i = 1
+    while argv[i] != "--":
+        if argv[i] in ("-4", "-6", "--config-net", "--quiet", "--no-map-gw"):
+            out.setdefault(argv[i], [])
+            i += 1
+        else:
+            out.setdefault(argv[i], []).append(argv[i + 1])
+            i += 2
+    return out
+
+
+def test_pasta_s_namespace_gets_fixed_addresses_not_the_computer_s(tmp_path):
+    """B4: pasta copied the computer's interface name, its global IPv6 address (a VPN hides it; its EUI-64 form
+    holds the hardware address) and its gateway, whose hardware address it showed inside: the computer's own (pasta
+    2024-02-20) or the router's (2026-01-20). Now: eth0, a hardware address the same for everyone, 10.0.2.15/24
+    through 10.0.2.2, fd00::15 through pasta's own link-local address."""
+    host, _ = computer(tmp_path)
+    o = opts_of(["pasta", *S.pasta_opts(host), "--"])
+    assert o["-I"] == ["eth0"] and o["-M"] == ["9a:55:9a:55:9a:55"] and o["-n"] == ["24"]
+    assert o["-a"] == ["10.0.2.15", "fd00::15"] and o["-g"] == ["10.0.2.2", "fe80::9855:9aff:fe55:9a55"]
+    assert "-4" not in o and "-6" not in o and o["--dns-forward"] == [S.DNS_FORWARD]
+    text = " ".join(S.pasta_opts(host))
+    for real in ("eno1", "192.168.1.", "2001:db8:1:", "98:fa:9b", "fe80::3a10"):
+        assert real not in text
+    # the gateway is never one of the computer's neighbours (newer pasta shows a neighbour's hardware address): with a
+    # network of the computer's over 10.0.2.0/24, the next candidate
+    lan = [{"ifname": "enp0s3", "addr_info": [{"family": "inet", "local": "10.0.2.15", "prefixlen": 24, "scope": "global"}]}]
+    host, _ = computer(tmp_path, addresses=lan, routes=[{"dst": "default", "gateway": "10.0.2.2", "dev": "enp0s3"}])
+    o = opts_of(["pasta", *S.pasta_opts(host), "--"])
+    assert o["-a"] == ["10.0.3.15"] and o["-g"] == ["10.0.3.2"] and "-4" in o      # and no IPv6 without a route for it
+    # without a listing: the first candidate, and both versions (pasta leaves out one it has no route for)
+    host, _ = computer(tmp_path, fails=True)
+    o = opts_of(["pasta", *S.pasta_opts(host), "--"])
+    assert o["-a"] == ["10.0.2.15", "fd00::15"] and "-4" not in o
+
+
+def test_ipv6_only_where_the_computer_has_a_route_for_it(tmp_path):
+    """Without an IPv6 default route newer pasta made one up for its namespace, through fe80::1, a common router
+    address it would then answer for with the router's hardware address (tested on Fedora 44): -4 leaves IPv6 out."""
+    host, _ = computer(tmp_path, routes=[r for r in ROUTES if ":" not in r["dst"] + r.get("gateway", "")])
+    o = opts_of(["pasta", *S.pasta_opts(host), "--"])
+    assert "-4" in o and o["-a"] == ["10.0.2.15"] and not any(":" in g for g in o["-g"])
+    host, _ = computer(tmp_path, routes=[r for r in ROUTES if ":" in r["dst"] + r.get("gateway", "")])
+    o = opts_of(["pasta", *S.pasta_opts(host), "--"])
+    assert "-6" in o and o["-a"] == ["fd00::15"]
+
+
+def test_the_browser_and_a_trial_start_pasta_with_them(tmp_path):
+    host, calls = computer(tmp_path)
+    S.probe_pasta(host)
+    o = opts_of(next(c for c in calls if c[0] == "pasta"))
+    assert o["-I"] == ["eth0"] and "10.0.2.15" in o["-a"]
+    from daprivacyscanner.tools import trial
+    source = Path(trial.__file__).read_text()
+    assert "sandbox.pasta_opts(host)" in source and "sandbox.PASTA_OPTS" not in source
+    assert "*pasta_opts(host)" in Path(S.__file__).read_text().split("def browser_argv")[1]

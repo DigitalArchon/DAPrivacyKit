@@ -720,7 +720,7 @@ class Bubblewrap(Engine):
         fence = sandbox.fence(host, proxies=False)
         if fence is None:
             raise sandbox.SandboxError("The local network can't be fenced off (iproute2's ip isn't installed).")
-        return [parts.pasta, *sandbox.PASTA_OPTS, "--pcap", str(parts.pcap), "--", *fence, *a]
+        return [parts.pasta, *sandbox.pasta_opts(host), "--pcap", str(parts.pcap), "--", *fence, *a]
 
 
 class Flatpak(Engine):
