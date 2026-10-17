@@ -2457,13 +2457,20 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
 
         def clear_trials() -> None:
             """Trial folders a copy of the app that has ended left behind go at the start (a running copy's are
-            locked: trial.leftovers)."""
-            from .tools import trial
+            locked: trial.leftovers), and so does the empty folder a logout or a restart left where ~/TempBrowser was
+            (systemd unmounts it when the session ends, helper.dropin_setting; the folder is put back as the user)."""
+            from .tools import ramdisk, trial
             app.state.trial_cleaned = True
+            host = make_host()
             try:
-                trial.clear_leftovers(make_host())
+                trial.clear_leftovers(host)
             except OSError as e:
                 print(f"Trial folders left from before couldn't be removed: {type(e).__name__}", file=sys.stderr)
+            try:
+                if ramdisk.status(host, ramdisk.BROWSER).leftover:
+                    ramdisk.put_back(host, ramdisk.BROWSER)
+            except OSError as e:
+                print(f"The browser's RAM disk's folder couldn't be put back: {type(e).__name__}", file=sys.stderr)
         threading.Thread(target=clear_trials, name="trial-leftovers", daemon=True).start()
 
     if on_quit is not None:

@@ -2767,7 +2767,8 @@ function browserIntro(data) {
     h("p", { class: "small" }, "Quitting the browser doesn't close ~/TempBrowser: the browser and what you saved stay there, "
       + "ready to start again, until you close it here or quit this app. Quitting the app closes it (asking for your password "
       + "if administrator access has ended), unless the browser is still running then: it stays open until you close it "
-      + "here or restart the computer."),
+      + "here or restart the computer. On KDE Plasma, logging out closes it too, with no password. On Cinnamon, quit the "
+      + "app before you log out: logging out ends it before it can overwrite anything."),
     h("p", { class: "small" }, h("b", {}, "It is for one session, or a few over a day. "),
       "Set it up, browse, then close ~/TempBrowser: don't leave it set up for days, which defeats the point (nothing "
       + "of it should outlive the session). It never updates itself: each time you set it up, it downloads the latest "

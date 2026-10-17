@@ -430,10 +430,10 @@ you need, close `~/TempBrowser`, and set it up again.
 **Finishing:** quit the browser, then **Close and overwrite…** (or just quit the app, which closes
 `~/TempBrowser` too). Closing is refused while the browser runs. Only the window that opened `~/TempBrowser`
 closes it when you quit: a window the right-click entries opened (Verify download…, Remove metadata…) leaves it
-as it is. Logging out with the app open overwrites and deletes what is in it straight away, then asks for your
-password to close it. On KDE Plasma the password window is already gone by then, so unless you gave the password in
-the last few minutes `~/TempBrowser` stays open, empty, until you close it in the app or restart: quit the app
-before logging out to close it properly.
+as it is. On KDE Plasma, logging out with the app open closes it too, with no password: Plasma closes the app's
+window, the app overwrites and deletes what is in it, and the computer unmounts it once you are logged out (the empty
+folder it leaves goes the next time you start the app). On Cinnamon, quit the app before you log out: logging out ends
+the app with the display before it can overwrite anything, and `~/TempBrowser` can stay mounted until you restart.
 
 ### Try an app
 

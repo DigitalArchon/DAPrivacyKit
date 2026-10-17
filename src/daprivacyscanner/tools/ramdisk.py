@@ -47,7 +47,7 @@ class Status:
     total: int = 0
     files: int = 0
     other: str = ""                 # something else is mounted there
-    leftover: bool = False          # closed, and its empty folder is still there (after a reboot)
+    leftover: bool = False          # closed, and its empty folder is still there (after a reboot, or a logout)
     notes: list[str] = field(default_factory=list)
 
     def to_dict(self, home: Path) -> dict:
@@ -89,7 +89,8 @@ def commands(host: Host, name: str = NAME, size_mb: int = DEFAULT_MB) -> dict[st
         gid = host.uid
     noswap = helper._kernel_has_noswap()
 
-    quiet = os.path.isdir(host.sys_path(helper.QUIET_DIR))          # systemd's runtime folder: the helper's _quiet
+    quiet = os.path.isdir(host.sys_path(helper.DROPIN_DIR))         # systemd's runtime folder: the helper's _dropin
+    ends = host.uid if name == BROWSER else None                     # ~/TempBrowser's ends with the session
 
     def opening(noexec: bool) -> list[str]:
         import json
@@ -110,10 +111,10 @@ def commands(host: Host, name: str = NAME, size_mb: int = DEFAULT_MB) -> dict[st
             mode = earlier["folder_mode"]
         remember = json.dumps({"created": created, "folder_mode": None if created else mode})
         return made + [shell(["setfattr", "-n", helper.RAMDISK_XATTR, "-v", remember, path]), shell(["chmod", "500", path]),
-                       *(helper.quiet_commands(path, True) if quiet else []),
+                       *(helper.dropin_commands(path, True, ends) if quiet else []),
                        shell(["mount", "-t", "tmpfs", "-o", options, "tmpfs", path])]
     return {"open": opening(True), "open_exec": opening(False),
-            "close": [shell(["umount", path]), *(helper.quiet_commands(path, False) if quiet else [])]}
+            "close": [shell(["umount", path]), *(helper.dropin_commands(path, False) if quiet else [])]}
 
 
 def _here(host: Host, path: Path) -> list[list[str]]:
@@ -189,7 +190,8 @@ def record(path: Path) -> dict | None:
 
 
 def put_back(host: Host, name: str = NAME) -> str:
-    """A closed RAM disk's folder an open left behind (a restart ended the mount: status().leftover) put back as it
+    """A closed RAM disk's folder an open left behind (a restart ended the mount, or for ~/TempBrowser the end of the
+    session: status().leftover) put back as it
     was before that open, as the user (it is their folder, in their home: no administrator access): removed when the
     open made it, its mode back otherwise (0700 when nothing says what it was: a filesystem without extended
     attributes). Only an empty folder, never through a link. Returns what was done, in words; raises OSError."""

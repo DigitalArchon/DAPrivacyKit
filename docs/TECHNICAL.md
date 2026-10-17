@@ -476,7 +476,9 @@ The helper's `ramdisk_open`:
    timeline of the sessions (found in the review of 2026-10-17). Before mounting, the helper writes a drop-in for
    that unit in `/run/systemd/system/<unit>.d/` (gone at a reboot) with `LogLevelMax=notice`: systemd reads it as it
    makes the unit, at the mount, with no `daemon-reload` (whose own lines would say as much), and logs only the
-   unit's warnings and errors (tested on Mint 22.3, systemd 255). The close removes it. What stays in the journal:
+   unit's warnings and errors (tested on Mint 22.3, systemd 255). For `~/TempBrowser` it also has `BindsTo=` and
+   `Before=user@UID.service`, so that systemd unmounts it once the user's manager has stopped at the end of their
+   session (below, Closing; read the same way on systemd 255 and CachyOS's). The close removes it. What stays in the journal:
    pkexec's line each time administrator access is given to the app (when, not what for); the close dialog says so.
 
 ### 7.4 Step 2: getting the browser
@@ -1194,11 +1196,19 @@ the review of 2026-10-17). When the app is told to end by a signal (SIGTERM or S
 `--browser` mode handles them too, where Python would otherwise end without closing anything), it closes the RAM disk
 as on Quit, asking for the password if it has to (the owner's decision of 2026-10-17): the files are overwritten in a
 thread of their own while administrator access is asked for, never after the password, and it is unmounted once both
-are done. At a logout on KDE Plasma 6 the prompt can't come up: systemd stops Plasma's polkit agent
-(`plasma-polkit-agent.service`) as the logout begins, and a menu-started app, in a scope of its own, gets its SIGTERM
-only when the user's manager stops, about 10 seconds after the last session (tested on CachyOS: the files were gone
-0.3 s after the SIGTERM, pkexec found no agent). Unless administrator access is still active, the RAM disk then stays
-mounted, empty, until it is closed or the computer restarts.
+are done. At a logout the prompt can't come up: systemd stops Plasma's polkit agent (`plasma-polkit-agent.service`)
+as the logout begins, and a menu-started app, in a scope of its own, gets its SIGTERM only when the user's manager
+stops, about 10 seconds after the last session (tested on CachyOS: the files were gone 0.3 s after the SIGTERM, pkexec
+found no agent). So the helper's drop-in for the mount unit (step 7 of opening) binds it to the user's manager:
+systemd unmounts it once that has stopped, after every process of the user's has ended, the app's overwrite
+included, with no password (tested on CachyOS with a real Plasma logout, window mode: Plasma closed the window, the
+app overwrote the files within a second, user@1000.service stopped 10 s after the last session, and the RAM disk with
+it, nothing about it in the journal). The empty folder left underneath is put back as the user by the app at its next
+start (`ramdisk.put_back`, the start's background work). A user who lingers (`loginctl enable-linger`) keeps the
+manager running, and the RAM disk with it, until it is closed or a restart. On Cinnamon (tested on Mint 22.3, X11)
+neither half holds: the app, not a session-management client, ends with the X server before its clean-up runs, and
+processes Mint leaves in the logged-out session (the location agent, the printer applet) keep the user's manager
+running, so the page says to quit the app before logging out.
 
 **Which copy closes it** (`tools/owner.py`, the owner's decision of 2026-10-17). Every right-click entry starts a
 copy of the app of its own, and quitting one closed `~/TempBrowser` under another, with a download not saved yet
@@ -1787,7 +1797,7 @@ OACS, FNA and SANICAP via the helper's ioctl), read on request and kept for the 
 | `$XDG_CONFIG_HOME/daprivacyscanner/` | `ui.json` (welcome dismissed), `online.json` (endpoints) | |
 | `/var/lib/daprivacyscanner/changes` | The helper's journal of root changes | Root-owned |
 | `/run/daprivacyscanner/` | RAM disk state, swap state | Gone at reboot |
-| `/run/systemd/system/<unit>.d/50-daprivacyscanner-quiet.conf` | `LogLevelMax=notice` for an open RAM disk's mount unit | Root-owned; removed at the close, gone at reboot |
+| `/run/systemd/system/<unit>.d/50-daprivacyscanner.conf` | `LogLevelMax=notice` for an open RAM disk's mount unit; for ~/TempBrowser's also `BindsTo=`/`Before=user@UID.service` (unmounted when the session has ended) | Root-owned; removed at the close, gone at reboot |
 | `~/TempBrowser`, `~/RAMDisk` | Tool data | In memory only |
 | `$XDG_CACHE_HOME/daprivacyscanner/browsers/` (0700) | Tor Browser's or Mullvad Browser's archive and signature, one per browser | Only when the download dialog's tick asks for it; deleted from the panel; on the disk, so it says the browser was set up here |
 

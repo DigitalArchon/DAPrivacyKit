@@ -123,18 +123,26 @@ from test_ramdisk import ME, call, root, xattrs_work  # noqa: E402,F401 - the he
 
 def test_systemd_logs_nothing_about_the_ram_disks_mount_unit(root):  # noqa: F811
     """systemd logged "home-<user>-TempBrowser.mount: Deactivated successfully." in the persistent journal at every
-    close: a drop-in in /run gives the unit LogLevelMax=notice, read as the unit is made at the mount (no reload)."""
+    close: a drop-in in /run gives the unit LogLevelMax=notice, read as the unit is made at the mount (no reload).
+    ~/TempBrowser's also ends with its owner's session (the owner's decision of 2026-10-17): systemd unmounts it once
+    their manager has stopped, since at a logout no password can be asked for. ~/RAMDisk's doesn't."""
     from daprivacyscanner import helper
     r, *_ = root
     (r / "run/systemd/system").mkdir(parents=True)
-    dropin = r / "run/systemd/system/home-alice-TempBrowser.mount.d/50-daprivacyscanner-quiet.conf"
+    dropin = r / "run/systemd/system/home-alice-TempBrowser.mount.d/50-daprivacyscanner.conf"
     ran = call("ramdisk_open", size_mb=100, noexec=False, name="TempBrowser")["ran"]
-    assert "[Mount]\nLogLevelMax=notice\n" in dropin.read_text()
-    assert ran[-3:-1] == helper.quiet_commands("/home/alice/TempBrowser", True) and ran[-1].startswith("mount ")
-    assert "LogLevelMax=notice" in ran[-2] and "home-alice-TempBrowser.mount.d" in ran[-2]
+    text = dropin.read_text()
+    assert "[Mount]\nLogLevelMax=notice\n" in text
+    assert f"[Unit]\nBindsTo=user@{ME[0]}.service\nBefore=user@{ME[0]}.service\n" in text
+    assert ran[-3:-1] == helper.dropin_commands("/home/alice/TempBrowser", True, ME[0]) and ran[-1].startswith("mount ")
+    assert "LogLevelMax=notice" in ran[-2] and f"BindsTo=user@{ME[0]}.service" in ran[-2]
     closed = call("ramdisk_close", name="TempBrowser")["ran"]
-    assert closed[:3] == ["umount /home/alice/TempBrowser", *helper.quiet_commands("/home/alice/TempBrowser", False)]
+    assert closed[:3] == ["umount /home/alice/TempBrowser", *helper.dropin_commands("/home/alice/TempBrowser", False)]
     assert not dropin.parent.exists() and (r / "run/systemd/system").is_dir()
+    call("ramdisk_open", size_mb=100, noexec=False, name="RAMDisk")
+    other = (r / "run/systemd/system/home-alice-RAMDisk.mount.d/50-daprivacyscanner.conf").read_text()
+    assert "LogLevelMax=notice" in other and "BindsTo" not in other                   # the RAM disk tool's stays open
+    call("ramdisk_close", name="RAMDisk")
 
 
 def test_the_page_shows_the_drop_in_among_what_opening_runs(tmp_path):
@@ -142,6 +150,8 @@ def test_the_page_shows_the_drop_in_among_what_opening_runs(tmp_path):
     host = make_host(tmp_path, files={"/run/systemd/system/.keep": ""})
     shown = R.commands(host, "TempBrowser")
     assert any("LogLevelMax=notice" in c for c in shown["open_exec"]) and shown["open_exec"][-1].startswith("mount ")
+    assert any(f"BindsTo=user@{host.uid}.service" in c for c in shown["open_exec"])
+    assert not any("BindsTo" in c for c in R.commands(host, "RAMDisk")["open_exec"])
     assert shown["close"][1].startswith("rm -f ") and shown["close"][2].startswith("rmdir ")
     assert not any("LogLevelMax" in c for c in R.commands(make_host(tmp_path / "bare"), "TempBrowser")["open"])
 
@@ -435,3 +445,27 @@ def test_a_copy_whose_set_up_was_interrupted_is_removed_on_its_own(cat, host, mo
     (disk / "mullvad-browser/Browser").mkdir(parents=True)
     (disk / "mullvad-browser/Browser/start-mullvad-browser").write_text("#!/bin/sh\n")
     assert "is running" in c.post("/api/tools/browser/remove", headers=H, json={"browser": "mullvad"}).json()["error"]
+
+
+def test_the_folder_a_logout_left_is_put_back_at_the_start(cat, host, monkeypatch):  # noqa: F811
+    """systemd unmounts ~/TempBrowser when the session has ended; the folder underneath, made by the open, goes the
+    next time the app starts (as the user: never a path removed as root)."""
+    import json
+    import time
+    from daprivacyscanner import helper
+    from daprivacyscanner.tools import transfer, trial
+    monkeypatch.setitem(transfer.WATCHED, "on", transfer.WATCHED.get("on"))
+    monkeypatch.setattr("daprivacyscanner.server.OUTBOX_EVERY", 3600)
+    monkeypatch.setattr(trial, "clear_leftovers", lambda h: None)
+    folder = host.home / "TempBrowser"
+    folder.mkdir(mode=0o700)
+    try:
+        os.setxattr(folder, helper.RAMDISK_XATTR, json.dumps({"created": True, "folder_mode": None}).encode())
+    except OSError:
+        pytest.skip("no extended attributes here")
+    os.chmod(folder, 0o500)
+    create_app("t0ken", cat, make_host=lambda: host, watch_outbox=True)
+    deadline = time.monotonic() + 5
+    while folder.exists() and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert not folder.exists()

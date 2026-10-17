@@ -2055,37 +2055,51 @@ def _kernel_has_noswap(release: str | None = None) -> bool:
 # 2026-10-17). A drop-in of the helper's in /run (gone at a reboot, as the mount is) gives that unit LogLevelMax=notice,
 # so only its warnings and errors are logged. systemd reads it when it makes the unit, at the mount, with no
 # daemon-reload, whose own lines would say as much (tested on Mint 22.3, systemd 255: the line is gone).
-QUIET_DIR = "/run/systemd/system"
-QUIET_FILE = "50-daprivacyscanner-quiet.conf"
+# ~/TempBrowser's also ends with the user's session (`ends_with`: the owner's decision of 2026-10-17): BindsTo= the
+# user's manager, user@UID.service, which stops once their last session has ended, and Before= it, so that systemd
+# unmounts it after the manager has stopped, every program of theirs ended and the app's overwrite on its SIGTERM done.
+# At a logout the app can't ask for the password: Plasma's polkit agent is stopped as the logout begins (tested on
+# CachyOS). Only the unmount is systemd's, never a path to chmod or remove as root: the folder underneath is put back
+# by the app, as the user, at its next start (ramdisk.put_back).
+DROPIN_DIR = "/run/systemd/system"
+DROPIN_FILE = "50-daprivacyscanner.conf"
 QUIET_SETTING = "[Mount]\nLogLevelMax=notice\n"
 
 
-def quiet_paths(path: str) -> tuple[str, str]:
+def dropin_setting(uid: int | None) -> str:
+    """The drop-in's settings: quiet, and for ~/TempBrowser (`uid`, its owner's) ended with the owner's session."""
+    ends = f"[Unit]\nBindsTo=user@{uid}.service\nBefore=user@{uid}.service\n" if uid is not None else ""
+    return ends + QUIET_SETTING
+
+
+def dropin_paths(path: str) -> tuple[str, str]:
     """(the drop-in's folder, the drop-in) for the mount unit of `path`."""
-    folder = f"{QUIET_DIR}/{unit_name(path)}.d"
-    return folder, f"{folder}/{QUIET_FILE}"
+    folder = f"{DROPIN_DIR}/{unit_name(path)}.d"
+    return folder, f"{folder}/{DROPIN_FILE}"
 
 
-def quiet_commands(path: str, on: bool) -> list[str]:
+def dropin_commands(path: str, on: bool, uid: int | None = None) -> list[str]:
     """What writing (or removing) the drop-in does, as the commands that do the same."""
-    folder, file = quiet_paths(path)
+    folder, file = dropin_paths(path)
     if on:
         return [f"mkdir -p {shlex.quote(folder)}",
-                f"printf {shlex.quote(QUIET_SETTING.replace(chr(10), chr(92) + 'n'))} > {shlex.quote(file)}"]
+                f"printf {shlex.quote(dropin_setting(uid).replace(chr(10), chr(92) + 'n'))} > {shlex.quote(file)}"]
     return [f"rm -f {shlex.quote(file)}", f"rmdir {shlex.quote(folder)}"]
 
 
-def _quiet(path: str, on: bool) -> bool:
-    """Writes (or removes) the drop-in that keeps systemd from logging the RAM disk's mount unit. Best effort: a
-    computer without systemd's runtime folder, or a failure, costs only that line. Whether it did it (the caller
-    lists quiet_commands then)."""
-    if not os.path.isdir(_p(QUIET_DIR)):
+def _dropin(path: str, on: bool, uid: int | None = None) -> bool:
+    """Writes (or removes) the RAM disk's mount unit's drop-in (dropin_setting). Best effort: a computer without
+    systemd's runtime folder, or a failure, costs only the line in the journal (and for ~/TempBrowser, its unmount
+    at a logout). Whether it did it (the caller lists dropin_commands then)."""
+    if not os.path.isdir(_p(DROPIN_DIR)):
         return False
-    folder, file = quiet_paths(path)
+    folder, file = dropin_paths(path)
     try:
         if on:
-            _write(file, ("# Written by DA Privacy Kit for the RAM disk it opened here: nothing but warnings and "
-                          "errors about it in the journal.\n" + QUIET_SETTING).encode(), 0o644)
+            _write(file, ("# Written by DA Privacy Kit for the RAM disk it opened here: nothing but warnings and errors "
+                          "about it in the journal" + (", and unmounted when its owner's session has ended"
+                                                       if uid is not None else "") + ".\n"
+                          + dropin_setting(uid)).encode(), 0o644)
             return True
         if not os.path.lexists(_check_path(file)):
             return False
@@ -2191,7 +2205,8 @@ def ramdisk_open(args: dict) -> dict:
         flags = MS_NOSUID | MS_NODEV | (MS_NOEXEC if noexec else 0)
         options = f"size={size}M,mode=0700,uid={uid},gid={gid}"
         noswap = _kernel_has_noswap()
-        quiet = _quiet(path, True)              # systemd logs nothing about its mount unit but warnings and errors
+        ends = uid if name == "TempBrowser" else None      # the browser's ends with the session (dropin_setting)
+        quiet = _dropin(path, True, ends)       # systemd logs nothing about its mount unit but warnings and errors
         err = MOUNT(f"/proc/self/fd/{fd}", flags, options + (",noswap" if noswap else ""))
         if err == errno.EINVAL and noswap:          # a kernel built without it
             noswap = False
@@ -2203,11 +2218,11 @@ def ramdisk_open(args: dict) -> dict:
             else:
                 _remember_folder(fd, undo[1]["created"], undo[1]["folder_mode"], path)
             if quiet:
-                _quiet(path, False)
+                _dropin(path, False)
             raise Refused(f"the mount failed: {os.strerror(err)}")
         _did(["chmod", "500", path])
         if quiet:
-            DID.extend(quiet_commands(path, True))
+            DID.extend(dropin_commands(path, True, ends))
         _did(["mount", "-t", "tmpfs", "-o", ",".join(["nosuid", "nodev", *(["noexec"] if noexec else []), options,
                                                       *(["noswap"] if noswap else [])]), "tmpfs", path])
     finally:
@@ -2243,8 +2258,8 @@ def ramdisk_close(args: dict) -> dict:
         if err:
             raise Refused(f"unmounting failed: {os.strerror(err)}")
         _did(["umount", path])
-    if _quiet(path, False):                      # read when the unit was made: removing it now changes nothing logged
-        DID.extend(quiet_commands(path, False))
+    if _dropin(path, False):                     # read when the unit was made: removing it now changes nothing logged
+        DID.extend(dropin_commands(path, False))
     if state is None:                            # after a reboot /run is empty: the folder itself says what to put back
         state = _remembered_folder(home, parts, uid)
     if state is None:
