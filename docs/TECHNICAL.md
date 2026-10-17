@@ -652,17 +652,19 @@ offline…) is wrapped by `sandbox.fresh_keyring`, which runs the host's `/usr/b
 just before `execv`ing the real command:
 
 1. Writes `0` to `/proc/self/coredump_filter` (inherited by every child, kept across `exec`): a crash dump
-   holds no memory. The hard core limit alone isn't enough: systemd-coredump is handed its own limit by
-   `core_pattern` and keeps the dump regardless (tested: a 35 MB core with the limit at 0; 48 KB without
-   memory with the filter).
-2. Sets `RLIMIT_CORE` to (0, 0).
+   holds no memory, should one be written.
+2. Sets `RLIMIT_CORE` to (1, 1) (`NO_CORE`), at which the kernel skips the dump altogether, logging only the
+   process's number and name; (0, 0) only where the hard limit is already 0 and can't be raised. Not 0: with a
+   pipe in `core_pattern` (systemd-coredump) the kernel ignores a limit of 0 and runs the handler, which kept
+   the dump (tested: a 35 MB core with the limit at 0; 48 KB without memory with the filter) and wrote the
+   program's command line, environment and the paths of its open files into the journal.
 3. `keyctl(KEYCTL_JOIN_SESSION_KEYRING, NULL)`: joins a new, empty, anonymous session keyring, so nothing
    started can reach the login session's kernel keyring (where eCryptfs keeps an encrypted home's key and
    some Kerberos setups their tickets; nothing but session membership guards it). The user keyring is
    already the sandbox's own (user namespaces have their own). Where `keyctl` is refused (`EPERM`,
    `ENOSYS`: a container's seccomp), the keyring is out of reach anyway and the start goes on.
 
-Without python3 only the core limit is applied, through `prlimit --core=1:1` (1, not 0: at 0 systemd-coredump still recorded the crash, its command line and its open files, in the journal).
+Without python3 only the core limit is applied, through `prlimit --core=1:1`.
 
 **Landlock** (where the kernel has ABI 6, Linux 6.12+): whatever shares a network namespace with the
 computer is also scoped with `LANDLOCK_SCOPE_ABSTRACT_UNIX_SOCKET | LANDLOCK_SCOPE_SIGNAL`: it can't

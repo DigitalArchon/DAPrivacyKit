@@ -208,10 +208,11 @@ QUIET = ["/bin/sh", "-c", 'exec "$0" "$@" </dev/null >/dev/null 2>&1']     # std
 
 # runs on the computer just before the sandbox (bwrap, or pasta around it, or a Flatpak viewer):
 # - leaves its memory out of crash dumps: coredump_filter 0 (inherited by every process it starts, kept across
-#   exec) leaves no memory in a dump, and a core size limit of 0. The limit alone isn't enough: systemd-coredump
-#   is handed a fixed limit by the kernel's core_pattern and keeps the dump whatever the process's own is
-#   (tested on Mint 22: a 35 MB core with the limit at 0, 48 KB without memory with the filter). The journal
-#   still records that it crashed, with its command line, environment and open files (the sandbox's);
+#   exec) leaves no memory in a dump, and a core size limit of 1 (NO_CORE, below), at which the kernel skips the
+#   dump altogether. The filter is there for where the limit can't be set: at 0 systemd-coredump, handed a fixed
+#   limit by the kernel's core_pattern, kept the dump whatever the process's own limit was (tested on Mint 22: a
+#   35 MB core with the limit at 0, 48 KB without memory with the filter), and wrote the crash's command line,
+#   environment and open files into the journal;
 # - joins a new, empty session keyring, so nothing started from here can reach the kernel keyring of the login
 #   session (where eCryptfs keeps the key to an encrypted home, some Kerberos setups their tickets: no password
 #   guards it, only belonging to the session, which every program started from it inherits). The user keyring
