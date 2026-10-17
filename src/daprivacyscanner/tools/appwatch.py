@@ -257,13 +257,18 @@ def report(host: Host, app: menu.App, raw: dict, started: dict) -> dict:
     out["others"] = sum(1 for r in records if r[5])
     # what the user's other programs wrote meanwhile, per program and folder: where the work of a background service
     # of the app's own, or of a copy that was already running, shows (counts only, as everything else)
-    others: dict[tuple[str, str], int] = {}
+    # (in the user's own folders and on other disks, and past the helper's limit, changes per folder: never one by one)
+    others: dict[tuple[str, str], dict] = {}
     for r in records:
         if r[5]:
-            key = (r[5], activity.place(r[0], w)[1])
-            others[key] = others.get(key, 0) + 1
-    out["others_places"] = sorted(({"who": k[0], "folder": k[1], "files": v} for k, v in others.items()),
-                                  key=lambda o: (-o["files"], o["who"], o["folder"]))[:OTHERS_SHOWN]
+            o = others.setdefault((r[5], activity.place(r[0], w)[1]), {"files": 0, "changes": 0})
+            o["files"] += 1
+    for who, folder, n in raw.get("others_folded") or []:
+        o = others.setdefault((who, activity.tilde(folder, w) if folder else ""), {"files": 0, "changes": 0})
+        o["changes"] += n
+    out["others_changes"] = sum(o["changes"] for o in others.values())
+    out["others_places"] = sorted(({"who": k[0], "folder": k[1], **v} for k, v in others.items()),
+                                  key=lambda o: (-o["files"] - o["changes"], o["who"], o["folder"]))[:OTHERS_SHOWN]
     out["system"] = sorted(({"folder": k, "files": v} for k, v in (raw.get("system") or {}).items()),
                            key=lambda s: -s["files"])[:40]
     out["gone"] = sorted(({"folder": activity.tilde(k, w), "events": v} for k, v in (raw.get("gone") or {}).items()),

@@ -3972,11 +3972,15 @@ function keepsResult(job, reload) {
     h("p", { class: "small muted" }, `Your own files are counted, never listed: ${r.yours.opened} read, ${r.yours.changed} changed.`),
     r.places.length ? placesTable(r) : h("p", { class: "small muted" }, "Nothing outside the system's own folders."),
     r.places_left_out ? h("div", { class: "small muted" }, `${r.places_left_out} more folders aren't shown.`) : null,
-    r.others ? h("details", { class: "small" }, h("summary", {}, `What your other programs wrote meanwhile (${plural(r.others, "file")})`),
+    r.others || r.others_changes ? h("details", { class: "small" }, h("summary", {}, "What your other programs wrote "
+        + `meanwhile (${[r.others ? plural(r.others, "file") : "", r.others_changes ? plural(r.others_changes, "change")
+          : ""].filter(Boolean).join(", ")})`),
       h("p", { class: "muted" }, "An app that hands its work to a background program of its own, or to a copy that was "
-        + "already running, shows here; so does everything else that was running. Counted per folder:"),
-      h("ul", { class: "named" }, (r.others_places || []).map(o => h("li", {}, h("code", {}, o.folder),
-        ` — ${plural(o.files, "file")}, by ${o.who}`)))) : null,
+        + "already running, shows here; so does everything else that was running. Counted per folder (in your own "
+        + "folders and on other disks, changes rather than files):"),
+      h("ul", { class: "named" }, (r.others_places || []).map(o => h("li", {}, h("code", {}, o.folder || "other folders"),
+        ` — ${[o.files ? plural(o.files, "file") : "", o.changes ? plural(o.changes, "change") : ""].filter(Boolean)
+          .join(", ")}, by ${o.who}`)))) : null,
     r.gone.length ? h("details", { class: "small" }, h("summary", {}, "By programs that ended before they could be identified"),
       h("ul", { class: "named" }, r.gone.map(g => h("li", {}, h("code", {}, g.folder), `: ${plural(g.events, "event")}`)))) : null,
     h("details", { class: "small" }, h("summary", {}, "How complete this is"),
@@ -3986,6 +3990,9 @@ function keepsResult(job, reload) {
         r.overflow ? h("li", {}, "The computer was too busy for every event to be recorded: some of what happened is missing.") : null,
         r.unresolved ? h("li", {}, `${r.unresolved} couldn't be tied to a file (its folder was gone by then).`) : null,
         r.folded ? h("li", {}, `${r.folded} files past the first 60,000 weren't kept one by one.`) : null,
+        r.others_left ? h("li", {}, `${plural(r.others_left, "change")} by your other programs, past the first 30,000 `
+          + "files, were counted per folder, not file by file: files among them weren't searched for the names of what "
+          + "you opened.") : null,
         r.limits.map(x => h("li", {}, x)))),
     h("div", { class: "orow" }, dismiss, h("span", { class: "small muted" }, "It is gone when you dismiss it or quit; nothing was saved."))];
 }

@@ -436,6 +436,46 @@ def test_a_watched_filesystem_closes_and_removes_the_folder_it_mounted(tmp_path,
     w.close()                                                    # twice is nothing
 
 
+OTHER = "/user.slice/user-1000.slice/user@1000.service/app.slice/x.scope"
+
+
+def test_what_other_programs_write_in_the_users_folders_doesnt_crowd_out_the_records(monkeypatch, tmp_path):
+    """A build writing 30,000 files filled the other programs' records and the thumbnail written after it was
+    dropped, unsaid (D8). The user's own folders and other disks are counted per folder (never searched for records
+    anyway); past the limit, the rest too, and the result says how many."""
+    procs = {10: (1000, OTHER, "npm"), 11: (1000, OTHER, "tumblerd"), 12: (1000, OTHER, "cp")}
+    t = helper._Tally(1000, "/home/u", ["daprivacyscanner-watch-abc.scope"], proc=lambda pid: procs.get(pid))
+    for i in range(helper.WATCH_OTHERS_MAX + 10):
+        t.add(helper.FAN_CREATE | helper.FAN_MODIFY, 10, f"/home/u/project/node_modules/pkg{i}/index.js")
+    t.add(helper.FAN_CREATE, 12, "/media/u/STICK/Photos/2026/a.jpg")
+    t.add(helper.FAN_MODIFY, 12, "/home/u/notes.txt")
+    t.add(helper.FAN_CREATE | helper.FAN_MODIFY, 11, "/home/u/.cache/thumbnails/normal/abc.png")
+    r = t.result()
+    assert [f[0] for f in r["files"] if f[5]] == ["/home/u/.cache/thumbnails/normal/abc.png"] and r["others_left"] == 0
+    assert r["others_folded"] == [["npm", "/home/u/project/node_modules", helper.WATCH_OTHERS_MAX + 10],
+                                  ["cp", "/media/u/STICK/Photos", 1], ["cp", "/home/u", 1]]
+    assert t.counts()["others"] == helper.WATCH_OTHERS_MAX + 13
+    # past the limit, programs' data is counted per folder too, and said
+    monkeypatch.setattr(helper, "WATCH_OTHERS_MAX", 2)
+    t = helper._Tally(1000, "/home/u", ["daprivacyscanner-watch-abc.scope"], proc=lambda pid: procs.get(pid))
+    for i in range(5):
+        t.add(helper.FAN_CREATE, 11, f"/home/u/.cache/thumbnails/normal/{i}.png")
+    r = t.result()
+    assert len(r["files"]) == 2 and r["others_left"] == 3
+    assert r["others_folded"] == [["tumblerd", "/home/u/.cache/thumbnails/normal", 3]]
+    # the result shows them per program and folder, changes apart from files
+    host = Host(home=tmp_path, environ={"HOME": str(tmp_path)}, runner=FakeRunner(), uid=1000)
+    home = str(tmp_path.resolve())
+    raw = {"files": [[f"{home}/.cache/thumbnails/normal/0.png", helper.W_CREATED, 0, 1, 1, "tumblerd"]],
+           "others_folded": [["npm", f"{home}/project/node_modules", 40], ["cp", "", 2]], "others_left": 2}
+    out = appwatch.report(host, menu.App("x.desktop", "X", ["x"], "native"), raw, {})
+    assert out["others"] == 1 and out["others_changes"] == 42 and out["others_left"] == 2
+    assert out["others_places"][0] == {"who": "npm", "folder": "~/project/node_modules", "files": 0, "changes": 40}
+    assert {"who": "cp", "folder": "", "files": 0, "changes": 2} in out["others_places"]
+    js = (Path(__file__).parent.parent / "src/daprivacyscanner/web/app.js").read_text()
+    assert "r.others_left ?" in js and "o.changes" in js
+
+
 def test_the_helper_ends_a_watch_when_its_input_ends(monkeypatch):
     """Dropping the access (or the app going) closes the helper's input: the watch ends through its clean-up."""
     import io

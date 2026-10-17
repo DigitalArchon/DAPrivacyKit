@@ -1466,7 +1466,11 @@ OACS, FNA and SANICAP via the helper's ioctl), read on request and kept for the 
   - **What is kept**, in the child's memory only: the app's files under the home, the temporary folders and
     other disks, one record each (flags, opens, writes, and in how many different minutes it was written; 60,000
     at most, then counted per folder); for the system's folders, counts per folder; and the files the caller's
-    other programs wrote meanwhile. `watch_end` hands it over once and the child ends.
+    other programs wrote meanwhile in programs' data and the temporary folders, one record each (30,000 at most,
+    then changes per program and folder, which the result says), while in the user's own folders and on other
+    disks, which are never searched for records, their changes are counted per program and folder (a build's
+    thousands of files filled the 30,000, and the thumbnail written after them was dropped, unsaid). `watch_end`
+    hands it over once and the child ends.
   - **The summary** (`activity.summarise`): totals; folders with counts, each as deep as says whose it is
     (`~/.config/Foo/Cache`, `~/.var/app/<id>/data/x`, `~/Documents/Work`); the files written to regularly (in three
     or more different minutes), named with what kind of file they are, programs' files only (a document of the

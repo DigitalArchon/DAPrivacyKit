@@ -4718,7 +4718,8 @@ def planned_files(request: str, args: dict, uid: int | None = None, home: str | 
 WATCH_UNIT = re.compile(r"(?!user@|session-)[A-Za-z0-9_.:@\\-]{1,200}\*?\.(scope|service)")
 WATCH_UNITS_MAX = 8
 WATCH_FILES_MAX = 60000                        # the app's files kept one by one; past that, counted per folder
-WATCH_OTHERS_MAX = 30000                       # files the caller's other programs wrote
+WATCH_OTHERS_MAX = 30000                       # files the caller's other programs wrote (in programs' data, temporary)
+WATCH_FOLDERS_MAX = 5000                       # folders their other writes are counted under
 WATCH_PID_TTL = 10.0                           # seconds a process's lookup is trusted once it is the app's
 WATCH_OTHER_TTL = 2.0                          # and when it isn't: a program is moved into its scope as it starts
 WATCH_HANDLES_MAX = 20000                      # folder handles remembered as paths
@@ -4791,6 +4792,10 @@ class _Tally:
         self.folded: dict[str, int] = {}           # the app's files past the limit, per folder
         self.system: dict[str, int] = {}           # the app's files outside `keep`, per folder two deep
         self.gone: dict[str, int] = {}             # by a process that had ended: per folder under the home
+        # what the other programs changed in the user's own folders and on other disks (never searched for records:
+        # a build's thousands of files filled the 30,000 and later records were lost, D8), and past the limit:
+        # changes per program and folder
+        self.others_folded: dict[tuple[str, str], int] = {}
         self.events = self.foreign = self.overflow = self.unresolved = self.others_left = 0
 
     def who(self, pid: int, fresh: bool = False) -> tuple[str, str] | None:
@@ -4852,8 +4857,16 @@ class _Tally:
                 return
             rec = self.others.get(path)
             if rec is None:
-                if len(self.others) >= WATCH_OTHERS_MAX:
-                    self.others_left += 1
+                folder = self._own_folder(path)
+                if folder is None and len(self.others) >= WATCH_OTHERS_MAX:
+                    self.others_left += 1               # ~/.cache/thumbnails/normal, /tmp/foo/bar
+                    deep = len(self.home.split("/")) + 3 if _watch_inside(path, (self.home,)) else 4
+                    folder = "/".join(path.split("/")[:-1][:deep])
+                if folder is not None:
+                    key = (w[1], folder)
+                    if key not in self.others_folded and len(self.others_folded) >= WATCH_FOLDERS_MAX:
+                        key = (w[1], "")                # past that many folders: counted for the program alone
+                    self.others_folded[key] = self.others_folded.get(key, 0) + 1
                     return
                 rec = self.others[path] = [0, 0, 0, -1, w[1]]
             self._count(rec, 1, flags, minute)
@@ -4873,6 +4886,18 @@ class _Tally:
             rec[1] += 1
         self._count(rec, 2, flags, minute)
 
+    def _own_folder(self, path: str) -> str | None:
+        """For a file in the user's own folders (under the home, not hidden) or on another disk: the folder it is
+        counted under (two deep under the home, three under the disks' folder); None for programs' data and the
+        temporary folders, which are kept file by file."""
+        parts = path.split("/")[:-1]
+        if _watch_inside(path, (self.home,)):
+            depth = len(self.home.split("/"))
+            first = path.split("/")[depth:depth + 1]        # the folder (or file) right under the home
+            return None if not first or first[0].startswith(".") else "/".join(parts[:depth + 2])
+        base = next((b for b in ("/media", "/mnt", "/run/media") if _watch_inside(path, (b,))), None)
+        return "/".join(parts[:len(base.split("/")) + 3]) if base else None
+
     @staticmethod
     def _count(rec: list, at: int, flags: int, minute: int) -> None:
         """Adds the flags; a write counts, and counts its minute once. A file made again isn't deleted any more."""
@@ -4886,14 +4911,16 @@ class _Tally:
                 rec[at + 1] += 1
 
     def counts(self) -> dict:
-        return {"events": self.events, "files": len(self.app) + sum(self.folded.values()), "others": len(self.others),
-                "overflow": self.overflow}
+        return {"events": self.events, "files": len(self.app) + sum(self.folded.values()),
+                "others": len(self.others) + sum(self.others_folded.values()), "overflow": self.overflow}
 
     def result(self) -> dict:
         """The records as tools/activity.py reads them: [path, flags, opens, writes, minutes, who]."""
         files = [[p, r[0], r[1], r[2], r[3], ""] for p, r in self.app.items()]
         files += [[p, r[0], 0, r[1], r[2], r[4]] for p, r in self.others.items()]
         return {"files": files, "folded": self.folded, "system": self.system, "gone": self.gone,
+                "others_folded": sorted(([who, folder, n] for (who, folder), n in self.others_folded.items()),
+                                        key=lambda o: -o[2]),
                 "events": self.events, "foreign": self.foreign, "overflow": self.overflow,
                 "unresolved": self.unresolved, "others_left": self.others_left}
 
