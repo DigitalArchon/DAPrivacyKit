@@ -316,6 +316,28 @@ def processes(host: Host) -> set[str]:
     return out
 
 
+def removed_while_running(host: Host, name: str) -> bool:
+    """Whether the processes called `name` run a program that has since been removed: /proc/PID/exe reads
+    "PATH (deleted)" and nothing is at PATH now. Package managers remove the files and leave what runs running, a
+    session's daemon until logout (KDE Connect's, tested with pacman). An upgrade leaves "(deleted)" too, with the new
+    program at PATH. Other accounts' processes can't be read and don't count; False when none could be read."""
+    found = False
+    for p in children(host.sys_path("/proc")):
+        if not p.name.isdigit():
+            continue
+        try:
+            if (p / "comm").read_text().strip() != name:
+                continue
+            exe = os.readlink(p / "exe")
+        except OSError:
+            continue
+        path, deleted = exe.removesuffix(" (deleted)"), exe.endswith(" (deleted)")
+        if not deleted or not path.startswith("/") or os.path.lexists(host.sys_path(path)):
+            return False
+        found = True
+    return found
+
+
 def open_files(host: Host) -> list[tuple[str, frozenset[str]]]:
     """(process name, paths it holds) for each of this user's processes: its working directory,
     open files and mapped files, from /proc (what `fuser` reads). One pass over /proc: reading

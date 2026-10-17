@@ -214,6 +214,21 @@ def test_kdeconnect(cat, tmp_path):
     assert o.status is Status.FAIL and ev(o)["Paired devices"] == 2
 
 
+def test_kdeconnect_removed_while_running(cat, tmp_path):
+    """Removing the package leaves the daemon running from its deleted program, still listening (pacman on
+    CachyOS): still a problem, and the summary says why it is still there. After an upgrade the program is back."""
+    proc = {"/proc/77/comm": "kdeconnectd\n"}
+    exe = {"/proc/77/exe": "/usr/bin/kdeconnectd (deleted)"}
+    host = make_host(tmp_path / "removed", files=proc, links=exe)
+    o = detect(cat, "net.kdeconnect", make_scan(host, listeners=[Listener("tcp", "*", 1716)]))
+    assert o.status is Status.FAIL and o.summary.startswith("KDE Connect was removed") and ev(o)["Listening on"] == "1716"
+    host = make_host(tmp_path / "upgraded", files={**proc, "/usr/bin/kdeconnectd": ""}, links=exe)
+    o = detect(cat, "net.kdeconnect", make_scan(host))
+    assert o.status is Status.FAIL and o.summary.startswith("KDE Connect is running")
+    host = make_host(tmp_path / "running", files=proc, links={"/proc/77/exe": "/usr/bin/kdeconnectd"})
+    assert detect(cat, "net.kdeconnect", make_scan(host)).summary.startswith("KDE Connect is running")
+
+
 # ------------------------------------------------------------------ VPN and DNS
 
 RESOLVECTL_LEAK = """Global

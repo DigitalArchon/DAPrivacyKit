@@ -808,7 +808,7 @@ def test_thumbnails_in_memory_only_for_the_usual_cache_folder(cat, tmp_path):
 # ------------------------------------------------------------------ KDE Connect and GSConnect
 
 def test_kdeconnect_turned_off_for_the_user(cat, tmp_path):
-    host = make_host(tmp_path, files={"/proc/77/comm": "kdeconnectd\n"},
+    host = make_host(tmp_path, files={"/proc/77/comm": "kdeconnectd\n", "/etc/os-release": "ID=arch\n"},
                      home_files={".config/kdeconnect/trusted_devices": "[abc]\nname=Phone\n"})
     calls = []
     host.runner.handlers["pkill"] = lambda argv: (calls.append(argv), CommandResult(argv, 0, ""))[1]
@@ -820,6 +820,22 @@ def test_kdeconnect_turned_off_for_the_user(cat, tmp_path):
     assert calls and calls[0][-1] == "kdeconnectd"
     revert(host, log, res)
     assert not autostart.exists() and not dbus.exists()
+    remove = next(s for s in g.steps if s.title == "Or remove it for every account")
+    assert remove.commands == ["sudo pacman -R kdeconnect", "pkill -TERM -x -u 1000 kdeconnectd"]
+    assert "until that account logs out" in remove.text
+
+
+def test_kdeconnect_removed_while_running_is_stopped(cat, tmp_path):
+    """Removed, with the session's daemon still running from before: the guide only stops it (nothing starts it
+    again), and doesn't offer to turn off or remove what is gone."""
+    host = make_host(tmp_path, files={"/proc/77/comm": "kdeconnectd\n", "/etc/os-release": "ID=arch\n"},
+                     links={"/proc/77/exe": "/usr/bin/kdeconnectd (deleted)"})
+    calls = []
+    host.runner.handlers["pkill"] = lambda argv: (calls.append(argv), CommandResult(argv, 0, ""))[1]
+    g = build(cat, host, "net.kdeconnect", desktop=("kde",))
+    assert [s.title for s in g.steps] == ["Stop the copy that is still running"]
+    apply(host, options(g)["Stop it now"])
+    assert calls == [("pkill", "-TERM", "-x", "-u", "1000", "kdeconnectd")]
 
 
 def test_gsconnect_turned_off(cat, tmp_path):

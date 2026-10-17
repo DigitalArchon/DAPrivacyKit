@@ -1280,7 +1280,11 @@ checks:
       - 'pgrep kdeconnectd; ~/.config/kdeconnect/trusted_devices'
       - 'gnome-extensions list --enabled | grep gsconnect'
       - 'ss -tulpn for ports 1714-1764'
-    fix: Review paired devices and enabled plugins; disable when unused.
+      - 'kdeconnectd''s /proc/PID/exe reading "PATH (deleted)" with nothing at PATH: KDE Connect was removed while it
+        ran. The package manager leaves the daemon running and listening until logout (tested with pacman on CachyOS)'
+    fix: >
+      Review paired devices and enabled plugins; disable when unused. Removed while running: stop the daemon left
+      running (pkill), which nothing starts again.
     remedy: >
       KDE Connect (or GSConnect) is waiting for phones on the local network. If you don't use it,
       Guide… turns it off; if you do, check which phones are paired.

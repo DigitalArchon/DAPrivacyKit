@@ -14,7 +14,7 @@ from ..network import carrying_vpn_links, vpn_links
 from ..privileged import HelperError
 from . import Check, Scan, register
 from ._util import (absent, children, failed, installed, isdir, mentions_name, passed, processes, read_text,
-                    systemctl_state, unknown, user_names, warned)
+                    removed_while_running, systemctl_state, unknown, user_names, warned)
 
 
 # ------------------------------------------------------------------ NetworkManager
@@ -476,6 +476,10 @@ class KdeConnect(Check):
         ports = sorted({s.port for s in scan.context.listeners or [] if 1714 <= s.port <= 1764})
         if ports:
             ev.append(Evidence.val("Listening on", ", ".join(map(str, ports))))
+        if active == ["KDE Connect"] and removed_while_running(host, "kdeconnectd"):
+            # removing the package left the daemon running from memory: still listening, until logout
+            return failed("KDE Connect was removed, but the copy started before that is still running and reachable "
+                          "on the local network until you log out or stop it.", *ev)
         if active:
             return failed(f"{' and '.join(active)} {'is' if len(active) == 1 else 'are'} running and reachable on the "
                           "local network.", *ev)

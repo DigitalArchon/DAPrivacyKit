@@ -6,9 +6,9 @@ import re
 
 from .. import No
 from ... import network as net
-from ...fix import BluetoothSet, Command, GSettingsSet, NmSet, RootChange, WriteFile
+from ...fix import BluetoothSet, Command, GSettingsSet, NmSet, RootChange, WriteFile, shell
 from ...guide import Guide, Option, Step
-from .._util import human_size, installed, isfile, processes, read_text, systemctl_state
+from .._util import human_size, installed, isfile, processes, read_text, removed_while_running, systemctl_state
 from . import guide, option, evidence, unit_exists, service_off, dropin, install, remove, remote_session
 
 
@@ -499,15 +499,26 @@ def kdeconnect(check, scan, outcome):
     enabled = scan.gnome.gsettings("org.gnome.shell", "enabled-extensions")
     gsconnect = isinstance(enabled, list) and GSCONNECT in enabled
     steps = []
-    if running:
+    stop = ["pkill", "-TERM", "-x", "-u", str(host.uid), "kdeconnectd"]
+    if running and removed_while_running(host, "kdeconnectd"):
+        # removed, and the daemon the session started before that still listens: nothing starts it again
+        steps.append(Step("Stop the copy that is still running",
+                          "KDE Connect has been removed, but removing a program doesn't stop it where it is already "
+                          "running: the copy your session started keeps listening until you log out. Once stopped, "
+                          "nothing starts it again. Other accounts logged in now keep theirs until they log out.",
+                          options=[option(check, "Stop it now", [Command(stop, "stop KDE Connect's daemon, left running "
+                                                                          "from before it was removed", check_ok=False)],
+                                          recommended=True, side_effects=[
+                                              "Phones can no longer connect. Install KDE Connect again to use it."])]))
+    elif running:
         autostart = paths.config_home / "autostart" / KDECONNECT_AUTOSTART
         dbus = paths.data_home / "dbus-1" / "services" / KDECONNECT_DBUS
         off = [WriteFile(autostart, lambda old: "[Desktop Entry]\nType=Application\nName=KDE Connect\n"
                          "Exec=kdeconnectd\nHidden=true\n", "Don't start KDE Connect at login", host.display(autostart)),
                WriteFile(dbus, lambda old: "[D-BUS Service]\nName=org.kde.kdeconnect\nExec=/bin/false\n",
                          "Don't start it when something asks for it", host.display(dbus)),
-               Command(["pkill", "-TERM", "-x", "-u", str(host.uid), "kdeconnectd"],
-                       "stop it now (it would start again on demand, which the line above prevents)", check_ok=False)]
+               Command(stop, "stop it now (it would start again on demand, which the line above prevents)",
+                       check_ok=False)]
         steps.append(Step("Check which phones are paired",
                           "If you use KDE Connect, keep only phones you own, and turn off plugins you don't use "
                           "(running commands, sharing the clipboard, reading notifications).",
@@ -518,7 +529,10 @@ def kdeconnect(check, scan, outcome):
                 "The KDE Connect icon in the panel shows it as not running. Revert from History to use it again."])]))
         cmd = remove(scan, debian="kdeconnect", fedora="kdeconnectd", arch="kdeconnect", suse="kdeconnect-kde")
         if cmd:
-            steps.append(Step("Or remove it for every account", "If nobody on this computer uses it.", commands=[cmd]))
+            steps.append(Step("Or remove it for every account",
+                              "If nobody on this computer uses it. Removing it doesn't stop the copy already running in "
+                              "each account's session, which keeps listening until that account logs out: the second "
+                              "command stops yours now.", commands=[cmd, shell(stop)]))
     if gsconnect:
         disabled = scan.gnome.gsettings("org.gnome.shell", "disabled-extensions")
         disabled = disabled if isinstance(disabled, list) else []
