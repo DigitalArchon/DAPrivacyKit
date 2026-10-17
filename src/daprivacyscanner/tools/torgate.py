@@ -4,7 +4,8 @@ only, and nothing of the app's imported: the AppImage that started it may be gon
 browser closes. It:
 
 1. applies Landlock's scopes (abstract Unix sockets, signals) when the kernel has them;
-2. starts tor, Tor Browser's own, with its SOCKS and control ports as Unix sockets in the outer
+2. starts tor, Tor Browser's own, in a sandbox of its own (sandbox.tor_argv: none of the display, sound or
+   the browser's profile the outer one holds), with its SOCKS and control ports as Unix sockets in the outer
    sandbox's tor folder, and follows its log for the bootstrap status (written to status.json, which
    the app shows: Tor Browser's own Connect page is off when it doesn't start tor);
 3. listens on the browser's control socket and filters what goes to tor's: what Tor Browser needs to
@@ -12,7 +13,8 @@ browser closes. It:
    tor's settings (a proxy or a bridge of the browser's choosing would make tor reveal the address) is
    refused with 510. The browser authenticates to the filter with anything; the filter authenticates
    to tor with the cookie, which the browser never sees;
-4. runs the inner sandbox (the browser, with no network) and waits for it; then stops tor. The inner
+4. runs the inner sandbox (the browser, with no network) and waits for it; then stops tor (halt: over
+   its control port, so that it saves its state). The inner
    sandbox's command (sandbox.STAY) lasts until no browser process is left, also when the browser restarts
    itself as a new process, and the sandbox dies with this gate (--die-with-parent).
 
@@ -314,6 +316,23 @@ def apply_landlock():
         sys.exit("Landlock could not be applied (%d)" % ctypes.get_errno())
 
 
+def halt(upstream, cookie, tor, wait=10):
+    """tor asked to exit cleanly over its control port (SIGNAL HALT: as SIGTERM, it saves its state first) and
+    waited for, then stopped if it hasn't: it runs in a sandbox of its own (sandbox.tor_argv), whose bubblewrap a
+    signal ends at once, taking tor with it unsaved."""
+    up = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        up.settimeout(5)
+        up.connect(upstream)
+        up.sendall(b"AUTHENTICATE " + cookie.hex().encode() + b"\r\nSIGNAL HALT\r\n")
+        tor.wait(wait)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    finally:
+        up.close()
+    stop(tor)
+
+
 def stop(proc, wait=10):
     if proc.poll() is None:
         proc.terminate()
@@ -364,7 +383,7 @@ def main(cfg):
     signal.signal(signal.SIGINT, end)
     rc = inner.wait()
     srv.close()
-    stop(tor)
+    halt(cfg["upstream"], cookie, tor)
     for p in (cfg["control"], cfg["socks"], cfg["upstream"]):
         try:
             os.unlink(p)

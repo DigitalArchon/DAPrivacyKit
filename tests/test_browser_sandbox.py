@@ -353,7 +353,8 @@ def test_tor_browser_has_no_network_but_tors(host):
     assert argv[i + 1:i + 5] == [S.PYTHON, "-I", "-c", "GATE"]
     cfg = json.loads(argv[-1])
     tor = cfg["tor"]
-    assert tor[0] == "/home/user/tor-browser/Browser/TorBrowser/Tor/tor" and "@PID@" in tor
+    assert tor[0] == "bwrap" and tor[tor.index("--") + 1] == "/home/user/tor-browser/Browser/TorBrowser/Tor/tor"
+    assert "@PID@" not in tor and "__OwningControllerProcess" not in tor       # its own PID namespace: it dies with the gate
     assert tor[tor.index("+__SocksPort") + 1].startswith("unix:/run/user/1000/tor/socks ")
     assert tor[tor.index("+__ControlPort") + 1] == "unix:/run/user/1000/tor/tor-control"     # the filter's is "control"
     assert cfg["control"] == "/run/user/1000/tor/control" and cfg["upstream"] == "/run/user/1000/tor/tor-control"

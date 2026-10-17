@@ -308,3 +308,81 @@ def test_both_browsers_innermost_sandboxes_get_them(host):
     inner = json.loads(argv[-1])["inner"]
     assert ("/run/identity/swaps", "/proc/swaps") in pairs(inner, "--ro-bind") and "/proc/bus" in inner
     assert "/proc/bus" not in argv[:argv.index("--")]                # never the outer one: its /proc stays whole
+
+
+# ------------------------------------------------------------------ Tor Browser's outer sandbox held the X cookie
+
+def test_tor_and_its_bridges_run_in_a_sandbox_of_their_own(host):
+    """The outer sandbox holds what the inner one binds from it: the X server's socket and cookie (seen live: tor's
+    /tmp held .X11-unix and .Xauthority), sound's socket, the browser's profile and Downloads. A pluggable transport
+    parses what the network sends it (Snowflake: WebRTC from volunteers' proxies), and tor started its transports
+    there. tor now has a sandbox of its own: none of that, a PID namespace of its own."""
+    installed(host, "tor")
+    bwrap_ok(host)
+    (host.root / "tmp/.X11-unix").mkdir(parents=True)
+    (host.root / "tmp/.X11-unix/X0").write_text("")
+    (host.home / ".Xauthority").write_bytes(b"\x01\x00\x00\x03box\x00\x010\x00\x12MIT-MAGIC-COOKIE-1\x00\x10" + b"A" * 16)
+    host.environ["DISPLAY"] = ":0"
+    (host.root / f"run/user/{host.uid}/pulse").mkdir(parents=True)
+    (host.root / f"run/user/{host.uid}/pulse/native").write_text("")
+    identity_etc(host)
+    lay, private = layout(host, B.BROWSERS["tor"])
+    (private / "tor").mkdir(exist_ok=True)
+    disp = S.display(host, private, landlock=True)
+    argv = S.tor_argv(host, lay, private / "tor", disp, True, True, S.identity_files(private / "etc", None), "GATE")
+    outer = argv[:argv.index("--")]
+    assert any(d == "/tmp/.Xauthority" for _, d in pairs(outer, "--ro-bind"))        # the outer one has them, for the inner
+    tor = json.loads(argv[-1])["tor"]
+    box, command = tor[:tor.index("--")], tor[tor.index("--") + 1:]
+    assert box[:2] == ["bwrap", "--die-with-parent"] and "--unshare-pid" in box and "--unshare-user" in box
+    assert box[box.index("--cap-drop") + 1] == "ALL" and "--share-net" not in box and "--unshare-net" not in box
+    mounts = [x for flag in ("--bind", "--ro-bind") for pair in pairs(box, flag) for x in pair]
+    assert not any(m.startswith(("/tmp/", "/run/user/1000/wayland", "/run/user/1000/pulse", "/home/user/.session"))
+                   or "Data/Browser" in m or "Downloads" in m for m in mounts), mounts
+    assert ("/home/user/tor-browser/Browser/TorBrowser/Tor",) * 2 in pairs(box, "--ro-bind")
+    assert ("/home/user/tor-browser/Browser/TorBrowser/Data/Tor",) * 2 in pairs(box, "--bind")
+    assert ("/run/user/1000/tor",) * 2 in pairs(box, "--bind") and ("/etc", "/etc") in pairs(box, "--ro-bind")
+    assert box[box.index("--tmpfs") + 1] == "/tmp" and box[box.index("--chdir") + 1] == "/home/user/tor-browser/Browser"
+    assert command[0].endswith("/TorBrowser/Tor/tor") and "__OwningControllerProcess" not in command
+
+
+def test_the_gate_stops_tor_over_its_control_port_so_it_saves_its_state(tmp_path):
+    """In its own sandbox a signal to tor's bubblewrap would end tor at once (SIGKILL), unsaved: the gate asks tor
+    to halt over its control port, waits, and only then stops what is left."""
+    import socket
+    import threading
+    from daprivacyscanner.tools import torgate as G
+    got = []
+    srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    srv.bind(str(tmp_path / "tor-control"))
+    srv.listen(1)
+
+    class Tor:
+        rc = None
+
+        def wait(self, timeout=None):
+            for _ in range(int((timeout or 1) * 20)):
+                if self.rc is not None:
+                    return self.rc
+                import time
+                time.sleep(0.05)
+            raise G.subprocess.TimeoutExpired("tor", timeout)
+
+        def poll(self):
+            return self.rc
+
+    tor = Tor()
+
+    def control():
+        c, _ = srv.accept()
+        for line in G.lines(c):
+            got.append(line.decode().strip())
+            if got[-1] == "SIGNAL HALT":
+                tor.rc = 0
+                break
+        c.close()
+    threading.Thread(target=control, daemon=True).start()
+    G.halt(str(tmp_path / "tor-control"), b"\x01" * 32, tor, wait=5)
+    assert got == ["AUTHENTICATE " + "01" * 32, "SIGNAL HALT"] and tor.rc == 0
+    source = Path(G.__file__).read_text()
+    assert 'halt(cfg["upstream"], cookie, tor)' in source.split("rc = inner.wait()")[1]

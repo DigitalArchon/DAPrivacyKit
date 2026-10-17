@@ -788,7 +788,7 @@ box, and asks again before Tor Browser starts with sound.
 
 ### 7.12 Tor Browser's network: two sandboxes and a filter
 
-Tor Browser has no network of its own. It runs as two nested sandboxes:
+Tor Browser has no network of its own. It runs as two nested sandboxes, and tor in a third:
 
 ```
 host
@@ -798,7 +798,8 @@ host
       │   tor's data folder writable here; tor/ folder at /run/user/1000/tor
       │   sandbox identity files at /run/identity
       └─ python3 -I -c <torgate.py source> <config>
-         ├─ tor  (Tor Browser's own binary, from its folder)
+         ├─ bwrap  TOR  --unshare-user --unshare-pid …   (the outer one's network; no display, sound or profile)
+         │  └─ tor  (Tor Browser's own binary, from its folder) and its pluggable transports
          │     SocksPort    unix:/run/user/1000/tor/socks
          │     ControlPort  unix:/run/user/1000/tor/tor-control  (cookie auth)
          ├─ control-port filter, listening on /run/user/1000/tor/control (0600)
@@ -814,27 +815,38 @@ host
 may be unmounted by the time the browser closes) and imports nothing of the app's. It:
 
 1. applies Landlock's scopes when the kernel has them;
-2. starts tor:
+2. starts tor, in a sandbox of its own inside the outer one:
    ```
+   bwrap --die-with-parent --unshare-user --unshare-pid --unshare-ipc --unshare-uts --unshare-cgroup-try
+         --new-session --cap-drop ALL  <the system, read-only>  --ro-bind /etc /etc
+         --proc /proc --dev /dev --tmpfs /tmp  --ro-bind <TorBrowser/Tor> (tor and its transports)
+         --bind <Data/Tor>  --bind /run/user/1000/tor  --chdir <Browser> --
    tor --defaults-torrc <Data/Tor>/torrc-defaults -f /run/user/1000/tor/torrc
        DataDirectory <Data/Tor>  ClientOnionAuthDir <Data/Tor>/onion-auth
        GeoIPFile <Data/Tor>/geoip  GeoIPv6File <Data/Tor>/geoip6
        +__ControlPort unix:/run/user/1000/tor/tor-control
        +__SocksPort "unix:/run/user/1000/tor/socks IPv6Traffic PreferIPv6 KeepAliveIsolateSOCKSAuth"
        CookieAuthentication 1  CookieAuthFile /run/user/1000/tor/control_auth_cookie
-       __OwningControllerProcess <gate's pid>
    ```
    with `HOME`, a minimal `PATH` and `LD_LIBRARY_PATH` for tor's own libraries; it waits up to 60 seconds
-   for the sockets and cookie;
+   for the sockets and cookie. The outer sandbox holds what the inner one binds from it: the display's socket
+   and X cookie, sound's socket, the browser's profile and Downloads; and its processes see the inner ones.
+   tor needs none of it, and its pluggable transports parse what the network sends them (Snowflake's: WebRTC
+   from volunteers' proxies), so tor and they run without it (found in the review of 2026-10-17: tor's `/tmp`
+   held `.X11-unix` and `.Xauthority`; since, empty, and the profile out of sight, tested on Mint 22.3 and
+   CachyOS). Its own PID namespace means tor can no longer watch the gate by its PID
+   (`__OwningControllerProcess`): it dies with the gate instead (`--die-with-parent`);
 3. follows tor's log: `Bootstrapped N%` lines update `status.json` (`starting`, `connecting`, `connected`,
    `failed`, `stopped`, with progress, summary and the last warning). The panel reads it every 2 seconds
    while the browser runs;
 4. asks tor for its version on its own connection (for the PROTOCOLINFO reply);
 5. listens on the browser's control socket and filters every connection (below);
-6. runs the inner sandbox and waits for it; on exit (or SIGTERM) it closes the filter, stops tor
-   (SIGTERM, then SIGKILL after 10 seconds), and removes the sockets. The inner sandbox's command lasts as
-   long as any browser process does (`sandbox.STAY`, above, its PID 1), and the inner sandbox is started with
-   `--die-with-parent`: when its command is over, or the gate is gone, it is killed and everything
+6. runs the inner sandbox and waits for it; on exit (or SIGTERM) it closes the filter, stops tor (`halt`:
+   `SIGNAL HALT` over its control port, so that it saves its state, as on SIGTERM, then waited for; a signal to
+   tor's bubblewrap would end tor at once, unsaved; SIGTERM, then SIGKILL after 10 seconds, only if it hasn't
+   gone: tested, tor gone and its state file written in about a second), and removes the sockets. The inner
+   sandbox's command lasts as long as any browser process does (`sandbox.STAY`, above, its PID 1), and the inner
+   sandbox is started with `--die-with-parent`: when its command is over, or the gate is gone, it is killed and everything
    in it with it. A browser is never left running with tor gone.
 
 **The control-port filter.** Each browser connection gets its own upstream connection to tor,
@@ -873,7 +885,7 @@ are refused; the circuit display works with nothing refused (logged: `SETEVENTS 
 
 The choice is kept in `bridges.json` (in the RAM disk) and written into the app's own `torrc` at each start
 as `UseBridges 1` and `Bridge …` lines. The pluggable transports are tor's own (`lyrebird`,
-`snowflake-client`, `conjure-client`, from `torrc-defaults`), run by tor in the outer sandbox.
+`snowflake-client`, `conjure-client`, from `torrc-defaults`), run by tor in its sandbox.
 
 **A VPN underneath.** The card notes that a trustworthy VPN adds a second layer: if the browser were ever
 made to connect around Tor, sites would see the VPN's address; the cost is that the VPN sees when Tor is

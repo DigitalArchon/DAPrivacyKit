@@ -47,8 +47,9 @@ and no capabilities. Nested user namespaces stay allowed, so Firefox's own sandb
 
 The network:
 - Tor Browser has none of its own. Two sandboxes, one inside the other: the outer one shares the
-  computer's network and runs tor (Tor Browser's own, from its folder) and a filter on tor's control
-  port (tools/torgate.py, run by the host's python3); the inner one, with only a loopback interface,
+  computer's network and runs tor (Tor Browser's own, from its folder, with its pluggable transports in
+  a sandbox of their own, without the display, sound or the browser's profile the outer one holds) and
+  a filter on tor's control port (tools/torgate.py, run by the host's python3); the inner one, with only a loopback interface,
   runs the browser, which reaches tor through two Unix sockets: SOCKS, and the filtered control port.
   So a browser that was taken over can't connect around Tor (revealing the address), nor to services
   on this computer or the local network, nor to the session's abstract sockets (they belong to the
@@ -1150,8 +1151,8 @@ TOR_ENV = {"TOR_SKIP_LAUNCH": "1", "TOR_SOCKS_IPC_PATH": SOCKS_IN, "TOR_CONTROL_
 def tor_argv(host: Host, lay: Layout, tor_dir: Path, disp: Display, with_sound: bool, landlock: bool,
              etc: dict[str, Path], gate: str, sync_fd: int | None = None, gpu: tuple[str, ...] = ()) -> list[str]:
     """Tor Browser's two sandboxes: the outer one, on the computer's network, runs `gate`
-    (tools/torgate.py's source) in the host's python3, which starts tor and the control-port filter,
-    then the inner sandbox, with no network, around the browser. `tor_dir` (in the app's private
+    (tools/torgate.py's source) in the host's python3, which starts tor (in a sandbox of its own, inside the
+    outer one) and the control-port filter, then the inner sandbox, with no network, around the browser. `tor_dir` (in the app's private
     folder) holds tor's sockets, its control cookie, the torrc with the bridges and the status. `etc`:
     identity_files' files: the outer sandbox has the computer's resolver (tor and its pluggable transports
     need it), the inner one none; the inner one, the innermost, has /proc's own files (proc_masks). `gpu`: the
@@ -1163,13 +1164,25 @@ def tor_argv(host: Host, lay: Layout, tor_dir: Path, disp: Display, with_sound: 
     bwrap = _need(host, BWRAP)
     snd = sound(host) if with_sound else None
     data = f"{lay.inside}/Browser/TorBrowser/Data/Tor"
-    tor = [f"{lay.inside}/Browser/TorBrowser/Tor/tor", "--defaults-torrc", f"{data}/torrc-defaults",
+    programs = f"{lay.inside}/Browser/TorBrowser/Tor"
+    # tor and its pluggable transports in a sandbox of their own, inside the outer one (the review of 2026-10-17): the
+    # outer one holds what the inner one binds from it, the display's socket and X cookie, sound's socket, the
+    # browser's profile and Downloads, and sees the browser's processes, none of which tor needs; and a bridge's
+    # program parses what the network sends it (Snowflake's: WebRTC from volunteers' proxies). In tor's own: the
+    # system, the outer sandbox's /etc (the resolver, certificates), tor's programs read-only, its data and its
+    # sockets' folder; a PID namespace of its own, so it no longer watches the gate by its PID
+    # (__OwningControllerProcess): it dies with the gate (--die-with-parent), which stops it over its control port
+    # first (torgate.halt), so that it saves its state.
+    box = [bwrap, "--die-with-parent", "--unshare-user", "--unshare-pid", "--unshare-ipc", "--unshare-uts",
+           "--unshare-cgroup-try", "--new-session", "--cap-drop", "ALL", *system(host, etc=False),
+           "--ro-bind", "/etc", "/etc", "--ro-bind", programs, programs, "--bind", data, data,
+           "--bind", TOR_DIR_IN, TOR_DIR_IN, "--chdir", f"{lay.inside}/Browser", "--"]
+    tor = [*box, f"{programs}/tor", "--defaults-torrc", f"{data}/torrc-defaults",
            "-f", f"{TOR_DIR_IN}/torrc", "DataDirectory", data, "ClientOnionAuthDir", f"{data}/onion-auth",
            "GeoIPFile", f"{data}/geoip", "GeoIPv6File", f"{data}/geoip6",
            "+__ControlPort", f"unix:{TOR_DIR_IN}/tor-control",
            "+__SocksPort", f"unix:{SOCKS_IN} IPv6Traffic PreferIPv6 KeepAliveIsolateSOCKSAuth",
-           "CookieAuthentication", "1", "CookieAuthFile", f"{TOR_DIR_IN}/control_auth_cookie",
-           "__OwningControllerProcess", "@PID@"]
+           "CookieAuthentication", "1", "CookieAuthFile", f"{TOR_DIR_IN}/control_auth_cookie"]
     inner = [bwrap, "--die-with-parent", *namespaces(False), *system(host, etc=False),
              *etc_argv(host, etc, None, inner=True), *proc_masks(IDENTITY_IN, bool(gpu), host), *_gpu_argv(gpu)]
     inner += _folder(lay, outer=False, inside=True)
