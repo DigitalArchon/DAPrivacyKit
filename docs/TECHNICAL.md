@@ -1600,7 +1600,10 @@ OACS, FNA and SANICAP via the helper's ioctl), read on request and kept for the 
   - **The watch** (`tools/homewatch.py`): inotify on every folder under the throwaway home, as the user. It
     records what is opened, changed, made, deleted and renamed, in the records `activity.summarise` reads (here
     with file names: the home is made up), and leaves its own listings out (a folder it looks through when it
-    appears isn't counted as listed by the program).
+    appears isn't counted as listed by the program). Each decoy file also has a watch on its own inode, which
+    counts its openings: a folder's watch reports a file by the name it was opened under in that folder, so a
+    decoy linked into another folder and read there, or read after its folder was renamed, went unseen (the
+    2026-10-17 review's suspicion, confirmed by a test).
   - **Decoys** (`tools/bait.py`): made-up SSH and GnuPG keys, Firefox, Chrome and Thunderbird profiles with real
     SQLite files, a keyring, wallets, cloud and Git credentials, a shell history, documents and a photo: 34
     files, new for each trial, from random bytes. A program that opens them has gone looking; the page shows it

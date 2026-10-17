@@ -24,10 +24,15 @@ from pathlib import Path
 from .activity import CREATED, DELETED, DIR, MOVED, OPENED, WRITTEN
 
 IN_ACCESS, IN_MODIFY, IN_OPEN, IN_MOVED_FROM, IN_MOVED_TO = 0x1, 0x2, 0x20, 0x40, 0x80
-IN_CREATE, IN_DELETE, IN_Q_OVERFLOW, IN_IGNORED = 0x100, 0x200, 0x4000, 0x8000
+IN_CREATE, IN_DELETE, IN_DELETE_SELF, IN_MOVE_SELF = 0x100, 0x200, 0x400, 0x800
+IN_Q_OVERFLOW, IN_IGNORED = 0x4000, 0x8000
 IN_ONLYDIR, IN_DONT_FOLLOW, IN_ISDIR = 0x01000000, 0x02000000, 0x40000000
 IN_NONBLOCK, IN_CLOEXEC = 0o4000, 0o2000000
 MASK = IN_ACCESS | IN_MODIFY | IN_OPEN | IN_MOVED_FROM | IN_MOVED_TO | IN_CREATE | IN_DELETE | IN_ONLYDIR | IN_DONT_FOLLOW
+# a decoy file's own watch: on its inode, so it is seen however it is reached. A folder's watch reports a file by the
+# name it was opened under in that folder: a decoy linked (ln) into another folder and read there, or its folder
+# renamed first, went unseen (the review of 2026-10-17)
+DECOY_MASK = IN_MODIFY | IN_OPEN | IN_MOVE_SELF | IN_DELETE_SELF | IN_DONT_FOLLOW
 FILES_MAX = 50000
 FOLDERS_MAX = 20000
 
@@ -45,6 +50,7 @@ class HomeWatch:
         self.libc = ctypes.CDLL(None, use_errno=True)
         self.fd = -1
         self.wds: dict[int, str] = {}
+        self.decoy_wds: dict[int, str] = {}         # a decoy file's own watch -> its relative path (DECOY_MASK)
         self.files: dict[str, list] = {}            # path -> [flags, opens, writes, minutes, last minute]
         self.hits: dict[str, dict] = {}             # a decoy's relative path -> {"listed", "opened", "changed", "first"}
         self.overflow = self.left_out = 0
@@ -58,6 +64,12 @@ class HomeWatch:
         if self.fd < 0:
             raise WatchError(ctypes.get_errno(), "inotify isn't available")
         self._watch_tree(self.root, seen=False)
+        for rel in self.bait:
+            path = os.path.join(self.root, rel)
+            if os.path.isfile(path) and not os.path.islink(path):
+                wd = self.libc.inotify_add_watch(self.fd, os.fsencode(path), DECOY_MASK)
+                if wd >= 0:
+                    self.decoy_wds[wd] = rel
         self._drain()                                  # its own look through the folders: nothing of the program's yet
         with self.lock:
             self.files.clear()
@@ -139,17 +151,36 @@ class HomeWatch:
                     rec[4] = minute
                     rec[3] += 1
             if rel in self.bait:
-                hit = self.hits.setdefault(rel, {"listed": 0, "opened": 0, "changed": 0, "first": time.time()})
+                own = rel in self.decoy_wds.values()       # its own watch counts its openings (_decoy)
                 if flags & DIR:
-                    hit["listed"] += 1 if opened else 0
+                    if opened:
+                        self._hit(rel)["listed"] += 1
                 elif flags & (WRITTEN | DELETED | MOVED):
-                    hit["changed"] += 1
-                elif opened:
-                    hit["opened"] += 1
+                    self._hit(rel)["changed"] += 1
+                elif opened and not own:
+                    self._hit(rel)["opened"] += 1
+
+    def _hit(self, rel: str) -> dict:
+        return self.hits.setdefault(rel, {"listed": 0, "opened": 0, "changed": 0, "first": time.time()})
+
+    def _decoy(self, wd: int, mask: int) -> None:
+        """An event on a decoy file's own watch: its inode, whatever name or folder it was reached through."""
+        rel = self.decoy_wds[wd]
+        if mask & IN_IGNORED:
+            del self.decoy_wds[wd]
+            return
+        with self.lock:
+            if mask & IN_OPEN:
+                self._hit(rel)["opened"] += 1
+            if mask & (IN_MODIFY | IN_MOVE_SELF | IN_DELETE_SELF):
+                self._hit(rel)["changed"] += 1
 
     def _event(self, wd: int, mask: int, name: str) -> None:
         if mask & IN_Q_OVERFLOW:
             self.overflow += 1
+            return
+        if wd in self.decoy_wds:
+            self._decoy(wd, mask)
             return
         folder = self.wds.get(wd)
         if folder is None:

@@ -286,6 +286,44 @@ def test_the_copies_flatpak_started_for_a_trial_are_ended_with_it(tmp_path, monk
     assert trial.end_flatpak_copies(host, t) == 1 and killed == [(4001, signal.SIGKILL)]
 
 
+# ------------------------------------------------------------------ suspicion: decoys seen only through their own path
+
+def test_a_decoy_is_seen_however_it_is_reached(tmp_path):
+    """The review's suspicion, confirmed here: a folder's watch reports a file by the name it was opened under in that
+    folder, so a decoy linked into another folder and read there, or read after its folder was renamed, went unseen.
+    Each decoy file now has a watch on its own inode."""
+    from daprivacyscanner.tools import bait, homewatch
+    home = tmp_path / "home"
+    home.mkdir()
+    decoys = bait.plant(home)
+    key = next(rel for rel, what in decoys.items() if rel == ".ssh/id_ed25519")
+    wallet = next(rel for rel, what in decoys.items() if "wallet" in what.lower() and (home / rel).is_file())
+    w = homewatch.HomeWatch(home, decoys)
+    w.start()
+    try:
+        os.link(home / key, home / "innocent.txt")                     # a second name for the key, elsewhere
+        (home / "innocent.txt").read_bytes()
+        os.rename(home / os.path.dirname(wallet), home / "renamed")      # the wallet's folder renamed, then read
+        (home / "renamed" / os.path.basename(wallet)).read_bytes()
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline and len([d for d in w.decoys() if d["opened"]]) < 2:
+            time.sleep(0.05)
+    finally:
+        w.stop()
+    seen = {d["path"]: d for d in w.decoys()}
+    assert seen["~/" + key]["opened"] == 1, "read through another name"
+    assert seen["~/" + wallet]["opened"] == 1, "read in its folder under a new name"
+    # reached by its own path, an opening is counted once, not by the folder's watch as well
+    w = homewatch.HomeWatch(home, {".ssh/id_ed25519": decoys[".ssh/id_ed25519"]})
+    w.start()
+    try:
+        (home / ".ssh/id_ed25519").read_bytes()
+        time.sleep(0.3)
+    finally:
+        w.stop()
+    assert w.decoys()[0]["opened"] == 1
+
+
 # ------------------------------------------------------------------ E10: a trial's and a Box's own words
 
 def test_no_display_says_what_has_nowhere_to_show(tmp_path):
