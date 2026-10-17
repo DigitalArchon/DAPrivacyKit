@@ -476,11 +476,14 @@ def test_unused_partitions_how_to_names_each_and_what_to_do(cat, tmp_path):
 
 # ------------------------------------------------------------------ root certificates added to the store
 
+PEM = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n"
+
 def test_local_root_certs(cat, tmp_path):
     from daprivacyscanner.host import CommandResult
     assert detect(cat, "net.local_root_certs", make_scan(make_host(tmp_path / "none"))).status is Status.PASS
-    files = {"/usr/local/share/ca-certificates/mitm.crt": "x", "/usr/local/share/ca-certificates/corp/root.pem": "x",
-             "/usr/local/share/ca-certificates/README": "not one"}
+    # update-ca-certificates takes *.crt alone from this folder: a .pem there is in no store
+    files = {"/usr/local/share/ca-certificates/mitm.crt": PEM, "/usr/local/share/ca-certificates/corp/root.crt": PEM,
+             "/usr/local/share/ca-certificates/corp/unused.pem": PEM, "/usr/local/share/ca-certificates/README": "not one"}
     host = make_host(tmp_path, files=files)
     o = detect(cat, "net.local_root_certs", make_scan(host))
     assert o.status is Status.WARN and o.summary.startswith("2 root certificates were added")
@@ -493,7 +496,7 @@ def test_local_root_certs(cat, tmp_path):
     host = make_host(tmp_path, files=files, commands=cmds)
     o = detect(cat, "net.local_root_certs", make_scan(host))
     assert ev(o)["/usr/local/share/ca-certificates/mitm.crt"] == "issued to mitmproxy"
-    assert ev(o)["/usr/local/share/ca-certificates/corp/root.pem"] == "a certificate file"       # openssl couldn't read it
+    assert ev(o)["/usr/local/share/ca-certificates/corp/root.crt"] == "a certificate file"       # openssl couldn't read it
 
 
 def test_local_root_certs_added_with_the_trust_tool(cat, tmp_path):
@@ -519,7 +522,7 @@ def test_local_root_certs_is_a_risk_below_the_problem(cat, tmp_path):
 
 def test_local_root_certs_how_to_removes_them_the_distributions_way(cat, tmp_path):
     from test_guides import build
-    files = {"/etc/pki/ca-trust/source/anchors/corp root.crt": "x", "/etc/os-release": "ID=fedora\n"}
+    files = {"/etc/pki/ca-trust/source/anchors/corp root.crt": PEM, "/etc/os-release": "ID=fedora\n"}
     g = build(cat, make_host(tmp_path, files=files), "net.local_root_certs")
     assert g.steps[0].commands == ["openssl x509 -noout -subject -issuer -dates -in "
                                    "'/etc/pki/ca-trust/source/anchors/corp root.crt'"]

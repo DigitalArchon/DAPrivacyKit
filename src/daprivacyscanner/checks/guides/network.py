@@ -148,10 +148,10 @@ def _other_service(scan, s) -> Step:
         return Step(title, f"{s.process} is a program you started (from the desktop or a terminal). Close it if you "
                     "don't need it; a development server can usually be started on 127.0.0.1 instead (for example "
                     "--host 127.0.0.1).")
-    return Step(title, "A program of another account (usually a system service) is listening; the app can't see which "
-                "without administrator access. The first command shows the program and its process number (pid=); the "
-                "second shows which service it belongs to (the first line); the third stops that service, if you don't "
-                "use it." + tail,
+    return Step(title, "A program of another account (usually a system service) is listening. The app lists what "
+                "listens as you, and the system doesn't name other accounts' programs to you. The first command, as "
+                "administrator, shows the program and its process number (pid=); the second shows which service it "
+                "belongs to (the first line); the third stops that service, if you don't use it." + tail,
                 commands=[f"sudo ss -l{'t' if s.proto == 'tcp' else 'u'}np 'sport = :{s.port}'",
                           "systemctl status PID     # the number after pid=",
                           "sudo systemctl disable --now SERVICE.service"])
@@ -181,6 +181,10 @@ def ipv6_reachable(check, scan, outcome):
     return g
 
 
+SSHD_DROPIN = "/etc/ssh/sshd_config.d/10-daprivacyscanner.conf"
+SSHD_KEYS = {"PasswordAuthentication": "no", "KbdInteractiveAuthentication": "no", "PermitRootLogin": "no"}
+
+
 @guide("net.exposed_services")
 def exposed_services(check, scan, outcome):
     listeners = net.exposed(scan.context.listeners or [], net.ephemeral_range(scan.host))
@@ -196,12 +200,33 @@ def exposed_services(check, scan, outcome):
                                              "Anyone logged in over SSH right now is cut off."],
                                blockers=["You are connected over SSH now: turning it off would cut this connection. "
                                          "Do it from the machine itself."] if "ssh" in remote_session(scan) else []))
-        opts.append(option(check, "Keep SSH, but only with keys", [dropin(
-            "sshd", {"PasswordAuthentication": "no", "KbdInteractiveAuthentication": "no", "PermitRootLogin": "no"},
-            "/etc/ssh/sshd_config.d/10-daprivacyscanner.conf")],
-            side_effects=["Check you can log in with a key first (ssh -o PasswordAuthentication=no you@this-machine): "
-                          "passwords stop working for everyone.", "Root can no longer log in over SSH."]))
-        steps.append(Step("SSH server (port 22)", "Anyone who can reach port 22 can try passwords.", options=opts))
+        # the app's own file, as the helper writes it: once it is there, applying it again changes nothing (Fedora
+        # keeps sshd_config.d root-only: read through the helper with administrator access, else it is offered)
+        from ...helper import dropin_content
+        from ...host import Unreadable
+        try:
+            in_place = scan.host.read_sys(SSHD_DROPIN) == dropin_content("sshd", SSHD_KEYS).decode()
+        except Unreadable:
+            in_place = False
+        still = [str(v) for v in evidence(outcome, "SSH password logins") if str(v).lower().startswith("yes")]
+        if not in_place:
+            opts.append(option(check, "Keep SSH, but only with keys", [dropin("sshd", SSHD_KEYS, SSHD_DROPIN)],
+                               side_effects=["Check you can log in with a key first (ssh -o PasswordAuthentication=no "
+                                             "you@this-machine): passwords stop working for everyone.",
+                                             "Root can no longer log in over SSH."]))
+            text, cmds = "Anyone who can reach port 22 can try passwords.", []
+        elif still:
+            text = (f"The app's file {SSHD_DROPIN} turns passwords and root logins off, but sshd still accepts "
+                    "passwords: it keeps the first value it reads, and a setting read before this file says yes. The "
+                    "commands show the setting in effect, then where it is set: change that line to no, then restart "
+                    "sshd.")
+            cmds = ["sudo sshd -T | grep -i -E 'passwordauthentication|permitrootlogin'",
+                    "sudo grep -rn -i passwordauthentication /etc/ssh/sshd_config /etc/ssh/sshd_config.d"]
+        else:
+            text = (f"SSH takes keys only: the app's file {SSHD_DROPIN} turns passwords and root logins off. If you "
+                    "don't use SSH at all, it can be turned off too.")
+            cmds = []
+        steps.append(Step("SSH server (port 22)", text, options=opts, commands=cmds, done=in_place and not still))
     xrdp_effect = ("Anyone connected over RDP is disconnected at once, you included if you are using this machine "
                    "remotely now, and can't connect again until xrdp is started.")
     xrdp_blockers = ["You are using this machine over xrdp now: turning it off would end this session. Do it from "
@@ -223,11 +248,25 @@ def exposed_services(check, scan, outcome):
                                                      blockers=xrdp_blockers if "xrdp" in units[0] else [])]
                               if acts else [], text="" if acts else "Stop it, or uninstall it, if you don't use it."))
     if ports(5355):
-        steps.append(Step("LLMNR (port 5355)", "systemd-resolved answers Windows-style name queries from the whole "
-                          "network, which announces this machine's name.", options=[_llmnr_off(check, scan)]))
+        from ..network import resolved_announces, resolved_links
+        links = resolved_links(scan.host)
+        # Fedora's LLMNR=resolve: systemd-resolved asks other machines and answers nobody, yet listens on the port
+        resolve_only = bool(links) and not resolved_announces(links, "llmnr") and any(
+            s.get("llmnr") == "resolve" for n, s in links.items() if n != "Global")
+        steps.append(Step("LLMNR (port 5355)", "systemd-resolved listens for Windows-style name queries from the whole "
+                          "network. " + ("Here it only asks other machines (LLMNR=resolve) and answers no one, but "
+                                         "the port is open on every network you join; turning LLMNR off closes it."
+                                         if resolve_only else "It answers them, which announces this machine's name."),
+                          options=[_llmnr_off(check, scan)]))
     if ports(631) or procs("cupsd"):
         steps.append(Step("CUPS printing (port 631)", "CUPS listens on the network, e.g. to share printers.",
                           commands=["sudo cupsctl --no-share-printers --no-remote-admin --no-remote-any"]))
+    kde = sorted({s.port for s in listeners if 1714 <= s.port <= 1764})
+    if kde:
+        steps.append(Step(f"KDE Connect or GSConnect (port{'s' if len(kde) > 1 else ''} {', '.join(map(str, kde))})",
+                          "KDE Connect, or GSConnect on GNOME, waits on the local network for paired phones, which can "
+                          "send files, read notifications and, with its plugin on, run commands here. The check "
+                          "net.kdeconnect deals with it: its guide shows which phones are paired, or turns it off."))
     known = {22, 3389, 139, 445, 111, 9090, 5355, 631}
     other_listeners = [s for s in listeners if s.port not in known and not 1714 <= s.port <= 1764
                        and s.process not in ("sshd", "xrdp", "smbd", "nmbd", "rpcbind", "avahi-daemon", "cupsd")]
@@ -276,7 +315,10 @@ def docker_bypass(check, scan, outcome):
                           "In docker run or compose, write the port as 127.0.0.1:8080:80 instead of 8080:80, then "
                           "recreate the container.", commands=["docker compose up -d --force-recreate"]),
                      Step("Or filter in DOCKER-USER",
-                          "Rules in the DOCKER-USER chain apply before Docker's own (ufw-docker sets this up for ufw)."),
+                          "Rules in the DOCKER-USER chain apply before Docker's own (ufw-docker sets this up for ufw). "
+                          "The app can't read them (that needs administrator access, and what they block depends on "
+                          "what they match), so this check keeps listing the ports: once your rules cover them, "
+                          "accept the finding, with a note naming the rules."),
                  ])
 
 
@@ -961,8 +1003,9 @@ def outgoing_firewall(check, scan, outcome):
                       ("Deny mode is on: nothing without a rule gets out unless you allow it. Undo it from History to go "
                        "back to allow mode." if s.deny_mode else
                        ("Now: allow mode." if s.daemon else "The starter rules leave OpenSnitch in allow mode.")
-                       + " A question you don't answer, whatever else connects while a question is open, "
-                       "about included), and any connection while OpenSnitch's window isn't running, is let through. "
+                       + " Three kinds of connection are let through: one whose question you don't answer, anything "
+                       "new that connects while a question is open (the program it asks about included, trying "
+                       "another address), and any connection while OpenSnitch's window isn't running. "
                        "Deny mode blocks them instead. Turn it on once questions have become rare: a week or two of "
                        "normal use, answering forever for what you use every day."),
                       options=[option(check, "Turn on deny mode", acts, blockers=blockers, side_effects=[

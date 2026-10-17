@@ -278,21 +278,31 @@ def open_autoconnect_fix(check, scan, outcome):
 @fix("net.ipv6_privacy", can=_need_nmcli)
 def ipv6_privacy(check, scan, outcome):
     from .guides import dropin
-    from .network import NM_DEFAULT, ip6_privacy_default, nm_connections, nm_get
+    from .network import NM_DEFAULT, NM_KINDS, PRIVACY_ON, ip6_privacy_defaults, nm_connections, nm_get
     a, effects = [], ["Takes effect the next time each connection connects."]
-    default = ip6_privacy_default(scan.host)
-    if default is not None and default[0] != "2":
+    defaults = ip6_privacy_defaults(scan.host) or {}
+    # the app's default is NetworkManager's [connection] section, searched last: a section of the distribution's that
+    # sets it for a kind of network comes first, and keeps its value for that kind
+    reaches = {kind: d[0] == "2" or d[2] in (None, "connection") for kind, d in defaults.items()}
+    if any(d[0] != "2" for d in defaults.values()):
         a.append(dropin("nm-ipv6-privacy", {"connection:ipv6.ip6-privacy": "2"},
                         "/etc/NetworkManager/conf.d/99-daprivacyscanner-ipv6-privacy.conf"))
         effects.append("For every network that doesn't set it itself, those joined later included: NetworkManager's "
                        "default, for every account on this computer.")
-    for uuid in (nm_connections(scan.host, "802-11-wireless") or []) + (nm_connections(scan.host, "802-3-ethernet") or []):
-        v = nm_get(scan.host, uuid, "connection.id", "ipv6.ip6-privacy")
-        value = v["ipv6.ip6-privacy"]
-        follows = value.strip().lower() in NM_DEFAULT and default is not None and (default[0] == "2" or a)
-        if value in ("2", "enabled (prefer temporary address)") or follows:
-            continue                                                  # takes the default, which is (or becomes) 2
-        a.append(NmSet(uuid, v["connection.id"] or uuid, "ipv6.ip6-privacy", "2"))
+        effects += [f"NetworkManager's [{d[2]}] section sets it to {d[0]} for {'Wi-Fi' if k == 'wifi' else 'wired'} "
+                    "networks, and comes before the app's default: those joined later keep that value until the "
+                    "section is changed by hand (in /etc/NetworkManager/conf.d)." for k, d in defaults.items()
+                    if not reaches[k]]
+    for nm_kind, kind in NM_KINDS.items():
+        for uuid in nm_connections(scan.host, nm_kind) or []:
+            v = nm_get(scan.host, uuid, "connection.id", "ipv6.ip6-privacy")
+            value = v["ipv6.ip6-privacy"].strip().lower()
+            if value in PRIVACY_ON or (value in NM_DEFAULT and reaches.get(kind)):
+                continue                                              # takes the default, which is (or becomes) 2
+            a.append(NmSet(uuid, v["connection.id"] or uuid, "ipv6.ip6-privacy", "2"))
+    if not a:
+        effects = ["The settings are in place already: a network connected before they were uses privacy addresses "
+                   "from the next time it connects (turn Wi-Fi off and on, or unplug the cable and plug it in)."]
     return FixPlan(check.id, "Prefer temporary IPv6 addresses", a, side_effects=effects)
 
 

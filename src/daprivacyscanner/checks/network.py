@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import time
 from pathlib import Path
@@ -113,10 +114,14 @@ def sshd_config(host: Host) -> dict[str, str] | None:
             unreadable.append(path)
             return False
         for line in text.splitlines():
-            words = line.split(None, 1)
-            if not words or words[0].startswith("#"):
+            # sshd splits a keyword from its value at white space or one "=" ("PasswordAuthentication=no",
+            # "PasswordAuthentication = no"); keywords and yes/no values are read regardless of case
+            m = re.match(r"\s*([^\s=#]\S*?)(?:\s*=\s*|\s+|$)(.*)$", line)
+            if not m or not m.group(1):
                 continue
-            key, value = words[0].lower(), (words[1].strip() if len(words) > 1 else "")
+            key, value = m.group(1).lower(), m.group(2).strip()
+            if len(value) >= 2 and value[0] == value[-1] == '"':
+                value = value[1:-1]
             if key == "match":
                 return True
             if key == "include" and depth < 4:
@@ -139,25 +144,57 @@ def ufw_active(host: Host) -> bool:
     return bool(re.search(r"^\s*ENABLED\s*=\s*yes", conf, re.M)) and systemctl_state(host, "is-active", "ufw") == "active"
 
 
-def _firewalld_rules(host: Host) -> net.FirewallRules | None:
+def _firewall_cmd_error(r) -> str:
+    """What firewall-cmd said when it failed, in a few words (polkit's "Authorization failed", INVALID_ZONE...)."""
+    text = (r.stderr or r.stdout or "").strip().splitlines()
+    return text[0].strip()[:120] if text else f"exit status {r.returncode}"
+
+
+def _firewalld_service_ports(host: Host, svc: str, seen: set[str] | None = None) -> list[str] | None:
+    """The ports a firewalld service opens (`firewall-cmd --info-service`), with those of the services it includes
+    (samba-client includes netbios-ns, 137/udp); ["0/none"] for a service that opens none, None when it can't be
+    read."""
+    seen = set() if seen is None else seen
+    if svc in seen or len(seen) > 20:
+        return []
+    seen.add(svc)
+    info = host.run("firewall-cmd", f"--info-service={svc}")
+    if not info.ok:
+        return None
+    pm = re.search(r"^\s*ports:[ \t]*(.*)$", info.stdout, re.M)
+    if pm is None:
+        return None
+    ports = pm.group(1).split()
+    im = re.search(r"^\s*includes:[ \t]*(.*)$", info.stdout, re.M)
+    for inc in (im.group(1).split() if im else []):
+        more = _firewalld_service_ports(host, inc, seen)
+        if more is None:
+            return None
+        ports += [p for p in more if p != "0/none"]
+    return ports or ["0/none"]                          # a service with no ports (e.g. a helper only): opens nothing
+
+
+def _firewalld_rules(host: Host) -> tuple[net.FirewallRules | None, str]:
+    """What firewalld's active zones let in, and why not when that couldn't be read. firewalld 2.x marks the
+    default zone in `--get-active-zones` ("FedoraWorkstation (default)"): a zone's name is the first word."""
     r = host.run("firewall-cmd", "--get-active-zones")
-    zones = [ln.strip() for ln in r.stdout.splitlines() if ln.strip() and not ln[0].isspace()] if r.ok else []
+    if r.missing:
+        return None, "firewall-cmd isn't installed"
+    zones = [ln.split()[0] for ln in r.stdout.splitlines() if ln.strip() and not ln[0].isspace()] if r.ok else []
     if not zones:
         d = host.run("firewall-cmd", "--get-default-zone")
-        zones = [d.stdout.strip()] if d.ok and d.stdout.strip() else []
+        zones = d.stdout.split()[:1] if d.ok else []
+        if not zones:
+            return None, f"firewall-cmd didn't name its zones ({_firewall_cmd_error(d if not d.ok else r)})"
     merged = None
     for zone in zones:
         z = host.run("firewall-cmd", f"--zone={zone}", "--list-all")
         if not z.ok:
-            return None
+            return None, f"firewall-cmd couldn't list the zone {zone} ({_firewall_cmd_error(z)})"
         m = re.search(r"^\s*services:[ \t]*(.*)$", z.stdout, re.M)
         ports = {}
         for svc in (m.group(1).split() if m else []):
-            info = host.run("firewall-cmd", f"--info-service={svc}")
-            pm = re.search(r"^\s*ports:[ \t]*(.*)$", info.stdout, re.M) if info.ok else None
-            ports[svc] = pm.group(1).split() if pm else []
-            if pm and not ports[svc]:
-                ports[svc] = ["0/none"]                 # a service with no ports (e.g. mdns helper only): opens nothing
+            ports[svc] = _firewalld_service_ports(host, svc) or []       # [] when unreadable: counted as unparsed
         rules = net.parse_firewalld_zone(z.stdout, ports)
         rules.open_ports = [p for p in rules.open_ports if p[2] != "none"]
         if merged is None:
@@ -166,7 +203,7 @@ def _firewalld_rules(host: Host) -> net.FirewallRules | None:
             merged.default_allows = merged.default_allows or rules.default_allows
             merged.open_ports += rules.open_ports
             merged.unparsed += rules.unparsed
-    return merged
+    return merged, ""
 
 
 def firewall_rules(scan: Scan) -> tuple[str | None, net.FirewallRules | None, str]:
@@ -181,8 +218,8 @@ def firewall_rules(scan: Scan) -> tuple[str | None, net.FirewallRules | None, st
             return "ufw", None, f"couldn't read ufw's rules: {e}"
         return ("ufw", rules, "") if rules else (None, None, "")
     if systemctl_state(host, "is-active", "firewalld") == "active":
-        rules = _firewalld_rules(host)
-        return "firewalld", rules, "" if rules else "couldn't read firewalld's zones"
+        rules, why = _firewalld_rules(host)
+        return "firewalld", rules, "" if rules else f"its zones couldn't be read: {why}"
     for unit in ("nftables", "netfilter-persistent", "iptables"):
         if systemctl_state(host, "is-active", unit) == "active":
             return unit, None, f"{unit} rules aren't read by the app yet"
@@ -206,9 +243,11 @@ class ExposedServices(Check):
             tool, rules, why = firewall_rules(scan)
             if tool and rules is None:
                 findings[self.FINDING] = None
-                notes.append(Note("limitation", f"A firewall ({tool}) is active",
-                                  f"It may block these services, but {why}. Scan with administrator access to see "
-                                  "which of them it lets through.", ("net.firewall_off",)))
+                # only ufw's rules are read through the helper: for the others administrator access changes nothing
+                text = (f"It may block these services, but {why}. Scan with administrator access to see which of them "
+                        "it lets through." if tool == "ufw" and scan.privileged is None else
+                        f"It may block these services, but {why}, so the app can't tell which of them it lets through.")
+                notes.append(Note("limitation", f"A firewall ({tool}) is active", text, ("net.firewall_off",)))
             elif tool and rules:
                 verdict = {s: rules.allows(s.port, s.proto) for s in exposed}
                 blocked = [s for s, v in verdict.items() if v is False]
@@ -249,7 +288,7 @@ class ExposedServices(Check):
                 pw = settings.get("passwordauthentication", "yes (default)")
                 root = settings.get("permitrootlogin", "prohibit-password (default)")
                 ev += [Evidence.val("SSH password logins", pw), Evidence.val("SSH root login", root)]
-                if pw.startswith("yes"):
+                if pw.lower().startswith("yes"):
                     notes.append(Note("risk", "SSH accepts passwords",
                                       "Anyone who can reach port 22 can try to guess passwords. Use SSH keys and set "
                                       "PasswordAuthentication no in /etc/ssh/sshd_config.d/."))
@@ -273,8 +312,25 @@ class ExposedServices(Check):
 class DockerBypass(Check):
     id = "net.docker_bypass"
 
+    ROOTLESS = Note("info", "Rootless containers are different",
+                    "Rootless Docker and Podman bind ports as your user, so they show up with the other listening "
+                    "services instead, where the host firewall filters them.", ("net.exposed_services",))
+
     def detect(self, scan: Scan) -> Outcome:
-        r = scan.host.run("docker", "ps", "--format", "{{.Names}}\t{{.Ports}}")
+        host = scan.host
+        if not installed(host, "docker"):
+            return absent("Docker isn't installed.")
+        podman = self._podman(host)                     # `docker --version` asks the program, not the daemon
+        if podman is not None:
+            return self._podman_outcome(host, podman)
+        if not self._docker_running(host):
+            # never `docker ps` then: through docker.socket it would start the service (and the containers set to
+            # restart with it), and a scan changes nothing
+            return passed("Docker's service isn't running, so no container is running and no port is published. It "
+                          "starts the first time something uses Docker (docker.socket starts it), with the containers "
+                          "set to restart: scan again after using Docker.",
+                          Evidence.val("docker.service", systemctl_state(host, "is-active", "docker.service")))
+        r = host.run("docker", "ps", "--format", "{{.Names}}\t{{.Ports}}")
         if r.missing:
             return absent("Docker isn't installed.")
         if not r.ok:
@@ -290,13 +346,58 @@ class DockerBypass(Check):
                     public.append(f"{name}:{m.group(2)}")
                     ev.append(Evidence.val(name, f"{m.group(2)} → {m.group(3)} on all interfaces"))
         ev = list({(e.label, e.value): e for e in ev}.values())   # IPv4 and IPv6 bindings of one port
+        if public and self._rootless_docker(host):
+            return passed("Docker here is rootless: the ports its containers publish are ordinary listening sockets, "
+                          "which the host firewall filters.", *ev, notes=[self.ROOTLESS])
         if public:
             # VERIFY: rootful Podman (netavark) isn't listed by `docker ps`, and may bypass the firewall too
             return failed("Containers publish ports on all interfaces, past the host firewall.", *ev,
-                          notes=[Note("info", "Rootless containers are different",
-                                      "Rootless Docker and Podman bind ports as your user, so they show up with the "
-                                      "other listening services instead.")])
+                          notes=[self.ROOTLESS, self.DOCKER_USER])
         return passed("No container publishes a port on all interfaces.")
+
+    DOCKER_USER = Note("limitation", "Rules in DOCKER-USER aren't read",
+                       "Firewall rules you add to Docker's DOCKER-USER chain apply before Docker's own, but reading "
+                       "them needs administrator access and what they block depends on what they match, so the app "
+                       "keeps listing these ports. Once your rules cover them, accept this finding (with a note naming "
+                       "the rules).")
+
+    @staticmethod
+    def _docker_running(host: Host) -> bool:
+        """Whether Docker's daemon runs, or containers it left running do (live-restore keeps them when it stops:
+        their containerd shims run on). Unknown is taken as running."""
+        state = systemctl_state(host, "is-active", "docker.service")
+        if state in ("", "active", "activating", "reloading", "deactivating"):
+            return True
+        return any(p.startswith(("dockerd", "containerd-shim", "com.docker")) for p in processes(host))
+
+    @staticmethod
+    def _podman(host: Host) -> str | None:
+        """When `docker` is Podman (podman-docker's shim, which prints Podman's version): "rootless", "root" or ""
+        (it couldn't say); None when it is Docker or isn't installed."""
+        r = host.run("docker", "--version")
+        if not r.ok or not r.stdout.lower().startswith("podman"):
+            return None
+        info = host.run("docker", "info", "--format", "{{.Host.Security.Rootless}}")
+        if not info.ok:
+            return ""
+        return {"true": "rootless", "false": "root"}.get(info.stdout.strip().lower(), "")
+
+    def _podman_outcome(self, host: Host, mode: str) -> Outcome:
+        ev = [Evidence.val("docker", "Podman (podman-docker)"),
+              Evidence.val("Runs containers", {"rootless": "without root (rootless)", "root": "as root"}.get(mode, "unknown"))]
+        if mode == "rootless":
+            return passed("docker here is Podman, running your containers without root: their published ports are "
+                          "ordinary listening sockets, which the host firewall filters.", *ev, notes=[self.ROOTLESS])
+        if mode == "root":
+            return unknown("docker here is Podman running as root, whose containers' firewall rules the app doesn't "
+                           "read yet: check where they publish ports with sudo podman ps.", *ev)
+        return unknown("docker here is Podman, which couldn't say how it runs containers (podman info failed).", *ev)
+
+    @staticmethod
+    def _rootless_docker(host: Host) -> bool:
+        """Whether the Docker daemon `docker` talks to is rootless Docker (its security options name rootless)."""
+        r = host.run("docker", "info", "--format", "{{json .SecurityOptions}}")
+        return r.ok and "rootless" in r.stdout
 
 
 @register
@@ -941,6 +1042,34 @@ def rated_providers_note(data) -> Note:
                 "vpn-providers.yaml with each fact's source and date.")
 
 
+def dns_in_tunnel(host: Host) -> list[str]:
+    """The VPN tunnels every DNS lookup goes into, when a tunnel carries this computer's traffic and no lookup can
+    go out another way (as net.vpn_leaks judges it: a "~." routing domain on the tunnel's link, as Mullvad VPN's app
+    sets, or nameservers reached only through it); empty otherwise, or when it can't be told."""
+    vpns = vpn_links(host)
+    full = carrying_vpn_links(host, vpns) if vpns else []
+    if not full:
+        return []
+    if resolved_answers(host) is False:
+        # the nameservers in /etc/resolv.conf, each by the interface it is reached through; a local resolver's
+        # (loopback) own lookups aren't followed
+        servers = re.findall(r"^\s*nameserver\s+(\S+)", host.read_sys("/etc/resolv.conf") or "", re.M)
+        through = [route_link(host, a.split("%")[0]) for a in servers]
+        return sorted(set(through)) if servers and all(t in vpns for t in through) else []
+    links = resolved_links(host)
+    if not links or VpnLeaks._leaking(host, vpns, full, []) != []:
+        return []
+    return [n for n in full if links.get(n, {}).get("servers")]
+
+
+def firefox_doh(scan: Scan) -> tuple[int, list[str]]:
+    """Firefox-family profiles (Firefox, LibreWolf), and those that encrypt their own lookups with DNS over HTTPS
+    (network.trr.mode 2, falling back to the system's DNS, or 3, only): (profiles, those using it, by label)."""
+    from ._util import firefox_prefs, mozilla_profiles
+    profiles = mozilla_profiles(scan.host, scan.paths, ("Firefox", "LibreWolf"))
+    return len(profiles), [p.label for p in profiles if firefox_prefs(scan.host, p.path).get("network.trr.mode") in (2, 3)]
+
+
 @register
 class DnsUnencrypted(Check):
     id = "net.dns_unencrypted"
@@ -949,50 +1078,94 @@ class DnsUnencrypted(Check):
         host = scan.host
         servers = re.findall(r"^\s*nameserver\s+(\S+)", host.read_sys("/etc/resolv.conf") or "", re.M)
         ev = [Evidence.val("Nameservers in /etc/resolv.conf", ", ".join(servers[:4]) or "none")]
-        doh = Note("limitation", "Browsers may encrypt DNS themselves",
-                   "Firefox and Chromium-based browsers can send DNS over HTTPS on their own; the app can't see that "
-                   "setting yet. Only the system's own DNS is judged here.")
+        profiles, doh = firefox_doh(scan)
+        if profiles:
+            ev.append(Evidence.val("Firefox profiles using DNS over HTTPS", ", ".join(doh) if doh else
+                                   f"none of {profiles}"))
+        notes = [Note("limitation", "Browsers can encrypt their own lookups",
+                      "Firefox's DNS over HTTPS setting is read from each profile (above): it covers Firefox's own "
+                      "lookups, not other programs'. Chromium-based browsers have one too (Settings → Privacy and "
+                      "security → Security → Use secure DNS), which the app doesn't read. Only the system's DNS, which "
+                      "every program uses, decides this result.")]
+        tunnel = dns_in_tunnel(host)
+        tunnel_note = Note("info", "Lookups go inside the VPN",
+                           f"Every lookup goes into the VPN tunnel ({', '.join(tunnel)}), encrypted with the rest of "
+                           "the traffic, so the network you're on and your internet provider can't read them; the VPN "
+                           "provider can, as it sees your traffic. If the VPN drops, they go out unencrypted unless its "
+                           "kill switch stops them.", ("net.vpn_leaks",))
+
+        def unencrypted(text: str, warn: bool = False) -> Outcome:
+            # in the VPN's tunnel, lookups are encrypted on the way like the rest of the traffic
+            if tunnel:
+                return passed(f"DNS lookups go inside the VPN tunnel ({', '.join(tunnel)}), encrypted on their way.",
+                              *ev, Evidence.val("Every lookup goes into", ", ".join(tunnel)), notes=[tunnel_note, *notes])
+            if not warn and profiles and len(doh) == profiles:
+                # what a browser looks up is the most of it: a risk, below the problem
+                return warned("Firefox encrypts its own lookups (DNS over HTTPS), but other programs' are sent "
+                              "unencrypted.", *ev, notes=notes)
+            return (warned if warn else failed)(text, *ev, notes=notes)
+
         if any(s.startswith("127.0.0.53") for s in servers):
             links = resolved_links(host)
             dot = [s["dot"] for s in links.values() if s["dot"]]
             ev.append(Evidence.val("systemd-resolved DNSOverTLS", ", ".join(sorted(set(dot))) or "unknown"))
             if any(d == "yes" for d in dot):
-                return passed("DNS is encrypted (DNS over TLS).", *ev, notes=[doh])
+                return passed("DNS is encrypted (DNS over TLS).", *ev, notes=notes)
             if any(d == "opportunistic" for d in dot):
-                return warned("DNS over TLS is opportunistic: it falls back to plain DNS without telling you.",
-                              *ev, notes=[doh])
+                return unencrypted("DNS over TLS is opportunistic: it falls back to plain DNS without telling you.",
+                                   warn=True)
             if not links:
-                return unknown("Couldn't read systemd-resolved's settings.", *ev, notes=[doh])
-            return failed("DNS queries are sent unencrypted.", *ev, notes=[doh])
+                return unknown("Couldn't read systemd-resolved's settings.", *ev, notes=notes)
+            return unencrypted("DNS queries are sent unencrypted.")
         local = processes(host) & LOCAL_RESOLVERS
         if servers and all(s.startswith(("127.", "::1")) for s in servers) and local & ENCRYPTING_RESOLVERS:
-            return passed(f"DNS goes through a local encrypting resolver ({', '.join(sorted(local))}).", *ev, notes=[doh])
+            return passed(f"DNS goes through a local encrypting resolver ({', '.join(sorted(local))}).", *ev, notes=notes)
         if servers and all(s.startswith(("127.", "::1")) for s in servers) and local:
             return unknown(f"DNS goes through a local resolver ({', '.join(sorted(local))}), which encrypts only if it "
-                           "is set to: check that its upstream servers use DNS over TLS or HTTPS.", *ev, notes=[doh])
+                           "is set to: check that its upstream servers use DNS over TLS or HTTPS.", *ev, notes=notes)
         if servers and all(s.startswith(("127.", "::1")) for s in servers):
-            return unknown("DNS goes through a local resolver the app doesn't recognise.", *ev, notes=[doh])
-        return failed("DNS queries are sent unencrypted.", *ev, notes=[doh])
+            return unknown("DNS goes through a local resolver the app doesn't recognise.", *ev, notes=notes)
+        return unencrypted("DNS queries are sent unencrypted.")
 
 
-def ip6_privacy_default(host: Host) -> tuple[str, str] | None:
-    """What a NetworkManager connection that doesn't set ipv6.ip6-privacy gets (NetworkManager.conf(5)): its
-    [connection] default, else the kernel's default for new interfaces. (value, where from); None without nmcli."""
+PRIVACY_ON = ("2", "enabled (prefer temporary address)")
+
+
+def ip6_privacy_defaults(host: Host) -> dict[str, tuple[str, str, str | None]] | None:
+    """What a NetworkManager connection of each kind ("wifi", "ethernet") that doesn't set ipv6.ip6-privacy gets
+    (NetworkManager.conf(5)): the [connection*] sections' default, else the kernel's default for new interfaces.
+    {kind: (value, where from, the section)}; None without nmcli."""
     if nm_connections(host) is None:
         return None
-    v = (ini.get(nm_config(host), "connection", "ipv6.ip6-privacy") or "").strip()
-    if v and v != "-1":
-        return v, "NetworkManager's default"
-    return (host.read_sys("/proc/sys/net/ipv6/conf/default/use_tempaddr") or "").strip(), "the kernel's default"
+    cfg = nm_config(host)
+    kernel = (host.read_sys("/proc/sys/net/ipv6/conf/default/use_tempaddr") or "").strip()
+    out = {}
+    for kind in NM_TYPES:
+        v, section = nm_default(cfg, "ipv6.ip6-privacy", kind)
+        if v and v != "-1":
+            out[kind] = (v, "NetworkManager's default" if section == "connection" else
+                         f"NetworkManager's [{section}] section", section)
+        else:
+            out[kind] = (kernel, "the kernel's default", None)
+    return out
+
+
+def _defaults_text(defaults: dict[str, tuple[str, str, str | None]]) -> str:
+    values = {(v, w) for v, w, _ in defaults.values()}
+    if len(values) == 1:
+        v, w = values.pop()
+        return f"{v or 'unknown'} ({w})"
+    return "; ".join(f"{'Wi-Fi' if k == 'wifi' else 'wired'}: {v or 'unknown'} ({w})" for k, (v, w, _) in defaults.items())
 
 
 @register
 class Ipv6Privacy(Check):
     id = "net.ipv6_privacy"
-    FUTURE = "ipv6_privacy_default_off"
 
     def detect(self, scan: Scan) -> Outcome:
         host = scan.host
+        defaults = ip6_privacy_defaults(host)
+        connected = net.global_ipv6(host)
         ev, off = [], []
         for p in children(host.sys_path("/sys/class/net")):
             if p.name == "lo" or not (p / "device").exists():          # physical interfaces only
@@ -1001,23 +1174,45 @@ class Ipv6Privacy(Check):
             if (host.read_sys(f"{conf}/disable_ipv6") or "0").strip() == "1":
                 ev.append(Evidence.val(p.name, "IPv6 off"))
                 continue
+            in_use = (read_text(host, p / "operstate") or "").strip() == "up" and p.name in connected
+            if defaults is not None and not in_use:
+                # NetworkManager sets it as the interface connects, from the connection or its default (below): an
+                # unplugged port keeps the kernel's value until then, which says nothing
+                ev.append(Evidence.val(p.name, "not on an IPv6 network now (it takes the setting below when it "
+                                               "connects)"))
+                continue
             temp = (host.read_sys(f"{conf}/use_tempaddr") or "").strip()
             ev.append(Evidence.val(f"{p.name} use_tempaddr", temp or "unknown"))
             if temp in ("0", "1", "-1"):
                 off.append(p.name)
         if not ev:
             return absent("No physical network interfaces.")
-        default = ip6_privacy_default(host)
-        later = default is not None and default[0] not in ("2", "")
-        if default is not None:
-            ev.append(Evidence.val("Networks joined from now on", (default[0] or "unknown") + f" ({default[1]})"))
+        saved_off = []
+        if defaults is not None:
+            for kind in NM_KINDS:
+                for uuid in nm_connections(host, kind) or []:
+                    v = nm_get(host, uuid, "ipv6.ip6-privacy")["ipv6.ip6-privacy"].strip().lower()
+                    if v not in NM_DEFAULT and v not in PRIVACY_ON:
+                        saved_off.append(uuid)
+            ev.append(Evidence.count("Saved networks that turn them off", len(saved_off)))
+            ev.append(Evidence.val("Networks joined from now on", _defaults_text(defaults)))
+        later = [d for d in (defaults or {}).values() if d[0] not in ("2", "")]
         if off:
             return failed(f"IPv6 privacy addresses aren't used on {', '.join(off)}: on a network that offers IPv6, "
                           "every site you visit sees the same address for as long as you stay on it (and on every "
                           "network, where the address is made from the hardware address).", *ev)
+        n = len(saved_off)
+        saved = (f"{n} saved network{'s turn' if n != 1 else ' turns'} them off for {'themselves' if n != 1 else 'itself'}"
+                 if n else "")
         if later:
-            return failed("IPv6 privacy addresses are used now, but networks joined from now on won't use them: "
-                          f"{default[1]} is {default[0]}.", *ev)
+            text = ("IPv6 privacy addresses are used now, but networks joined from now on won't use them"
+                    if any(e.label.endswith(" use_tempaddr") for e in ev) else
+                    "No network in use now has IPv6, but networks joined from now on won't use IPv6 privacy addresses")
+            return failed(f"{text}: {later[0][1]} is {later[0][0]}" + (f"; and {saved}." if saved else "."), *ev)
+        if saved:
+            return failed(f"{saved[0].upper()}{saved[1:].replace('them off', 'IPv6 privacy addresses off')}: on "
+                          f"{'those networks' if n != 1 else 'that network'}, every site you visit sees the same address "
+                          "for as long as you stay.", *ev)
         return passed("IPv6 privacy addresses are preferred, on networks joined from now on too.", *ev)
 
 
@@ -1220,9 +1415,10 @@ class OutgoingFirewall(Check):
             return passed("OpenSnitch is on, in deny mode: nothing without a rule gets out unless you allow it.",
                           *ev, notes=notes)
         notes.insert(0, Note("risk", "Allow mode",
-                             "A connection you don't answer for, whatever else connects while a question is open, "
-                             "and every connection while OpenSnitch's window isn't running, is allowed. Good while you learn what your programs do; once questions have "
-                             "become rare, turn on deny mode in the guide (Set up…)."))
+                             "Three kinds of connection are allowed: one whose question you don't answer, anything new "
+                             "that connects while a question is open, and any connection while OpenSnitch's window "
+                             "isn't running. Good while you learn what your programs do; once questions have become "
+                             "rare, turn on deny mode in the guide (Set up…)."))
         return warned("OpenSnitch is on, in allow mode: what you don't answer for is let through.", *ev, notes=notes)
 
 
@@ -1234,10 +1430,43 @@ LOCAL_ANCHORS = ("/usr/local/share/ca-certificates", "/etc/pki/ca-trust/source/a
 # beside the anchors folder, not in it (seen on CachyOS). Only files directly there: blocklist/ holds distrust.
 LOCAL_SOURCES = ("/etc/ca-certificates/trust-source", "/etc/pki/ca-trust/source", "/etc/pki/trust")
 ROOT_SUFFIXES = (".crt", ".pem", ".cer", ".p11-kit")
+# update-ca-certificates takes only *.crt from /usr/local/share/ca-certificates (update-ca-certificates(8))
+DEBIAN_LOCAL = "/usr/local/share/ca-certificates"
+
+
+def _added_file(host: Host, p: Path) -> Path | None:
+    """The file a trust-store entry is, its links followed within the scanned system (a few deep); None when a link
+    leads into /usr, where the distribution's packages keep their files (Fedora's
+    /etc/pki/ca-trust/source/ca-bundle.legacy.crt, a link to ca-certificates' empty legacy bundle), or nowhere."""
+    for _ in range(8):
+        if not p.is_symlink():
+            return p
+        target = Path(os.readlink(p))
+        on_system = Path(os.path.normpath(target if target.is_absolute()
+                                          else Path("/") / p.parent.relative_to(host.root) / target))
+        if on_system.parts[1:2] == ("usr",):
+            return None
+        p = host.sys_path(on_system)
+    return None
+
+
+def _holds_certificate(p: Path) -> bool:
+    """Whether a file holds a certificate p11-kit would load: PEM (BEGIN CERTIFICATE, OpenSSL's BEGIN TRUSTED
+    CERTIFICATE), DER (an ASN.1 sequence) or a p11-kit object. An empty file (Fedora's legacy bundle) holds none;
+    one that can't be read is counted."""
+    try:
+        head = Host.read_head(p, 1 << 20)
+    except Unreadable:
+        return True
+    if not head or not head.strip():
+        return False
+    return (b"-----BEGIN CERTIFICATE-----" in head or b"-----BEGIN TRUSTED CERTIFICATE-----" in head
+            or b"[p11-kit-object-v1]" in head or head[:1] == b"\x30")
 
 
 def local_roots(scan: Scan) -> list[str]:
-    """The certificate files an administrator added to the system's trust store, as paths on the system."""
+    """The certificate files an administrator added to the system's trust store, as paths on the system: not the
+    distribution's own (links into /usr), nor files holding no certificate."""
     host, out = scan.host, []
     for d in LOCAL_ANCHORS:
         stack = [host.sys_path(d)]
@@ -1245,11 +1474,14 @@ def local_roots(scan: Scan) -> list[str]:
             for p in children(stack.pop()):
                 if p.is_dir():
                     stack.append(p)
-                elif p.suffix in ROOT_SUFFIXES:
+                elif (p.suffix == ".crt" if d == DEBIAN_LOCAL else p.suffix in ROOT_SUFFIXES) and \
+                        (f := _added_file(host, p)) is not None and _holds_certificate(f):
                     out.append(f"{d}/{p.relative_to(host.sys_path(d))}")
     for d in LOCAL_SOURCES:
         for p in children(host.sys_path(d)):
-            if p.is_file() and p.suffix in ROOT_SUFFIXES and "x-distrusted: true" not in (read_text(host, p) or ""):
+            f = _added_file(host, p) if p.suffix in ROOT_SUFFIXES else None
+            if f is not None and f.is_file() and _holds_certificate(f) and \
+                    "x-distrusted: true" not in (read_text(host, f) or ""):
                 out.append(f"{d}/{p.name}")
     return sorted(out)
 

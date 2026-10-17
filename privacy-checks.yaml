@@ -1173,6 +1173,11 @@ checks:
       - 'Active firewall: ufw status verbose (root), or firewall-cmd --list-all for the active zones; a port
         the firewall blocks is listening but not reachable (firewall_blocks_exposed when all of them are).
         nftables/iptables rulesets are not interpreted: unknown.'
+      - 'firewalld 2.x marks the default zone in --get-active-zones ("FedoraWorkstation (default)"): the zone is the
+        first word. A service''s ports come with those of the services it includes (--info-service includes:,
+        samba-client includes netbios-ns). Fedora Workstation''s default zone lets in 1025-65535/tcp and udp.
+        firewall-cmd runs as the user (polkit lets an active session query it); administrator access doesn''t change
+        what it says, so only ufw''s note asks for it'
     fix: Disable unneeded services, bind dev servers to 127.0.0.1, disable SSH password and root login.
     remedy: >
       Programs here accept connections from other machines. Guide… goes through each: stop it, limit
@@ -1188,6 +1193,14 @@ checks:
     why: Docker inserts its own iptables/nftables rules ahead of ufw (and often firewalld zones).
     detect:
       - 'docker ps --format "{{.Names}} {{.Ports}}"; flag 0.0.0.0: or :::'
+      - 'docker --version naming Podman: podman-docker''s shim. Rootless Podman (docker info
+        {{.Host.Security.Rootless}}), and rootless Docker (its SecurityOptions name rootless), publish ports as
+        ordinary sockets the host firewall filters: a pass'
+      - 'docker.service not running (systemctl is-active) and no dockerd or containerd shim left running: no
+        container runs, a pass, and docker ps isn''t run (through docker.socket it would start the service: Omarchy
+        enables only the socket)'
+      - 'Rules in DOCKER-USER aren''t read (root, and what they block depends on what they match): the finding says
+        to accept it once they cover the ports'
     fix: Publish as 127.0.0.1:<port>:<port>, or add rules to the DOCKER-USER chain.
     remedy: >
       Docker's published ports get past the firewall. Guide… shows how to publish them on this
@@ -1395,6 +1408,11 @@ checks:
       - 'resolvectl status (DNSOverTLS setting); check whether systemd-resolved is in use at all'
       - 'A local resolver: dnscrypt-proxy, stubby and cloudflared always encrypt; unbound, kresd, AdGuard Home,
         dnsproxy and blocky may send plain DNS (unbound resolves recursively in plain text by default): unknown'
+      - 'A VPN tunnel that carries the traffic and takes every lookup (as net.vpn_leaks judges it: a "~." routing
+        domain on its link, Mullvad VPN''s app sets one, or nameservers reached only through it): a pass, the lookups
+        encrypted in the tunnel'
+      - 'Firefox-family profiles with network.trr.mode 2 or 3 (DNS over HTTPS): listed; when every profile uses it,
+        plain system DNS is a warning (other programs'' lookups) rather than a failure'
     fix: Configure DNSOverTLS in resolved.conf.d with a chosen resolver, or use the browser's DoH.
     remedy: >
       The names of the sites you visit travel unencrypted to your DNS server. Guide… turns on
@@ -1408,9 +1426,13 @@ checks:
     scope: user
     tier: auto
     detect:
-      - 'sysctl net.ipv6.conf.all.use_tempaddr (and per interface); nmcli -g ipv6.ip6-privacy connection show <id>'
-      - 'Networks joined from now on: NetworkManager''s [connection] ipv6.ip6-privacy default (NetworkManager --print-config),
-        else /proc/sys/net/ipv6/conf/default/use_tempaddr (NetworkManager.conf(5)); not 2 is a finding'
+      - 'use_tempaddr of each physical interface that is up with a global IPv6 address (with NetworkManager: others
+        take the connection''s setting when they connect, so an unplugged port''s kernel value says nothing; without
+        it, every physical interface''s own value); nmcli -g ipv6.ip6-privacy connection show <id>: a saved
+        connection that sets anything but 2 is a finding'
+      - 'Networks joined from now on: NetworkManager''s ipv6.ip6-privacy default from its [connection*] sections, per
+        kind (Wi-Fi, wired; NetworkManager --print-config), else /proc/sys/net/ipv6/conf/default/use_tempaddr
+        (NetworkManager.conf(5)); not 2 is a finding'
     fix: >
       NetworkManager's default for every connection that doesn't set its own, those joined later included (a conf.d
       drop-in of the app's own, through the helper), and ipv6.ip6-privacy=2 on saved connections that set something
@@ -1526,6 +1548,10 @@ checks:
       - 'Files in /usr/local/share/ca-certificates (Debian, Ubuntu), /etc/pki/ca-trust/source/anchors (Fedora), /etc/ca-certificates/trust-source/anchors (Arch), /etc/pki/trust/anchors (openSUSE)'
       - 'And the .p11-kit files `trust anchor FILE` writes beside those folders: /etc/ca-certificates/trust-source, /etc/pki/ca-trust/source, /etc/pki/trust (not blocklist/, nor one marked x-distrusted)'
       - 'Each one named with openssl x509 -noout -subject when openssl is installed (it reads a .p11-kit file too)'
+      - 'Not counted: links into /usr (the distribution''s own: Fedora''s /etc/pki/ca-trust/source/ca-bundle.legacy.crt,
+        a link to ca-certificates'' empty legacy bundle), files holding no certificate (no PEM certificate, DER or
+        p11-kit object), and anything but *.crt in /usr/local/share/ca-certificates, the only files
+        update-ca-certificates takes from there'
       - 'Not read: certificates added inside a browser (Firefox and Chromium keep stores of their own)'
     fix: Advice only; How to… gives the commands that remove one and rebuild the store.
     remedy: >
@@ -3640,7 +3666,9 @@ checks:
       host firewall lets through can be reached from anywhere, unless the router blocks it.
     detect:
       - 'Listening services on all interfaces that the host firewall lets through'
-      - 'With a port probe server of your own (online.json port_probe): ask it to connect to each one from outside'
+      - 'With a port probe server of your own (online.json port_probe): ask it to connect to each one from outside,
+        at this computer''s own global address (not a VPN tunnel''s, as the ipv6_global context counts them; the
+        interface IPv6 traffic leaves by first)'
       - 'Otherwise: likely reachable; confirm with daprivacyscanner --probe from a device on another network'
     fix: >
       Stop the service, bind it to a local address, or block it in the host firewall: net.exposed_services' guide,

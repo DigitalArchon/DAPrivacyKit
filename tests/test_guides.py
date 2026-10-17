@@ -1282,7 +1282,8 @@ def test_nxdomain_guide_points_at_the_router_when_it_answers(cat, tmp_path):
 
 def test_tls_interception_guide_names_the_issuer_and_the_root_to_remove(cat, tmp_path):
     host = make_host(tmp_path, files={"/etc/os-release": "ID=ubuntu\nID_LIKE=debian\n",
-                                      "/usr/local/share/ca-certificates/kaspersky.crt": "x"})
+                                      "/usr/local/share/ca-certificates/kaspersky.crt":
+                                          "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n"})
     out = Outcome(Status.FAIL, "HTTPS is decrypted on the way: certificates are issued by Kaspersky Anti-Virus Personal Root.",
                   [Evidence.val("www.wikipedia.org", "issued by Kaspersky Anti-Virus Personal Root")])
     g = _advice(cat, host, "net.tls_interception", out)

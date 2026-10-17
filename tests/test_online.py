@@ -374,7 +374,8 @@ def test_tls_interception(cat, tmp_path):
 
 
 def test_locally_added_roots_are_noted(cat, tmp_path):
-    host = make_host(tmp_path, files={"/usr/local/share/ca-certificates/corp/proxy-root.crt": "-----BEGIN"})
+    host = make_host(tmp_path, files={"/usr/local/share/ca-certificates/corp/proxy-root.crt":
+                                      "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n"})
     o = run(cat, "net.tls_interception", host, tls_net("DigiCert Inc"))
     assert o.status is Status.PASS and "corp/proxy-root.crt" in o.notes[0].text
 

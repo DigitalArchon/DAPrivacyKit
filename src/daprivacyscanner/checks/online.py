@@ -901,7 +901,13 @@ class Ipv6Reachable(OnlineCheck):
             candidates = [s for s in candidates if rules.allows(s.port, s.proto) is not False]
             if not candidates:
                 return passed(f"{tool} blocks every service listening on IPv6.", *ev)
-        addrs = [str(ipaddress.ip_address(a)) for addrs in net.global_ipv6(scan.host).values() for a in addrs]
+        # this computer's own addresses, as the ipv6_global context counts them: not a VPN tunnel's (the provider's,
+        # shared, reached only through it), the interface IPv6 traffic leaves by first
+        v6, tunnels = net.global_ipv6(scan.host), set(net.vpn_links(scan.host))
+        routed = net.internet_route(scan.host, 6)
+        addrs = [str(ipaddress.ip_address(a)) for iface in sorted((i for i in v6 if i not in tunnels),
+                                                                   key=lambda i: (i not in routed, i))
+                 for a in v6[iface]]
         probe = scan.online.get("port_probe")
         if probe and addrs:
             open_, closed = [], []
