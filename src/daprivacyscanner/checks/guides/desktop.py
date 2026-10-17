@@ -209,7 +209,7 @@ def set_gtk_setting(text: str | None, key: str, value: str) -> str:
 @guide("desk.recent_files", keys=("max_age",))
 def recent(check, scan, outcome):
     host = scan.host
-    clear = [DeleteFiles(x.parent, [x], "the recent files list", host.display(x))
+    clear = [DeleteFiles(x.parent, [x], "the recent files list", host.display(x.parent))
              for x in recent_files(scan.paths) if not x.is_dir() and recent_hrefs(host, x)]
     steps = [Step("Clear the list", "Open Recent menus and the Recent place in file managers start empty.",
                   options=[option(check, "Clear it", clear)] if clear else [], done=not clear)]
@@ -249,8 +249,8 @@ def recent(check, scan, outcome):
     for x in [xbel] + [p for p in recent_files(scan.paths) if p != xbel]:
         if x.is_dir():
             continue
-        block += ([DeleteFiles(x.parent, [x], "the recent files list", host.display(x))] if isfile(x) else [])
-        block.append(MakeDir(x, host.display(x) + " as an empty, read-only folder", mode=0o500, phase=4))
+        block += ([DeleteFiles(x.parent, [x], "the recent files list", host.display(x.parent))] if isfile(x) else [])
+        block.append(MakeDir(x, host.display(x), mode=0o500, phase=4, note="an empty, read-only folder in its place"))
     if kde:
         block += kset(scan, "kdeglobals", "RecentDocuments", "UseRecent", "false", default="true")
     sandboxed = [p for p in recent_files(scan.paths) if p != xbel]

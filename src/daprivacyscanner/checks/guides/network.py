@@ -6,7 +6,7 @@ import re
 
 from .. import No
 from ... import network as net
-from ...fix import BluetoothSet, Command, GSettingsSet, NmSet, RootChange, WriteFile, shell
+from ...fix import BluetoothSet, Command, GSettingsSet, NmSet, RootChange, WriteFile, bus_reload, shell
 from ...guide import Guide, Option, Step
 from .._util import human_size, installed, isfile, processes, read_text, removed_while_running, systemctl_state
 from . import guide, option, evidence, unit_exists, service_off, dropin, install, remove, remote_session
@@ -495,7 +495,7 @@ def _gvariant_list(items) -> str:
 @guide("net.kdeconnect")
 def kdeconnect(check, scan, outcome):
     host, paths = scan.host, scan.paths
-    running = "kdeconnectd" in processes(host)
+    running = "kdeconnectd" in processes(host, own=True)
     enabled = scan.gnome.gsettings("org.gnome.shell", "enabled-extensions")
     gsconnect = isinstance(enabled, list) and GSCONNECT in enabled
     steps = []
@@ -516,8 +516,8 @@ def kdeconnect(check, scan, outcome):
         off = [WriteFile(autostart, lambda old: "[Desktop Entry]\nType=Application\nName=KDE Connect\n"
                          "Exec=kdeconnectd\nHidden=true\n", "Don't start KDE Connect at login", host.display(autostart)),
                WriteFile(dbus, lambda old: "[D-BUS Service]\nName=org.kde.kdeconnect\nExec=/bin/false\n",
-                         "Don't start it when something asks for it", host.display(dbus)),
-               Command(stop, "stop it now (it would start again on demand, which the line above prevents)",
+                         "Don't start it when something asks for it", host.display(dbus), then=bus_reload(host)),
+               Command(stop, "stop it now: the override above keeps it from starting again on demand",
                        check_ok=False)]
         steps.append(Step("Check which phones are paired",
                           "If you use KDE Connect, keep only phones you own, and turn off plugins you don't use "

@@ -51,8 +51,11 @@ def gset(scan: Scan, schema: str, key: str, value: str) -> list[GSettingsSet]:
 
 
 def kset(scan: Scan, file: str, group: str, key: str, value: str, default: str | None = None) -> list[KConfigSet]:
+    """A KDE setting written to the user's file, or nothing when it already holds the value. Judged on the value the
+    program reads (the user's file over the distribution's in /etc/xdg), as the checks do: a default set there would
+    otherwise leave a failing check with an empty plan."""
     path = scan.paths.config_home / file
-    current = ini.get(ini.parse(read_text(scan.host, path) or "", kde=True), group, key)
+    current = scan.kde.get(file, group, key)
     if (current if current is not None else default) == value:
         return []
     return [KConfigSet(scan.kde.tool("kwriteconfig"), path, file, group, key, value)]
@@ -684,7 +687,7 @@ def gnome_app_usage(check, scan, outcome):
     a = gset(scan, "org.gnome.desktop.privacy", "remember-app-usage", "false") if _is_gnome(scan) else []
     state = scan.paths.data_home / "gnome-shell" / "application_state"
     if isfile(state):
-        a.append(DeleteFiles(state.parent, [state], "GNOME app usage record", scan.host.display(state)))
+        a.append(DeleteFiles(state.parent, [state], "GNOME app usage record", scan.host.display(state.parent)))
     return FixPlan(check.id, "Stop and clear GNOME's app usage tracking", a,
                    side_effects=["The Frequent apps list in the app grid stops updating."])
 

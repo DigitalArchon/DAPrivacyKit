@@ -69,7 +69,8 @@ def editor_residue(check, scan, outcome):
                             ("Neovim history and registers", scan.paths.state_home / "nvim" / "shada", ("nvim",))):
         files = files_under(p)[0] if isdir(p) else [p] if isfile(p) else []
         if files and not in_use(scan, p if isdir(p) else p.parent, *procs):
-            acts.append(DeleteFiles(p if isdir(p) else p.parent, files, label, host.display(p), prune=False))
+            acts.append(DeleteFiles(p if isdir(p) else p.parent, files, label, host.display(p if isdir(p) else p.parent),
+                                    prune=False))
     stray, stack = [], [(host.home, 0)]
     while stack:
         d, depth = stack.pop()

@@ -53,11 +53,11 @@ def test_gnome_plan_on_and_off(tmp_path):
 def test_a_setting_the_user_changed_meanwhile_is_kept(tmp_path):
     host, gs = gnome_host(tmp_path)
     P.turn_on(host)
-    gs.values[NOTIF] = "true"                               # they turned banners back on themselves
-    gs.values[DISABLED] = "['clipboard-indicator@tudmotu.com', 'other@x']"
+    gs.values[NOTIF] = "true"                               # they turned banners back on themselves: already as before
+    gs.values[DISABLED] = "['clipboard-indicator@tudmotu.com', 'other@x']"      # and disabled another extension
     off = P.turn_off(host)
-    assert len(off["kept"]) == 2 and not P.state_file(host).exists()
-    assert gs.values[DISABLED] == "['clipboard-indicator@tudmotu.com', 'other@x']"
+    assert len(off["kept"]) == 1 and "disabled-extensions" in off["kept"][0] and not P.state_file(host).exists()
+    assert gs.values[DISABLED] == "['clipboard-indicator@tudmotu.com', 'other@x']" and gs.values[NOTIF] == "true"
 
 
 def test_cinnamon(tmp_path):

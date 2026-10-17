@@ -304,12 +304,15 @@ def mode_of(path: Path) -> int | None:
 
 # ------------------------------------------------------------------ the running system
 
-def processes(host: Host) -> set[str]:
-    """Names (comm) of running processes."""
+def processes(host: Host, own: bool = False) -> set[str]:
+    """Names (comm) of running processes; with `own`, only this user's (what a fix of the user's can act on: other
+    accounts' copies are theirs to stop). A name is at most 15 characters: zeitgeist-daemon is "zeitgeist-daemo"."""
     out = set()
     for p in children(host.sys_path("/proc")):
         if p.name.isdigit():
             try:
+                if own and host.root == Path("/") and p.stat().st_uid != host.uid:
+                    continue
                 out.add((p / "comm").read_text().strip())
             except OSError:
                 continue
@@ -320,12 +323,14 @@ def removed_while_running(host: Host, name: str) -> bool:
     """Whether the processes called `name` run a program that has since been removed: /proc/PID/exe reads
     "PATH (deleted)" and nothing is at PATH now. Package managers remove the files and leave what runs running, a
     session's daemon until logout (KDE Connect's, tested with pacman). An upgrade leaves "(deleted)" too, with the new
-    program at PATH. Other accounts' processes can't be read and don't count; False when none could be read."""
+    program at PATH. Only this user's processes count; False when none could be read."""
     found = False
     for p in children(host.sys_path("/proc")):
         if not p.name.isdigit():
             continue
         try:
+            if host.root == Path("/") and p.stat().st_uid != host.uid:
+                continue                                # another account's: its program can't be read
             if (p / "comm").read_text().strip() != name:
                 continue
             exe = os.readlink(p / "exe")

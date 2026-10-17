@@ -192,6 +192,18 @@ def action(cls):
     return cls
 
 
+def bus_reload(host: Host) -> list[str]:
+    """The command that has the session bus read its configuration and service files again. dbus-broker (Arch,
+    CachyOS, Fedora) watches only the service folders that existed when it started: a service file of the user's own
+    in a folder made since (an override starting /bin/false) is otherwise never seen, and the service starts on
+    demand as before (tested with KDE Connect on CachyOS: it started again when Dolphin's context menu opened)."""
+    if host.runner.which("busctl"):
+        return ["busctl", "--user", "call", "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus",
+                "ReloadConfig"]
+    return ["dbus-send", "--session", "--type=method_call", "--dest=org.freedesktop.DBus", "/org/freedesktop/DBus",
+            "org.freedesktop.DBus.ReloadConfig"]
+
+
 def shell(argv: list[str] | tuple[str, ...]) -> str:
     """A command as it can be pasted into a shell: every argument quoted where it needs to be. Paths shown
     as ~/... keep the ~ outside the quotes, so the shell still expands it."""
@@ -291,7 +303,7 @@ class GSettingsSet(Action):
     @staticmethod
     def revert(record: dict, ctx: FixContext, force: bool = False) -> RevertResult:
         now = ctx.host.run("gsettings", "get", record["schema"], record["key"]).stdout.strip()
-        if now != record["after"] and not force:
+        if now not in (record["after"], record["before"]) and not force:     # already back by hand: nothing to resolve
             return RevertResult(False, f"{record['schema']} {record['key']} has changed since (now {now})", True)
         if record.get("was_default"):
             _change(ctx.host, "gsettings", "reset", record["schema"], record["key"])
@@ -349,7 +361,7 @@ class XfconfSet(Action):
     @staticmethod
     def revert(record: dict, ctx: FixContext, force: bool = False) -> RevertResult:
         now = XfconfSet._get(ctx.host, record["channel"], record["property"])
-        if now != record["after"] and not force:
+        if now not in (record["after"], record["before"]) and not force:
             return RevertResult(False, f"{record['channel']} {record['property']} has changed since (now {now})", True)
         if record["before"] is None:
             _change(ctx.host, "xfconf-query", "-c", record["channel"], "-p", record["property"], "-r")
@@ -404,7 +416,7 @@ class KConfigSet(Action):
     def revert(record: dict, ctx: FixContext, force: bool = False) -> RevertResult:
         from . import ini
         now = ini.get(ini.parse(Host.read_file(Path(record["path"])) or "", kde=True), record["group"], record["key"])
-        if now != record["after"] and not force:
+        if now not in (record["after"], record["before"]) and not force:
             return RevertResult(False, f"{record['file']} {record['key']} has changed since (now {now})", True)
         base = [record["tool"], "--file", record["file"], "--group", record["group"], "--key", record["key"], "--notify"]
         if record["before"] is None:
@@ -483,7 +495,7 @@ class PlasmaTraySet(Action):
     @staticmethod
     def revert(record: dict, ctx: FixContext, force: bool = False) -> RevertResult:
         now = PlasmaTraySet._state(Path(record["path"]), record["plugin"], record["trays"])
-        if now != record["after"] and not force:
+        if now not in (record["after"], record["before"]) and not force:
             return RevertResult(False, f"{record['label']} in the system tray has changed since (now {now})", True)
         if now != record["before"]:
             PlasmaTraySet._run_set(ctx.host, record["set"][record["before"]], record["trays"])
@@ -647,7 +659,7 @@ class CopyQTabSet(Action):
         p = Path(record["path"])
         old = Host.read_file(p)
         now = copyq_tab_prop(old, record["tab"], record["prop"])
-        if now != record["after"] and not force:
+        if now not in (record["after"], record["before"]) and not force:
             return RevertResult(False, f"CopyQ's tab {record['tab']} {record['prop']} has changed since (now {now})", True)
         new = copyq_set_tab_prop(old, record["tab"], record["prop"], record["before"])
         if record.get("created_file") and not new.strip():
@@ -714,7 +726,7 @@ class QSettingsSet(Action):
         p = Path(record["path"])
         old = Host.read_file(p)
         now = ini.qsettings_get(old, record["group"], record["key"])
-        if now != record["after"] and not force:
+        if now not in (record["after"], record["before"]) and not force:
             return RevertResult(False, f"{record['display']}: {record['key']} has changed since (now {now})", True)
         new = ini.qsettings_set(old, record["group"], record["key"], record["before"])
         if record.get("created_file") and not new.strip():
@@ -873,7 +885,7 @@ class NmSet(Action):
         if not r.ok:
             return RevertResult(False, "That saved connection no longer exists")
         name = NmSet.name_of(ctx.host, record["uuid"])
-        if r.stdout.strip() != record["after"] and not force:
+        if r.stdout.strip() not in (record["after"], record["before"]) and not force:
             return RevertResult(False, f"{name} {record['prop']} has changed since", True)
         _change(ctx.host, "nmcli", "connection", "modify", record["uuid"], record["prop"], record["before"])
         return RevertResult(True, f"{name}: {record['prop']} back to {record['before'] or 'the default'}")
@@ -932,7 +944,7 @@ class BluetoothSet(Action):
     @staticmethod
     def revert(record: dict, ctx: FixContext, force: bool = False) -> RevertResult:
         now = BluetoothSet._value(BluetoothSet._show(ctx.host), record["what"])
-        if now != record["after"] and not force:
+        if now not in (record["after"], record["before"]) and not force:
             return RevertResult(False, f"Bluetooth {record['what']} has changed since", True)
         if record["what"] == "alias":
             if record.get("default_alias"):
@@ -1073,12 +1085,15 @@ class WriteFile(Action):
             "   (it didn't exist before" + (", nor did the folders, removed only if empty)" if dirs else ")"))
 
     def __init__(self, path: Path, content: Callable[[str | None], str], text: str, display: str,
-                 mode: int | None = None, lines: list[str] | None = None):
+                 mode: int | None = None, lines: list[str] | None = None, then: list[str] | None = None):
         self.path, self.content, self.text, self.display = path, content, text, display
         self.mode = mode                    # for a file created new (an existing file keeps its mode)
         # what the dry run and History show of the change in place of its lines, for a line that names someone
         # (an authorized key's comment is often an email address): the log is a record too
         self.lines = lines
+        # a command that has the program reading the file notice it, run after writing and again after reverting
+        # (bus_reload: the session bus reads its service files again); its failure doesn't fail the step
+        self.then = then
 
     def describe(self) -> str:
         # an existing file is copied into History's backups first, and the user should know the copy is there (a
@@ -1098,7 +1113,17 @@ class WriteFile(Action):
         return old, old_text, self.content(old_text)
 
     def commands(self) -> list[str]:
-        return [shell(["mkdir", d]) for d in made_dirs(self.path.resolve() if self.path.is_symlink() else self.path)]
+        return [shell(["mkdir", d]) for d in made_dirs(self.path.resolve() if self.path.is_symlink() else self.path)] + \
+            ([shell(self.then)] if self.then else [])
+
+    def noop(self) -> bool:
+        """Whether writing would leave the file exactly as it is (an option applied before): FixPlan leaves such a
+        step out, so a guide doesn't offer again, nor History record, a change that changes nothing."""
+        try:
+            old, old_text, new_text = self._old_new()
+        except Exception:  # noqa: BLE001 - unreadable or odd: apply() says what is wrong
+            return False
+        return old is not None and new_text == old_text
 
     def preview(self) -> list[str]:
         if self.lines is not None:
@@ -1122,8 +1147,11 @@ class WriteFile(Action):
             _write_atomic(backup, old, 0o600)
             old_mode = self.path.stat().st_mode & 0o7777
         _write_atomic(self.path, new, None if old is not None else self.mode)
+        if self.then:
+            ctx.host.run(*self.then)
+            did(shell(self.then))
         return {"kind": self.kind, "path": str(self.path), "display": self.display, "backup": str(backup) if backup else None,
-                "mode": old_mode,
+                "mode": old_mode, **({"then": self.then} if self.then else {}),
                 "after_sha": _sha(new), "text": f"{self.text} ({self.display})",
                 "lines": list(self.lines) if self.lines is not None else changed_lines(old_text, new_text),
                 "dirs": dirs}
@@ -1148,11 +1176,19 @@ class WriteFile(Action):
             # the file's own mode, also when it was removed since (a backup is 0600 and a new file gets the umask's)
             _write_atomic(p, data, None if p.exists() or record.get("mode") is None else record["mode"])
             did(shell(["cp", record["backup"], record["path"]]))
+            WriteFile._then(record, ctx)
             return RevertResult(True, f"{record['display']} restored")
         if now is not None:
             p.unlink()
             did(shell(["rm", record["path"]]))
+        WriteFile._then(record, ctx)
         return RevertResult(True, _with_notes(f"{record['display']} removed", remove_made_dirs(record.get("dirs") or [])))
+
+    @staticmethod
+    def _then(record: dict, ctx: FixContext) -> None:
+        if record.get("then"):
+            ctx.host.run(*record["then"])
+            did(shell(record["then"]))
 
 
 @action
@@ -1315,8 +1351,23 @@ class FixPlan:
     via: dict = field(default_factory=dict)
 
     def __post_init__(self):
+        # a file write that changes nothing isn't a step (an option applied before would be offered for ever)
+        self.actions = [a for a in self.actions if not (isinstance(a, WriteFile) and a.noop())]
         # reversible changes first, deletions last (see the module docstring); stable within a phase
         self.actions.sort(key=lambda a: a.phase)
+
+    def step_commands(self) -> list[list[str]]:
+        """Each step's commands for the dry run, without the mkdir of a folder an earlier step makes: applying makes
+        it once, at the first step that needs it."""
+        made: set[str] = set()
+        out = []
+        for a in self.actions:
+            cmds = [c for c in a.commands() if c not in made]
+            made.update(c for c in cmds if c.startswith("mkdir "))
+            if isinstance(a, MakeDir):
+                made.add(shell(["mkdir", str(a.path)]))
+            out.append(cmds)
+        return out
 
     @property
     def irreversible(self) -> list[Action]:
@@ -1334,10 +1385,10 @@ class FixPlan:
         lines = [f"Fix for {self.check_id}: {self.title}"]
         for b in self.blockers:
             lines.append(f"{indent}BLOCKED: {b}")
-        for a in self.actions:
+        for a, cmds in zip(self.actions, self.step_commands()):
             tag = "can be undone" if a.reversible else "CANNOT be undone" if a.destructive else "side effect"
             lines.append(f"{indent}[{tag}{', as root' if a.needs_root else ''}] {a.describe()}")
-            lines += [f"{indent}    also runs: {c}" for c in a.commands()]
+            lines += [f"{indent}    also runs: {c}" for c in cmds]
             lines += [f"{indent}    {ln}" for ln in a.preview()]
         for s in self.side_effects:
             lines.append(f"{indent}Note: {s}")
@@ -1347,8 +1398,8 @@ class FixPlan:
         return {"id": self.id, "check_id": self.check_id, "title": self.title, "blockers": self.blockers,
                 "side_effects": self.side_effects, "needs_root": self.needs_root, "via": dict(self.via),
                 "steps": [{"kind": a.kind, "text": a.describe(), "reversible": a.reversible,
-                           "irreversible": a.destructive, "needs_root": a.needs_root, "commands": a.commands(),
-                           "lines": a.preview()} for a in self.actions],
+                           "irreversible": a.destructive, "needs_root": a.needs_root, "commands": cmds,
+                           "lines": a.preview()} for a, cmds in zip(self.actions, self.step_commands())],
                 "irreversible_files": sum(len(a.files) for a in self.irreversible if isinstance(a, DeleteFiles))}
 
 
@@ -1526,7 +1577,7 @@ class ChmodPath(Action):
             now = stat.S_IMODE(os.lstat(p).st_mode)
         except FileNotFoundError:
             return RevertResult(False, f"{record['display']} no longer exists")
-        if now != record["after"] and not force:
+        if now not in (record["after"], record["before"]) and not force:
             return RevertResult(False, f"{record['display']}'s permissions have changed since (now {now:o})", True)
         os.chmod(p, record["before"])
         did(shell(["chmod", f"{record['before']:o}", record["path"]]))
@@ -1540,11 +1591,13 @@ class MakeDir(Action):
     the plan's deletions (a folder put where a file was, so nothing can write that file)."""
     kind = "mkdir"
 
-    def __init__(self, path: Path, display: str, mode: int = 0o755, phase: int = 0):
+    def __init__(self, path: Path, display: str, mode: int = 0o755, phase: int = 0, note: str = ""):
         self.path, self.display, self.mode, self.phase = path, display, mode, phase
+        self.note = note                # what the folder is for, beside the command (never in it: it can be pasted)
 
     def describe(self) -> str:
-        return shell(["mkdir", self.display])
+        cmd = shell(["mkdir", *(["-m", f"{self.mode:o}"] if self.mode != 0o755 else []), self.display])
+        return f"{cmd}   ({self.note})" if self.note else cmd
 
     @staticmethod
     def undo_hint(record: dict) -> str:
@@ -1804,7 +1857,7 @@ class FirefoxPref(Action):
             return RevertResult(False, f"{record['label']} is open; close it and revert again")
         path = profile / "prefs.js"
         now = read_prefs(path).get(record["key"])
-        if now != record["after"] and not force:
+        if now not in (record["after"], record["before"]) and not force:
             return RevertResult(False, f"{record['label']}: {record['key']} has changed since", True)
         _write_atomic(path, set_pref(Host.read_file(path) or "", record["key"], record["before"]).encode())
         did(f'# {record["key"]} back to {json.dumps(record["before"]) if record["before"] is not None else "its default"} '

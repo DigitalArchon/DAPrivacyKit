@@ -465,8 +465,15 @@ class KdeConnect(Check):
 
     def detect(self, scan: Scan) -> Outcome:
         host = scan.host
-        ev, active = [], []
-        if "kdeconnectd" in processes(host):
+        ev, active, notes = [], [], []
+        # the user's own daemon: another account's is theirs to stop (the fixes act on this user's alone)
+        mine = "kdeconnectd" in processes(host, own=True)
+        if not mine and "kdeconnectd" in processes(host):
+            notes.append(Note("info", "Another account has KDE Connect running",
+                              "Someone else logged in to this computer has KDE Connect running, and it listens on the "
+                              "local network for their paired phones. It stops when they log out; removing KDE Connect "
+                              "keeps it from starting again for every account."))
+        if mine:
             active.append("KDE Connect")
             text = read_text(host, scan.paths.config_home / "kdeconnect" / "trusted_devices") or ""
             ev.append(Evidence.count("Paired devices", len(re.findall(r"^\[", text, re.M))))
@@ -484,7 +491,9 @@ class KdeConnect(Check):
             return failed(f"{' and '.join(active)} {'is' if len(active) == 1 else 'are'} running and reachable on the "
                           "local network.", *ev)
         if installed(host, "kdeconnectd", "kdeconnect-cli"):
-            return passed("KDE Connect is installed but not running.")
+            return passed("KDE Connect is installed but not running for you.", *ev, notes=notes)
+        if notes:
+            return passed("KDE Connect isn't running for you.", *ev, notes=notes)
         return absent("Neither KDE Connect nor GSConnect is in use.")
 
 
