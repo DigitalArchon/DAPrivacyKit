@@ -218,8 +218,10 @@ def test_installer_sticks_are_left_out(cat, tmp_path):
 
 # ------------------------------------------------------------------ crash dumps
 
+# kept but none there now is a risk (WARN), and a plain core file goes by the limit of the programs the user runs (the
+# app's parent's), not the app's own /proc/self/limits: both pinned the other way before the review of 2026-10-17
 @pytest.mark.parametrize("files, status", [
-    ({"/proc/sys/kernel/core_pattern": "|/usr/lib/systemd/systemd-coredump %P %u %g %s %t %c %h\n"}, Status.FAIL),
+    ({"/proc/sys/kernel/core_pattern": "|/usr/lib/systemd/systemd-coredump %P %u %g %s %t %c %h\n"}, Status.WARN),
     ({"/proc/sys/kernel/core_pattern": "|/usr/lib/systemd/systemd-coredump %P\n",
       "/etc/systemd/coredump.conf.d/50-off.conf": "[Coredump]\nStorage=none\nProcessSizeMax=0\n"}, Status.PASS),
     ({"/proc/sys/kernel/core_pattern": "|/usr/lib/systemd/systemd-coredump %P\n",
@@ -228,9 +230,9 @@ def test_installer_sticks_are_left_out(cat, tmp_path):
     ({"/proc/sys/kernel/core_pattern": "|/usr/share/apport/apport -p%p -s%s -c%c\n",
       "/etc/default/apport": "enabled=0\n"}, Status.PASS),
     ({"/proc/sys/kernel/core_pattern": "|/usr/share/apport/apport -p%p\n", "/etc/default/apport": "enabled=1\n"},
-     Status.FAIL),
-    ({"/proc/sys/kernel/core_pattern": "core\n", "/proc/self/limits": "Max core file size        0   unlimited  bytes\n"},
-     Status.PASS),
+     Status.WARN),
+    ({"/proc/sys/kernel/core_pattern": "core\n", "/proc/self/status": "PPid:\t7\n",
+      "/proc/7/limits": "Max core file size        0   unlimited  bytes\n"}, Status.PASS),
 ])
 def test_coredumps(cat, tmp_path, files, status):
     assert detect(cat, "enc.coredumps_retained", make_scan(make_host(tmp_path, files=files))).status is status

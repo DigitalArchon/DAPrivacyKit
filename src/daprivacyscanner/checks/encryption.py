@@ -639,18 +639,63 @@ def _layered(host: Host, main: str, dropin: str = "") -> dict:
     return systemd_config(host, main)[0]
 
 
-def crash_dumps(host: Host) -> tuple[bool, int, list[Evidence]]:
-    """(whether crashes are kept on disk, how many are there now, evidence): systemd-coredump's Storage, apport,
-    or a plain core file. Also used by the browser panel's risks (tools/browser.py)."""
+PAGE = 4096                     # the kernel writes no core file under a page (binfmt min_coredump), nor does
+                                # systemd-coredump store one ("Resource limits disable core dumping")
+# crash handlers that keep nothing (kernel.core_pattern=|/bin/false is a common way to turn core files off)
+NOTHING_KEPT = re.compile(r"^\|\s*(/usr)?/bin/(false|true)(\s|$)")
+
+
+def _soft_core_limit(text: str | None) -> int | None:
+    """The soft core size limit in bytes from a /proc/PID/limits text (None: not there; unlimited: a big number)."""
+    m = re.search(r"^Max core file size\s+(\S+)", text or "", re.M)
+    if not m:
+        return None
+    return 2**63 if m.group(1) == "unlimited" else int(m.group(1)) if m.group(1).isdigit() else None
+
+
+def user_core_limit(host: Host) -> tuple[int | None, str]:
+    """The soft core size limit the programs this user runs get, and where it was read: the session's (this app's
+    parent's /proc/PID/limits: the desktop, the terminal's shell or the user's service manager that started it; never
+    the app's own, which app.no_core_dumps sets to 1), and the user service manager's DefaultLimitCORESoft for what it
+    starts. The higher of the two; None when neither could be read."""
+    found = []
+    m = re.search(r"^PPid:\s*(\d+)", host.read_sys("/proc/self/status") or "", re.M)
+    if m and m.group(1) != "0":
+        limit = _soft_core_limit(host.read_sys(f"/proc/{m.group(1)}/limits"))
+        if limit is not None:
+            found.append(limit)
+    r = host.run("systemctl", "--user", "show", "-p", "DefaultLimitCORESoft")
+    value = r.stdout.strip().partition("=")[2] if r.ok else ""
+    if value:
+        found.append(2**63 if value == "infinity" else int(value) if value.isdigit() else 0)
+    if not found:
+        return None, ""
+    limit = max(found)
+    return limit, ("unlimited" if limit >= 2**62 else f"{limit} bytes") + (" (no core files)" if limit < PAGE else "")
+
+
+def crash_dumps(host: Host) -> tuple[bool | None, int, list[Evidence]]:
+    """(whether crashes are kept on disk, None when that can't be told; how many are there now; evidence):
+    systemd-coredump's Storage, apport, a handler that keeps nothing (|/bin/false), or a plain core file, which the
+    kernel writes only up to the core size limit of the programs the user runs (user_core_limit). Also used by the
+    browser panel's risks (tools/browser.py)."""
     pattern = (host.read_sys("/proc/sys/kernel/core_pattern") or "").strip()
     ev = [Evidence.val("core_pattern", pattern[:120] or "unknown")]
-    retained, existing = False, 0
+    retained: bool | None = False
+    existing = 0
     if pattern.startswith("|") and "systemd-coredump" in pattern:
         cfg = _layered(host, "coredump.conf", "coredump.conf.d")
         storage = (ini.get(cfg, "Coredump", "Storage") or "external").lower()
         size_max = (ini.get(cfg, "Coredump", "ProcessSizeMax") or "").strip()
         retained = storage != "none" and size_max not in ("0", "0B")
         ev.append(Evidence.val("systemd-coredump Storage", storage + ("" if ini.get(cfg, "Coredump", "Storage") else " (default)")))
+        if retained and "%c" in pattern.split():
+            # handed the crashing program's own limit (Fedora, Arch): under a page, it stores nothing (Ubuntu and Mint
+            # hand it a fixed one instead)
+            limit, said = user_core_limit(host)
+            if limit is not None:
+                ev.append(Evidence.val("Core file size limit of the programs you run", said))
+                retained = limit >= PAGE
         dumps = tally(host.sys_path("/var/lib/systemd/coredump"))
         existing = dumps.files
         ev.append(Evidence.count("Dumps in /var/lib/systemd/coredump", dumps.files))
@@ -662,11 +707,15 @@ def crash_dumps(host: Host) -> tuple[bool, int, list[Evidence]]:
         crashes = tally(host.sys_path("/var/crash"), pattern=re.compile(r"\.crash$"))
         existing = crashes.files
         ev.append(Evidence.count("Crash reports in /var/crash", crashes.files))
+    elif NOTHING_KEPT.match(pattern):
+        ev.append(Evidence.val("Crash handler", "keeps nothing"))
+    elif pattern.startswith("|"):
+        retained = None                                  # a handler the app doesn't know: can't tell what it keeps
+        ev.append(Evidence.val("Crash handler", "a program the app doesn't know"))
     elif pattern:
-        limits = host.read_sys("/proc/self/limits") or ""
-        m = re.search(r"^Max core file size\s+(\S+)", limits, re.M)
-        retained = bool(m) and m.group(1) != "0"
-        ev.append(Evidence.val("Core file size limit", m.group(1) if m else "unknown"))
+        limit, said = user_core_limit(host)
+        retained = None if limit is None else limit >= PAGE
+        ev.append(Evidence.val("Core file size limit of the programs you run", said or "unknown"))
     return retained, existing, ev
 
 
@@ -676,8 +725,16 @@ class CoredumpsRetained(Check):
 
     def detect(self, scan: Scan) -> Outcome:
         retained, existing, ev = crash_dumps(scan.host)
-        if retained or existing:
-            return failed("Crash dumps are kept on disk." if retained else "Old crash dumps are still on disk.", *ev)
+        if retained and existing:
+            return failed(f"Crash dumps are kept on disk: {existing} {'is' if existing == 1 else 'are'} there now.", *ev)
+        if existing:
+            return failed("Old crash dumps are still on disk.", *ev)
+        if retained:
+            return warned("A program that crashes would leave a copy of its memory on disk (none is there now).", *ev)
+        if retained is None:
+            return unknown("Couldn't tell whether crash dumps would be kept: "
+                           + ("crashes are handed to a program the app doesn't know." if ev[-1].label == "Crash handler"
+                              else "the core size limit of the programs you run couldn't be read."), *ev)
         return passed("Crash dumps aren't kept.", *ev)
 
 

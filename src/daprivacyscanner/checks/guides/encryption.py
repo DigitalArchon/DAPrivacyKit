@@ -124,28 +124,37 @@ def backups(check, scan, outcome):
 
 @guide("enc.coredumps_retained", keys=("turn_off",))
 def coredumps(check, scan, outcome):
+    from ..encryption import NOTHING_KEPT, crash_dumps
     steps = []
     pattern = (scan.host.read_sys("/proc/sys/kernel/core_pattern") or "").strip()
+    retained, _, _ = crash_dumps(scan.host)
+    done = retained is False
     if "systemd-coredump" in pattern:
         steps.append(Step("Don't keep core dumps",
+                          "systemd-coredump logs that a program crashed, but doesn't store its memory." if done else
                           "systemd-coredump still logs that a program crashed, but no longer stores its memory.",
-                          options=[option(check, "Stop storing core dumps", [dropin(
+                          options=[] if done else [option(check, "Stop storing core dumps", [dropin(
                               "coredump", {"Storage": "none", "ProcessSizeMax": "0"},
                               "/etc/systemd/coredump.conf.d/60-daprivacyscanner.conf")], recommended=True,
                               key="turn_off")],
-                          side_effects=["Developers lose the dumps they'd use to debug a crash."]))
+                          side_effects=[] if done else ["Developers lose the dumps they'd use to debug a crash."],
+                          done=done))
     elif "apport" in pattern:
         steps.append(Step("Turn off apport",
+                          "apport is turned off." if done else
                           "apport writes crash reports, including memory, to /var/crash.",
-                          options=[option(check, "Turn off apport", [
+                          options=[] if done else [option(check, "Turn off apport", [
                               RootChange("edit_config", {"target": "apport"}, "Set enabled=0 in /etc/default/apport"),
                               *service_off(scan, "apport.service")], recommended=True, key="turn_off")],
-                          side_effects=["Ubuntu no longer offers to report crashes."]))
-    elif pattern:
+                          side_effects=[] if done else ["Ubuntu no longer offers to report crashes."], done=done))
+    elif pattern and not NOTHING_KEPT.match(pattern) and not pattern.startswith("|"):
         steps.append(Step("Stop programs writing core files",
+                          "The programs you run get a core size limit under a page: the kernel writes no core file."
+                          if done else
                           "The kernel writes core files next to crashing programs. Limit their size to zero for "
                           "every login:",
-                          commands=["echo '* hard core 0' | sudo tee /etc/security/limits.d/60-no-core.conf"]))
+                          commands=[] if done else ["echo '* hard core 0' | sudo tee /etc/security/limits.d/60-no-core.conf"],
+                          done=done))
     existing = sum(e.value for e in outcome.evidence if e.kind == "count" and isinstance(e.value, int))
     if existing:
         steps.append(Step("Delete the dumps already on disk",

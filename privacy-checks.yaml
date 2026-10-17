@@ -377,15 +377,22 @@ checks:
     title: Core dumps and crash reports kept on disk
     category: encryption
     severity: 5
+    warn_lower: 2
     kind: hygiene
     scope: system
     tier: guided
     why: Dumps contain process memory from browsers, password managers and messengers.
     detect:
       - 'cat /proc/sys/kernel/core_pattern'
-      - 'systemd-coredump: Storage= in /etc/systemd/coredump.conf and coredump.conf.d/*'
+      - 'systemd-coredump: Storage= in /etc/systemd/coredump.conf and coredump.conf.d/*; where the pattern hands it the
+        program''s own limit (%c: Fedora, Arch; Ubuntu and Mint hand it a fixed one), a limit under a page stores nothing'
       - 'ls /var/lib/systemd/coredump; coredumpctl list'
       - 'apport (Ubuntu): /var/crash/*.crash; grep enabled /etc/default/apport'
+      - 'A pipe to /bin/false or /bin/true keeps nothing; to a program the app doesn''t know: couldn''t check'
+      - 'A plain core file name: the soft core size limit of the programs the user runs (the app''s parent''s
+        /proc/PID/limits, never the app''s own, which it sets to 1; systemctl --user show -p DefaultLimitCORESoft), under
+        a page: none written'
+      - 'Kept but none there now: a risk, not a problem'
     fix: 'Drop-in coredump.conf.d with Storage=none and ProcessSizeMax=0; delete existing dumps; disable apport.'
     remedy: >
       Crash dumps hold the memory of programs that crashed: passwords and documents can be in them.

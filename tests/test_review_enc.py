@@ -241,6 +241,65 @@ def test_cryptsetup_suspend_installed_passes(cat, tmp_path):
     assert o.status is Status.PASS and "cryptsetup-suspend" in o.summary
 
 
+# ------------------------------------------------------------------ crash dumps
+
+LIMITS = "Limit                     Soft Limit           Hard Limit           Units     \nMax core file size        {} unlimited bytes\n"
+
+
+def _core_host(tmp_path, pattern, parent_limit="0", files=None):
+    return make_host(tmp_path, files={"/proc/sys/kernel/core_pattern": pattern + "\n",
+                                      "/proc/self/limits": LIMITS.format("1"),           # the app's own (no_core_dumps)
+                                      "/proc/self/status": "Name:\tpython3\nPPid:\t4242\n",
+                                      "/proc/4242/limits": LIMITS.format(parent_limit), **(files or {})})
+
+
+@pytest.mark.parametrize("pattern, parent, status", [
+    ("core", "0", Status.PASS),                    # Debian, or Ubuntu after apport is off: the session's limit is 0
+    ("core", "unlimited", Status.WARN),            # would be kept: a risk while none is there
+    ("|/bin/false", "unlimited", Status.PASS),     # a handler that keeps nothing
+    ("|/usr/lib/systemd/systemd-coredump %P %u %g %s %t %c %h %d %F", "0", Status.PASS),   # %c under a page: not stored
+    ("|/usr/lib/systemd/systemd-coredump %P %u %g %s %t %c %h %d %F", "unlimited", Status.WARN),
+    ("|/usr/lib/systemd/systemd-coredump %P %u %g %s %t 9223372036854775808 %h %d", "0", Status.WARN),  # Mint: fixed
+    ("|/usr/libexec/some-handler %p", "0", Status.UNKNOWN),
+])
+def test_crash_dumps_go_by_the_limit_of_the_programs_you_run(cat, tmp_path, pattern, parent, status):
+    """It read /proc/self/limits, the app's own, which app.no_core_dumps sets to 1: always "kept" where core_pattern is
+    a plain file (Debian; Ubuntu after the apport fix; |/bin/false too)."""
+    o = detect(cat, "enc.coredumps_retained", make_scan(_core_host(tmp_path, pattern, parent)))
+    assert o.status is status, o.summary
+
+
+def test_crash_dumps_kept_but_none_there_is_a_risk(cat, tmp_path):
+    """"Crash dumps are kept on disk" at severity 5 with none there: now a risk, rated below the problem."""
+    from daprivacyscanner.runner import Runner
+    host = _core_host(tmp_path, "|/usr/share/apport/apport -p%p -s%s -c%c", files={"/etc/default/apport": "enabled=1\n"})
+    host.sys_path("/var/crash").mkdir(parents=True)
+    o = detect(cat, "enc.coredumps_retained", make_scan(host))
+    assert o.status is Status.WARN and "none is there now" in o.summary
+    (host.sys_path("/var/crash") / "_usr_bin_x.1000.crash").write_text("x")
+    o = detect(cat, "enc.coredumps_retained", make_scan(host))
+    assert o.status is Status.FAIL and "1 is there now" in o.summary
+
+
+def test_crash_dump_guide_marks_storing_off_as_done(cat, tmp_path):
+    """No done=: Easy fixes offered "Stop storing core dumps" again after it was applied."""
+    from daprivacyscanner.checks import load_all
+    pattern = "|/usr/lib/systemd/systemd-coredump %P %u %g %s %t 9223372036854775808 %h %d"
+    host = _core_host(tmp_path, pattern, files={
+        "/etc/systemd/coredump.conf.d/60-daprivacyscanner.conf": "[Coredump]\nStorage=none\nProcessSizeMax=0\n"})
+    check = load_all()["enc.coredumps_retained"](cat["enc.coredumps_retained"])
+    scan = make_scan(host)
+    o = check.detect(scan)
+    assert o.status is Status.PASS
+    [step] = check.plan_guide(scan, o).steps
+    assert step.done and not step.options
+
+
+def test_the_browser_panel_uses_the_same_answer(tmp_path):
+    from daprivacyscanner.tools import browser as B
+    assert B.risks(_core_host(tmp_path, "core", "0"))["crash_dumps"]["kept"] is False
+
+
 def test_the_panels_say_what_the_scan_says(tmp_path):
     """The RAM disk and browser panels said "this computer can hibernate" where the scan said it can't."""
     from daprivacyscanner.tools import ramdisk as R
