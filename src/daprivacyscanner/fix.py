@@ -373,19 +373,28 @@ class XfconfSet(Action):
 @action
 class KConfigSet(Action):
     """A KDE setting, written with kwriteconfig so running apps are notified. "Before" is the
-    value in the user's file; a key that wasn't there (the default) is deleted again on revert."""
+    value in the user's file; a key that wasn't there (the default) is deleted again on revert.
+    `then`: a command that has a program which reads its settings only when it starts, or when asked,
+    read them again (kscreenlocker's configure call), run after writing and again after reverting, as
+    WriteFile's; its failure doesn't fail the step."""
     kind = "kconfig"
 
     @staticmethod
     def undo_hint(record: dict) -> str:
         base = [record['tool'], "--file", record['file'], "--group", record['group'], "--key", record['key'], "--notify"]
-        return shell(base + ["--delete"]) if record["before"] is None else shell(base + [record['before']])
+        cmd = shell(base + ["--delete"]) if record["before"] is None else shell(base + [record['before']])
+        return f"{cmd}; {shell(record['then'])}" if record.get("then") else cmd
 
-    def __init__(self, tool: str, path: Path, file: str, group: str, key: str, value: str):
+    def __init__(self, tool: str, path: Path, file: str, group: str, key: str, value: str,
+                 then: list[str] | None = None):
         self.tool, self.path, self.file, self.group, self.key, self.value = tool, path, file, group, key, value
+        self.then = then
 
     def describe(self) -> str:
         return shell([self.tool, "--file", self.file, "--group", self.group, "--key", self.key, "--notify", self.value])
+
+    def commands(self) -> list[str]:
+        return [shell(self.then)] if self.then else []
 
     def _current(self, host: Host) -> str | None:
         from . import ini
@@ -396,14 +405,18 @@ class KConfigSet(Action):
         created = not os.path.lexists(self.path)
         dirs = made_dirs(self.path)
         _change(ctx.host, self.tool, "--file", self.file, "--group", self.group, "--key", self.key, "--notify", self.value)
+        if self.then:
+            ctx.host.run(*self.then)
+            did(shell(self.then))
         return {"kind": self.kind, "tool": self.tool, "path": str(self.path), "file": self.file, "group": self.group,
                 "key": self.key, "before": before, "after": self.value, "created_file": created, "dirs": dirs,
+                **({"then": self.then} if self.then else {}),
                 "text": f"{self.file} [{self.group}] {self.key}: {before if before is not None else '(default)'} → {self.value}"}
 
     @staticmethod
     def ran(record: dict) -> list[str]:
         return [shell([record["tool"], "--file", record["file"], "--group", record["group"], "--key", record["key"],
-                       "--notify", record["after"]])]
+                       "--notify", record["after"]])] + ([shell(record["then"])] if record.get("then") else [])
 
     @staticmethod
     def changed_back(record: dict, host: Host) -> str | None:
@@ -436,6 +449,9 @@ class KConfigSet(Action):
                 did(shell(["rm", str(p)]))
                 message += f"; {_shown(str(p))} removed (the fix made it)"
             notes += remove_made_dirs(record.get("dirs") or [])
+        if record.get("then"):                          # the program reads the setting put back, now
+            ctx.host.run(*record["then"])
+            did(shell(record["then"]))
         return RevertResult(True, _with_notes(message, notes))
 
 

@@ -690,9 +690,14 @@ checks:
       - 'Cinnamon: org.cinnamon.desktop.screensaver lock-enabled'
       - 'XFCE: xfconf-query -c xfce4-screensaver -p /lock/enabled, /lock/saver-activation/enabled and /delay, /lock/sleep-activation, /saver/idle-activation/enabled and /delay (minutes); a property never set is the default (light-locker isn''t read)'
     fix: >
-      Enable locking, idle timeout of 5 minutes or less, lock on suspend and lid close. Xfce: the same
+      Enable locking, idle timeout of 5 minutes or less, lock on suspend and lid close. KDE Plasma: kscreenlockerrc
+      through kwriteconfig (Timeout 0, never, set to 5 too; a value from /etc/xdg counts as the user's), each followed by
+      kscreenlocker's configure call on the session bus (org.kde.screensaver /ScreenSaver, through qdbus or dbus-send:
+      KConfigSet's `then`), after writing and again after reverting, since it reads its settings only at login or when
+      asked. MATE: lock-enabled, idle-delay and lock-delay (minutes). Xfce: the same
       xfce4-screensaver properties through xfconf-query (XfconfSet: a property never set is removed again on
-      revert).
+      revert). The side effects are the desktop's own (GNOME blanks the screen at its idle delay, Cinnamon and MATE
+      start the screensaver); a plan with nothing left to change names the desktop's settings page.
     remedy: >
       Fix… locks the screen after 5 minutes idle, and when the computer sleeps or the lid closes.
     verify: >

@@ -50,15 +50,24 @@ def gset(scan: Scan, schema: str, key: str, value: str) -> list[GSettingsSet]:
     return [GSettingsSet(schema, key, value)]
 
 
-def kset(scan: Scan, file: str, group: str, key: str, value: str, default: str | None = None) -> list[KConfigSet]:
+def kset(scan: Scan, file: str, group: str, key: str, value: str, default: str | None = None,
+         then: list[str] | None = None) -> list[KConfigSet]:
     """A KDE setting written to the user's file, or nothing when it already holds the value. Judged on the value the
     program reads (the user's file over the distribution's in /etc/xdg), as the checks do: a default set there would
-    otherwise leave a failing check with an empty plan."""
+    otherwise leave a failing check with an empty plan. `then`: the command that has the program read it again, run
+    after writing and after reverting (KConfigSet)."""
     path = scan.paths.config_home / file
     current = scan.kde.get(file, group, key)
     if (current if current is not None else default) == value:
         return []
-    return [KConfigSet(scan.kde.tool("kwriteconfig"), path, file, group, key, value)]
+    return [KConfigSet(scan.kde.tool("kwriteconfig"), path, file, group, key, value, then=then)]
+
+
+def kscreenlocker_reload(scan: Scan) -> list[str] | None:
+    """The call that has Plasma's screen locker read kscreenlockerrc again, as System Settings → Screen Locking does
+    when it saves: kscreenlocker reads it only when the session starts or on this call, so a setting written without it
+    applies from the next login, and one put back on revert the same. None without qdbus or dbus-send."""
+    return scan.kde.dbus("org.kde.screensaver", "/ScreenSaver", "org.kde.screensaver.configure")
 
 
 def delete(scan: Scan, root: Path, label: str, pattern: re.Pattern | None = None) -> list[DeleteFiles]:
@@ -103,7 +112,7 @@ def _nmcli(scan: Scan) -> bool:
 # `can` answers: True, or No with what the user can do instead
 
 def _gnome_only(scan: Scan) -> bool | No:
-    return _is_gnome(scan) or No(f"The fix covers GNOME's setting, and this is {scan.context.desktop.label}.")
+    return _is_gnome(scan) or No(f"The fix covers GNOME's setting, and {scan.context.desktop.this}.")
 
 
 def _need_kwriteconfig(scan: Scan) -> bool | No:
@@ -160,13 +169,25 @@ def _screen_lock_can(scan: Scan) -> bool | No:
         return _need_kwriteconfig(scan)
     if _gnome_family(scan) is not None or _xfce(scan):
         return True
-    return No(f"The fix covers GNOME, Cinnamon, MATE, KDE Plasma and Xfce, and this is {scan.context.desktop.label}: "
-              "set the screen lock in its settings (lock after 5 minutes idle, and on suspend).")
+    return No(f"The fix covers GNOME, Cinnamon, MATE, KDE Plasma and Xfce, and {scan.context.desktop.this}: "
+              "set the screen lock in your desktop's settings (lock after 5 minutes idle, and on suspend).")
+
+
+def _screen_lock_page(scan: Scan, family: str | None) -> str:
+    """Where the user sets the screen lock on this desktop, for a plan that has nothing left to change."""
+    if scan.context.desktop.is_kde:
+        return "System Settings → Screen Locking"
+    if family == "cinnamon":
+        return "System Settings → Screensaver"
+    if family == "mate":
+        return "Control Center → Screensaver"
+    major = scan.context.desktop.gnome_major
+    return "Settings → Privacy & Security → Screen Lock" if not major or major >= 46 else "Settings → Privacy → Screen Lock"
 
 
 @fix("auth.screen_lock", can=_screen_lock_can)
 def screen_lock(check, scan, outcome):
-    a = []
+    a, effects = [], []
     family = _gnome_family(scan)
     if not scan.context.desktop.is_kde and family is None and _xfce(scan):
         from .auth import XFCE_SAVER, xfconf_get
@@ -184,19 +205,32 @@ def screen_lock(check, scan, outcome):
         return FixPlan(check.id, "Lock the screen after 5 minutes idle and on suspend", a,
                        side_effects=["The screensaver starts after 5 minutes without input, and locks the screen."])
     if scan.context.desktop.is_kde:
+        # Timeout 0 is "never" (the check's "never locks when idle"); a value set in /etc/xdg counts as the user's
         timeout = int(scan.kde.get("kscreenlockerrc", "Daemon", "Timeout") or 5)
         grace = int(scan.kde.get("kscreenlockerrc", "Daemon", "LockGrace") or 5)
-        a += kset(scan, "kscreenlockerrc", "Daemon", "Autolock", "true", default="true")
-        a += kset(scan, "kscreenlockerrc", "Daemon", "LockOnResume", "true", default="true")
-        if timeout > 5:
-            a += kset(scan, "kscreenlockerrc", "Daemon", "Timeout", "5")
+        # kscreenlocker reads its settings when the session starts, or when asked: asked after each change and
+        # after each is put back, or the old settings would stay until the next login
+        reload = kscreenlocker_reload(scan)
+        a += kset(scan, "kscreenlockerrc", "Daemon", "Autolock", "true", default="true", then=reload)
+        a += kset(scan, "kscreenlockerrc", "Daemon", "LockOnResume", "true", default="true", then=reload)
+        if timeout == 0 or timeout > 5:
+            a += kset(scan, "kscreenlockerrc", "Daemon", "Timeout", "5", then=reload)
         if grace > 60:
-            a += kset(scan, "kscreenlockerrc", "Daemon", "LockGrace", "5")
+            a += kset(scan, "kscreenlockerrc", "Daemon", "LockGrace", "5", then=reload)
+        if a:
+            effects.append("The screen locker uses the new settings at once, and the old ones again at once if the fix "
+                           "is reverted." if reload else
+                           "The screen locker uses the new settings from your next login: neither qdbus nor dbus-send is "
+                           "installed to tell it now. The same goes for reverting the fix.")
     elif family == "mate":
         a += gset(scan, "org.mate.screensaver", "lock-enabled", "true")
         idle = scan.gnome.gsettings("org.mate.screensaver", "idle-delay")
         if idle is not None and (idle == 0 or idle > 5):
             a += gset(scan, "org.mate.screensaver", "idle-delay", "5")
+            effects.append("The screensaver starts after 5 minutes without input.")
+        delay = scan.gnome.gsettings("org.mate.screensaver", "lock-delay")          # minutes
+        if delay is not None and delay > 1:
+            a += gset(scan, "org.mate.screensaver", "lock-delay", "0")
     elif family:
         saver = "org.cinnamon.desktop.screensaver" if family == "cinnamon" else "org.gnome.desktop.screensaver"
         session = "org.cinnamon.desktop.session" if family == "cinnamon" else "org.gnome.desktop.session"
@@ -204,6 +238,10 @@ def screen_lock(check, scan, outcome):
         idle = scan.gnome.gsettings(session, "idle-delay")
         if idle is not None and (idle == 0 or idle > 300):
             a += gset(scan, session, "idle-delay", "uint32 300")
+            # the session's idle delay: GNOME blanks the screen then (Settings → Power → Screen Blank), Cinnamon
+            # starts its screensaver
+            effects.append("The screensaver also starts after 5 minutes without input." if family == "cinnamon" else
+                           "The screen also turns off after 5 minutes without input.")
         delay = scan.gnome.gsettings(saver, "lock-delay")
         if delay is not None and delay > 60:
             a += gset(scan, saver, "lock-delay", "uint32 0")
@@ -211,8 +249,11 @@ def screen_lock(check, scan, outcome):
             a += gset(scan, "org.cinnamon.settings-daemon.plugins.power", "lock-on-suspend", "true")
         else:
             a += gset(scan, "org.gnome.desktop.screensaver", "ubuntu-lock-on-suspend", "true")
-    return FixPlan(check.id, "Lock the screen after 5 minutes idle and on suspend", a,
-                   side_effects=["The screen also turns off after 5 minutes without input."])
+    if not a:
+        # an empty plan isn't offered, and this is shown as the reason
+        effects = [f"The settings Fix… changes already have its values here. Set the screen lock in "
+                   f"{_screen_lock_page(scan, family)}: lock after 5 minutes idle, and on suspend."]
+    return FixPlan(check.id, "Lock the screen after 5 minutes idle and on suspend", a, side_effects=effects)
 
 
 @fix("auth.lockscreen_notifications", can=_gnome_only)
@@ -709,7 +750,7 @@ def _session_restore_can(scan: Scan) -> bool | No:
         return _xfce(scan) or No("Xfce's settings are changed with xfconf-query, which isn't installed: untick \"Save "
                                  "session for future logins\" when you log out instead.")
     return _gnome_family(scan) in ("gnome", "cinnamon", "mate") or No(
-        f"The fix covers GNOME, Cinnamon, MATE, Xfce and KDE Plasma, and this is {scan.context.desktop.label}.")
+        f"The fix covers GNOME, Cinnamon, MATE, Xfce and KDE Plasma, and {scan.context.desktop.this}.")
 
 
 @fix("desk.session_restore", can=_session_restore_can)

@@ -76,6 +76,9 @@ class ScreenLock(Check):
                                    ("org.gnome.desktop.screensaver", "ubuntu-lock-on-suspend"))
         if "xfce" in names:
             return self._xfce(scan)
+        if not d.session:
+            return unknown("Not checked without a desktop session (a scan from a terminal or over SSH): which desktop's "
+                           "screen lock you use can't be told. Scan from your desktop to check it.")
         return unknown(f"Screen lock settings for {d.label} aren't supported yet.")
 
     def _judge(self, desktop: str, enabled, idle: int | None, delay: int, on_suspend, ev: list[Evidence]) -> Outcome:
@@ -200,6 +203,9 @@ class LockscreenNotifications(Check):
             # show-notifications setting isn't read by the lock screen at all.)
             return passed("Cinnamon's lock screen shows only how many notifications arrived, never what they say.",
                           Evidence.val("Shown on the lock screen", "a count of notifications"))
+        if not scan.context.desktop.session:
+            return unknown("Not checked without a desktop session (a scan from a terminal or over SSH): which desktop's "
+                           "lock screen you use can't be told. Scan from your desktop to check it.")
         return unknown(f"Not checked on {scan.context.desktop.label} yet: its setting is still to be confirmed.")
 
 

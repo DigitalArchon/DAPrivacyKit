@@ -810,7 +810,8 @@ class SessionRestore(Check):
         schema = "org.cinnamon.SessionManager" if names & {"x-cinnamon", "cinnamon"} else \
             "org.mate.session" if "mate" in names else "org.gnome.SessionManager" if d.is_gnome else None
         if schema is None:
-            return absent(f"Session restore isn't checked on {d.label}.")
+            return absent(f"Session restore isn't checked on {d.label}." if d.session else
+                          "Session restore isn't checked without a desktop session (a scan from a terminal or over SSH).")
         save = scan.gnome.gsettings(schema, "auto-save-session")
         if save is None:
             return unknown("Couldn't read the session manager's settings.")

@@ -34,12 +34,24 @@ class DesktopInfo:
         return "gnome" in self.names
 
     @property
+    def session(self) -> bool:
+        """Whether the scan runs in a desktop session: a scan from a terminal or over SSH has none ($XDG_CURRENT_DESKTOP
+        unset), so which desktop the user logs in to can't be told."""
+        return bool(self.names)
+
+    @property
     def label(self) -> str:
         if self.is_kde:
             return f"KDE Plasma {self.plasma_major}" if self.plasma_major else "KDE Plasma"
         if self.is_gnome:
             return f"GNOME {self.gnome_major}" if self.gnome_major else "GNOME"
-        return self.names[0].removeprefix("x-").capitalize() if self.names else "unknown"
+        return self.names[0].removeprefix("x-").capitalize() if self.names else "no desktop session"
+
+    @property
+    def this(self) -> str:
+        """The desktop in a sentence saying what a fix covers: "this is KDE Plasma 6", or "this scan ran without a
+        desktop session" (from a terminal or over SSH)."""
+        return f"this is {self.label}" if self.names else "this scan ran without a desktop session"
 
     def to_dict(self) -> dict:
         return {"names": list(self.names), "plasma_major": self.plasma_major, "gnome_major": self.gnome_major,
