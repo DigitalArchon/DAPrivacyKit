@@ -885,13 +885,17 @@ host
             -M 9a:55:9a:55:9a:55 -I eth0 -a 10.0.2.15 -n 24 -g 10.0.2.2 [-a fd00::15 -g fe80::9855:9aff:fe55:9a55 | -4] --
       └─ /bin/sh -c '<fence rules> ; exec "$0" "$@"'      (as root of pasta's namespace)
          └─ bwrap --unshare-all --share-net …              (pasta's namespace, not the computer's)
-            /etc/resolv.conf: nameserver 169.254.0.1
+            /etc/resolv.conf: nameserver 169.254.0.1, options edns0
             └─ python3 LANDLOCK → start-mullvad-browser → firefox
 ```
 
 - `--no-map-gw`: the host's loopback services aren't reachable through the gateway address. No ports
   are forwarded in either direction (`-t/-u/-T/-U none`).
-- DNS goes to pasta's forwarder at 169.254.0.1, which forwards to the computer's resolver.
+- DNS goes to pasta's forwarder at 169.254.0.1, which forwards to the computer's resolver. Over TCP only
+  where pasta forwards that too: pasta 2026-01-20 does, 2024-02-20 (Mint 22.3, Ubuntu 24.04) sent the
+  connection on to 169.254.0.1 itself, where it timed out (tested). `probe_fence` connects to it from inside
+  (2 seconds at most, once per run of the app) and the fence lets TCP through only where that worked;
+  elsewhere it is refused at once. The sandbox's resolver asks with EDNS0, so a large answer comes over UDP.
 - Abstract Unix sockets belong to the network namespace, so the session's are out of reach.
 - **Addresses of its own** (`sandbox.pasta_opts`). By default pasta copies the computer's interface name, its
   addresses (the global IPv6 address, which a VPN hides and whose EUI-64 form holds the hardware address), its
@@ -914,7 +918,7 @@ has no capabilities to change them):
 | Pref | Rule |
 |---|---|
 | 40 | `lookup main to 10.64.0.1 ipproto tcp dport 1080` and `to 10.124.0.0/22 … dport 1080`: Mullvad VPN's SOCKS5 proxies inside its tunnel, which Mullvad Browser's extension uses to change the browser's country (from mullvad.net/help/socks5-proxy and Mullvad's proxy list, which also uses 10.124.2.x). Only reachable while Mullvad VPN is connected |
-| 50 | `lookup main to 169.254.0.1`: pasta's DNS forwarder |
+| 50 | `lookup main to 169.254.0.1 ipproto udp dport 53`, and `… ipproto tcp dport 53` where pasta forwards DNS over TCP: pasta's DNS forwarder, for DNS alone |
 | 100 | `prohibit` to 0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10 (CGNAT, Tailscale), 169.254.0.0/16, 172.16.0.0/12, 192.0.0.0/24, 192.168.0.0/16, 198.18.0.0/15, 224.0.0.0/3 |
 | 100 | `prohibit` to fc00::/7, fe80::/10, ff00::/8 (tolerated if pasta has no IPv6) |
 | 100 | `prohibit` to **the computer's own networks** (`host_networks`, listed on the computer with `ip -j address show` and `ip -j route show table all type unicast` just before pasta starts): every address of the computer's on every interface (but loopback's) and the network it is on, a point-to-point link's far end, and the unicast routes of every routing table, merged, those inside the ranges above left out. Not the default routes, nor the routes through one interface that between them cover at least a sixteenth of IPv4 (or of IPv6's 2000::/3): a VPN that carries everything but the local network does it with broad routes in place of a default one (WireGuard's "exclude private IPs", OpenVPN's 0.0.0.0/1 and 128.0.0.0/1) |

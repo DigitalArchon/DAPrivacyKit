@@ -1409,7 +1409,7 @@ def _start(host: Host, b: Browser, spawn: Callable, sandboxed: bool, with_sound:
                 network = "tor"
             else:
                 pasta = sandbox.program(host, sandbox.PASTA) if sb["pasta"]["available"] and not disp.network else None
-                etc = sandbox.identity_files(private / "etc", f"nameserver {sandbox.DNS_FORWARD}\n" if pasta
+                etc = sandbox.identity_files(private / "etc", sandbox.FORWARD_RESOLV if pasta
                                              else sandbox.resolver(host))
                 # pasta passes its command only stdin, stdout and stderr: the pipe goes in as stdin, held as --sync-fd 0
                 argv = sandbox.browser_argv(host, lay, disp, with_sound, landlock, etc, pasta, sb["pasta"]["lan_blocked"],

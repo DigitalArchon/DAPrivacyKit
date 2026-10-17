@@ -116,6 +116,15 @@ TOR_DIR_IN = f"{RUNTIME_IN}/tor"
 SOCKS_IN, CONTROL_IN = f"{TOR_DIR_IN}/socks", f"{TOR_DIR_IN}/control"
 MACHINE_ID = "b08dfa6083e7567a1921a715000001fb"     # Whonix's, the same for everyone: it says nothing
 DNS_FORWARD = "169.254.0.1"                          # pasta forwards DNS sent here to the computer's resolver
+# the sandbox's resolv.conf under pasta: its forwarder, with EDNS0 so that a large answer comes over UDP rather than
+# needing TCP, which pasta 2024-02-20 (Mint 22.3, Ubuntu 24.04) doesn't forward (_DNS_TCP)
+FORWARD_RESOLV = f"nameserver {DNS_FORWARD}\noptions edns0\n"
+# whether pasta's forwarder takes DNS over TCP, by pasta's program, as probe_fence found (connecting from inside):
+# pasta 2026-01-20 forwards it to the computer's resolver, 2024-02-20 sent the connection on to the address itself,
+# where it timed out (tested). The fence lets TCP to the forwarder through only where it works; elsewhere it is
+# refused at once, and nothing goes out towards 169.254.0.1 on the local network.
+_DNS_TCP: dict[str, bool] = {}
+DNS_TCP_MARK = "dns-over-tcp"
 # pasta's namespace gets addresses of its own, never the computer's (pasta_opts). By default pasta copies the
 # computer's: its interface's name, its addresses (the global IPv6 one, which a VPN hides and whose EUI-64 form
 # holds the hardware address), its routes, and the gateway's address, whose hardware address it then shows: the
@@ -664,7 +673,8 @@ def host_networks(host: Host, c: Computer | None = None) -> tuple[list[str], lis
     return v4, v6
 
 
-def fence(host: Host, proxies: bool = True, networks: tuple[list[str], list[str]] | None = None) -> list[str] | None:
+def fence(host: Host, proxies: bool = True, networks: tuple[list[str], list[str]] | None = None,
+          dns_tcp: bool | None = None) -> list[str] | None:
     """What runs first in pasta's namespace, as its root: the FENCE rules, the computer's own networks (host_networks,
     listed now, before pasta starts: the local networks' prefixes, which on IPv6, and on some IPv4 networks, are
     public addresses no fixed list covers, the computer's addresses on every interface, a VPN's routes), and every
@@ -672,16 +682,19 @@ def fence(host: Host, proxies: bool = True, networks: tuple[list[str], list[str]
     iproute2's ip; SandboxError when the computer's networks can't be listed. Fails closed (nothing starts): any
     rule that can't be set stops it, but for a copied route's that is there already, and the IPv6 ones where the
     kernel has no IPv6 at all (no /proc/net/if_inet6: nothing to fence then). pasta's DNS forwarder is let through
-    for DNS alone (port 53), not for anything else at its address; a route listing that fails counts as a failure
-    too (it isn't hidden by the pipe). `proxies`: FENCE_ALLOWED is let through (Mullvad Browser's; not for a
-    program on trial). `networks`: host_networks' answer, when the caller has it already."""
+    for DNS alone (port 53: UDP, and TCP where `dns_tcp`, by default where probe_fence found pasta's forwarder
+    takes it), not for anything else at its address; a route listing that fails counts as a failure too (it isn't
+    hidden by the pipe). `proxies`: FENCE_ALLOWED is let through (Mullvad Browser's; not for a program on trial).
+    `networks`: host_networks' answer, when the caller has it already."""
     ip = program(host, "ip")
     if not ip:
         return None
     host4, host6 = networks or host_networks(host)
+    if dns_tcp is None:
+        dns_tcp = _DNS_TCP.get(program(host, PASTA) or "", False)
     fail = "{ echo 'The local network could not be fenced off' >&2; exit 1; }"
     dns = " && ".join(f"{ip} rule add lookup main to {DNS_FORWARD} ipproto {proto} dport 53 pref 50"
-                      for proto in ("udp", "tcp"))
+                      for proto in (("udp", "tcp") if dns_tcp else ("udp",)))
     v4 = " && ".join(f"{ip} rule add prohibit to {n} pref 100" for n in FENCE_V4)
     v6 = " && ".join(f"{ip} -6 rule add prohibit to {n} pref 100" for n in FENCE_V6)
     allowed = "; ".join(f"{ip} rule add lookup main to {n} ipproto tcp dport {port} pref 40 2>/dev/null"
@@ -700,14 +713,18 @@ def fence(host: Host, proxies: bool = True, networks: tuple[list[str], list[str]
     return ["/bin/sh", "-c", script]
 
 
-def fence_check(host: Host, also: tuple[str, ...] = ()) -> list[str]:
+def fence_check(host: Host, also: tuple[str, ...] = (), dns_tcp: bool = False) -> list[str]:
     """Run inside the sandbox by probe_fence: a route lookup of each FENCE_PROBE address, and of the addresses
     `also` (one of the computer's own networks of each IP version), must be refused (no packet is sent), or the
-    fence isn't in place."""
+    fence isn't in place. `dns_tcp`: then whether pasta's forwarder takes a TCP connection on port 53 (the
+    computer's python3 connecting, for 2 seconds at most), said on stdout as DNS_TCP_MARK."""
     ip = program(host, "ip") or "ip"
     loop = (f"for a in {' '.join((*FENCE_PROBE, *also))}; do {ip} route get \"$a\" >/dev/null 2>&1 && "
-            '{ echo "$a is reachable: the fence is not in place" >&2; exit 1; }; done; exit 0')
-    return ["/bin/sh", "-c", loop]
+            '{ echo "$a is reachable: the fence is not in place" >&2; exit 1; }; done; ')
+    if dns_tcp:
+        loop += (f"{PYTHON} -I -c 'import socket; socket.create_connection((\"{DNS_FORWARD}\", 53), 2).close()' "
+                 f">/dev/null 2>&1 && echo {DNS_TCP_MARK}; ")
+    return ["/bin/sh", "-c", loop + "exit 0"]
 
 
 def probe_fence(host: Host) -> str | None:
@@ -723,14 +740,15 @@ def probe_fence(host: Host) -> str | None:
     try:
         c = computer(host)
         host4, host6 = host_networks(host, c)
-        f = fence(host, networks=(host4, host6)) or []
+        f = fence(host, networks=(host4, host6), dns_tcp=True) or []
     except SandboxError as e:
         return str(e)
     also = tuple(str(next(iter(ipaddress.ip_network(nets[0]).hosts()), ipaddress.ip_network(nets[0]).network_address))
                  for nets in (host4, host6) if nets)
     r = host.run(pasta, *pasta_opts(host, c), "--", *f, bwrap, *namespaces(True), *system(host), "--",
-                 *fence_check(host, also), timeout=20)
+                 *fence_check(host, also, dns_tcp=True), timeout=25)
     if r.ok:
+        _DNS_TCP[pasta] = DNS_TCP_MARK in (r.stdout or "").split()
         return None
     err = [ln for ln in (r.stderr or r.stdout).strip().splitlines() if not quiet_line(ln)]
     return f"its rules couldn't be set ({err[-1][:200] if err else f'exit status {r.returncode}'})."

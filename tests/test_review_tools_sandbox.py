@@ -224,3 +224,27 @@ def test_the_browser_and_a_trial_start_pasta_with_them(tmp_path):
     source = Path(trial.__file__).read_text()
     assert "sandbox.pasta_opts(host)" in source and "sandbox.PASTA_OPTS" not in source
     assert "*pasta_opts(host)" in Path(S.__file__).read_text().split("def browser_argv")[1]
+
+
+# ------------------------------------------------------------------ B7: DNS over TCP only where pasta forwards it
+
+@pytest.mark.parametrize("forwards", [True, False])
+def test_dns_over_tcp_is_let_through_only_where_pasta_s_forwarder_takes_it(tmp_path, monkeypatch, forwards):
+    """B7: pasta 2024-02-20 (Mint 22.3) doesn't forward DNS over TCP: the connection went on to 169.254.0.1 itself and
+    timed out, while the fence let it through. The probe connects from inside; the rule is set only where it worked
+    (pasta 2026-01-20), and elsewhere TCP to the forwarder is refused at once."""
+    monkeypatch.setattr(S, "_DNS_TCP", {})
+    host, calls = computer(tmp_path)
+    host.runner.handlers["pasta"] = lambda argv: calls.append(argv) or CommandResult(
+        tuple(argv), 0, f"{S.DNS_TCP_MARK}\n" if forwards else "")
+    assert "ipproto tcp dport 53" not in S.fence(host)[2]               # not probed yet: refused
+    assert S.probe_fence(host) is None
+    probe = next(c for c in calls if c[0] == "pasta")
+    assert "ipproto tcp dport 53" in probe[probe.index("-c") + 1]      # the probe tries it, with the rule in place
+    assert f'socket.create_connection(("{S.DNS_FORWARD}", 53), 2)' in probe[-1] and S.DNS_TCP_MARK in probe[-1]
+    script = S.fence(host)[2]
+    assert ("ipproto tcp dport 53 pref 50" in script) is forwards and "ipproto udp dport 53 pref 50" in script
+    # an answer too large for 512 bytes then comes over UDP: the sandbox's resolver asks with EDNS0
+    assert S.FORWARD_RESOLV == f"nameserver {S.DNS_FORWARD}\noptions edns0\n"
+    etc = S.identity_files(tmp_path / "etc", S.FORWARD_RESOLV)
+    assert "options edns0" in etc["resolv.conf"].read_text()
