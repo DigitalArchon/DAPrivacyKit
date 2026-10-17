@@ -181,4 +181,9 @@ def test_no_window_message_uses_the_desktops_dialog_and_falls_back(monkeypatch, 
     ran.clear()
     status["zenity"] = 1                                     # closed by its window's button: it was read
     assert app.refuse_without_window("x") == 2 and ran == ["zenity"]
+    # shown in a dialog, it doesn't also go to stderr, which is then the journal or ~/.xsession-errors on the disk
+    assert "doesn't open in your web browser by itself" not in capsys.readouterr().err
+    ran.clear()
+    status["zenity"] = status["kdialog"] = 127              # neither could show it: stderr is all there is
+    assert app.refuse_without_window("x") == 2 and ran == ["zenity", "kdialog"]
     assert "doesn't open in your web browser by itself" in capsys.readouterr().err

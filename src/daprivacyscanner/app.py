@@ -100,14 +100,15 @@ def refuse_without_window(problem: str) -> int:
 
 
 def show_error(text: str) -> int:
-    """Says `text` on stderr and, when started from the menu (nobody sees stderr then), in a desktop dialog.
-    Returns the exit status for it (2)."""
+    """Says `text` on stderr in a terminal and, when started from the menu, in a desktop dialog only: stderr is then
+    the journal or ~/.xsession-errors, kept on the disk, and the text can name a Box (a downloaded file's name).
+    Only when no dialog could show it does it go to stderr there. Returns the exit status for it (2)."""
     import shutil
     import subprocess
 
     from .hostenv import as_host
-    print(text, file=sys.stderr)
     if sys.stderr.isatty() or not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+        print(text, file=sys.stderr)
         return 2
     dialogs = [["zenity", "--error", "--title=DA Privacy Kit", "--no-markup", "--width=520", f"--text={text}"],
                ["kdialog", "--title", "DA Privacy Kit", "--error", text]]
@@ -116,11 +117,12 @@ def show_error(text: str) -> int:
     for argv in dialogs:
         if shutil.which(argv[0]):
             with as_host():
-                shown = subprocess.run(argv, check=False).returncode
+                shown = subprocess.run(argv, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode
             # closed by its button (0) or its window (1): it was read. Anything else and the program didn't work
             # (seen on CachyOS: a zenity that couldn't load its libraries, exit status 127): try the other one
             if shown in (0, 1):
-                break
+                return 2
+    print(text, file=sys.stderr)                    # no dialog could show it: stderr is all there is
     return 2
 
 
@@ -446,17 +448,29 @@ def box_cli(slug: str) -> int:
 
 
 def outbox_cli() -> int:
-    """What the Outbox's user unit runs: clean what is waiting in ~/Outbox, then say so."""
+    """What the Outbox's user unit runs: clean what is waiting in ~/Outbox, then say so. Its output goes to the
+    journal, which most distributions keep on the disk: counts only there, as in its notification, never the names
+    of the files the user is about to share. A terminal gets the names (someone ran it by hand)."""
     from .host import Host
     from .tools import metadata
 
     host = Host.local()
-    run = metadata.run_outbox_settled(host)        # stays until what just landed has settled and is cleaned
+    tty = sys.stdout.isatty()
+    try:
+        run = metadata.run_outbox_settled(host)    # stays until what just landed has settled and is cleaned
+    except Exception as e:  # noqa: BLE001 - its kind only: an error about a file names it (a path)
+        if sys.stderr.isatty():
+            raise
+        print(f"The Outbox couldn't be emptied: {type(e).__name__}", file=sys.stderr)
+        return 1
     metadata.notify_outbox(host, run)
-    for name in run.cleaned:
-        print(f"cleaned: {name}")
-    for name, why in run.not_cleaned:
-        print(f"not cleaned: {name} ({why})")
+    if tty:
+        for name in run.cleaned:
+            print(f"cleaned: {name}")
+        for name, why in run.not_cleaned:
+            print(f"not cleaned: {name} ({why})")
+    elif run.cleaned or run.not_cleaned:
+        print(f"Outbox: {len(run.cleaned)} cleaned, {len(run.not_cleaned)} not cleaned.")
     return 0
 
 
@@ -550,8 +564,26 @@ def no_core_dumps() -> None:
         pass
 
 
+def quiet_tracebacks() -> None:
+    """When stderr isn't a terminal (a unit, a timer, a menu entry, a file manager's right-click entry), an error
+    nothing caught is said by its kind only: stderr is then the journal or ~/.xsession-errors, kept on the disk, and
+    a traceback's values and messages can name a file, a finding or a host (as the server does for its routes)."""
+    import threading as _threading
+
+    def hook(kind, value, tb):
+        if issubclass(kind, KeyboardInterrupt):
+            return
+        print(f"DA Privacy Kit stopped on an error it didn't expect ({kind.__name__}).", file=sys.stderr)
+
+    sys.excepthook = hook
+    _threading.excepthook = lambda a: hook(a.exc_type, a.exc_value, a.exc_traceback) \
+        if a.exc_type is not SystemExit else None
+
+
 def main(argv: list[str] | None = None) -> None:
     no_core_dumps()
+    if not sys.stderr.isatty():
+        quiet_tracebacks()
     ap = argparse.ArgumentParser(
         prog="daprivacyscanner", description="Linux privacy auditor",
         epilog="Without options, the app's window opens: that is how it is meant to be used. The options here are for "
