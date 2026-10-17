@@ -3,11 +3,17 @@ passes for the sandbox's network namespace (`pasta --pcap`, into a pipe the app 
 only as sums: per host, how many connections, to which ports, how many bytes each way. No packet and no payload
 is kept; nothing is written to the disk.
 
-A host's name comes from what the program itself asked or said, in this order: the DNS answer that gave the
-address (the sandbox's DNS goes through pasta's forwarder, in plain text on this link), else the name in a TLS
-connection's first message (SNI: what a program using DNS over HTTPS still sends), else an HTTP request's Host
-line; without any of them, the address. Names looked up and never connected to are listed apart. What can't be
-told: what was sent (it is encrypted), and a name hidden by Encrypted Client Hello. Standard library only."""
+Each connection is named by what the program itself said or asked, in this order: the name in its first message
+(a TLS connection's SNI, what a program using DNS over HTTPS still sends, or an HTTP request's Host line), else the
+DNS answer that had given the address it connected to (the sandbox's DNS goes through pasta's forwarder, in plain
+text on this link, over UDP or TCP), else the address. Per connection, not per address: one address serves many
+sites (a CDN's, Cloudflare's), and two connections to it naming two sites are two hosts (found in the 2026-10-17
+review: the last DNS answer for an address had named every connection to it). Connections with the same name are
+summed up as one host. Names looked up and never used are listed apart. DNS sent to pasta's forwarder is the
+sandbox's own resolver, never a host; DNS sent anywhere else goes to a server of the program's own choosing, which
+is listed. A TCP connection is counted once, however often its first packet is sent again (one lookup hanging on a
+server that didn't answer was counted as five connections). What can't be told: what was sent (it is encrypted),
+and a name hidden by Encrypted Client Hello. Standard library only."""
 
 from __future__ import annotations
 
@@ -21,6 +27,7 @@ CONNS_MAX = 20000
 HOSTS_MAX = 2000
 NAMES_MAX = 5000
 PACKET_MAX = 262144 + 64
+STREAM_MAX = 70000                      # DNS over TCP: what is kept of a message not complete yet (one is 65537 at most)
 
 
 def _name(data: bytes, at: int, depth: int = 0) -> tuple[str, int]:
@@ -105,17 +112,21 @@ def http_host(data: bytes) -> str | None:
 
 
 class Flows:
-    """Fed a pcap stream piece by piece (feed), it sums up who was contacted (result)."""
+    """Fed a pcap stream piece by piece (feed), it sums up who was contacted (result). `forwarder`: the address of the
+    sandbox's own DNS resolver (pasta's forwarder), whose traffic is lookups, never a host contacted; None takes every
+    DNS server for the sandbox's own."""
 
-    def __init__(self):
+    def __init__(self, forwarder: str | None = None):
+        self.forwarder = forwarder
         self.buf = bytearray()
         self.order: str | None = None
         self.link = ETHERNET
-        self.names: dict[str, str] = {}                 # address -> the name whose lookup gave it
+        self.names: dict[str, str] = {}                 # address -> the name whose lookup last gave it
         self.asked: dict[str, int] = {}                 # names looked up -> how often
-        self.conns: dict[tuple, tuple[str, int, str]] = {}   # (src, sport, dst, dport, proto) -> its host's key
-        self.hosts: dict[tuple[str, int, str], dict] = {}    # (address, port, proto) -> sums
-        self.said: dict[tuple[str, int, str], str] = {}      # the name the program gave itself (SNI, Host)
+        self.conns: dict[tuple, dict] = {}              # (src, sport, dst, dport, proto) -> that connection's sums
+        self.folded: dict[str, dict] = {}               # connections the table had no more room for, summed by name
+        self.used: set[str] = set()                     # the names those were made under (DNS, SNI, Host)
+        self.streams: dict[tuple, list] = {}            # DNS over TCP, each way: [the next sequence number, bytes]
         self.packets = self.broken = self.left_out = 0
         self.lock = threading.Lock()                    # fed by the reader thread, summed up by the page's requests
 
@@ -173,98 +184,158 @@ class Flows:
                 return
             src, dst = str(ipaddress.ip_address(src)), str(ipaddress.ip_address(dst))
             if proto == 6 and len(body) >= 20:
-                sport, dport = struct.unpack_from(">HH", body, 0)
+                sport, dport, seq = struct.unpack_from(">HHI", body, 0)
                 flags, data = body[13], body[(body[12] >> 4) * 4:]
-                self._tcp(src, sport, dst, dport, flags, data)
+                self._tcp(src, sport, dst, dport, flags, seq, data)
             elif proto == 17 and len(body) >= 8:
                 sport, dport = struct.unpack_from(">HH", body, 0)
                 self._udp(src, sport, dst, dport, body[8:])
         except (IndexError, struct.error, ValueError):
             self.broken += 1
 
-    def _host(self, key: tuple[str, int, str]) -> dict | None:
-        h = self.hosts.get(key)
-        if h is None:
-            if len(self.hosts) >= HOSTS_MAX:
-                self.left_out += 1
-                return None
-            h = self.hosts[key] = {"connections": 0, "sent": 0, "received": 0}
-        return h
+    # ------------------------------------------------------------------ lookups
 
-    def _tcp(self, src: str, sport: int, dst: str, dport: int, flags: int, data: bytes) -> None:
+    def _questions(self, data: bytes) -> None:
+        for name in dns(data)[0]:
+            if name in self.asked or len(self.asked) < NAMES_MAX:
+                self.asked[name] = self.asked.get(name, 0) + 1
+
+    def _answers(self, data: bytes) -> None:
+        for address, name in dns(data)[1].items():
+            if address in self.names or len(self.names) < NAMES_MAX:
+                self.names[address] = name
+
+    def _resolver(self, address: str) -> bool:
+        """Whether DNS to or from `address` is the sandbox's own lookups (pasta's forwarder), not a host contacted."""
+        return self.forwarder is None or address == self.forwarder
+
+    def _dns_stream(self, key: tuple, seq: int, data: bytes, answers: bool) -> None:
+        """DNS over TCP, one way: each message after a two-byte length, possibly over several segments. Only the
+        segment that comes next in order is taken: one sent again is skipped."""
+        st = self.streams.get(key)
+        if st is None or not data or seq != st[0]:
+            return
+        st[0] = (seq + len(data)) & 0xFFFFFFFF
+        st[1] += data
+        while len(st[1]) >= 2:
+            n = struct.unpack_from(">H", st[1], 0)[0]
+            if len(st[1]) < 2 + n:
+                break
+            msg = bytes(st[1][2:2 + n])
+            del st[1][:2 + n]
+            (self._answers if answers else self._questions)(msg)
+        if len(st[1]) > STREAM_MAX:                         # not DNS after all
+            st[1].clear()
+
+    # ------------------------------------------------------------------ connections
+
+    def _open(self, key: tuple, address: str, port: int, proto: str) -> dict:
+        if len(self.conns) >= CONNS_MAX:
+            self._fold()
+        c = self.conns[key] = {"address": address, "port": port, "proto": proto, "dns": self.names.get(address),
+                               "said": None, "sent": 0, "received": 0, "closed": False}
+        return c
+
+    def _fold(self) -> None:
+        """The table is full: the older half of the connections are summed up by name and dropped (what still comes
+        for one of them isn't counted)."""
+        for key in list(self.conns)[:CONNS_MAX // 2]:
+            self._retire(key)
+        if len(self.streams) > CONNS_MAX:
+            self.streams.clear()
+
+    def _retire(self, key: tuple) -> None:
+        c = self.conns.pop(key)
+        self.used.update(n for n in (c["said"], c["dns"]) if n)
+        if not self._add(self.folded, c):
+            self.left_out += 1
+
+    def _add(self, merged: dict[str, dict], c: dict) -> bool:
+        """Adds the connection `c` to the hosts in `merged`, by its name; False when there is no room for another."""
+        known = c["dns"] or self.names.get(c["address"])
+        name = c["said"] or known or c["address"]
+        m = merged.get(name)
+        if m is None:
+            if len(merged) >= HOSTS_MAX:
+                return False
+            m = merged[name] = {"host": name, "named_by": "tls" if c["said"] else "dns" if known else "address",
+                                "addresses": set(), "ports": set(), "connections": 0, "sent": 0, "received": 0}
+        m["addresses"].add(c["address"])
+        m["ports"].add(f"{c['port']}/udp" if c["proto"] == "udp" else str(c["port"]))
+        m["connections"] += 1
+        m["sent"] += c["sent"]
+        m["received"] += c["received"]
+        return True
+
+    def _tcp(self, src: str, sport: int, dst: str, dport: int, flags: int, seq: int, data: bytes) -> None:
         out, back = (src, sport, dst, dport, "tcp"), (dst, dport, src, sport, "tcp")
         if flags & 0x02 and not flags & 0x10:               # SYN: the program connects out
-            if len(self.conns) >= CONNS_MAX:
-                self.conns.clear()
-            key = (dst, dport, "tcp")
-            h = self._host(key)
-            if h is not None:
-                self.conns[out] = key
-                h["connections"] += 1
+            c = self.conns.get(out)
+            if c is not None and not c["closed"]:
+                return                                      # the same SYN sent again: the same attempt
+            if c is not None:                               # these ports used again: the earlier one is summed up
+                self._retire(out)
+            if dport == 53:                                 # DNS over TCP: its questions are read
+                self.streams[out] = [(seq + 1) & 0xFFFFFFFF, bytearray()]
+                if self._resolver(dst):
+                    return                                  # a lookup through the sandbox's own resolver
+            self._open(out, dst, dport, "tcp")
             return
-        if out in self.conns:
-            key = self.conns[out]
-            h = self.hosts.get(key)
-            if h is not None and data:
-                if not h["sent"] and key not in self.said:
-                    name = sni(data) or http_host(data)
-                    if name:
-                        self.said[key] = name
-                h["sent"] += len(data)
-        elif back in self.conns:
-            h = self.hosts.get(self.conns[back])
-            if h is not None:
-                h["received"] += len(data)
+        if flags & 0x12 == 0x12:                            # SYN-ACK: where the answers' bytes start
+            if sport == 53 and back in self.streams:
+                self.streams[out] = [(seq + 1) & 0xFFFFFFFF, bytearray()]
+            return
+        if dport == 53:
+            self._dns_stream(out, seq, data, answers=False)
+        elif sport == 53:
+            self._dns_stream(out, seq, data, answers=True)
+        c = self.conns.get(out)
+        if c is not None:
+            if data:
+                if not c["sent"] and c["said"] is None:
+                    c["said"] = sni(data) or http_host(data)
+                c["sent"] += len(data)
+            if flags & 0x05:                                # FIN or RST: a SYN on these ports again is a new one
+                c["closed"] = True
+            return
+        c = self.conns.get(back)
+        if c is not None:
+            c["received"] += len(data)
+            if flags & 0x05:
+                c["closed"] = True
 
     def _udp(self, src: str, sport: int, dst: str, dport: int, data: bytes) -> None:
         if dport == 53:
-            for name in dns(data)[0]:
-                if name in self.asked or len(self.asked) < NAMES_MAX:
-                    self.asked[name] = self.asked.get(name, 0) + 1
-            return
-        if sport == 53:
-            for address, name in dns(data)[1].items():
-                if address in self.names or len(self.names) < NAMES_MAX:
-                    self.names[address] = name
-            return
-        out, back = (src, sport, dst, dport, "udp"), (dst, dport, src, sport, "udp")
-        if back in self.conns:
-            h = self.hosts.get(self.conns[back])
-            if h is not None:
-                h["received"] += len(data)
-            return
-        if out not in self.conns:
-            if len(self.conns) >= CONNS_MAX:
-                self.conns.clear()
-            key = (dst, dport, "udp")
-            h = self._host(key)
-            if h is None:
+            self._questions(data)
+            if self._resolver(dst):
                 return
-            self.conns[out] = key
-            h["connections"] += 1
-        h = self.hosts.get(self.conns[out])
-        if h is not None:
-            h["sent"] += len(data)
+        elif sport == 53:
+            self._answers(data)
+            if self._resolver(src):
+                return
+        out, back = (src, sport, dst, dport, "udp"), (dst, dport, src, sport, "udp")
+        c = self.conns.get(back)
+        if c is not None:
+            c["received"] += len(data)
+            return
+        c = self.conns.get(out) or self._open(out, dst, dport, "udp")
+        c["sent"] += len(data)
 
     def result(self) -> dict:
         """{"hosts": [{"host", "named_by", "addresses", "ports", "connections", "sent", "received"}], "looked_up":
-        [names asked for and never connected to], "packets", "left_out"}: hosts by what was sent, most first."""
+        [names asked for and never used], "packets", "left_out"}: hosts by what was sent, most first."""
         with self.lock:
             return self._result()
 
     def _result(self) -> dict:
-        merged: dict[str, dict] = {}
-        for (address, port, proto), h in self.hosts.items():
-            by = "dns" if address in self.names else "tls" if (address, port, proto) in self.said else "address"
-            name = self.names.get(address) or self.said.get((address, port, proto)) or address
-            m = merged.setdefault(name, {"host": name, "named_by": by, "addresses": set(), "ports": set(),
-                                         "connections": 0, "sent": 0, "received": 0})
-            m["addresses"].add(address)
-            m["ports"].add(f"{port}/udp" if proto == "udp" else str(port))
-            for k in ("connections", "sent", "received"):
-                m[k] += h[k]
+        merged = {k: {**m, "addresses": set(m["addresses"]), "ports": set(m["ports"])} for k, m in self.folded.items()}
+        used, left_out = set(self.used), self.left_out
+        for c in self.conns.values():
+            used.update(n for n in (c["said"], c["dns"]) if n)
+            if not self._add(merged, c):
+                left_out += 1
         hosts = sorted(merged.values(), key=lambda m: (-m["sent"], -m["connections"], m["host"]))
         for m in hosts:
             m["addresses"], m["ports"] = len(m["addresses"]), sorted(m["ports"], key=lambda p: (len(p), p))
-        return {"hosts": hosts, "looked_up": sorted(n for n in self.asked if n not in merged),
-                "packets": self.packets, "left_out": self.left_out, "broken": self.broken}
+        return {"hosts": hosts, "looked_up": sorted(n for n in self.asked if n not in merged and n not in used),
+                "packets": self.packets, "left_out": left_out, "broken": self.broken}

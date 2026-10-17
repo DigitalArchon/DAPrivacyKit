@@ -1021,7 +1021,7 @@ def start(host: Host, t: Trial, options: dict, spawn: Callable = subprocess.Pope
                                      "Choose no network.")
                 if sandbox.probe_fence(host):
                     raise TrialError("The local network can't be fenced off here, so the trial isn't given a network.")
-                t.flows = pcap.Flows()
+                t.flows = pcap.Flows(sandbox.DNS_FORWARD)      # its lookups go there: not a host contacted
                 t.reader = PipeReader(t.private / "packets", t.flows)
             etc = sandbox.identity_files(t.private / "etc", sandbox.FORWARD_RESOLV if pasta_path else None)
         else:

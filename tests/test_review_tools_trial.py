@@ -3,15 +3,19 @@ as each test says)."""
 
 from __future__ import annotations
 
+import ipaddress
 import os
 import signal
+import struct
 import subprocess
 import sys
 import time
 
 import pytest
 
-from daprivacyscanner.tools import trial
+from daprivacyscanner.tools import pcap, trial
+
+from test_trial import client_hello, eth, ip4, qname, udp
 
 
 # ------------------------------------------------------------------ E2: a trial ends with the app that started it
@@ -92,3 +96,99 @@ def test_a_trial_and_its_display_start_under_the_tether(tmp_path):
     assert a[:4] == ["/usr/bin/python3", "-I", "-c", trial.TETHER] and a[4] == str(os.getpid()) and a[5:] == ["/usr/bin/bwrap", "x"]
     assert "<end it if the app ends>" in trial.shown(a)
     compile(trial.TETHER, "tether", "exec")
+
+
+# ------------------------------------------------------------------ E4: hosts named per connection; DNS over TCP
+
+def _capture(packets: list[bytes]) -> bytes:
+    stream = b"\xd4\xc3\xb2\xa1" + struct.pack("<HHiIII", 2, 4, 0, 0, 65535, 1)
+    return stream + b"".join(struct.pack("<IIII", 0, 0, len(p), len(p)) + p for p in packets)
+
+
+def _flows(packets, forwarder="169.254.0.1"):
+    f = pcap.Flows(forwarder)
+    data = _capture(packets)
+    for i in range(0, len(data), 53):                   # as it comes from a pipe: in pieces
+        f.feed(data[i:i + 53])
+    return f.result()
+
+
+def _query(qid, name):
+    return struct.pack(">HHHHHH", qid, 0x0100, 1, 0, 0, 0) + qname(name) + struct.pack(">HH", 1, 1)
+
+
+def _answer(qid, name, address):
+    return (struct.pack(">HHHHHH", qid, 0x8180, 1, 1, 0, 0) + qname(name) + struct.pack(">HH", 1, 1) + b"\xc0\x0c"
+            + struct.pack(">HHIH", 1, 1, 60, 4) + ipaddress.ip_address(address).packed)
+
+
+def _tcp(sp, dp, flags, seq=0, data=b""):
+    return struct.pack(">HHIIBBHHH", sp, dp, seq, 0, 0x50, flags, 0, 0, 0) + data
+
+
+ME, FWD = "10.0.2.15", "169.254.0.1"
+
+
+def test_two_sites_on_one_address_are_two_hosts():
+    """Found live on p330-2: two TLS connections to 1.1.1.1 naming one.one.one.one and site-b.example were shown as
+    one host, named by the last DNS answer for the address, and one.one.one.one as looked up and never connected to."""
+    p = [eth(ip4(ME, FWD, 17, udp(4000, 53, _query(1, "one.one.one.one")))),
+         eth(ip4(FWD, ME, 17, udp(53, 4000, _answer(1, "one.one.one.one", "1.1.1.1")))),
+         eth(ip4(ME, FWD, 17, udp(4001, 53, _query(2, "1dot1dot1dot1.cloudflare-dns.com")))),
+         eth(ip4(FWD, ME, 17, udp(53, 4001, _answer(2, "1dot1dot1dot1.cloudflare-dns.com", "1.1.1.1")))),
+         eth(ip4(ME, "1.1.1.1", 6, _tcp(5000, 443, 0x02))),
+         eth(ip4(ME, "1.1.1.1", 6, _tcp(5000, 443, 0x18, 1, client_hello("one.one.one.one")))),
+         eth(ip4(ME, "1.1.1.1", 6, _tcp(5001, 443, 0x02))),
+         eth(ip4(ME, "1.1.1.1", 6, _tcp(5001, 443, 0x18, 1, client_hello("site-b.example")))),
+         eth(ip4("1.1.1.1", ME, 6, _tcp(443, 5001, 0x18, 1, b"z" * 300))),
+         eth(ip4(ME, "1.1.1.1", 6, _tcp(5002, 80, 0x02))),                    # no name of its own: the lookup's
+         eth(ip4(ME, "1.1.1.1", 6, _tcp(5002, 80, 0x18, 1, b"\x00binary"))),
+         eth(ip4(ME, FWD, 17, udp(4002, 53, _query(3, "never-used.example"))))]
+    r = _flows(p)
+    hosts = {h["host"]: h for h in r["hosts"]}
+    assert set(hosts) == {"one.one.one.one", "site-b.example", "1dot1dot1dot1.cloudflare-dns.com"}
+    assert hosts["one.one.one.one"]["named_by"] == "tls" and hosts["one.one.one.one"]["connections"] == 1
+    assert hosts["site-b.example"]["received"] == 300 and hosts["site-b.example"]["named_by"] == "tls"
+    assert hosts["1dot1dot1dot1.cloudflare-dns.com"]["named_by"] == "dns"
+    assert hosts["1dot1dot1dot1.cloudflare-dns.com"]["ports"] == ["80"]
+    assert r["looked_up"] == ["never-used.example"]
+    assert FWD not in hosts, "the sandbox's own resolver is no host"
+
+
+def test_dns_over_tcp_is_read_and_a_hung_lookup_is_one_connection():
+    """Found live on p330-2: DNS over TCP wasn't read (the forwarder showed as a host by its address), and one lookup
+    hanging on a server that didn't answer, its SYN sent again and again, counted as about five connections."""
+    q, a = _query(7, "tcp.example"), _answer(7, "tcp.example", "203.0.113.5")
+    framed_q, framed_a = struct.pack(">H", len(q)) + q, struct.pack(">H", len(a)) + a
+    p = [eth(ip4(ME, FWD, 6, _tcp(6000, 53, 0x02, 100))),
+         eth(ip4(FWD, ME, 6, _tcp(53, 6000, 0x12, 900))),
+         eth(ip4(ME, FWD, 6, _tcp(6000, 53, 0x18, 101, framed_q[:5]))),     # the question over two segments
+         eth(ip4(ME, FWD, 6, _tcp(6000, 53, 0x18, 101, framed_q[:5]))),     # one of them sent again
+         eth(ip4(ME, FWD, 6, _tcp(6000, 53, 0x18, 106, framed_q[5:]))),
+         eth(ip4(FWD, ME, 6, _tcp(53, 6000, 0x18, 901, framed_a))),
+         eth(ip4(ME, "203.0.113.5", 6, _tcp(6001, 443, 0x02))),
+         eth(ip4(ME, "203.0.113.5", 6, _tcp(6001, 443, 0x18, 1, b"\x17\x03\x03hello"))),
+         *[eth(ip4(ME, "192.0.2.53", 6, _tcp(6002, 53, 0x02, 5000))) for _ in range(5)],   # a server of its own, silent
+         eth(ip4(ME, "8.8.8.8", 17, udp(6003, 53, _query(8, "own-server.example")))),
+         eth(ip4("8.8.8.8", ME, 17, udp(53, 6003, _answer(8, "own-server.example", "198.51.100.1"))))]
+    r = _flows(p)
+    hosts = {h["host"]: h for h in r["hosts"]}
+    assert hosts["tcp.example"]["named_by"] == "dns" and hosts["tcp.example"]["connections"] == 1
+    assert FWD not in hosts
+    assert hosts["192.0.2.53"]["connections"] == 1 and hosts["192.0.2.53"]["ports"] == ["53"]
+    assert hosts["8.8.8.8"]["ports"] == ["53/udp"], "DNS sent past the sandbox's resolver goes to a server of its own"
+    assert r["looked_up"] == ["own-server.example"]
+
+
+def test_a_connection_made_again_on_the_same_ports_counts_again():
+    p = [eth(ip4(ME, "203.0.113.9", 6, _tcp(7000, 443, 0x02))), eth(ip4(ME, "203.0.113.9", 6, _tcp(7000, 443, 0x11, 1))),
+         eth(ip4(ME, "203.0.113.9", 6, _tcp(7000, 443, 0x02)))]
+    assert _flows(p)["hosts"][0]["connections"] == 2
+
+
+def test_a_full_table_folds_the_older_connections_into_their_hosts(monkeypatch):
+    monkeypatch.setattr(pcap, "CONNS_MAX", 4)
+    p = [eth(ip4(ME, "203.0.113.%d" % (i % 2 + 1), 6, _tcp(8000 + i, 443, 0x02))) for i in range(9)]
+    r = _flows(p)
+    assert sum(h["connections"] for h in r["hosts"]) == 9 and len(r["hosts"]) == 2
+    assert _flows(p)["hosts"] == r["hosts"], "summing up twice changes nothing"

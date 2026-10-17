@@ -1555,9 +1555,15 @@ OACS, FNA and SANICAP via the helper's ioctl), read on request and kept for the 
   - **The network**: none, or its own through pasta (`--pcap` into a pipe), fenced off from the local network
     (`sandbox.fence(proxies=False)`: Mullvad Browser's proxy exception isn't for a program on trial), refused
     when pasta or the fence isn't usable; never the computer's own network. `tools/pcap.py` reads the packets as
-    they come and keeps only sums per host: connections, ports, bytes each way. A host is named by the DNS
-    answer that gave its address, else the name in a TLS connection's first message, else an HTTP Host line,
-    else its address; names looked up and never connected to are listed apart. No packet or payload is kept. A
+    they come and keeps only sums per host: connections, ports, bytes each way. Each connection is named on its
+    own, by the name in its first message (TLS's SNI, an HTTP Host line), else the DNS answer that had given the
+    address it connected to, else the address, and connections with one name are one host: one address serves
+    many sites, and naming by address had shown two TLS connections to 1.1.1.1, naming two sites, as one host
+    under the last DNS answer for it (found in the 2026-10-17 review). DNS over TCP is read as over UDP; lookups
+    sent to pasta's forwarder are the sandbox's own and no host, while DNS sent to any other server (one of the
+    program's own choosing) is listed; a TCP connection is counted once however often its first packet is sent
+    again (a lookup hanging on a silent server had counted as five). Names looked up and never used are listed
+    apart. No packet or payload is kept. A
     Flatpak can't be put behind pasta (it would run as root of pasta's namespace): none, or its usual network,
     unobserved.
   - **The watch** (`tools/homewatch.py`): inotify on every folder under the throwaway home, as the user. It
