@@ -230,10 +230,17 @@ os.execv(sys.argv[1], sys.argv[1:])
 # subreaper, to which the sandbox's orphans come, that waits until the start script has ended and no program from
 # the browser's folder is left (by /proc/PID/exe: what else lingers, from /usr, isn't waited for), then ends
 # with the script's status.
+# STAY is the sandbox's PID 1 (--as-pid-1) and sets its own parent-death signal (prctl 1, SIGKILL) as it starts: Tor
+# Browser's inner sandbox must die with the gate (--die-with-parent), and under Ubuntu's AppArmor profile for bubblewrap
+# the exec into its unpriv_bwrap domain clears the signal bubblewrap set before it, so the browser ran on with tor gone
+# (found on Ubuntu 26.04 by the trial's fixes, 2026-10-17; trial.STAY does the same). For Mullvad Browser's sandbox,
+# whose bubblewrap only ends after STAY, it changes nothing.
 STAY = """\
 import ctypes, os, sys
 folder, prog = sys.argv[1] + "/", sys.argv[2:]
-ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0)
+libc = ctypes.CDLL(None, use_errno=True)
+libc.prctl(36, 1, 0, 0, 0)
+libc.prctl(1, 9, 0, 0, 0)
 first = os.fork()
 if not first:
     os.execv(prog[0], prog)

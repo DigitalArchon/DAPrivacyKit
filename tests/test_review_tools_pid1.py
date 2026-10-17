@@ -141,3 +141,12 @@ def test_the_gate_ends_on_sigterm_instead_of_hanging(child, code):
     r = subprocess.run([sys.executable, "-c", GATE, child], capture_output=True, text=True, timeout=20,
                        env={**os.environ, "PYTHONPATH": src})
     assert r.stdout.strip() == str(code), r.stderr
+
+
+def test_both_reapers_set_their_own_parent_death_signal():
+    """As the sandbox's PID 1 they are exec'd by bubblewrap, and on Ubuntu 26.04 the exec into AppArmor's unpriv_bwrap
+    domain cleared the signal --die-with-parent had set: with the gate killed, Tor Browser's inner sandbox ran on
+    (tested there: the old reaper and its program left running, the new one gone)."""
+    for src in (S.STAY, trial.STAY):
+        compile(src if "%r" not in src else src % (("x",),), "stay", "exec")
+        assert "prctl(1, 9, 0, 0, 0)" in src
