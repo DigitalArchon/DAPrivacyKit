@@ -481,7 +481,10 @@ def boxes(check, scan, outcome):
                "no longer want its data (deleting doesn't erase it from the disk; encryption is what protects it)."]
     if kind == "flatpak":
         effects.append("It runs in Flatpak's own sandbox with the permissions it declares for itself dropped. It can still "
-                       "ask the desktop through its portals: a file chooser that you answer, notifications, opening a link.")
+                       "ask the desktop through its portals: a file chooser that you answer, notifications, opening a link. "
+                       "And it can ask Flatpak to start another copy of itself, as apps do to draw pictures: that copy gets "
+                       "its real data in ~/.var/app (not the Box's) and the desktop services it declares, though not your "
+                       "files or a network the Box doesn't give; it is ended when the Box's app ends.")
         effects.append(f"Flatpak shares a folder at its own path, so the app finds the Exchange folder at {shown}/Exchange, "
                        "not at ~/Exchange.")
     if source == "trial" and kind == "deb":

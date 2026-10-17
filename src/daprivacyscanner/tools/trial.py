@@ -558,9 +558,13 @@ def prepare_app(host: Host, app: menu.App, where: str) -> Trial:
         keep = [a for a in app.argv if a.startswith(("--branch=", "--arch=", "--command="))]
         return Trial(tid, folder, where, "flatpak", app.name, "a Flatpak app", argv=[*keep, app.flatpak], flatpak=app.flatpak,
                      notes=["It runs in Flatpak's own sandbox with the permissions it declares for itself dropped, and "
-                            "only what this trial grants given back. Its real data (in ~/.var/app) isn't touched.",
+                            "only what this trial grants given back. Its real data (in ~/.var/app) isn't given to it.",
                             "It can still ask the desktop through its portals, as every Flatpak app can: a file chooser "
-                            "that you answer (a file you pick there is a real one), notifications, opening a link."])
+                            "that you answer (a file you pick there is a real one), notifications, opening a link. And "
+                            "it can ask Flatpak to start another copy of itself, as apps do to draw pictures: that copy "
+                            "isn't watched, and it gets the app's real data in ~/.var/app and the desktop services the app "
+                            "declares, though not your files or a network this trial doesn't give. It is ended with the "
+                            "trial."])
     prog = _program(host, app.argv[0])
     if prog is None:
         raise TrialError(f"{app.name}'s program ({app.argv[0]}) isn't in the system's folders, so it can't be started "
@@ -818,8 +822,13 @@ class Flatpak(Engine):
         # portals are out of reach, and GTK 4 apps, which start their image loaders through one, stop at once
         # (Evince 48 from Flathub: "Loader process exited early", tested on Mint 22.3). Filtered, it reaches the
         # portals and names of its own, nothing of the session's other programs.
+        # One of those portals starts another copy of the app (flatpak-spawn, what GTK 4's image loaders use), and
+        # Flatpak gives that copy the app's declared permissions, not --sandbox, with this command's other options
+        # on top, home meaning the real one (found in the 2026-10-17 review on Mint 22.3, Flatpak 1.14.6: a copy
+        # of Text Editor listed the real home, which the app declares as host). So everything the app declares is
+        # taken back here (`taken_back`), which the copy inherits, and the throwaway home is given by its path.
         a = [sandbox.program(host, "flatpak") or "flatpak", "run", "--sandbox", "--session-bus", "--die-with-parent",
-             "--filesystem=home",
+             *taken_back(host, t, parts.disp.kind), f"--filesystem={t.home}",
              "--share=network" if o.get("network") == "on" else "--unshare=network"]
         a += ["--socket=wayland"] if parts.disp.kind == "wayland" else ["--socket=x11", "--share=ipc"]
         if o.get("gpu"):
@@ -828,6 +837,87 @@ class Flatpak(Engine):
             a.append("--socket=pulseaudio")
         a += [f"--filesystem={outside}" for outside, _inside in t.binds]
         return a + t.argv
+
+
+FLATPAK_WORD = re.compile(r"[\w~/.@+-]+")
+
+
+def declared(host: Host, app: str) -> dict[str, list[str]]:
+    """What a Flatpak app declares for itself, with the user's and the system's overrides: {"filesystems", "sockets",
+    "devices", "shared", "features"}, each a list (entries the overrides take away left out)."""
+    from types import SimpleNamespace
+    from ..checks.sandbox import flatpak_permissions
+    from ..paths import PathResolver
+    ctx = flatpak_permissions(SimpleNamespace(host=host, paths=PathResolver(host.home, host.environ)), app).get(("Context",), {})
+    return {k: [x.strip() for x in ctx.get(k, "").split(";") if x.strip() and not x.strip().startswith("!")]
+            for k in ("filesystems", "sockets", "devices", "shared", "features")}
+
+
+def taken_back(host: Host, t: Trial, display: str) -> list[str]:
+    """Options that take away what the Flatpak app declares and the trial doesn't give: a copy of it started through
+    Flatpak's portal gets the app's own permissions with these on top (Flatpak.command). Its real data folder in
+    ~/.var/app, which Flatpak gives every copy, and the desktop services it declares on the session bus stay (taking
+    those away (--no-talk-name) made Flatpak 1.14 refuse every such copy, the image loaders' too)."""
+    d = declared(host, t.flatpak or "")
+    out = ["--nofilesystem=host", "--nofilesystem=home"]
+    for fs in d["filesystems"]:
+        fs = re.sub(r":(ro|rw|create)$", "", fs)
+        if fs not in ("host", "home") and FLATPAK_WORD.fullmatch(fs):
+            out.append(f"--nofilesystem={fs}")
+    given = {"wayland"} if display == "wayland" else {"x11"}
+    if t.options.get("sound"):
+        given.add("pulseaudio")
+    out += [f"--nosocket={s}" for s in d["sockets"] if s not in given and FLATPAK_WORD.fullmatch(s)]
+    out += [f"--nodevice={x}" for x in d["devices"] if FLATPAK_WORD.fullmatch(x)]        # dri given back after, if ticked
+    out += [f"--unshare={s}" for s in d["shared"] if FLATPAK_WORD.fullmatch(s)
+            and not (s == "ipc" and display != "wayland") and not (s == "network" and t.options.get("network") == "on")]
+    out += [f"--disallow={f}" for f in d["features"] if FLATPAK_WORD.fullmatch(f)]
+    return out
+
+
+def flatpak_copies(host: Host, t: Trial) -> list[int]:
+    """Copies of a Flatpak trial's app started through Flatpak's portal: they outlive the trial's own command, as
+    the portal's children (found in the 2026-10-17 review: one ran on after Stop). Flatpak records each instance
+    with the options it was started with (extra-args in $XDG_RUNTIME_DIR/.flatpak/<id>/info), the trial's home's
+    path among them, which no other app's copy has; each is its sandbox's first process (bwrapinfo.json's
+    child-pid), checked to be in that sandbox's PID namespace still (a number used again can't pass)."""
+    import json
+    runtime = Path(host.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{host.uid}")
+    base = (runtime if str(runtime).startswith(str(host.home)) else host.sys_path(str(runtime))) / ".flatpak"
+    mark = f"--filesystem={t.home}"
+    out = []
+    try:
+        instances = [d for d in base.iterdir() if d.name.isdigit()]
+    except OSError:
+        return []
+    for d in instances:
+        try:
+            info = (d / "info").read_text(errors="replace")
+            bw = json.loads((d / "bwrapinfo.json").read_text())
+            pid, ns = int(bw["child-pid"]), int(bw["pid-namespace"])
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+        extra = next((ln.split("=", 1)[1] for ln in info.splitlines() if ln.startswith("extra-args=")), "")
+        if mark not in extra.split(";"):
+            continue
+        try:
+            if os.readlink(host.sys_path(f"/proc/{pid}/ns/pid")) == f"pid:[{ns}]":
+                out.append(pid)
+        except OSError:
+            continue
+    return out
+
+
+def end_flatpak_copies(host: Host, t: Trial) -> int:
+    """Ends what flatpak_copies finds: SIGKILL to the first process of each sandbox takes the whole sandbox."""
+    n = 0
+    for pid in flatpak_copies(host, t):
+        try:
+            os.kill(pid, signal.SIGKILL)
+            n += 1
+        except OSError:
+            pass
+    return n
 
 
 ENGINES: dict[str, Engine] = {e.id: e for e in (Bubblewrap(), Flatpak())}
@@ -1157,6 +1247,7 @@ def stop(host: Host, t: Trial) -> None:
 def _finish(host: Host, t: Trial) -> None:
     t.exit = t.proc.poll() if hasattr(t.proc, "poll") else 0
     t.ended, t.state = time.time(), "ended"
+    copies = end_flatpak_copies(host, t) if t.kind == "flatpak" else 0     # what it started through Flatpak's portal
     time.sleep(0.3)                                     # the last events
     if t.watch is not None:
         t.watch.stop()
@@ -1186,6 +1277,7 @@ def _finish(host: Host, t: Trial) -> None:
         "failed": failed,
         "output": t.output.lines() if t.output is not None and (failed or seconds < 5) else [],
         "missed": (t.watch.overflow if t.watch is not None else 0) + (t.watch.left_out if t.watch is not None else 0),
+        "copies_ended": copies,
     }
     t.watch = None
     t.reader = None

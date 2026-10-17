@@ -3891,6 +3891,9 @@ function trialResult(t, call, st = {}) {
     s.regular.length ? [h("h4", {}, "Files it writes to all the time"),
       h("ul", { class: "named" }, s.regular.map(f => h("li", {}, h("code", {}, f.path), ` — ${f.type}, ${plural(f.writes, "write")}`)))] : null,
     r.missed ? h("div", { class: "small muted" }, "It did more than could be recorded: some of it is missing above.") : null,
+    r.copies_ended ? h("div", { class: "warnbox small" }, `It had Flatpak start ${plural(r.copies_ended, "more copy", "more copies")} `
+      + "of itself, which ran outside this watch, with the app's real data in ~/.var/app. They were ended with the "
+      + "trial.") : null,
     h("details", { class: "small" }, h("summary", {}, "The command that ran it"), commandBlock([t.how.whole])),
     h("div", { class: "orow" }, discard, keepAsBox(t), h("span", { class: "small muted" }, t.where === "memory"
       ? "Its folder is in memory: discarding overwrites and removes it."

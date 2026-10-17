@@ -216,6 +216,76 @@ def test_a_trial_has_no_proc_masks_and_says_what_it_can_read(tmp_path):
     assert "its command line (which often names your disks' ids)" in js
 
 
+# ------------------------------------------------------------------ suspicion: a Flatpak trial's copies through the portal
+
+PERMS = """[Context]
+shared=network;ipc;
+sockets=x11;wayland;pulseaudio;fallback-x11;pcsc;
+devices=all;
+features=devel;
+filesystems=host;xdg-download;/run/media:ro;!xdg-music;
+
+[Session Bus Policy]
+org.gtk.vfs.*=talk
+"""
+
+
+def _flatpak_host(tmp_path):
+    from daprivacyscanner.host import CommandResult, FakeRunner, Host
+    root = tmp_path / "root"
+    (root / "run/user/1000/.flatpak").mkdir(parents=True)
+    (root / "home/a").mkdir(parents=True)
+    perms = lambda argv: CommandResult(argv, 0, PERMS if "--show-permissions" in argv else "")     # noqa: E731
+    return Host(home=root / "home/a", environ={"XDG_RUNTIME_DIR": "/run/user/1000", "DISPLAY": ":0"},
+                runner=FakeRunner(handlers={"flatpak": perms}), root=root, uid=1000)
+
+
+def test_a_flatpak_trial_takes_back_what_the_app_declares(tmp_path):
+    """Found live on Mint 22.3 (Flatpak 1.14.6): a Flatpak trial's program ran `flatpak-spawn`, and the copy Flatpak's
+    portal started had the app's declared permissions (Text Editor's host: the real home listed) and --filesystem=home
+    meaning the real home. Everything declared is taken back on the command line, which the copy inherits, and the
+    throwaway home is given by its path (tested there: the copy saw the trial's home and not the real one)."""
+    from test_trial import a_trial, parts
+    host = _flatpak_host(tmp_path)
+    t = a_trial(tmp_path, kind="flatpak", argv=["org.x.App"], flatpak="org.x.App")
+    t.options = {"network": "off", "gpu": True, "sound": False}
+    a = trial.ENGINES["flatpak"].command(host, t, parts(host, tmp_path))
+    assert "--filesystem=home" not in a and f"--filesystem={t.home}" in a
+    for taken in ("--nofilesystem=host", "--nofilesystem=home", "--nofilesystem=xdg-download", "--nofilesystem=/run/media",
+                  "--nosocket=wayland", "--nosocket=pulseaudio", "--nosocket=fallback-x11", "--nosocket=pcsc",
+                  "--nodevice=all", "--unshare=network", "--disallow=devel"):
+        assert taken in a, taken
+    assert "--nosocket=x11" not in a and "--unshare=ipc" not in a, "what the trial gives (an X11 display) stays"
+    assert a.index("--nodevice=all") < a.index("--device=dri"), "the graphics card, ticked, is given back after"
+    assert "--nofilesystem=xdg-music" not in a and not any("talk-name" in x for x in a)
+
+
+def test_the_copies_flatpak_started_for_a_trial_are_ended_with_it(tmp_path, monkeypatch):
+    """Found live: a copy started through the portal ran on after the trial was stopped. Flatpak records each copy's
+    options, the trial's home's path among them; only those, alive in their own PID namespace, are ended."""
+    import json
+    from test_trial import a_trial
+    host = _flatpak_host(tmp_path)
+    t = a_trial(tmp_path, kind="flatpak", argv=["org.x.App"], flatpak="org.x.App")
+    base = host.root / "run/user/1000/.flatpak"
+
+    def instance(iid, home, pid, ns, alive_ns):
+        (base / iid).mkdir()
+        (base / iid / "info").write_text(f"[Application]\nname=org.x.App\n\n[Instance]\ninstance-id={iid}\n"
+                                         f"extra-args=--unshare=network;--nofilesystem=home;--filesystem={home};\n")
+        (base / iid / "bwrapinfo.json").write_text(json.dumps({"child-pid": pid, "pid-namespace": ns}))
+        (host.root / f"proc/{pid}/ns").mkdir(parents=True)
+        os.symlink(f"pid:[{alive_ns}]", host.root / f"proc/{pid}/ns/pid")
+    instance("111", t.home, 4001, 9001, 9001)                   # the trial's copy, running
+    instance("222", "/home/a/other", 4002, 9002, 9002)          # another app's (or the user's own) copy
+    instance("333", t.home, 4003, 9003, 7777)                   # an ended copy whose number is used again
+    (base / "org.x.App").mkdir()
+    assert trial.flatpak_copies(host, t) == [4001]
+    killed = []
+    monkeypatch.setattr(os, "kill", lambda pid, sig: killed.append((pid, sig)))
+    assert trial.end_flatpak_copies(host, t) == 1 and killed == [(4001, signal.SIGKILL)]
+
+
 # ------------------------------------------------------------------ E10: a trial's and a Box's own words
 
 def test_no_display_says_what_has_nowhere_to_show(tmp_path):

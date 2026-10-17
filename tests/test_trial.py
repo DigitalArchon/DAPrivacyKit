@@ -175,7 +175,8 @@ def test_a_flatpak_runs_with_its_own_permissions_dropped(host, tmp_path):
     t = a_trial(tmp_path, kind="flatpak", argv=["--branch=stable", "org.x.App"], flatpak="org.x.App")
     t.options = {"network": "off", "gpu": False, "sound": False}
     a = trial.ENGINES["flatpak"].command(host, t, parts(host, tmp_path))
-    assert a[:6] == ["flatpak", "run", "--sandbox", "--session-bus", "--die-with-parent", "--filesystem=home"]
+    assert a[:5] == ["flatpak", "run", "--sandbox", "--session-bus", "--die-with-parent"]
+    assert a[5:8] == ["--nofilesystem=host", "--nofilesystem=home", f"--filesystem={t.home}"], "the throwaway home by its path"
     assert "--unshare=network" in a and "--share=network" not in a and "--device=dri" not in a and a[-2:] == ["--branch=stable", "org.x.App"]
     t.options = {"network": "on", "gpu": True, "sound": True}
     b = trial.ENGINES["flatpak"].command(host, t, parts(host, tmp_path))

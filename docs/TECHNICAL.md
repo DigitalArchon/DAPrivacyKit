@@ -1566,7 +1566,19 @@ OACS, FNA and SANICAP via the helper's ioctl), read on request and kept for the 
     Evince 48, tested) and what was ticked. `HOME` points at the throwaway home, so its data goes to
     `<home>/.var/app/<id>` and "home" is the made-up one (the real `/home` isn't in its sandbox: tested with
     Flatpak 1.14); its real data in `~/.var/app` isn't touched. It can still ask the desktop's portals, which the
-    page says.
+    page says. One of them, Flatpak's own (`flatpak-spawn`, which GTK 4's image loaders use, so it can't be taken
+    away), starts another copy of the app with the permissions the app declares, not `--sandbox`, and this
+    command's options on top, "home" meaning the real one (found in the 2026-10-17 review on Mint 22.3, Flatpak
+    1.14.6: a copy of Text Editor, which declares host, listed the real home and ran on after Stop). So the trial
+    takes back on its command line everything the app declares (`taken_back`, from `flatpak info
+    --show-permissions` and the overrides: filesystems, host and home, sockets, devices, shared, features; then
+    what the trial gives), which the copy inherits, and gives the throwaway home by its path, not as "home"
+    (tested there: the copy saw the trial's home and not the real one). What Flatpak gives every copy stays: its
+    real data folder in `~/.var/app`, and the desktop services it declares on the session bus (`--no-talk-name`
+    made Flatpak 1.14 refuse every copy, the image loaders' too). Such copies are found by the options Flatpak
+    records for each instance (the trial's home's path in `extra-args`, checked against the sandbox's PID
+    namespace) and ended with the trial (`end_flatpak_copies`), which the result says; the page says all this
+    before the start, and the Box's guide too.
   - **The network**: none, or its own through pasta (`--pcap` into a pipe), fenced off from the local network
     (`sandbox.fence(proxies=False)`: Mullvad Browser's proxy exception isn't for a program on trial), refused
     when pasta or the fence isn't usable; never the computer's own network. `tools/pcap.py` reads the packets as
