@@ -1487,7 +1487,9 @@ OACS, FNA and SANICAP via the helper's ioctl), read on request and kept for the 
     user's own or on another disk, saved as often, is counted, never named); the sensitive places it opened
     (`activity.SENSITIVE`: SSH and GnuPG keys, keyrings, browsers' and mail profiles, wallets, shell histories),
     by kind; and how many of the user's own files it opened. The user's own files are never listed: that list
-    would itself be a recent-files record.
+    would itself be a recent-files record. A file of the app's own (programs' data, temporary folders) that it
+    only opened, yet whose date moved during the watch, counts as changed "by its date" (`appwatch._changed_by_date`):
+    writes through a memory map (SQLite's `-shm`, an LMDB database) make no fanotify event, and it showed as read.
   - **Who recorded what was opened** (`activity.find_records`): the files written during the watch, by the app
     or by another program of the user's, are read as the user for the paths of the user's files the app opened,
     and of the files it opened in `/tmp` or `/var/tmp` that another program made (an attachment, a download), in
@@ -1497,7 +1499,11 @@ OACS, FNA and SANICAP via the helper's ioctl), read on request and kept for the 
     the recent-files list). A PNG's text chunks are unpacked (Qt writes a thumbnail's `Thumb::URI` longer than 40
     characters compressed, as zTXt: Dolphin's thumbnails were never matched), and GVFS's metadata is read by its
     own paths, relative to the home folder (`/Documents/x`), whole in its journal and split into names in its
-    database (`_gvfs_journal`, `_gvfs_tree`: Xed's cursor positions were never matched). Those that hold them
+    database (`_gvfs_journal`, `_gvfs_tree`: Xed's cursor positions were never matched). gvfsd-metadata writes its
+    journal through a memory map, which fanotify never reports, nor does the file's date always move (a second
+    `gio set` during a watch on Mint left neither): so its files are searched at the end whatever was seen, for the
+    paths whose entries grew since the watch began (`gvfs_snapshot`, taken then: keyed hashes of each database and
+    path with their counts, in the server's memory, never in the job the page reads). Those that hold them
     are named with who wrote them: the thumbnail, the recent-files list, the desktop's notes on files, the app's
     own history. Other compressed and encrypted stores can't be read this way, and the result says so.
   - **Administrator access** is held from start to end, which the page says before it starts

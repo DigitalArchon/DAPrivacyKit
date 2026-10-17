@@ -583,6 +583,49 @@ def test_the_result_and_the_page_follow_the_filesystems_watched(tmp_path):
     assert 'job["not_watched"] = job["counts"].pop("skipped", [])' in src
 
 
+def test_a_file_written_through_memory_counts_as_changed_by_its_date(tmp_path):
+    """A memory map's writes make no fanotify event: SQLite's -shm the app had open showed as only read (the
+    suspicion, confirmed). Its date moved during the watch: counted as changed, and searched for records."""
+    import os
+    home = tmp_path / "home"
+    (home / ".config/Foo").mkdir(parents=True)
+    (home / "Documents").mkdir()
+    shm = home / ".config/Foo/history.sqlite-shm"
+    shm.write_bytes(b"\0" * 32)
+    doc = home / "Documents/letter.odt"
+    doc.write_text("x")
+    old = home / ".config/Foo/settings.ini"
+    old.write_text("x")
+    since = time.time() - 5
+    os.utime(old, (since - 100, since - 100))
+    recs = [[str(shm), A.OPENED, 1, 0, 0, ""], [str(doc), A.OPENED, 1, 0, 0, ""], [str(old), A.OPENED, 1, 0, 0, ""]]
+    w = A.Where(str(home), 1000)
+    assert appwatch._changed_by_date(recs, w, since) == 1
+    assert recs[0][1] == A.OPENED | A.WRITTEN | A.MAPPED and recs[1][1] == recs[2][1] == A.OPENED
+    s = A.summarise(recs, w, 600)
+    assert s["totals"]["written"] == 1 and s["totals"]["opened"] == 2
+    assert A._did(recs[0][1]) == "changed (by its date)"
+
+
+def test_gvfs_metadata_written_through_memory_is_searched_for_what_it_gained(tmp_path):
+    """gvfsd-metadata writes its journal through a memory map: no event, nor always a newer date (a second `gio set`
+    during a watch on Mint left neither), so its files never reached the search. Compared with a snapshot taken as
+    the watch began, the paths whose entries grew are what was recorded meanwhile."""
+    home, w = _home(tmp_path)
+    folder = home / ".local/share/gvfs-metadata"
+    journal = folder / "home-caaaa677.log"
+    journal.write_bytes(_gvfs_journal(["/Documents/old.txt", "/Documents/again.txt"]))
+    before = A.gvfs_snapshot(str(folder), b"k" * 16)
+    assert before["files"] == [str(journal)] and len(before["entries"]) == 2 and "old.txt" not in repr(before)
+    journal.write_bytes(_gvfs_journal(["/Documents/old.txt", "/Documents/again.txt", "/Documents/new.txt",
+                                       "/Documents/again.txt"]))
+    recs = [[f"{home}/Documents/{n}", A.OPENED, 1, 0, 0, ""] for n in ("old.txt", "again.txt", "new.txt")]
+    r = A.find_records(recs, w, gvfs=before)                    # no record of the journal being written
+    assert r["found"] == [{"path": "~/.local/share/gvfs-metadata/home-caaaa677.log", "who": "gvfsd-metadata",
+                           "names": 2, "type": "the desktop's notes on files (GVFS metadata, its journal)"}]
+    assert not A.find_records(recs, w)["found"]                # without the snapshot: never searched
+
+
 def test_the_helper_ends_a_watch_when_its_input_ends(monkeypatch):
     """Dropping the access (or the app going) closes the helper's input: the watch ends through its clean-up."""
     import io

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import os
 import re
+import stat
 import subprocess
 from typing import Callable
 
@@ -246,16 +247,50 @@ def alive(host: Host, wanted: list[str]) -> int:
     return count
 
 
-def report(host: Host, app: menu.App, raw: dict, started: dict) -> dict:
-    """The watch's records (the helper's watch_end) as the page shows them."""
+def snapshot(host: Host) -> dict:
+    """Taken as the watch begins, in memory only: when, and what GVFS's metadata holds (keyed hashes, no names),
+    which `report` compares with at the end."""
+    import time
+    from ..paths import PathResolver
+    folder = PathResolver(host.home, host.environ).data_home / activity.GVFS_FOLDER
+    return {"since": time.time(), "gvfs": activity.gvfs_snapshot(str(folder), os.urandom(16))}
+
+
+def _changed_by_date(records: list[list], w: activity.Where, since: float) -> int:
+    """The app's files in programs' data and the temporary folders that it only opened, yet whose date moved
+    during the watch: written through a memory map (SQLite's -shm, an LMDB database), which fanotify doesn't
+    report. Marked as changed (MAPPED); returns how many."""
+    n = 0
+    for rec in records:
+        if rec[5] or not rec[1] & activity.OPENED or rec[1] & (activity.WRITTEN | activity.CREATED | activity.MOVED
+                                                               | activity.DELETED | activity.DIR):
+            continue
+        if activity.place(rec[0], w)[0] not in ("app", "temp"):
+            continue                                 # the user's own: another program may have changed it meanwhile
+        try:
+            st = os.lstat(rec[0])
+        except OSError:
+            continue
+        if stat.S_ISREG(st.st_mode) and st.st_mtime >= since:
+            rec[1] |= activity.WRITTEN | activity.MAPPED
+            n += 1
+    return n
+
+
+def report(host: Host, app: menu.App, raw: dict, started: dict, before: dict | None = None) -> dict:
+    """The watch's records (the helper's watch_end) as the page shows them. `before`: what `snapshot` took as the
+    watch began."""
     from ..history import state_dir
     from ..paths import PathResolver
     w = activity.Where.of(host)
     records = raw.get("files") or []
+    by_date = _changed_by_date(records, w, before["since"]) if before else 0
     out = activity.summarise(records, w, raw.get("seconds") or 0)
+    out["by_date"] = by_date
     paths = PathResolver(host.home, host.environ)
     own = (os.path.realpath(state_dir(paths)), os.path.realpath(paths.config_home / "daprivacyscanner"))
-    out["records"] = activity.find_records(records, w, skip=lambda p: p.startswith(own))
+    out["records"] = activity.find_records(records, w, skip=lambda p: p.startswith(own),
+                                           gvfs=before.get("gvfs") if before else None)
     out["others"] = sum(1 for r in records if r[5])
     # what the user's other programs wrote meanwhile, per program and folder: where the work of a background service
     # of the app's own, or of a copy that was already running, shows (counts only, as everything else)

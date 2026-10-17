@@ -17,6 +17,7 @@ for. Nothing here is kept: the caller holds the result in memory for as long as 
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import stat
@@ -28,6 +29,7 @@ from typing import Callable, Iterable
 from urllib.parse import quote
 
 OPENED, WRITTEN, CREATED, DELETED, RAN, MOVED, DIR = 1, 2, 4, 8, 16, 32, 64
+MAPPED = 128            # changed though no write was seen: its date moved while the app had it open (a memory map)
 
 # a file counts as written to regularly: in this many different minutes, or (a session too short for that) this often
 REGULAR_MINUTES = 3
@@ -285,7 +287,9 @@ def summarise(records: Iterable[list], w: Where, seconds: float, names: bool = F
 
 def _did(flags: int) -> str:
     words = [word for bit, word in ((CREATED, "created"), (WRITTEN, "written"), (MOVED, "renamed"), (DELETED, "deleted"),
-                                    (RAN, "run")) if flags & bit]
+                                    (RAN, "run")) if flags & bit and not (bit == WRITTEN and flags & MAPPED)]
+    if flags & MAPPED:
+        words.append("changed (by its date)")
     return ", ".join(words) or "opened"
 
 
@@ -380,13 +384,14 @@ def _root(path: str, w: Where) -> str:
 
 
 def find_records(records: list[list], w: Where, skip: Callable[[str], bool] = lambda p: False,
-                 deadline: float | None = None) -> dict:
+                 deadline: float | None = None, gvfs: dict | None = None) -> dict:
     """Which files written during the session hold the names of the user's own files the app opened: by the
     app itself or by another program of the user's (`who`). Read as the user, raw (a database's pages, a
     recent-files list hold the path as bytes), a PNG's text chunks unpacked (a thumbnail's Thumb::URI), GVFS's
     metadata by the paths it holds; other compressed or encrypted stores can't be read this way, and the result
-    says so. Returns {"found": [{path, who, names, type}], "searched", "skipped", "names"}: `names` is how many
-    of the user's files were looked for."""
+    says so. `gvfs`: what GVFS's metadata held as the session began (`gvfs_snapshot`): its files are then
+    searched whether or not a write to them was seen, for what was added since. Returns {"found": [{path, who,
+    names, type}], "searched", "skipped", "names"}: `names` is how many of the user's files were looked for."""
     wanted = needles(records, w)
     forms: dict[bytes, int] = {}
     for i, path in enumerate(wanted):
@@ -399,10 +404,16 @@ def find_records(records: list[list], w: Where, skip: Callable[[str], bool] = la
     found, searched, skipped, total = [], 0, 0, 0
     deadline = deadline if deadline is not None else time.monotonic() + SEARCH_SECONDS
     own = set(wanted)
-    gvfs = _GvfsKeys(wanted, w)
-    hay = sorted({(rec[0], rec[5]) for rec in records
-                  if rec[1] & (WRITTEN | CREATED | MOVED) and not rec[1] & (DELETED | DIR) and rec[0] not in own})
-    for path, who in hay if forms else []:
+    hay = {(rec[0], rec[5]) for rec in records
+           if rec[1] & (WRITTEN | CREATED | MOVED) and not rec[1] & (DELETED | DIR) and rec[0] not in own}
+    fresh = None
+    if gvfs is not None and forms:
+        now = gvfs_snapshot(gvfs["folder"], gvfs["salt"])
+        fresh = {key for key, n in now["entries"].items() if n > gvfs["entries"].get(key, 0)}
+        written = {p for p, _who in hay}
+        hay |= {(p, "gvfsd-metadata") for p in now["files"] if p not in written}
+    keys = _GvfsKeys(wanted, w, fresh, gvfs["salt"] if gvfs else b"")
+    for path, who in sorted(hay) if forms else []:
         if skip(path) or place(path, w)[0] in ("yours", "media", "system"):
             continue
         if time.monotonic() > deadline or total > SEARCH_TOTAL_MAX:
@@ -420,7 +431,7 @@ def find_records(records: list[list], w: Where, skip: Callable[[str], bool] = la
                 skipped += 1
                 continue
             if os.path.basename(os.path.dirname(path)) == GVFS_FOLDER:
-                hits = gvfs.hits(fd, os.path.basename(path))
+                hits = keys.hits(fd, os.path.basename(path))
             else:
                 hits = _scan(iter(lambda: os.read(fd, CHUNK), b""), forms, markers, lengths, longest)
                 if os.pread(fd, 8, 0) == b"\x89PNG\r\n\x1a\n":
@@ -500,8 +511,8 @@ class _GvfsKeys:
     """The names looked for, as GVFS's metadata holds them, per database: relative to the home folder ("home"), as
     they are ("root"), or relative to the top of the filesystem they are on (another disk's, named by its UUID)."""
 
-    def __init__(self, wanted: list[str], w: Where):
-        self.wanted, self.w, self.keys = wanted, w, {}
+    def __init__(self, wanted: list[str], w: Where, fresh: set[bytes] | None = None, salt: bytes = b""):
+        self.wanted, self.w, self.keys, self.fresh, self.salt = wanted, w, {}, fresh, salt
 
     def _key(self, tree: str, path: str) -> str | None:
         if tree == "home":
@@ -522,13 +533,56 @@ class _GvfsKeys:
                                if (key := self._key(tree, path))}
         keys = self.keys[tree]
         data = b"".join(iter(lambda: os.read(fd, CHUNK), b""))
-        return {keys[p] for p in (_gvfs_journal(data) if journal else _gvfs_tree(data)) if p in keys}
+        return {keys[p] for p in (_gvfs_journal(data) if journal else _gvfs_tree(data)) if p in keys
+                and (self.fresh is None or _gvfs_key(self.salt, tree, p) in self.fresh)}
 
 
-def _gvfs_journal(data: bytes) -> set[bytes]:
-    """The paths in a GVFS metadata journal: after its 20-byte header, entries of [size, crc32, time (8 bytes),
-    type, path NUL, …], a copy's (type 3) source path second."""
-    out, pos = set(), 20
+def _gvfs_key(salt: bytes, tree: str, path: bytes) -> bytes:
+    return hashlib.blake2b(tree.encode("utf-8", "surrogateescape") + b"\0" + path, key=salt, digest_size=16).digest()
+
+
+def gvfs_snapshot(folder: str, salt: bytes) -> dict:
+    """How many entries GVFS's metadata in `folder` holds for each path, by a keyed hash of its database and path
+    (no name is kept), and its files: taken as a watch begins and again at its end. gvfsd-metadata writes its
+    journal through a memory map, which fanotify never reports, nor does the file's date always move (tested on
+    Mint: a second `gio set` during the watch left neither), so its files are searched at the end whatever was
+    seen, for the paths whose entries grew meanwhile."""
+    entries: dict[bytes, int] = {}
+    files = []
+    try:
+        names = sorted(os.listdir(folder))[:200]
+    except OSError:
+        names = []
+    for name in names:
+        path = os.path.join(folder, name)
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+        except OSError:
+            continue
+        try:
+            st = os.fstat(fd)
+            if not stat.S_ISREG(st.st_mode) or st.st_size > SEARCH_FILE_MAX:
+                continue
+            data = b"".join(iter(lambda: os.read(fd, CHUNK), b""))
+        except OSError:
+            continue
+        finally:
+            os.close(fd)
+        files.append(path)
+        journal = GVFS_JOURNAL.fullmatch(name)
+        tree = journal.group(1) if journal else name
+        found = _gvfs_journal(data) if journal else dict.fromkeys(_gvfs_tree(data), 1)
+        for p, n in found.items():
+            key = _gvfs_key(salt, tree, p)
+            entries[key] = entries.get(key, 0) + n
+    return {"folder": folder, "salt": salt, "entries": entries, "files": files}
+
+
+def _gvfs_journal(data: bytes) -> dict[bytes, int]:
+    """The paths in a GVFS metadata journal, with how many entries each has: after its 20-byte header, entries of
+    [size, crc32, time (8 bytes), type, path NUL, …], a copy's (type 3) source path second."""
+    out: dict[bytes, int] = {}
+    pos = 20
     if not data.startswith(b"\xda\x1ajour"):
         return out
     while pos + 21 <= len(data) and len(out) < GVFS_PATHS_MAX:
@@ -536,9 +590,10 @@ def _gvfs_journal(data: bytes) -> set[bytes]:
         if size < 21 or pos + size > len(data):
             break
         first, _nul, rest = data[pos + 17:pos + size].partition(b"\0")
-        out.add(first)
+        out[first] = out.get(first, 0) + 1
         if data[pos + 16] == 3:
-            out.add(rest.partition(b"\0")[0])
+            source = rest.partition(b"\0")[0]
+            out[source] = out.get(source, 0) + 1
         pos += size
     return out
 

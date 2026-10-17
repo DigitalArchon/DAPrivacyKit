@@ -1856,6 +1856,8 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
                 return
             with admin.hold():
                 try:
+                    # when it began and what GVFS's metadata held then (keyed hashes): kept here, never in the job
+                    before = await asyncio.to_thread(appwatch.snapshot, host)
                     began = await asyncio.to_thread(host.privileged.call, "watch_begin", {"units": units})
                     job.update(watched=began["watched"], not_watched=began["skipped"])
                     await asyncio.to_thread(appwatch.start, host, entry, token, spawn_app)
@@ -1896,7 +1898,7 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
                                 await asyncio.to_thread(h.call, "watch_end", {}, 30)
                         except Exception:  # noqa: BLE001 - it ends with the helper anyway
                             pass
-            job["result"] = await asyncio.to_thread(appwatch.report, host, entry, raw, watched)
+            job["result"] = await asyncio.to_thread(appwatch.report, host, entry, raw, watched, before)
             job["state"] = "done"
         except appwatch.WatchError as e:
             job["state"], job["error"] = "failed", str(e)

@@ -3990,6 +3990,9 @@ function keepsResult(job, reload) {
         r.overflow ? h("li", {}, "The computer was too busy for every event to be recorded: some of what happened is missing.") : null,
         r.unresolved ? h("li", {}, `${r.unresolved} couldn't be tied to a file (its folder was gone by then).`) : null,
         r.folded ? h("li", {}, `${r.folded} files past the first 60,000 weren't kept one by one.`) : null,
+        r.by_date ? h("li", {}, `${plural(r.by_date, "file")} of its own it only opened changed meanwhile, as `
+          + `${r.by_date > 1 ? "their dates say" : "its date says"}: written through memory, as databases do, which `
+          + "isn't seen as it happens. Counted as changed.") : null,
         r.others_left ? h("li", {}, `${plural(r.others_left, "change")} by your other programs, past the first 30,000 `
           + "files, were counted per folder, not file by file: files among them weren't searched for the names of what "
           + "you opened.") : null,
