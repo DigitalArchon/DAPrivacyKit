@@ -1333,7 +1333,14 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
         return {"job": browser_view(job)}
 
     @app.post("/api/tools/browser/dismiss", dependencies=[Depends(auth)])
-    async def tools_browser_dismiss():
+    async def tools_browser_dismiss(request: Request):
+        """The finished set-up job's result, put away; with {"browser"}, why that browser last stopped with an error
+        (kept until dismissed or started again: browser.launch_problem)."""
+        from .tools import browser as B
+        b = browser_of(await body_of(request))
+        if b is not None:
+            B.forget_problem(b)
+            return {"ok": True}
         if not browser_busy():
             app.state.browser_job = None
         return {"job": None if not browser_busy() else browser_view(app.state.browser_job)}

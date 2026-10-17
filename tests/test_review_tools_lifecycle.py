@@ -30,7 +30,7 @@ def nothing_held():
     for name in list(owner._HELD):
         owner._drop(Host(home=Path("/nonexistent"), environ={}, runner=None), name)
     B._LAUNCHED.clear()
-    getattr(B, "_PROBLEMS", {}).clear()
+    B._PROBLEMS.clear()
 
 
 def quiet(monkeypatch):
@@ -241,3 +241,33 @@ def test_quitting_leaves_tempbrowser_to_the_copy_setting_a_browser_up_in_it(host
     mine = owner.hold(host, "browser-tor")                              # this copy's own set-up: it ends with it
     assert "closed" in B.close_disk(host, lambda: h) and h.calls
     owner.let_go(mine)
+
+
+# ------------------------------------------------------------------ A7: a start's error, until it is dismissed
+
+class Ended:
+    def __init__(self, rc):
+        self.rc = rc
+
+    def poll(self):
+        return self.rc
+
+
+def test_a_starts_error_stays_until_dismissed_or_started_again(cat, host, monkeypatch):  # noqa: F811
+    """launch_problem was consumed by the first GET, and the panel's poll two seconds later drew the card without it."""
+    from fastapi.testclient import TestClient
+    tor = B.BROWSERS["tor"]
+    B._LAUNCHED["tor"] = Ended(137)
+    c = TestClient(create_app("t0ken", cat, make_host=lambda: host))
+    for _ in range(3):
+        card = c.get("/api/tools/browser", headers=H).json()["browsers"][0]
+        assert "out of memory" in card["start_error"]
+    assert c.post("/api/tools/browser/dismiss", headers=H, json={"browser": "tor"}).status_code == 200
+    assert "start_error" not in c.get("/api/tools/browser", headers=H).json()["browsers"][0]
+    B._LAUNCHED["tor"] = Ended(1)
+    assert B.launch_problem(tor) == "Tor Browser stopped with an error: it stopped (exit status 1)"
+    with pytest.raises(B.BrowserError):                                 # started again: its own error is the news now
+        B.start(host, tor)
+    assert B.launch_problem(tor) is None
+    B._LAUNCHED["tor"] = Ended(0)                                       # a clean exit is no error
+    assert B.launch_problem(tor) is None and "tor" not in B._LAUNCHED

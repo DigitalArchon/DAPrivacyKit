@@ -131,7 +131,8 @@ Object.assign(routes, {
   "POST /api/tools/browser/upload": (body) => { toolBodies.upload = body; return { ...browserState(), added: [{ name: "photo.jpg", cleaned: true }], errors: [] }; },
   "POST /api/tools/browser/save": (body) => { toolBodies.save = body; return { ...browserState(), saved: "/home/a/Documents/report.pdf" }; },
   "POST /api/tools/browser/outbox": (body) => { toolBodies.outbox = body; outboxOn = body.on; return browserState(); },
-  "POST /api/tools/browser/dismiss": () => { browserJob = null; return { job: null }; },
+  "POST /api/tools/browser/dismiss": (body) => { if (body?.browser) { toolBodies.dismissed = body; browserStartError = null; return { ok: true }; }
+                                                 browserJob = null; return { job: null }; },
   "GET /api/tools": () => ({ tools: [
       { id: "verify", group: "files", short: "s", title: "Verify a download", text: "t", button: "Verify a file…" },
       { id: "metadata", group: "files", short: "s", title: "Remove metadata", text: "t", button: "Choose files…" },
@@ -1137,6 +1138,9 @@ browserStarted = null;
 while ($$(".modal").length) { $$(".modal .buttons button").at(-1).click(); await tick(); }
 await window.openBrowserTool(); await tick(); await tick();
 check(text(".modal").includes("tor didn't start: [err] no route"), "a start that failed later says why");
+$$(".modal .warnbox button").find(b => b.textContent === "OK").click(); await tick(); await tick();
+check(toolBodies.dismissed?.browser === "tor" && !text(".modal").includes("no route"),
+      "it stays until it is dismissed (OK), which tells the server to forget it");
 browserStartError = null;
 while ($$(".modal").length) { $$(".modal .buttons button").at(-1).click(); await tick(); }
 ramOpen = false; browserJob = null; browserStarted = null; delete toolBodies.open;

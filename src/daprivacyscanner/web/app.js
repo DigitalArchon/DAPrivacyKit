@@ -3481,7 +3481,10 @@ function browserCards(data, reload, opts = { sandbox: true, sound: false, nested
         `Set up more than a day ago: starting it first asks ${b.release.host} whether a newer version is out, and it won't `
         + "start if one is. Save what you need from its Downloads before then.") : null,
       !b.available ? h("div", { class: "small errmsg" }, "Not made for this processor.") : null,
-      b.start_error ? h("div", { class: "warnbox small" }, b.start_error) : null,
+      b.start_error ? h("div", { class: "warnbox small" }, b.start_error, " ", h("button", { class: "small", onclick: async () => {
+        try { await api("POST", "/api/tools/browser/dismiss", { browser: b.id }); } catch (e) { toast(e.message, "error"); }
+        await reload();
+      } }, "OK")) : null,
       vpnSetup,
       h("div", { class: "orow" }, action),
       b.installed && b.tor && data.sandbox?.available ? browserTor(b, reload) : null,

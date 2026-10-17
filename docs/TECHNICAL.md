@@ -989,9 +989,11 @@ Then:
 - the start is watched for 3 seconds: if it exits with an error, the log's last lines (pasta's notices
   left out) are shown, Xephyr is killed, and the mark is removed if this was the copy's first start (no
   website ever reached it);
-- a later failure is reported once by the panel (`launch_problem`, which also reaps the process), by its exit
+- a later failure is reported by the panel (`launch_problem`, which also reaps the process), by its exit
   status alone: once the browser has run, the log could hold anything a website that took it over wrote into
-  it (the sandbox can reach the log's descriptor), which the page would show as the app's own words.
+  it (the sandbox can reach the log's descriptor), which the page would show as the app's own words. It stays on
+  the card until the user dismisses it (OK) or starts the browser again: said once, the panel's next poll drew the
+  card without it two seconds later (found in the review of 2026-10-17).
 
 **Is it running?** A process of the user's is the browser when `/proc/PID/exe` points into its folder on
 the RAM disk, or (seen from outside, a sandboxed program's path is the one it sees) to

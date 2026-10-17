@@ -533,7 +533,8 @@ def test_a_failed_start_says_why(host, monkeypatch):
     assert B.launch_problem(b) is None
     p.rc = 3
     problem = B.launch_problem(b)
-    assert problem.endswith("it stopped (exit status 3)") and "evil" not in problem and B.launch_problem(b) is None
+    assert problem.endswith("it stopped (exit status 3)") and "evil" not in problem
+    assert B.launch_problem(b) == problem               # kept until dismissed or started again (the next start, below)
     p.rc = None
     B.start(host, b, spawn=lambda argv, **kw: p)
     p.rc = 137

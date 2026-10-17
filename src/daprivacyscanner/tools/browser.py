@@ -1259,20 +1259,33 @@ def _ended(rc: int) -> str:
     return f"it stopped (exit status {rc})"
 
 
+_PROBLEMS: dict[str, str] = {}                       # browser id -> why it last stopped with an error
+
+
 def launch_problem(b: Browser) -> str | None:
-    """Why the browser started last stopped with an error, once (then forgotten); None while it runs
-    or after a clean exit. Collects its exit status, so nothing is left behind. By the exit status alone: once it
-    has run, the start log could hold anything a website that took the browser over wrote into it (the sandbox's
-    descriptor of it is in its reach), which the page would then show as the app's own words."""
+    """Why the browser started last stopped with an error; None while it runs or after a clean exit. Kept until the
+    user dismisses it (forget_problem) or starts the browser again: said once, the panel's next poll drew the card
+    again without it, two seconds later (found in the review of 2026-10-17). Collects its exit status, so nothing is
+    left behind. By the exit status alone: once it has run, the start log could hold anything a website that took
+    the browser over wrote into it (the sandbox's descriptor of it is in its reach), which the page would then show
+    as the app's own words."""
     with _LOCK:
         proc = _LAUNCHED.get(b.id)
-        if proc is None:
-            return None
-        rc = proc.poll()
-        if rc is None:
-            return None
-        del _LAUNCHED[b.id]
-    return None if rc == 0 else f"{b.name} stopped with an error: {_ended(rc)}"
+        rc = proc.poll() if proc is not None else None
+        if proc is not None and rc is not None:
+            del _LAUNCHED[b.id]
+            if rc != 0:
+                _PROBLEMS[b.id] = f"{b.name} stopped with an error: {_ended(rc)}"
+        return _PROBLEMS.get(b.id)
+
+
+def forget_problem(b: Browser | None = None) -> None:
+    """The user dismissed it, started the browser again, or closed ~/TempBrowser (None: both browsers')."""
+    with _LOCK:
+        if b is None:
+            _PROBLEMS.clear()
+        else:
+            _PROBLEMS.pop(b.id, None)
 
 
 def _never_ran(text: str) -> bool:
@@ -1334,6 +1347,7 @@ def start(host: Host, b: Browser, spawn: Callable = subprocess.Popen, sandboxed:
         with _LOCK:
             _STARTING.discard(b.id)
         raise BrowserError(f"{b.name} is being set up or started in another window of this app.")
+    forget_problem(b)                                   # the last start's error: this start says its own
     try:
         return _start(host, b, spawn, sandboxed, with_sound, net, nested, expect, gpu)
     finally:
@@ -1677,6 +1691,7 @@ def wipe_disk(path: Path) -> "ramdisk.Wipe":
     finally:
         transfer.STOP.clear()
     transfer.forget_recent()
+    forget_problem()                                    # the browsers whose start failed are gone with it
     return w
 
 
