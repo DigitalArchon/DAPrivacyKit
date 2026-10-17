@@ -265,3 +265,21 @@ def test_a_signed_list_has_its_comma_and_a_checksum_given_is_given(tmp_path):
     assert "the SHA-256 checksum you pasted" in V.verify(host, f, expected=digest).text
     assert "doesn't match the one given" in V.verify(host, f, expected="00" * 32, given=True).text
     assert any("given with --checksum" in n for n in V.verify(host, f, expected="zz", given=True).notes)
+
+
+# ------------------------------------------------------------------ 5. Deleted file names
+
+from test_trimtest import home_folders, host_for, make_storage, root  # noqa: E402,F401 - fixtures
+
+
+def test_the_large_folder_note_is_there_without_a_watcher_and_fillers_move_nothing(root, monkeypatch):
+    from daprivacyscanner.tools import rebuild as R
+    make_storage(root)
+    home_folders(root)
+    monkeypatch.setattr(R, "_flags", lambda fd: R.FS_INDEX_FL)            # an indexed (large) folder
+    monkeypatch.setattr(R, "watchers", lambda host, path: [])             # and nothing watching it
+    p = R.plan(host_for(root), "/", [""])
+    assert p["folders"][0]["method"] == "fillers"                         # the home itself can't be swapped
+    assert any(x.startswith("In a large folder (an indexed one)") for x in p["side_effects"])
+    kept = next(x for x in p["side_effects"] if x.startswith("Nothing is kept"))
+    assert "moved" not in kept and "fillers are only added and deleted again" in kept

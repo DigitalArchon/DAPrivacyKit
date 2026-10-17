@@ -354,9 +354,9 @@ def plan(host: Host, mount: str, rels: list[str], rebuild_rels: list[str] = ()) 
         effects.append(f"Watching {'this folder' if len(ok) == 1 else 'these folders'} now: {', '.join(quiet)} (file "
                        "managers, the desktop, search indexers). They see the change; an indexer may record the "
                        "fillers' names, which hold nothing.")
-        if any(i.indexed for i in ok if i.method == "fillers"):
-            effects.append("In a large folder (an indexed one) a file's place depends on a hash of its name, so it can "
-                           "take many files to reach every deleted name, and some may stay when the cap is reached.")
+    if any(i.indexed for i in ok if i.method == "fillers"):
+        effects.append("In a large folder (an indexed one) a file's place depends on a hash of its name, so it can "
+                       "take many files to reach every deleted name, and some may stay when the cap is reached.")
     if not trims and ok:
         effects.append({"hdd": "This is a hard disk: there is no TRIM, so what is freed stays readable until it is "
                                "overwritten.",
@@ -368,8 +368,12 @@ def plan(host: Host, mount: str, rels: list[str], rebuild_rels: list[str] = ()) 
                        "the deleted files' own records (sizes and times, until reused); the flash chips themselves; "
                        "snapshots (LVM); and names recorded elsewhere: recent files, thumbnails, search indexes, shell "
                        "history, the trash, backups.")
-        effects.append("Nothing is kept: it isn't in History and can't be undone, but nothing needs undoing (entries "
-                       "are moved, not changed).")
+        why = ([f"a rebuild moves {'its' if len(ok) == 1 else 'the'} entries without changing them"]
+               if any(i.method == "rebuild" for i in ok) else []) + \
+              (["fillers are only added and deleted again, and nothing of yours is touched"]
+               if any(i.method == "fillers" for i in ok) else [])
+        effects.append(f"Nothing is kept: it isn't in History and can't be undone, but nothing needs undoing "
+                       f"({'; '.join(why)}).")
     return {"mount": t["mount"], "folders": [i.to_dict() for i in items], "steps": steps, "side_effects": effects,
             "needs_root": bool(ok), "trims": trims, "ask_synced": any(not i.synced for i in ok)}
 
