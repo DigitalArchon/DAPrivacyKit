@@ -741,6 +741,23 @@ def _has(pattern: str):
     return lambda text: bool(rx.search(text))
 
 
+# a value that names an environment variable rather than holding the secret: npm's documented
+# `_authToken=${NPM_TOKEN}` (it reads the variable when it runs; ${VAR?} is its optional form), and $VAR
+ENV_REFERENCE = re.compile(r"""^(["']?)\$(?:\{[A-Za-z_][A-Za-z0-9_]*\??\}|[A-Za-z_][A-Za-z0-9_]*)\1$""")
+
+
+def _npm(text: str) -> bool:
+    """An npm token in .npmrc (_authToken, for every registry or one), not a reference to an environment variable,
+    which npm's own documentation recommends and the guide too."""
+    for line in text.splitlines():
+        if line.lstrip().startswith(("#", ";")):
+            continue
+        m = re.search(r"_authToken\s*=\s*(\S.*?)\s*$", line)
+        if m and not ENV_REFERENCE.match(m.group(1)):
+            return True
+    return False
+
+
 def _docker(text: str) -> bool:
     try:
         auths = json.loads(text).get("auths") or {}
@@ -759,7 +776,7 @@ CREDENTIAL_FILES = (
     (".config/rclone/rclone.conf", "rclone passwords and tokens (obscured, not encrypted)",
      _has(r"^\s*(pass|password|token|secret_access_key|client_secret)\s*=\s*\S")),
     (".config/gh/hosts.yml", "GitHub CLI token", _has(r"^\s*oauth_token:\s*\S")),
-    (".npmrc", "npm token", _has(r"_authToken\s*=\s*\S")),
+    (".npmrc", "npm token", _npm),
     (".pypirc", "PyPI password", _has(r"^\s*password\s*[=:]\s*\S")),
     (".kube/config", "Kubernetes credentials", _has(r"^\s*(token|client-key-data|password):\s*\S")),
 )
@@ -1005,21 +1022,157 @@ def _broad(commands: str) -> bool:
     return False
 
 
+# sudoers(5): a Cmnd_Spec is Runas_Spec? Option_Spec* (Tag_Spec ':')* Digest_Spec? Cmnd, and a tag stays in force for
+# the commands after it in the list until the opposite tag
+SUDO_TAG = re.compile(r"^(?:NO)?(?:PASSWD|EXEC|FOLLOW|LOG_INPUT|LOG_OUTPUT|MAIL|INTERCEPT|SETENV):\s*")
+SUDO_OPTION = re.compile(r'^(?:ROLE|TYPE|CHROOT|CWD|TIMEOUT|NOTBEFORE|NOTAFTER|APPARMOR_PROFILE|PRIVS|LIMITPRIVS)='
+                         r'(?:"[^"]*"|\S+)\s+')
+SUDO_DIGEST = re.compile(r"^sha(?:224|256|384|512):\S+\s+")
+NO_AUTH = re.compile(r"(?:^|[\s,])!authenticate\s*(?:,|$)")
+
+
+def _list(text: str) -> list[str]:
+    """A sudo -l list split at its commas (one escaped with a backslash is part of an argument)."""
+    return [x.strip() for x in re.split(r"(?<!\\),", text) if x.strip()]
+
+
+def sudo_passwordless(listing: str) -> list[tuple[str, str, str]]:
+    """The commands `sudo -n -l` lists that run without a password: (runas, command, why: "NOPASSWD" or
+    "!authenticate"). Read from its shape, not its headings (they are in the user's language): rules start with their
+    runas list in parentheses and wrap onto lines indented further; the matching Defaults are a comma-separated list
+    (Defaults !authenticate, also Defaults:USER, makes every rule passwordless), and runas- or command-specific ones
+    lines of their own (Defaults>root !authenticate, Defaults!/usr/bin/x !authenticate). A PASSWD: tag still asks."""
+    noauth, runas_noauth, cmnd_noauth = False, set(), set()
+    rules: list[str] = []
+    block = None
+    for raw in listing.splitlines():
+        if not raw.strip():
+            block = None
+            continue
+        if not raw[0].isspace():
+            block = "heading"
+            continue
+        line = raw.strip()
+        if line.startswith("("):
+            rules.append(line)
+            block = "rules"
+        elif block == "rules":
+            rules[-1] += " " + line                     # a long rule wrapped onto the next line
+        elif line.startswith("Defaults") or block == "specific":
+            block = "specific"
+            m = re.match(r"Defaults([!>])(.*)$", line)
+            if m and NO_AUTH.search(m.group(2)):
+                before = m.group(2)[:m.group(2).index("!authenticate")]
+                names = {w.split()[0] for w in before.split(",") if w.split()}
+                if m.group(1) == ">":
+                    runas_noauth |= names
+                else:
+                    cmnd_noauth |= {n for n in names if n.startswith("/") or n == "ALL"}
+        else:
+            block = "defaults"
+            for entry in _list(line):
+                if entry in ("!authenticate", "authenticate"):
+                    noauth = entry == "!authenticate"   # the last one wins
+    out = []
+    for rule in rules:
+        m = re.match(r"\(([^)]*)\)\s*(.*)$", rule)
+        if not m:
+            continue
+        runas, rest = m.group(1).strip(), m.group(2)
+        users = {u.strip() for u in runas.split(":")[0].split(",")}
+        as_noauth = bool(runas_noauth) and bool(users & runas_noauth or "ALL" in users)
+        tagged = None                                   # None: no PASSWD or NOPASSWD tag so far on this line
+        for item in _list(rest):
+            while True:
+                t = SUDO_OPTION.match(item) or SUDO_TAG.match(item)
+                if not t:
+                    break
+                if t.group(0).startswith(("NOPASSWD", "PASSWD")):
+                    tagged = t.group(0).startswith("NOPASSWD")
+                item = item[t.end():]
+            item = SUDO_DIGEST.sub("", item).strip()
+            if not item:
+                continue
+            if tagged:
+                out.append((runas, item, "NOPASSWD"))
+            elif tagged is None and (noauth or as_noauth or item.split()[0] in cmnd_noauth or "ALL" in cmnd_noauth):
+                out.append((runas, item, "!authenticate"))
+    return out
+
+
+def _my_ids(host) -> tuple[set[str], set[str]]:
+    """This user's names for doas.conf (login and uid) and their groups' (names and gids): `id`, which knows accounts
+    from every source, else /etc/passwd and /etc/group."""
+    login, members, names = _accounts(host)
+    login = login or host.environ.get("USER") or host.environ.get("LOGNAME")
+    users = {u for u in (login, str(host.uid)) if u}
+    groups = set()
+    for args in (("-Gn",), ("-G",)):
+        r = host.run("id", *args)
+        if r.ok:
+            groups |= set(r.stdout.split())
+    for gid, mem in members.items():
+        if login in mem:
+            groups |= {str(gid)} | ({names[gid]} if gid in names else set())
+    return users, groups
+
+
+def doas_passwordless(text: str, users: set[str], groups: set[str]) -> list[tuple[str, str | None, str]]:
+    """doas.conf's permit nopass rules that apply to this user, by name or uid, or :group (doas.conf(5)): (the line,
+    its command or None for any, the account it runs as). A rule for someone else is theirs."""
+    import shlex
+    out = []
+    for line in text.splitlines():
+        try:
+            words = shlex.split(line, comments=True)
+        except ValueError:
+            continue
+        if not words or words[0] != "permit":
+            continue
+        i, nopass = 1, False
+        while i < len(words):
+            w = words[i]
+            if w in ("nopass", "nolog", "persist", "keepenv", "insult"):
+                nopass |= w == "nopass"
+                i += 1
+            elif w.startswith("setenv"):                # setenv { VAR=value ... }: skip to its closing brace
+                while i < len(words) and "}" not in words[i]:
+                    i += 1
+                i += 1
+            else:
+                break
+        if not nopass or i >= len(words):
+            continue
+        ident, rest = words[i], words[i + 1:]
+        if not (ident[1:] in groups if ident.startswith(":") else ident in users):
+            continue
+        target = "root"
+        if rest[:1] == ["as"] and len(rest) > 1:
+            target, rest = rest[1], rest[2:]
+        cmd = None
+        if rest[:1] == ["cmd"] and len(rest) > 1:
+            cmd = rest[1]                               # without args: any arguments
+            if rest[2:3] == ["args"]:                   # args alone: none allowed (written "" as sudoers does)
+                cmd += "".join(f" {a}" for a in rest[3:]) or ' ""'
+        out.append((line.strip(), cmd, target))
+    return out
+
+
 @register
 class SudoNopasswd(Check):
     id = "auth.sudo_nopasswd"
 
     def detect(self, scan: Scan) -> Outcome:
         host = scan.host
-        ev, broad, narrow = [], [], []
+        ev, broad, narrow = [], [], []                 # (as shown, the command)
         if host.runner.which("sudo"):
             # -n never prompts. Like any sudo use it may leave a line in the auth log; it changes nothing.
             r = host.run("sudo", "-n", "-l")
             if r.ok:
-                for line in r.stdout.splitlines():
-                    if "NOPASSWD:" in line:
-                        rule = line.strip()
-                        (broad if _broad(rule.split("NOPASSWD:", 1)[1]) else narrow).append(rule)
+                for runas, cmd, why in sudo_passwordless(r.stdout):
+                    shown = f"({runas}) NOPASSWD: {cmd}" if why == "NOPASSWD" else \
+                        f"({runas}) {cmd}, with Defaults !authenticate"
+                    (broad if _broad(cmd) else narrow).append((shown, cmd))
             elif "password is required" not in (r.stderr + r.stdout):
                 ev.append(Evidence.val("sudo -n -l", (r.stderr or r.stdout).strip()[:150]))
         try:
@@ -1027,21 +1180,20 @@ class SudoNopasswd(Check):
         except Unreadable:
             doas = None
             ev.append(Evidence.path("Needs administrator access", "/etc/doas.conf"))
-        for line in (doas or "").splitlines():
-            m = re.match(r"^\s*permit\b([^#]*)", line)
-            if m and re.search(r"\bnopass\b", m.group(1)):
-                cmd = re.search(r"\bcmd\s+(\S+)", m.group(1))
-                (narrow if cmd and cmd.group(1).rsplit("/", 1)[-1] not in SHELL_CAPABLE else broad).append(
-                    "doas: " + line.strip())
+        if doas:
+            for line, cmd, target in doas_passwordless(doas, *_my_ids(host)):
+                # a command for another account than root isn't root, whatever it is
+                (broad if target == "root" and (cmd is None or _broad(cmd)) else narrow).append(
+                    ("doas: " + line, cmd or f"any command as {target}"))
         if not host.runner.which("sudo") and doas is None:
             return absent("Neither sudo nor doas is set up.")
-        ev += [Evidence.val("Passwordless rule", r[:150]) for r in broad[:5]]
+        ev += [Evidence.val("Passwordless rule", shown[:150]) for shown, _ in broad[:5]]
         notes = []
         if narrow:
             ev.append(Evidence.count("Passwordless rules for specific commands", len(narrow)))
             notes.append(Note("info", "Some specific commands run as root without a password",
                               f"{len(narrow)} rule{'s let' if len(narrow) > 1 else ' lets'} particular programs run as "
-                              "root without a password, e.g. " + narrow[0].split("NOPASSWD:")[-1].strip()[:100] +
+                              "root without a password, e.g. " + narrow[0][1][:100] +
                               ". Distributions ship rules like these for their own tools; they are only a risk if "
                               "the program can be made to run other commands."))
         if broad:

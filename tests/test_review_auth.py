@@ -366,3 +366,90 @@ def test_sshd_port_from_listen_address_and_equals(cat, tmp_path):
                                                               "ListenAddress [::1]:2202\n"})
     assert sshd_ports(make_scan(host)) == {2200, 2201, 2202}
     assert sshd_ports(make_scan(make_host(tmp_path / "none"))) == {22}
+
+
+# ------------------------------------------------------------------ plaintext credentials
+
+def test_npm_token_from_the_environment_is_no_credential(cat, tmp_path):
+    """npm documents `_authToken=${NPM_TOKEN}`, and the guide recommends it: it still failed."""
+    for text in ("//registry.npmjs.org/:_authToken=${NPM_TOKEN}\n", "_authToken = \"${NPM_TOKEN}\"\n",
+                 "//npm.pkg.github.com/:_authToken=${GH_TOKEN?}\n", "_authToken=$NPM_TOKEN\n",
+                 "# _authToken=npm_old\n"):
+        host = make_host(tmp_path / str(abs(hash(text))), home_files={".npmrc": text})
+        assert detect(cat, "auth.plaintext_credentials", make_scan(host)).status is Status.PASS, text
+    for text in ("//registry.npmjs.org/:_authToken=npm_AbCdEf123\n", "_authToken=${NPM_TOKEN}x\n"):
+        host = make_host(tmp_path / str(abs(hash(text))), home_files={".npmrc": text})
+        assert detect(cat, "auth.plaintext_credentials", make_scan(host)).status is Status.FAIL, text
+    g = build(cat, host, "auth.plaintext_credentials")
+    step = next(s for s in g.steps if s.title.startswith("npm"))
+    assert "_authToken=${NPM_TOKEN}" in step.text and any("secret-tool" in c for c in step.commands)
+
+
+# ------------------------------------------------------------------ sudo and doas
+
+LIST = ("Matching Defaults entries for alice on box:\n"
+        "    env_reset, mail_badpass,\n"
+        "    secure_path=/usr/local/sbin\\:/usr/local/bin\\:/usr/sbin\\:/usr/bin\\:/sbin\\:/bin, use_pty{defaults}\n"
+        "\n"
+        "Runas and Command-specific defaults for alice:\n"
+        "    Defaults!/usr/sbin/visudo env_keep+=\"SUDO_EDITOR EDITOR VISUAL\"\n{specific}"
+        "\n"
+        "User alice may run the following commands on box:\n"
+        "{rules}")
+
+
+def _sudo(cat, tmp_path, rules, defaults="", specific=""):
+    host = make_host(tmp_path, commands={"sudo -n -l": LIST.format(rules=rules, defaults=defaults, specific=specific)})
+    return detect(cat, "auth.sudo_nopasswd", make_scan(host))
+
+
+def test_sudo_tags_besides_nopasswd(cat, tmp_path):
+    """`NOPASSWD: LOG_OUTPUT: ALL` passed: the tag after NOPASSWD was taken for the command."""
+    o = _sudo(cat, tmp_path / "a", "    (ALL : ALL) NOPASSWD: LOG_OUTPUT: ALL\n")
+    assert o.status is Status.FAIL and ev(o)["Passwordless rule"] == "(ALL : ALL) NOPASSWD: ALL"
+    assert _sudo(cat, tmp_path / "b", "    (root) TIMEOUT=10m NOEXEC: NOPASSWD: SETENV: /usr/bin/bash\n").status is Status.FAIL
+    # a PASSWD: tag holds for the commands after it; NOPASSWD for those after it
+    o = _sudo(cat, tmp_path / "c", "    (root) NOPASSWD: /usr/bin/apt-get update, PASSWD: /usr/bin/bash\n")
+    assert o.status is Status.PASS and "apt-get update" in o.notes[0].text
+    o = _sudo(cat, tmp_path / "d", "    (root) NOPASSWD: /usr/bin/apt-get update,\n        /usr/bin/vim\n")  # wrapped
+    assert o.status is Status.FAIL and ev(o)["Passwordless rule"] == "(root) NOPASSWD: /usr/bin/vim"
+
+
+def test_sudo_defaults_not_authenticate(cat, tmp_path):
+    """Defaults !authenticate makes every rule passwordless: `sudo -n -l` then succeeds and lists `(ALL : ALL) ALL`."""
+    o = _sudo(cat, tmp_path / "a", "    (ALL : ALL) ALL\n", defaults=", !authenticate")
+    assert o.status is Status.FAIL and ev(o)["Passwordless rule"] == "(ALL : ALL) ALL, with Defaults !authenticate"
+    g = build(cat, make_host(tmp_path / "g", commands={"sudo -n -l": LIST.format(
+        rules="    (ALL : ALL) ALL\n", defaults=", !authenticate", specific="")}), "auth.sudo_nopasswd")
+    assert "!authenticate" in g.steps[1].text and "!authenticate" in g.steps[0].commands[0]
+    # turned back on later in the list, or a PASSWD: tag: a password is asked for
+    assert _sudo(cat, tmp_path / "b", "    (ALL : ALL) ALL\n", defaults=", !authenticate, authenticate").status is Status.PASS
+    assert _sudo(cat, tmp_path / "c", "    (ALL) PASSWD: ALL\n", defaults=", !authenticate").status is Status.PASS
+    # for one runas account, or one command
+    assert _sudo(cat, tmp_path / "d", "    (ALL : ALL) ALL\n",
+                 specific="    Defaults>root !authenticate\n").status is Status.FAIL
+    assert _sudo(cat, tmp_path / "e", "    (postgres) ALL\n",
+                 specific="    Defaults>root !authenticate\n").status is Status.PASS
+    o = _sudo(cat, tmp_path / "f", "    (root) /usr/bin/less /var/log/syslog, /usr/bin/apt-get update\n",
+              specific="    Defaults!/usr/bin/less !authenticate\n")
+    assert o.status is Status.FAIL and ev(o)["Passwordless rule"].startswith("(root) /usr/bin/less /var/log/syslog")
+
+
+def test_doas_rule_applies_to_its_own_user_or_group(cat, tmp_path):
+    """`permit nopass bob as root` counted for every account."""
+    accounts = {"/etc/passwd": "alice:x:1000:1000::/home/alice:/bin/bash\nbob:x:1001:1001::/home/bob:/bin/bash\n",
+                "/etc/group": "alice:x:1000:\nwheel:x:10:bob\nadmins:x:20:alice\n"}
+
+    def doas(conf, tmp):
+        host = make_host(tmp, files={**accounts, "/etc/doas.conf": conf})
+        return detect(cat, "auth.sudo_nopasswd", make_scan(host))
+    assert doas("permit nopass bob as root\n", tmp_path / "a").status is Status.PASS
+    assert doas("permit nopass :wheel\n", tmp_path / "b").status is Status.PASS
+    assert doas("permit nopass alice as root\n", tmp_path / "c").status is Status.FAIL
+    assert doas("permit nopass keepenv :admins\n", tmp_path / "d").status is Status.FAIL
+    assert doas("permit nopass setenv { PATH=/bin HOME } 1000\n", tmp_path / "e").status is Status.FAIL
+    assert doas("permit persist alice\n", tmp_path / "f").status is Status.PASS                  # asks
+    o = doas("permit nopass alice as root cmd /usr/bin/apt-get args update\n", tmp_path / "g")
+    assert o.status is Status.PASS and "apt-get update" in o.notes[0].text
+    assert doas("permit nopass alice as root cmd /usr/bin/vim\n", tmp_path / "h").status is Status.FAIL
+    assert doas("permit nopass alice as postgres\n", tmp_path / "i").status is Status.PASS       # not root

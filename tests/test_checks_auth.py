@@ -353,7 +353,10 @@ def test_narrow_sudo_rules_get_a_note(cat, tmp_path):
 
 
 def test_doas_nopass(cat, tmp_path):
-    host = make_host(tmp_path, files={"/etc/doas.conf": "permit nopass :wheel\n"})
+    # the rule is for wheel: alice is in it (it counted for every account before)
+    host = make_host(tmp_path, files={"/etc/doas.conf": "permit nopass :wheel\n",
+                                      "/etc/passwd": "alice:x:1000:1000::/home/alice:/bin/bash\n",
+                                      "/etc/group": "wheel:x:10:alice\n"})
     assert detect(cat, "auth.sudo_nopasswd", make_scan(host)).status is Status.FAIL
 
 

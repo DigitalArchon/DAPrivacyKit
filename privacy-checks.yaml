@@ -839,6 +839,8 @@ checks:
     detect:
       - '~/.git-credentials, ~/.netrc, ~/.aws/credentials, ~/.docker/config.json ("auths" with "auth" values)'
       - '~/.pgpass, ~/.my.cnf, ~/.config/rclone/rclone.conf (obscured, not encrypted), ~/.config/gh/hosts.yml'
+      - '~/.npmrc _authToken, unless its value names an environment variable (${NPM_TOKEN}, as npm documents; $VAR): npm
+        reads it when it runs. Of the formats read, only npm and .env files document that form'
       - '.env files under home (limit depth, skip node_modules), counted only with a variable named as a secret (a word
         such as PASSWORD, SECRET, TOKEN, KEY; not PUBLIC or PUBLISHABLE) holding a real value (not empty or a placeholder),
         or a URL with a password'
@@ -878,11 +880,16 @@ checks:
     tier: guided
     why: Lets malware running as the user escalate silently.
     detect:
-      - 'sudo -n -l 2>/dev/null | grep NOPASSWD'
+      - 'sudo -n -l: the commands that run without a password: a NOPASSWD tag (among the other tags, LOG_OUTPUT: and
+        the like, and options such as TIMEOUT=; a tag holds for the commands after it until PASSWD:), or no tag with
+        Defaults !authenticate (also Defaults:user), or Defaults>runas or Defaults!command !authenticate for that runas
+        or command. Read by shape, not the headings, which are translated; long rules wrap onto further lines'
+      - '/etc/doas.conf: permit nopass rules for this user (by name or uid) or a group of theirs (:group, by name or
+        gid; `id`, else /etc/group); another account''s rule is theirs. A rule as another account than root is narrow'
       - 'A rule is as good as root when it allows ALL, or a program that can run others (GTFOBins) with any arguments; with
         fixed arguments only when the program can escape to a shell anyway (editors, pagers, journalctl, git, systemctl
         verbs that page or edit) or runs a file this user can write'
-    fix: Remove NOPASSWD entries via visudo.
+    fix: Remove NOPASSWD entries, and a Defaults !authenticate line, via visudo; for doas, nopass.
     remedy: >
       Any program running as you can become administrator without a password. Guide… shows how to
       remove that rule safely.

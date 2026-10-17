@@ -301,7 +301,11 @@ def plaintext_credentials(check, scan, outcome):
         ".config/gh/hosts.yml": ("GitHub CLI", "gh stores its token in the keyring when one is available.",
                                  ["gh auth logout", "gh auth login"]),
         ".aws/credentials": ("AWS", "aws-vault keeps keys in the keyring.", []),
-        ".npmrc": ("npm", "Keep the token in an environment variable (NPM_TOKEN) instead of the file.", []),
+        ".npmrc": ("npm", "Keep the token in an environment variable instead of the file: in ~/.npmrc write "
+                   "//registry.npmjs.org/:_authToken=${NPM_TOKEN} in place of the token, and npm reads NPM_TOKEN when "
+                   "it runs. Set it when you need it, from the keyring:",
+                   ["secret-tool store --label='npm token' service npm     # once: paste the token when asked",
+                    'export NPM_TOKEN="$(secret-tool lookup service npm)"     # in the terminal, before npm needs it']),
     }
     for rel in found:
         if rel in helpers:
@@ -369,16 +373,21 @@ def shell_history(check, scan, outcome):
 @guide("auth.sudo_nopasswd")
 def sudo_nopasswd(check, scan, outcome):
     rules = evidence(outcome, "Passwordless rule")
+    noauth = any("Defaults !authenticate" in r for r in rules)
+    doas = any(r.startswith("doas: ") for r in rules)
     return Guide(check.id, "Ask for a password for sudo",
                  "A passwordless rule lets any program running as you become root without asking.", [
                      Step("Find the rules", "The rules found: " + "; ".join(rules) if rules else "",
-                          commands=["sudo grep -rn NOPASSWD /etc/sudoers /etc/sudoers.d/"]),
+                          commands=["sudo grep -rnE 'NOPASSWD|!authenticate' /etc/sudoers /etc/sudoers.d/"]
+                          + (["grep -n nopass /etc/doas.conf"] if doas else [])),
                      Step("Edit them with visudo",
-                          "Remove NOPASSWD: from the rule (or delete the rule). visudo checks the syntax before "
-                          "saving. Keep a root shell open (sudo -i) in another terminal while you do this, so a "
-                          "mistake can't lock you out.",
-                          commands=["sudo visudo -f /etc/sudoers.d/FILE     # the file grep found",
-                                    "sudoedit /etc/doas.conf                # for doas: remove nopass"]),
+                          "Remove NOPASSWD: from the rule (or delete the rule)"
+                          + (", and delete the Defaults line with !authenticate, which lets every rule run without a "
+                             "password" if noauth else "")
+                          + ". visudo checks the syntax before saving. Keep a root shell open (sudo -i) in another "
+                          "terminal while you do this, so a mistake can't lock you out.",
+                          commands=["sudo visudo -f /etc/sudoers.d/FILE     # the file grep found"]
+                          + (["sudoedit /etc/doas.conf                # for doas: remove nopass"] if doas else [])),
                  ])
 
 
