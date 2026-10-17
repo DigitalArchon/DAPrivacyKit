@@ -3902,6 +3902,9 @@ function keepsProgress(job, reload) {
     job.closed ? h("div", { class: "notebox info" }, `${job.app} has closed. End the watch to see what it did.`) : null,
     job.absent ? h("div", { class: "warnbox" }, `${job.app} doesn't seem to have started, or it handed over to a copy `
       + "that was already running, which isn't watched. End the watch, close the app everywhere, and try again.") : null,
+    job.quiet ? h("div", { class: "warnbox" }, `${job.app} is running but hasn't opened a single file of yours or of its `
+      + "own: it may have handed over to a copy that was already running (a window elsewhere, or one in the background), "
+      + "which isn't watched. If so, end the watch, close the app everywhere, and try again.") : null,
     c.overflow ? h("div", { class: "warnbox" }, "The computer was too busy for every event to be recorded: some of what "
       + "happened is missing.") : null,
     (job.not_watched || []).length ? h("div", { class: "small muted" }, "Not watched: "
@@ -3939,6 +3942,9 @@ function keepsResult(job, reload) {
     h("p", {}, h("b", {}, r.app), ` was watched for ${fmtMinutes(r.seconds)}. It read ${plural(t.opened, "file")}, changed `
       + `${t.written}, made ${t.created} and deleted ${t.deleted}`
       + (r.system.length ? `, besides ${r.system.reduce((n, s) => n + s.files, 0)} of the system's own (programs, libraries, settings).` : ".")),
+    !r.files ? h("div", { class: "warnbox" }, `${r.app} opened no file of yours or of its own. If a copy of it was already `
+      + "running (a window elsewhere, or one in the background), it handed its work to that copy, which wasn't watched: "
+      + "close it everywhere and watch it again. What that copy wrote shows below, under your other programs.") : null,
     h("h4", {}, "Who recorded what you opened"),
     rec.names === 0 ? h("p", { class: "small muted" }, "It opened none of your own files (outside programs' data folders), "
         + "so there was nothing to look for.")
@@ -3966,6 +3972,11 @@ function keepsResult(job, reload) {
     h("p", { class: "small muted" }, `Your own files are counted, never listed: ${r.yours.opened} read, ${r.yours.changed} changed.`),
     r.places.length ? placesTable(r) : h("p", { class: "small muted" }, "Nothing outside the system's own folders."),
     r.places_left_out ? h("div", { class: "small muted" }, `${r.places_left_out} more folders aren't shown.`) : null,
+    r.others ? h("details", { class: "small" }, h("summary", {}, `What your other programs wrote meanwhile (${plural(r.others, "file")})`),
+      h("p", { class: "muted" }, "An app that hands its work to a background program of its own, or to a copy that was "
+        + "already running, shows here; so does everything else that was running. Counted per folder:"),
+      h("ul", { class: "named" }, (r.others_places || []).map(o => h("li", {}, h("code", {}, o.folder),
+        ` — ${plural(o.files, "file")}, by ${o.who}`)))) : null,
     r.gone.length ? h("details", { class: "small" }, h("summary", {}, "By programs that ended before they could be identified"),
       h("ul", { class: "named" }, r.gone.map(g => h("li", {}, h("code", {}, g.folder), `: ${plural(g.events, "event")}`)))) : null,
     h("details", { class: "small" }, h("summary", {}, "How complete this is"),

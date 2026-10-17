@@ -1424,7 +1424,16 @@ OACS, FNA and SANICAP via the helper's ioctl), read on request and kept for the 
   --scope`, so every process it starts is in one cgroup; Flatpak and Snap move an app into a scope of theirs,
   matched by name: `app-flatpak-<id>-*.scope`, `snap.<name>.*.scope`) and the helper watches the filesystems
   with fanotify until the user ends it. An app that is already running is refused ("Close X first": started
-  again it would hand over to the open copy, which isn't in the scope).
+  again it would hand over to the open copy, which isn't in the scope): a Flatpak by `flatpak ps`, a Snap by its
+  cgroup (`snap.<name>.…scope`), anything else by a process of the user's that runs its program or, when the menu
+  entry's command is a script, what the script starts (`appwatch._signs`: the programs it names and their
+  folders, its own folder, the one above a `bin`; a tool it uses from a shared folder, zenity, doesn't count), or
+  runs a script it names with its interpreter. Before, LibreOffice's `soffice` script, Firefox's and Mint's Python
+  tools were never found running: LibreOffice open already was started again, handed over, and the result was
+  empty. An app that runs but opens no file of its own or the user's for 20 seconds (`quiet`: oosplash waiting
+  after handing over) is said to have perhaps handed over, on the page and in the result, whose "What your other
+  programs wrote meanwhile" (per program and folder, counted) is where a copy already open, or a background
+  service of the app's own, shows.
   - **The watch** (in the helper, a child process of its own): `FAN_MARK_FILESYSTEM` on the filesystems holding
     the caller's home, `/tmp`, `/var/tmp`, `/dev/shm`, the runtime folder and `/`, and what is mounted under
     `/media`, `/mnt` and `/run/media`, each once (by the device number in mountinfo: every tmpfs is its own, a

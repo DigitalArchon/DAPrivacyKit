@@ -457,6 +457,9 @@ You get:
 - **Sensitive places it opened**, such as your SSH keys or a browser's profile. An app opening its own
   profile is normal; anything else deserves a second look.
 - **Where it read and wrote**: its folders with counts of files read, changed, made and deleted.
+- **What your other programs wrote meanwhile**, counted per program and folder: an app that hands its work to
+  a background program of its own shows here. If the app was already open somewhere, the window says so
+  before you start; if it hands over to a copy it couldn't see, the result says it opened nothing.
 
 Your own files are counted, never listed, and nothing is saved: the result is gone when you dismiss it or
 quit. The tool can't see what other accounts or system services record, nor inside compressed or encrypted

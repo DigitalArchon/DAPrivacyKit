@@ -6,8 +6,13 @@ from __future__ import annotations
 
 import struct
 import zlib
+from pathlib import Path
 
+import pytest
+
+from daprivacyscanner.host import FakeRunner, Host
 from daprivacyscanner.tools import activity as A
+from daprivacyscanner.tools import appwatch, menu
 
 
 # ------------------------------------------------------------------ D1: the user's own files are never named
@@ -148,3 +153,91 @@ def test_a_file_opened_from_a_temporary_folder_is_looked_for(tmp_path):
     assert A.needles(recs, w) == ["/tmp/mozilla_alice0/tax return.pdf"]
     r = A.find_records(recs, w)
     assert r["names"] == 1 and [f["path"] for f in r["found"]] == ["~/.local/share/recently-used.xbel"]
+
+
+# ------------------------------------------------------------------ D5: an app behind a script, a Snap
+
+def _file(root: Path, path: str, text: str = "\x7fELF", mode: int = 0o755) -> None:
+    f = root / path.lstrip("/")
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(text)
+    f.chmod(mode)
+
+
+@pytest.fixture
+def machine(tmp_path):
+    root = tmp_path / "root"
+    _file(root, "/usr/lib/libreoffice/program/soffice", '#!/bin/sh\nsd_prog=$(dirname "$0")\n'
+          'exec $RRCHECK "$sd_prog/oosplash" "$@"\n')
+    for p in ("/usr/lib/libreoffice/program/oosplash", "/usr/lib/libreoffice/program/soffice.bin",
+              "/usr/lib/firefox/firefox", "/usr/share/code/code", "/usr/bin/zenity", "/usr/bin/python3", "/bin/sh",
+              "/usr/bin/xed"):
+        _file(root, p)
+    (root / "usr/bin/libreoffice").symlink_to("../lib/libreoffice/program/soffice")
+    _file(root, "/usr/bin/firefox", "#!/bin/sh\nexport MOZ_APP_LAUNCHER=/usr/bin/firefox\nexec /usr/lib/firefox/firefox \"$@\"\n")
+    _file(root, "/usr/bin/mintupdate", '#!/usr/bin/python3\nimport os\nos.system("/usr/lib/linuxmint/mintUpdate/mintUpdate.py show &")\n')
+    _file(root, "/usr/lib/linuxmint/mintUpdate/mintUpdate.py", "#!/usr/bin/python3\n")
+    _file(root, "/usr/share/code/bin/code", '#!/usr/bin/env sh\nVSCODE_PATH="/usr/share/code"\nELECTRON="$VSCODE_PATH/code"\n'
+          '"$ELECTRON" "$@"\n')
+    (root / "usr/bin/code").symlink_to("../share/code/bin/code")
+    _file(root, "/usr/bin/asker", "#!/bin/sh\n/usr/bin/zenity --question || exit\nexec /usr/lib/asker/asker\n")
+    _file(root, "/usr/lib/asker/asker")
+    (root / "proc").mkdir()
+    home = root / "home/alice"
+    home.mkdir(parents=True)
+    return Host(home=home, environ={"HOME": str(home), "PATH": "/usr/bin:/bin"}, runner=FakeRunner(), root=root, uid=1000)
+
+
+def _process(host: Host, pid: int, exe: str, *args: str, cgroup: str = "0::/user.slice/user-1000.slice/session-2.scope"):
+    d = host.root / "proc" / str(pid)
+    d.mkdir()
+    (d / "exe").symlink_to(exe)
+    (d / "cmdline").write_bytes(b"\0".join(a.encode() for a in (args or (exe,))) + b"\0")
+    (d / "cgroup").write_text(cgroup + "\n")
+
+
+@pytest.mark.parametrize("argv, exe, args", [
+    (["libreoffice", "--writer"], "/usr/lib/libreoffice/program/oosplash", ()),     # the script beside it starts it
+    (["libreoffice"], "/usr/lib/libreoffice/program/soffice.bin", ()),
+    (["firefox"], "/usr/lib/firefox/firefox", ()),                                   # the program the script names
+    (["mintupdate"], "/usr/bin/python3", ("/usr/bin/python3", "/usr/lib/linuxmint/mintUpdate/mintUpdate.py", "show")),
+    (["/usr/bin/code"], "/usr/share/code/code", ()),                                # in the folder the script names
+    (["xed"], "/usr/bin/xed", ()),
+    (["python3", "/usr/lib/linuxmint/mintUpdate/mintUpdate.py"], "/usr/bin/python3",
+     ("python3", "/usr/lib/linuxmint/mintUpdate/mintUpdate.py")),
+])
+def test_an_app_behind_a_script_is_found_running(machine, argv, exe, args):
+    """running() compared processes with the menu entry's program, a script whose processes never run it: LibreOffice
+    already open was started again, handed over, and the watch saw nothing (Mint 22.3)."""
+    app = menu.App("x.desktop", "X", argv, "native")
+    _process(machine, 50, "/usr/bin/zenity")                                         # somebody else's tool
+    _process(machine, 51, "/usr/bin/python3", "/usr/bin/python3", "/usr/lib/other/thing.py")
+    assert not appwatch.running(machine, app)
+    _process(machine, 60, exe, *args)
+    assert appwatch.running(machine, app)
+
+
+def test_a_tool_a_script_uses_isnt_the_app(machine):
+    app = menu.App("asker.desktop", "Asker", ["asker"], "native")
+    _process(machine, 50, "/usr/bin/zenity")
+    assert not appwatch.running(machine, app)
+    _process(machine, 51, "/usr/lib/asker/asker")
+    assert appwatch.running(machine, app)
+
+
+def test_a_snap_is_found_running_by_its_cgroup(machine):
+    app = menu.App("firefox_firefox.desktop", "Firefox", ["/snap/bin/firefox"], "snap", snap="firefox")
+    _process(machine, 50, "/usr/lib/firefox/firefox", cgroup="0::/user.slice/user-1000.slice/user@1000.service/app.slice/"
+             "snap.firefox-esr.firefox-esr-1.scope")
+    assert not appwatch.running(machine, app)
+    _process(machine, 51, "/snap/firefox/6000/usr/lib/firefox/firefox", cgroup="0::/user.slice/user-1000.slice/"
+             "user@1000.service/app.slice/snap.firefox.firefox-0a1b2c3d.scope")
+    assert appwatch.running(machine, app)
+
+
+def test_a_watch_that_saw_nothing_of_the_app_says_it_may_have_handed_over():
+    """oosplash stays in the scope when it hands over to a LibreOffice already open: alive, and not one file."""
+    src = (Path(__file__).parent.parent / "src/daprivacyscanner/server.py").read_text()
+    assert 'job["quiet"]' in src and "appwatch.QUIET_AFTER" in src
+    js = (Path(__file__).parent.parent / "src/daprivacyscanner/web/app.js").read_text()
+    assert "job.quiet ?" in js and "!r.files ?" in js and "r.others_places" in js

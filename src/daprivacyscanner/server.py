@@ -1858,6 +1858,10 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
                         seen = seen or job["alive"] > 0
                         job["closed"] = seen and not job["alive"]                 # the app has ended: time to end
                         job["absent"] = not seen and time.time() - job["started"] > 20
+                        # running, but not a file of its own or the user's opened: a wrapper that handed over to a
+                        # copy already open (LibreOffice's oosplash stays, tested), which isn't watched
+                        job["quiet"] = (seen and job["alive"] > 0 and not (job["counts"] or {}).get("files")
+                                        and time.time() - job["started"] > appwatch.QUIET_AFTER)
                     job["state"] = "ending"
                     h = admin.get(prompt=False)         # the helper running now (the one polled), not the one given at the start
                     if h is None:
@@ -1921,6 +1925,7 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
                                           "over to the copy that is open, which isn't watched."}, status_code=409)
         job = app.state.keeps_job = {"id": uuid.uuid4().hex, "state": "asking", "app": entry.name, "started": None,
                                      "finished": None, "counts": None, "alive": None, "closed": False, "absent": False,
+                                     "quiet": False,
                                      "watched": [], "not_watched": [], "result": None, "error": "", "cancel": False}
         app.state.keeps_task = asyncio.create_task(run_keeps_job(job, entry))
         return {"job": keeps_view(job)}
