@@ -2327,17 +2327,20 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
         r = await asyncio.to_thread(host.run, "xdg-open", str(folder))
         return {"ok": r.ok}
 
-    def close_browser_disk() -> str:
+    def close_browser_disk(prompt: bool = True) -> str:
         """The browser's RAM disk is for while the app runs: quitting closes it (unless the browser
-        still uses it), asking for administrator access if it has to."""
+        still uses it), asking for administrator access if it has to. `prompt` False (the app told to end by a
+        signal: logging out, shutting down) never asks: its files are overwritten and deleted all the same, and it
+        stays mounted, empty, until it is closed or the computer restarts, rather than a password prompt coming up in
+        the middle of a logout. What happened is said on a terminal only: it names programs ("Tor Browser still uses
+        it"), and off a terminal stderr is a log on the disk (~/.xsession-errors, the journal)."""
         from .tools import browser
         try:
-            msg = said = browser.close_disk(make_host(), lambda: admin.get(prompt=True))
+            msg = browser.close_disk(make_host(), lambda: admin.get(prompt=prompt))
         except Exception as e:  # noqa: BLE001 - quitting goes on; the page shows it open next time
-            msg = f"~/TempBrowser couldn't be closed: {e}"
-            said = f"~/TempBrowser couldn't be closed: {type(e).__name__}"   # stderr: no message (a path, a name)
-        if said:
-            print(said, file=sys.stderr)
+            msg = f"~/TempBrowser couldn't be closed: {type(e).__name__}"   # no message: it can name a path
+        if msg and sys.stderr.isatty():
+            print(msg, file=sys.stderr)
         return msg
 
     app.state.close_browser_disk = close_browser_disk

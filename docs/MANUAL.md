@@ -419,7 +419,8 @@ you need, close `~/TempBrowser`, and set it up again.
 **Finishing:** quit the browser, then **Close and overwrite…** (or just quit the app, which closes
 `~/TempBrowser` too). Closing is refused while the browser runs. Only the window that opened `~/TempBrowser`
 closes it when you quit: a window the right-click entries opened (Verify download…, Remove metadata…) leaves it
-as it is.
+as it is. Logging out with the app open overwrites and deletes what is in it without asking for your password; it
+then stays open, empty, until you close it or restart.
 
 ### Try an app
 

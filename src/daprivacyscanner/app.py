@@ -732,8 +732,18 @@ def main(argv: list[str] | None = None) -> None:
         time.sleep(0.05)
 
     url = f"http://127.0.0.1:{port}/?t={launch}"
+    # SIGTERM or SIGHUP: the session is ending (logging out, shutting down), so closing ~/TempBrowser asks for no
+    # password: a polkit prompt would come up in the middle of the logout (close_browser_disk)
+    ended = {"by_signal": False}
+
+    def told_to_end(*_):
+        if not ended["by_signal"]:                      # once: a second signal mustn't cut the close short
+            ended["by_signal"] = True
+            raise KeyboardInterrupt
     try:
         if use_browser:
+            signal.signal(signal.SIGTERM, told_to_end)  # else Python ends at once, ~/TempBrowser's files left in it
+            signal.signal(signal.SIGHUP, told_to_end)
             print(f"DA Privacy Kit running in your web browser. {BROWSER_EXPOSES}\n"
                   f"Open this link once (it works a single time):\n{url}", flush=True)
             if not args.no_open:
@@ -757,7 +767,9 @@ def main(argv: list[str] | None = None) -> None:
             windows.append(window)
 
             def on_started():
-                def close(*_):
+                def close(sig=None):
+                    if sig in (signal.SIGTERM, signal.SIGHUP):
+                        ended["by_signal"] = True
                     window.destroy()
                     return False
 
@@ -773,13 +785,14 @@ def main(argv: list[str] | None = None) -> None:
                 GLib.idle_add(no_recent_files)
 
                 for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
-                    GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, sig, close)
+                    GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, sig, close, sig)
 
             webview.start(on_started, gui="gtk", private_mode=True, icon=window_icon())
     except KeyboardInterrupt:
         pass
     finally:
-        app.state.close_browser_disk()  # the browser's RAM disk is for while the app runs (this copy's, owner.py)
+        # the browser's RAM disk is for while the app runs (this copy's, owner.py); no password asked at a logout
+        app.state.close_browser_disk(prompt=not ended["by_signal"])
         app.state.discard_trial()       # and so is a trial: its folder, overwritten first when in memory
         app.state.admin.drop()          # the root helper ends with the app
         _presentation_off()             # and so does Presentation mode
