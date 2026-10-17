@@ -306,3 +306,13 @@ def test_stop_while_a_picked_archive_is_copied_in_leaves_no_copy(host):  # noqa:
     with pytest.raises(B.Stopped):
         B.copy_in(host, mine, Job())
     assert not list((disk / ".downloads").iterdir()) and mine.exists()
+
+
+# ------------------------------------------------------------------ A10: a proxy the download doesn't use
+
+def test_the_panel_names_a_proxy_the_download_doesnt_use(host):  # noqa: F811
+    """The download and the version checks go out directly (online.Net), silently past HTTPS_PROXY or ALL_PROXY; only
+    the online tests' dialog said so."""
+    assert B.status(host)["proxy_vars"] == []
+    host.environ.update({"ALL_PROXY": "socks5h://127.0.0.1:9050", "https_proxy": " "})
+    assert B.status(host)["proxy_vars"] == ["ALL_PROXY"]

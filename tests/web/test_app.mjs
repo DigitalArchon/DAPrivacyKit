@@ -75,9 +75,10 @@ const ramdisk = () => ({ path: "~/RAMDisk", full_path: "/home/a/RAMDisk", open: 
     open: ["chmod 500 /home/a/RAMDisk", "mount -t tmpfs -o nosuid,nodev,noexec,size=1024M,mode=0700,uid=1000,gid=1000,noswap tmpfs /home/a/RAMDisk"],
     open_exec: ["chmod 500 /home/a/RAMDisk", "mount -t tmpfs -o nosuid,nodev,size=1024M,mode=0700,uid=1000,gid=1000,noswap tmpfs /home/a/RAMDisk"],
     close: ["umount /home/a/RAMDisk"] } });
-let browserJob = null, browserStarted = null, browserStartError = null, browserDue = false, torProgress = 45,
+let browserJob = null, browserStarted = null, browserStartError = null, browserDue = false, torProgress = 45, browserProxy = [],
     browserUnchecked = false, sandboxDown = false, kdeWayland = false, waylandUnasked = false, pastaFenced = false;
 const browserState = () => ({ platform: "linux-x86_64", min_mb: 1024, can_pick: true, picker: "zenity", admin_active: true, job: browserJob,
+  proxy_vars: browserProxy,
   ramdisk: { ...ramdisk(), noexec: !ramOpen ? true : toolBodies.open?.noexec !== false }, mat2: true,
   sandbox: { available: !sandboxDown, why: sandboxDown ? "bubblewrap can't set up a sandbox here (setting up uid map: Permission denied)." : "",
              apparmor: sandboxDown, landlock: false, display: kdeWayland ? "wayland" : "x11",
@@ -865,6 +866,7 @@ while ($$(".modal").length) { $$(".modal .buttons button").at(-1).click(); await
 const clipSaved = window.eval("S").report.results["desk.clipboard_history"];
 window.eval("S").report.results["desk.clipboard_history"] = { ...(clipSaved || {}), id: "desk.clipboard_history",
   status: "fail", summary: "Clipboard history is saved to disk by Klipper.", fixable: true, effective_severity: 3 };
+browserProxy = ["HTTPS_PROXY"];
 await window.openBrowserTool(); await tick(); await tick();
 check(text(".modal .browser-tool").includes("open the browser's RAM disk, ~/TempBrowser"), "it asks for its own RAM disk first");
 check(text(".modal .browser-tool").includes("separate from the RAM disk tool's ~/RAMDisk")
@@ -876,6 +878,10 @@ check(toolBodies.open?.noexec === false && toolBodies.open.size_mb === 1536 && t
       "it opens its own RAM disk, executable: " + JSON.stringify(toolBodies.open));
 $$(".modal .browser-tool .toolcard button").find(b => b.textContent === "Download…").click(); await tick();
 check($$(".modal").at(-1).textContent.includes("aus1.torproject.org and dist.torproject.org"), "the hosts are named before downloading");
+check($$(".modal").at(-1).textContent.includes("Your proxy settings (HTTPS_PROXY) are not used")
+      && $$(".modal").at(-1).textContent.includes("dist.torproject.org see this computer's own address"),
+      "a proxy set in the environment, which the download doesn't use, is named before it");
+browserProxy = [];
 $$(".modal").at(-1).querySelectorAll(".buttons button")[1].click(); await tick(); await tick(); await tick();
 check(toolBodies.browser?.browser === "tor" && text(".modal .browser-tool").includes("50.0 MB of 100.0 MB"), "the download shows its progress");
 while ($$(".modal").length) { $$(".modal .buttons button").at(-1).click(); await tick(); }

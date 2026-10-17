@@ -3426,7 +3426,7 @@ function browserCards(data, reload, opts = { sandbox: true, sound: false, nested
             + "version is the latest, directly (not through Tor), as the download did: the server sees this computer's "
             + "address, nothing else."),
           h("p", {}, "If a newer version is out, or it can't tell, it won't start: save what you need from its Downloads, "
-            + "then close ~/TempBrowser and set it up again.")], "Check and start")) return;
+            + "then close ~/TempBrowser and set it up again."), proxyWarning(data, [b.release.host])], "Check and start")) return;
         if (b.tor && opts.sound && opts.sandbox && !await confirmModal("Start Tor Browser with sound?", [
           h("p", {}, "Sound connects the browser to this computer's sound server, which isn't in the sandbox and isn't "
             + "behind Tor. A website that got past the browser's own protections could then:"),
@@ -3449,7 +3449,7 @@ function browserCards(data, reload, opts = { sandbox: true, sound: false, nested
         } catch (err) { toast(err.message, "error", 10000); e.target.disabled = false; }
       } }, `Start ${b.name}`);
     } else {
-      action = h("button", { class: "small", disabled: !usable || !b.available, onclick: () => browserDownload(b, reload) }, "Download…");
+      action = h("button", { class: "small", disabled: !usable || !b.available, onclick: () => browserDownload(b, data, reload) }, "Download…");
     }
     const vpnSetup = b.id === "mullvad" ? (b.installed ? mullvadVpnNote(b.release?.vpn) : mullvadVpnTick()) : null;
     return h("div", { class: "toolcard" }, h("b", {}, b.name), h("p", { class: "small" }, b.about),
@@ -3503,16 +3503,27 @@ function browserCards(data, reload, opts = { sandbox: true, sound: false, nested
       + "which version is the latest, directly, and refuses an older archive. Where that server can't be reached (blocked "
       + "where you are, say, and the archive came from GetTor or a mirror), it accepts one whose signature was made in the "
       + "last 30 days, and says so."),
+    proxyWarning(data, ["aus1.torproject.org or cdn.mullvad.net"]),
     h("div", { class: "orow" }, use))];
 }
 
 const fmtWhen = (secs) => new Date(secs * 1000).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" });
 
-function browserDownload(b, reload) {
+// The download and the version checks go out directly, never through a proxy set in the environment (as the online
+// tests): said before either, as the online tests' dialog does.
+function proxyWarning(data, hosts) {
+  if (!data.proxy_vars?.length) return null;
+  return h("div", { class: "warnbox bad small" }, `Your proxy settings (${data.proxy_vars.join(", ")}) are not used: `
+    + `this connects directly, so ${hosts.join(" and ")} see${hosts.length === 1 ? "s" : ""} this computer's own address, not `
+    + "the proxy's. If the proxy is what hides your address, don't go on from here.");
+}
+
+function browserDownload(b, data, reload) {
   modal({ title: `Download ${b.name}?`, body: [
     h("p", {}, `This contacts ${b.hosts.join(" and ")}, the project's own servers: to learn the latest version, then for `
       + "the archive (about 120–140 MB) and its signature. They see this computer's address, as with any download; "
       + "nothing else about it is sent."),
+    proxyWarning(data, b.hosts),
     h("p", { class: "small muted" }, "The download goes straight into the RAM disk. The signature is checked against the "
       + "Tor Browser Developers key the app carries, and nothing is unpacked unless it is verified."),
     b.id === "mullvad" ? h("p", { class: "small" }, browserSetup.vpn

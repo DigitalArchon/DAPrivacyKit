@@ -336,9 +336,13 @@ def status(host: Host) -> dict:
             if b.tor:
                 entry.update(bridges=bridges_view(host, b), connection=tor_status(host, b))
         out.append(entry)
+    from ..online import proxy_vars
     return {"platform": plat, "min_mb": MIN_MB, "mat2": bool(host.runner.which("mat2")),
             "ramdisk": {**rd.to_dict(host.home), "max_mb": ramdisk.max_mb(host), "default_mb": ramdisk.DEFAULT_MB,
                         "commands": ramdisk.commands(host, DISK)},
+            # set, and not used: the download and the version checks go out directly (online.Net), as the online
+            # tests do, and the page says so before either, as it does for those (review of 2026-10-17)
+            "proxy_vars": proxy_vars(host.environ),
             "sandbox": sb, "risks": risks(host), "browsers": out}
 
 

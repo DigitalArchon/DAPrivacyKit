@@ -497,7 +497,10 @@ The helper's `ramdisk_open`:
 
 The signature, then the archive, are streamed by `online.Net.download` to `.part` files in
 `~/TempBrowser/.downloads` (capped at 600 MB, redirects only to the allowed hosts), then renamed. Anything
-stopped or failed is deleted.
+stopped or failed is deleted. Like the online tests, the download and every version check go out directly, never
+through a proxy set in the environment: when one is (`online.proxy_vars`), the download dialog, the picked archive's
+and the kept copy's checks and the start's check say so first, since those hosts then see this computer's own
+address (they went past `HTTPS_PROXY` and `ALL_PROXY` silently before the review of 2026-10-17).
 
 **Or an archive the user picked.** `browser.copy_in` opens it (and its `.asc`) with `O_NONBLOCK`, checks it
 is a regular file of at most 600 MB and that there is room, and copies it into `.downloads` with
