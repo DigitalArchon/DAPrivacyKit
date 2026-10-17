@@ -99,25 +99,29 @@ def refuse_without_window(problem: str) -> int:
                       f"{BROWSER_EXPOSES} If you accept that, start it with: daprivacyscanner --browser")
 
 
-def show_error(text: str) -> int:
+def show_error(text: str, detail: str = "") -> int:
     """Says `text` on stderr in a terminal and, when started from the menu, in a desktop dialog only: stderr is then
     the journal or ~/.xsession-errors, kept on the disk, and the text can name a Box (a downloaded file's name).
-    Only when no dialog could show it does it go to stderr there. Returns the exit status for it (2)."""
+    Only when no dialog could show it does it go to stderr there. `detail` (what a program printed, which can name
+    anything) goes to a terminal or a dialog, never to stderr from the menu. Returns the exit status for it (2)."""
     import shutil
     import subprocess
 
     from .hostenv import as_host
 
-    def to_stderr() -> int:
+    def to_stderr(said: str) -> int:
         try:
-            print(text, file=sys.stderr)
+            print(said, file=sys.stderr)
         except OSError:                             # closed (a pipe whose reader has gone): nothing more to do
             pass
         return 2
-    if sys.stderr.isatty() or not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
-        return to_stderr()
-    dialogs = [["zenity", "--error", "--title=DA Privacy Kit", "--no-markup", "--width=520", f"--text={text}"],
-               ["kdialog", "--title", "DA Privacy Kit", "--error", text]]
+    whole = f"{text}\n\n{detail}" if detail else text
+    if sys.stderr.isatty():
+        return to_stderr(whole)
+    if not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+        return to_stderr(text)
+    dialogs = [["zenity", "--error", "--title=DA Privacy Kit", "--no-markup", "--width=520", f"--text={whole}"],
+               ["kdialog", "--title", "DA Privacy Kit", "--error", whole]]
     if "kde" in os.environ.get("XDG_CURRENT_DESKTOP", "").lower():
         dialogs.reverse()                          # the desktop's own first
     for argv in dialogs:
@@ -128,7 +132,7 @@ def show_error(text: str) -> int:
             # (seen on CachyOS: a zenity that couldn't load its libraries, exit status 127): try the other one
             if shown in (0, 1):
                 return 2
-    return to_stderr()                              # no dialog could show it: stderr is all there is
+    return to_stderr(text)                          # no dialog could show it: stderr is all there is
 
 
 def dry_run(cat, check_id: str, host=None) -> int:
@@ -454,11 +458,18 @@ def box_cli(slug: str) -> int:
         if b is None:
             return show_error(f"There is no Box named {slug} here (or its settings can't be read). Set it up in DA "
                               "Privacy Kit: Tools → A Box for an app.")
-        box.run_to_end(host, b)
+        t = box.run_to_end(host, b)
     except (trial.TrialError, sandbox.SandboxError) as e:
         return show_error(str(e))
     except OSError as e:
         return show_error(f"The Box couldn't be started: {e.strerror or type(e).__name__}.")
+    # a program that fails as it starts would otherwise just not appear, the launcher ending quietly (found in the
+    # 2026-10-17 review: a Box whose program failed, exit status 0, nothing said)
+    r = t.result or {}
+    if r.get("failed") and r.get("seconds", 0) < box.FAILED_AT_ONCE:
+        out = "\n".join(r.get("output") or [])
+        return show_error(f"{b.name} couldn't start in its Box: it {r.get('ended') or 'ended with an error'}.",
+                          f"What it printed last:\n{out}" if out else "")
     return 0
 
 

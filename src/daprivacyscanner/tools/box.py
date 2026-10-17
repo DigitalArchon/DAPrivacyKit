@@ -45,6 +45,7 @@ SLUG = re.compile(r"[a-z0-9][a-z0-9-]{0,39}")
 KINDS = ("appimage", "program", "script", "archive", "deb", "installed", "flatpak")
 NETWORKS = ("off", "observed", "on")
 MARK = "Written by DA Privacy Kit. Revert it in the app's History to remove it."
+FAILED_AT_ONCE = 10                     # seconds: a run that fails sooner is said in a dialog (`--box`), with its output
 
 
 @dataclass
@@ -154,6 +155,12 @@ def problem(host: Host, box: Box) -> str | None:
         return "its program is missing from the Box"
     if box.kind == "installed" and not host.sys_path(box.argv[0]).exists():
         return f"its program ({box.argv[0]}) is no longer installed"
+    if box.kind == "flatpak":                           # flatpak run would only fail, out of sight, as the Box starts
+        if not host.runner.which("flatpak"):
+            return "Flatpak isn't installed any more"
+        branch = next((a.split("=", 1)[1] for a in box.argv if a.startswith("--branch=")), None)
+        if not host.run_flatpak("info", "--show-ref", box.flatpak or "", *([branch] if branch else [])).ok:
+            return f"its Flatpak app ({box.flatpak}) is no longer installed"
     return None
 
 

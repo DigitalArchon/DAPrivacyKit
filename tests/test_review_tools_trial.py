@@ -219,3 +219,68 @@ def test_no_display_says_what_has_nowhere_to_show(tmp_path):
     host.environ["DISPLAY"] = "localhost:10.0"                                     # forwarded over SSH
     with pytest.raises(trial.TrialError, match="over the network.*can't reach it"):
         trial.start(host, t, {}, lambda *a, **k: None)
+
+
+# ------------------------------------------------------------------ E6: a Box whose program fails at start says so
+
+def _box_host(tmp_path):
+    from daprivacyscanner.host import CommandResult
+    from conftest import make_host
+    from test_box import DESKTOP
+    ok = lambda argv: CommandResult(argv, 0, "")                                         # noqa: E731
+    h = make_host(tmp_path, files={
+        "/usr/share/applications/chat.desktop": DESKTOP.format(name="Chat App", exec="chat --flag %U", extra=""),
+        "/usr/bin/chat": "", "/tmp/.X11-unix/X0": "", "/run/user/1000/x": ""},
+        env={"XDG_DATA_DIRS": "/usr/share", "XDG_RUNTIME_DIR": "/run/user/1000", "DISPLAY": ":0"})
+    for name in ("bwrap", "pasta", "ip", "flatpak"):
+        h.runner.handlers[name] = ok
+    return h
+
+
+def test_a_flatpak_box_whose_app_is_gone_says_so(tmp_path):
+    """Found in the review: box.problem() didn't ask whether a Flatpak Box's app is still installed, so its launcher
+    only failed, out of sight."""
+    from daprivacyscanner.host import CommandResult
+    from daprivacyscanner.tools import box as B
+    from test_box import a_box, set_up
+    host = _box_host(tmp_path)
+    set_up(host, a_box(slug="meet", name="Meet", kind="flatpak", argv=["--branch=stable", "org.x.Meet"], flatpak="org.x.Meet"))
+    assert B.problem(host, B.read(host, "meet")) is None
+    asked = []
+    host.runner.handlers["flatpak"] = lambda argv: asked.append(argv) or CommandResult(argv, 1, "", "error: not installed")
+    assert B.problem(host, B.read(host, "meet")) == "its Flatpak app (org.x.Meet) is no longer installed"
+    assert list(asked[-1][-3:]) == ["--show-ref", "org.x.Meet", "stable"]
+
+
+def test_a_box_whose_program_fails_at_once_says_so_in_a_dialog(tmp_path, monkeypatch):
+    """Found live: a Box whose program failed as it started ended with exit status 0 and said nothing (box_cli
+    ignored the run's result)."""
+    from daprivacyscanner import app
+    from daprivacyscanner.host import Host as RealHost
+    from daprivacyscanner.tools import box as B
+    from test_box import a_box, set_up
+    host = _box_host(tmp_path)
+    set_up(host, a_box())
+    monkeypatch.setattr(RealHost, "local", staticmethod(lambda: host))
+    said = []
+    monkeypatch.setattr(app, "show_error", lambda text, detail="": said.append((text, detail)) or 2)
+    result = {"failed": True, "seconds": 1, "ended": "ended with an error (exit status 127)",
+              "output": ["chat: error while loading shared libraries: libfoo.so.1"]}
+    monkeypatch.setattr(B, "run_to_end", lambda h, b: trial.Trial("x", tmp_path, "disk", "installed", "Chat App", "a Box",
+                                                                   result=result))
+    assert app.box_cli("chat-app") == 2
+    assert said == [("Chat App couldn't start in its Box: it ended with an error (exit status 127).",
+                     "What it printed last:\nchat: error while loading shared libraries: libfoo.so.1")]
+    said.clear()
+    result.update(seconds=3600)                         # ended with an error after an hour's use: not a failed start
+    assert app.box_cli("chat-app") == 0 and said == []
+
+
+def test_what_a_program_printed_never_goes_to_the_journal(monkeypatch, capsys):
+    from daprivacyscanner import app
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    monkeypatch.setattr(sys.stderr, "isatty", lambda: False)
+    assert app.show_error("Chat App couldn't start in its Box.", "What it printed last:\n/home/a/secret.txt") == 2
+    err = capsys.readouterr().err
+    assert "couldn't start" in err and "secret" not in err

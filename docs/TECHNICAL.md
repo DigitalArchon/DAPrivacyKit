@@ -1593,7 +1593,11 @@ OACS, FNA and SANICAP via the helper's ioctl), read on request and kept for the 
   (`daprivacyscanner-box-<name>.desktop`) that runs `daprivacyscanner --box <name>` with this copy of the app.
   `--box` (`app.box_cli`, `box.run_to_end`) starts it as a trial is started (`box.as_trial`: no decoys, the
   sandbox's own files in the runtime folder and removed after the run), stays until its program has ended, and
-  says a problem in a desktop dialog (`app.show_error`). One run at a time: the launcher holds a kernel lock
+  says a problem in a desktop dialog (`app.show_error`): one that keeps it from starting (`box.problem`: its home
+  or program missing, an installed program gone, a Flatpak app no longer installed, asked of `flatpak info`), and
+  a program that fails within `box.FAILED_AT_ONCE` (10) seconds, with the last of its output, which goes to the
+  dialog or a terminal, never to the journal (found in the 2026-10-17 review: a Box whose program failed as it
+  started ended with exit status 0, saying nothing). One run at a time: the launcher holds a kernel lock
   (flock) on a file in the Box's runtime folder for as long as it runs, which `box.running` tries, so a second
   launcher is refused and a process number used again by something else can't pass for it. The Tools panel
   starts a Box by running that same
