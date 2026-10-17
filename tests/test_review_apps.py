@@ -162,6 +162,18 @@ def test_thunderbird_remote_content_offered_only_where_it_loads(cat, tmp_path):
     assert detect(cat, "app.mail_remote_content", make_scan(host)).status is Status.PASS
 
 
+def test_evolution_data_server_alone_isnt_evolution(cat, tmp_path):
+    """Mint ships evolution-data-server, which makes ~/.local/share/evolution, without Evolution."""
+    host = make_host(tmp_path, home_files={".local/share/evolution/addressbook/system/contacts.db": "x",
+                                           ".local/share/evolution/calendar/system/calendar.ics": "x"})
+    assert detect(cat, "app.mail_remote_content", make_scan(host)).status is Status.NOT_APPLICABLE
+    assert detect(cat, "app.messengers_mail", make_scan(host)).status is Status.NOT_APPLICABLE
+    # Evolution's own mail there, its setting unreadable (no schema here): couldn't check, never "blocked"
+    (host.home / ".local/share/evolution/mail/local").mkdir(parents=True)
+    o = detect(cat, "app.mail_remote_content", make_scan(host))
+    assert o.status is Status.UNKNOWN and ev(o)["Evolution"] == "couldn't read its setting"
+
+
 # ------------------------------------------------------------------ extensions removed, until the browser starts
 
 def _grabber(prof):
@@ -312,6 +324,176 @@ def test_private_downloads_in_kde_records(cat, tmp_path):
     e = ev(o)
     assert o.status is Status.FAIL and e["Downloads in KDE apps' lists of what they opened"] == 2
     assert e["Downloads in KDE's activity history"] == 2
+
+
+# ------------------------------------------------------------------ package repositories, DNF's counter
+
+UBUNTU_SOURCES = ("Types: deb\nURIs: http://archive.ubuntu.com/ubuntu/\nSuites: resolute resolute-updates\n"
+                  "Components: main restricted\nSigned-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\n\n"
+                  "Types: deb\nURIs: http://security.ubuntu.com/ubuntu/\nSuites: resolute-security\n"
+                  "Components: main restricted\nSigned-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\n")
+
+
+def _how_to(cat, host, check_id):
+    check = load_all()[check_id](cat[check_id])
+    scan = make_scan(host)
+    return check.plan_guide(scan, check.detect(scan))
+
+
+def test_every_http_mirror_of_a_deb822_file_is_found_and_switched(cat, tmp_path):
+    files = {"/etc/apt/sources.list.d/ubuntu.sources": UBUNTU_SOURCES, "/etc/os-release": "ID=ubuntu\nID_LIKE=debian\n"}
+    for i in range(8):                  # enough files that the evidence is shortened for the page
+        files[f"/etc/apt/sources.list.d/a-long-name-for-a-vendor-repository-{i}.list"] = \
+            "deb http://archive.ubuntu.com/ubuntu resolute main\n"
+    host = make_host(tmp_path, files=files)
+    o = detect(cat, "tel.http_repos", make_scan(host))
+    assert set(ev(o)) == {"archive.ubuntu.com", "security.ubuntu.com"}
+    g = _how_to(cat, host, "tel.http_repos")
+    titles = [s.title for s in g.steps]
+    assert len(titles) == len(set(titles)) == 11
+    step = _step(g, "Use HTTPS in /etc/apt/sources.list.d/ubuntu.sources")
+    assert step.commands == ["sudo sed -i 's|http://archive.ubuntu.com|https://archive.ubuntu.com|g' "
+                             "/etc/apt/sources.list.d/ubuntu.sources",
+                             "sudo sed -i 's|http://security.ubuntu.com|https://security.ubuntu.com|g' "
+                             "/etc/apt/sources.list.d/ubuntu.sources"]
+    assert all(c.endswith(".list") or c.endswith(".sources") for s in g.steps if s.title.startswith("Use HTTPS")
+               for c in s.commands)
+
+
+def test_mint_sources_go_through_software_sources(cat, tmp_path):
+    official = ("deb http://packages.linuxmint.com zena main upstream import backport\n\n"
+                "deb http://archive.ubuntu.com/ubuntu noble main restricted universe multiverse\n")
+    host = make_host(tmp_path, files={"/etc/os-release": "ID=linuxmint\nID_LIKE=\"ubuntu debian\"\n",
+                                      "/etc/apt/sources.list.d/official-package-repositories.list": official,
+                                      "/etc/apt/sources.list.d/vendor.list": "deb http://packages.linuxmint.com x main\n"})
+    g = _how_to(cat, host, "tel.http_repos")
+    cmds = [c for s in g.steps for c in s.commands]
+    assert not any("official-package-repositories" in c for c in cmds)              # never edited by hand
+    assert not any("https://packages.linuxmint.com" in c for c in cmds)             # it has no HTTPS
+    assert "Software Sources" in _step(g, "Linux Mint's own sources").text
+    assert "packages.linuxmint.com has no HTTPS" in _step(g, "Use HTTPS in /etc/apt/sources.list.d/vendor.list").text
+
+
+def test_countme_on_is_rewritten_as_the_check_reads_it(cat, tmp_path, system, monkeypatch):
+    from test_fixes import run_fix
+    host = rooted(make_host(tmp_path, files={"/etc/yum.repos.d/fedora.repo": "[fedora]\nenabled=1\ncountme=on\n"}),
+                  system, monkeypatch)
+    plan, res, log = run_fix(cat, host, "tel.countme")
+    assert res.ok and detect(cat, "tel.countme", make_scan(host)).status is Status.PASS
+
+
+def test_a_dotnet_runtime_isnt_the_sdk(cat, tmp_path):
+    host = make_host(tmp_path, commands={"dotnet --list-sdks": ""})          # Omarchy: Pinta's dotnet-host
+    assert detect(cat, "tel.devtools", make_scan(host)).status is Status.NOT_APPLICABLE
+
+
+def test_background_callers_on_arch_and_without_a_period(cat, tmp_path):
+    from daprivacyscanner.host import CommandResult
+    states = {("systemctl", "is-active", "archlinux-keyring-wkd-sync.timer"): "active",
+              ("systemctl", "is-enabled", "cachyos-rate-mirrors.timer"): "enabled",
+              ("systemctl", "--user", "is-enabled", "arch-update.timer"): "enabled",
+              ("systemctl", "is-enabled", "dnf-makecache.timer"): "enabled"}
+    host = make_host(tmp_path, commands={k: CommandResult(k, 0, v + "\n") for k, v in states.items()},
+                     installed=["systemctl"])
+    o = detect(cat, "tel.background_callers", make_scan(host))
+    e = ev(o)
+    assert {"archlinux-keyring", "cachyos-rate-mirrors", "Arch-Update", "dnf"} <= set(e)
+    assert "hourly" not in e["dnf"] and o.summary.startswith("4 services contact servers")
+    one = make_host(tmp_path / "1", commands={("systemctl", "is-enabled", "dnf-makecache.timer"): "enabled\n"},
+                    installed=["systemctl"])
+    assert detect(cat, "tel.background_callers", make_scan(one)).summary.startswith("1 service contacts servers")
+
+
+# ------------------------------------------------------------------ media players, photo managers
+
+def test_smplayer_recents_are_cleared(cat, tmp_path):
+    from test_fixes import run_fix
+    ini = ("[%General]\nvolume=50\n\n[history]\nrecents\\1\\filename=/home/alice/Videos/a.mkv\nrecents\\1\\title=\n"
+           "recents\\2\\filename=/home/alice/Videos/b.mkv\nrecents\\2\\title=\nrecents\\max_items=10\nrecents\\size=2\n\n"
+           "[gui]\nstyle=Fusion\n")
+    host = make_host(tmp_path, home_files={".config/smplayer/smplayer.ini": ini})
+    plan, res, log = run_fix(cat, host, "app.media_players")
+    assert res.ok and [a.kind for a in plan.actions] == ["clear"]
+    text = (host.home / ".config/smplayer/smplayer.ini").read_text()
+    assert "a.mkv" not in text and "recents\\size=0" in text and "recents\\max_items=10" in text
+    assert "volume=50" in text and "style=Fusion" in text
+    assert detect(cat, "app.media_players", make_scan(host)).status is Status.PASS
+
+
+def test_an_empty_gthumb_cache_is_nothing(cat, tmp_path):
+    host = make_host(tmp_path, home_files={".cache/gthumb/thumbnails/a.png": "x"})
+    o = detect(cat, "app.photo_dbs", make_scan(host))
+    assert o.status is Status.FAIL and o.summary == "gThumb keeps thumbnails of the pictures you browsed in its cache."
+    apply(host, options(build(cat, host, "app.photo_dbs"))["Delete them"])
+    assert detect(cat, "app.photo_dbs", make_scan(host)).status is Status.NOT_APPLICABLE
+
+
+# ------------------------------------------------------------------ editors
+
+def test_viminfo_and_vim_state_are_cleaned_though_something_has_home_open(cat, tmp_path):
+    """Live on Mint: ~/.viminfo was never deleted (its folder, the home, is always in use) and the step showed done;
+    ~/.local/state/vim was counted with no way to clean it."""
+    host = make_host(tmp_path, home_files={".viminfo": "# history\n", ".local/state/vim/viminfo": "x"},
+                     files={"/proc/5/comm": "bash\n"}, links={"/proc/5/cwd": str(tmp_path / "home/alice")})
+    g = build(cat, host, "app.editor_residue")
+    plan = options(g)["Delete them"]
+    assert sorted(a.label for a in plan.actions) == ["Vim history and registers", "Vim state"]
+    apply(host, plan)
+    assert not (host.home / ".viminfo").exists() and not (host.home / ".local/state/vim/viminfo").exists()
+    assert detect(cat, "app.editor_residue", make_scan(host)).status is Status.PASS
+
+
+def test_viminfo_left_while_vim_runs_says_so(cat, tmp_path):
+    host = make_host(tmp_path, home_files={".viminfo": "# history\n"}, files={"/proc/5/comm": "vim\n"})
+    step = _step(build(cat, host, "app.editor_residue"), "Delete editor swap")
+    assert not step.done and not step.options and "Vim history and registers: close vim first" in step.text
+
+
+def test_an_xdg_vimrc_is_the_one_changed(cat, tmp_path):
+    """Vim 9.1.0327+ reads $XDG_CONFIG_HOME/vim/vimrc when neither ~/.vimrc nor ~/.vim/vimrc exists: a new ~/.vimrc
+    would have shadowed the user's whole config."""
+    host = make_host(tmp_path, installed=("vim",), home_files={".vim/swap/x.swp": "x", ".config/vim/vimrc": "set number\n"})
+    plan = options(build(cat, host, "app.editor_residue"))["Keep Vim's and Neovim's swap and undo files in memory"]
+    apply(host, plan)
+    assert not (host.home / ".vimrc").exists()
+    assert (host.home / ".config/vim/vimrc").read_text().startswith("set number\n\n\" DA Privacy Kit")
+
+
+def test_no_vim_no_memory_step(cat, tmp_path):
+    host = make_host(tmp_path, home_files={".vim/swap/x.swp": "x"})
+    g = build(cat, host, "app.editor_residue")
+    assert not any(s.title.startswith("Keep swap and undo files") for s in g.steps)
+
+
+# ------------------------------------------------------------------ CUPS: documents and the job list judged apart
+
+def test_cups_a_days_job_list_without_documents_passes(cat, tmp_path, system, monkeypatch):
+    """Live on Mint: after "Keep the job list for a day, not the documents" the check still failed, saying CUPS keeps
+    printed documents, and the guide offered both options again."""
+    host = rooted(make_host(tmp_path, files={"/etc/cups/cupsd.conf": "LogLevel warn\n"}, installed=["lpstat"]),
+                  system, monkeypatch)
+    o = detect(cat, "app.cups_spool", make_scan(host))
+    assert o.summary == "CUPS keeps copies of the documents you print for a day, and the list of print jobs indefinitely."
+    log, res = apply(host, options(build(cat, host, "app.cups_spool"))["Keep the job list for a day, not the documents"])
+    o = detect(cat, "app.cups_spool", make_scan(host))
+    assert o.status is Status.PASS and o.summary == "CUPS keeps no printed documents, and the list of print jobs for a day."
+    revert(host, log, res)
+
+
+def test_cups_wording_by_what_is_kept(cat, tmp_path):
+    for conf, status, summary in (
+            ("PreserveJobFiles No\n", Status.FAIL, "CUPS keeps no printed documents, but keeps the list of print jobs, "
+                                                   "with their titles, indefinitely."),
+            ("PreserveJobFiles No\nPreserveJobHistory 2w\n", Status.WARN,
+             "CUPS keeps no printed documents, and the list of print jobs, with their titles, for 2 weeks."),
+            ("PreserveJobFiles No\nPreserveJobHistory No\n", Status.PASS,
+             "CUPS keeps no printed documents, and no list of print jobs."),
+            ("PreserveJobFiles Yes\nPreserveJobHistory No\n", Status.FAIL,
+             "CUPS keeps copies of the documents you print indefinitely, and no list of print jobs.")):
+        host = make_host(tmp_path / str(len(conf)), files={"/etc/cups/cupsd.conf": conf},
+                         commands={"lpstat -W completed -o": ""})
+        o = detect(cat, "app.cups_spool", make_scan(host))
+        assert (o.status, o.summary) == (status, summary)
 
 
 # ------------------------------------------------------------------ clipboard history

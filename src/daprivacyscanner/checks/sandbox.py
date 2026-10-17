@@ -144,6 +144,25 @@ class LeftoverData(Check):
 
 
 PORTAL_TABLES = {"devices": "device", "location": "location", "screenshot": "screenshot", "background": "background"}
+# what the location portal stores for an app: the accuracy it may have, then when it was granted ("EXACT,1792247823");
+# NONE is a refusal (xdg-desktop-portal's location.c)
+LOCATION_DENIED = ("NONE", "")
+
+
+def portal_grants(text: str) -> list[tuple[str, str, str]]:
+    """(table, object, app) of each remembered grant of the camera, microphone, location or screenshots in `flatpak
+    permissions`' table: Table, Object, App, then the permissions, comma-separated, then data. The devices and
+    screenshot portals store yes or no; the location portal an accuracy (and a time). Running in the background, or
+    playing sound, isn't a privacy grant."""
+    out = []
+    for line in text.splitlines():
+        f = line.split()
+        if len(f) < 4 or f[0] not in PORTAL_TABLES or f[0] == "background" or (f[0], f[1]) == ("devices", "speakers"):
+            continue
+        perms = [p.strip().upper() for p in f[3].split(",")]
+        if (f[0] == "location" and perms[0] not in LOCATION_DENIED) or (f[0] != "location" and "YES" in perms):
+            out.append((f[0], f[1], f[2]))
+    return out
 
 
 @register
@@ -156,14 +175,8 @@ class PortalPermissions(Check):
             return absent("Flatpak isn't installed.")
         if not r.ok:
             return unknown("Couldn't list portal permissions.")
-        ev = []
-        for line in r.stdout.splitlines():
-            f = line.split()
-            if len(f) >= 4 and f[0] in PORTAL_TABLES and f[0] != "Table" and "yes" in " ".join(f[3:]):
-                what = f[1] if f[0] == "devices" else PORTAL_TABLES[f[0]]
-                if f[0] == "background" or (f[0] == "devices" and f[1] == "speakers"):
-                    continue                        # running in the background, or playing sound, isn't a privacy grant
-                ev.append(Evidence.val(f[2], what))
+        ev = [Evidence.val(app, obj if table == "devices" else PORTAL_TABLES[table])
+              for table, obj, app in portal_grants(r.stdout)]
         if ev:
             return failed(f"{len(ev)} remembered grant{'s' if len(ev) > 1 else ''} for the camera, microphone, location "
                           "or screenshots.", *ev[:20])

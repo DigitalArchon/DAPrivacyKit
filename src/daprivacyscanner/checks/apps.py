@@ -38,8 +38,11 @@ class PhotoDbs(Check):
         for loc in _first(scan, Base.DATA, "shotwell/data/photo.db", flatpak=["org.gnome.Shotwell"]):
             ev.append(Evidence.val("Shotwell library", human_size(loc.path.stat().st_size)))
             faces += sqlite_count(loc.path, "SELECT count(*) FROM FaceTable", optional=True) or 0   # face detection builds
+        libraries = bool(ev)
         for loc in _first(scan, Base.CACHE, "gthumb", flatpak=["org.gnome.gThumb"]):
-            ev.append(Evidence.val("gThumb cache", tally(loc.path).describe()))
+            t = tally(loc.path)
+            if t.files:                     # an empty one (after its clean-up) holds nothing
+                ev.append(Evidence.val("gThumb thumbnail cache", t.describe()))
         if not ev:
             return absent("No digiKam, Shotwell or gThumb data.")
         notes = []
@@ -48,6 +51,8 @@ class PhotoDbs(Check):
             notes.append(Note("risk", "Face recognition data is stored",
                               "The photo manager keeps the names of people it has recognised; anyone who copies the "
                               "library gets them too."))
+        if not libraries:                   # gThumb's is a cache of thumbnails, not a library
+            return failed("gThumb keeps thumbnails of the pictures you browsed in its cache.", *ev, notes=notes)
         return failed("Photo manager databases hold your library's index" + (" and face recognition data." if faces
                       else "."), *ev, notes=notes)
 
@@ -64,6 +69,18 @@ MESSENGERS = (
 )
 
 
+EVOLUTION_FLATPAK = "org.gnome.Evolution"
+
+
+def evolution_locations(scan: Scan) -> list:
+    """Evolution's data folders: the Flatpak's, and ~/.local/share/evolution when Evolution itself is installed or has
+    kept mail there. evolution-data-server alone, which Mint ships for the calendar and contacts, makes that folder too,
+    with its address book and calendars and no mail: that isn't Evolution."""
+    native = installed(scan.host, "evolution")
+    return [loc for loc in scan.paths.data("evolution", flatpak=[EVOLUTION_FLATPAK])
+            if loc.install != "native" or native or isdir(loc.path / "mail")]
+
+
 @register
 class MessengersMail(Check):
     id = "app.messengers_mail"
@@ -71,7 +88,9 @@ class MessengersMail(Check):
     def detect(self, scan: Scan) -> Outcome:
         host, ev, plain_key, total = scan.host, [], [], 0
         for label, base, rel, fp, snap in MESSENGERS:
-            for loc in scan.paths.locate(base, rel, flatpak=[fp], snap=[snap] if snap else []):
+            locs = evolution_locations(scan) if label == "Evolution" else \
+                scan.paths.locate(base, rel, flatpak=[fp], snap=[snap] if snap else [])
+            for loc in locs:
                 t = tally(loc.path, limit=20_000)
                 total += t.bytes
                 where = "" if loc.install == "native" else f" ({loc.install})"
@@ -307,6 +326,26 @@ class MediaPlayers(Check):
         return passed("Media players keep no history.", *ev)
 
 
+def cups_seconds(value: str) -> int | None:
+    """A PreserveJobFiles or PreserveJobHistory value as seconds: 0 when off, None for ever (Yes); a number is seconds,
+    or minutes, hours, days or weeks with m, h, d or w (cupsd.conf(5))."""
+    v = value.strip().lower()
+    if v in ("no", "off", "false", "0"):
+        return 0
+    m = re.fullmatch(r"(\d+)([smhdw]?)", v)
+    if not m:
+        return None                                     # Yes, On, True: kept until MaxJobs pushes it out
+    return int(m.group(1)) * {"": 1, "s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}[m.group(2)]
+
+
+def _duration(seconds: int) -> str:
+    for unit, n in (("week", 604800), ("day", 86400), ("hour", 3600), ("minute", 60)):
+        if seconds >= n and seconds % n == 0:
+            k = seconds // n
+            return f"{'a' if k == 1 else k} {unit}{'' if k == 1 else 's'}"
+    return f"{seconds} seconds"
+
+
 @register
 class CupsSpool(Check):
     id = "app.cups_spool"
@@ -335,10 +374,22 @@ class CupsSpool(Check):
         ev = [Evidence.val("PreserveJobFiles", files + (" (default: one day)" if files == "86400" else "")),
               Evidence.val("PreserveJobHistory", history + (" (default)" if history == "Yes" else "")),
               Evidence.count("Completed jobs CUPS remembers", jobs)]
-        keeps = files.lower() not in ("no", "off", "false", "0") or history.lower() not in ("no", "off", "false", "0")
-        if keeps:
-            return failed("CUPS keeps printed documents and a history of print jobs.", *ev)
-        return passed("CUPS doesn't keep printed documents or job history.", *ev)
+        # the documents and the list of jobs (with their titles) are kept apart, each for as long as its limit says
+        kept_files, kept_history = cups_seconds(files), cups_seconds(history)
+        list_for = ("indefinitely" if kept_history is None else f"for {_duration(kept_history)}")
+        if kept_files != 0:
+            docs_for = "indefinitely" if kept_files is None else f"for {_duration(kept_files)}"
+            return failed(f"CUPS keeps copies of the documents you print {docs_for}, and "
+                          + ("no list of print jobs." if kept_history == 0 else f"the list of print jobs {list_for}."),
+                          *ev)
+        if kept_history is None:
+            return failed("CUPS keeps no printed documents, but keeps the list of print jobs, with their titles, "
+                          "indefinitely.", *ev)
+        if kept_history > 86400:
+            return warned(f"CUPS keeps no printed documents, and the list of print jobs, with their titles, {list_for}.",
+                          *ev)
+        return passed("CUPS keeps no printed documents" + (", and no list of print jobs." if kept_history == 0 else
+                                                           f", and the list of print jobs {list_for}."), *ev)
 
 
 # Okular keeps where each document was left in docdata (its recently opened documents, [Recent Files] of okularrc,
@@ -639,7 +690,9 @@ class ElectronCaches(Check):
 
 
 PACKAGE_LOGS = ("/var/log/apt/history.log", "/var/log/dpkg.log", "/var/log/pacman.log", "/var/log/zypp/history",
-                "/var/lib/dnf/history.sqlite", "/usr/lib/sysimage/libdnf5/transaction_history.sqlite")
+                "/var/lib/dnf/history.sqlite", "/usr/lib/sysimage/libdnf5/transaction_history.sqlite",
+                # DNF's own logs, world-readable (Fedora 44: dnf5.log; DNF 4: dnf.log, dnf.rpm.log), rotated beside them
+                "/var/log/dnf5.log", "/var/log/dnf.log", "/var/log/dnf.rpm.log")
 
 
 @register
@@ -830,11 +883,14 @@ class MailRemoteContent(Check):
             ev.append(Evidence.val(p.label, "remote content blocked" if blocked else "remote content loaded"))
             if not blocked:
                 loading.append(p.label)
-        if installed(host, "evolution") or scan.paths.data("evolution", flatpak=["org.gnome.Evolution"]):
+        unread = False
+        if installed(host, "evolution") or evolution_locations(scan):
             found = True
             policy = scan.gnome.gsettings("org.gnome.evolution.mail", "image-loading-policy")
             policy = str(policy).lower() if policy is not None else None
-            ev.append(Evidence.val("Evolution", EVOLUTION_POLICY.get(policy or "", "unknown setting")))
+            # a Flatpak-only Evolution keeps its settings in its own sandbox, out of gsettings' reach here
+            unread = policy not in EVOLUTION_POLICY
+            ev.append(Evidence.val("Evolution", EVOLUTION_POLICY.get(policy or "", "couldn't read its setting")))
             if policy in ("always", "sometimes"):
                 loading.append("Evolution")
         if not found:
@@ -842,6 +898,9 @@ class MailRemoteContent(Check):
         if loading:
             return failed(f"Remote content in mail is loaded by {', '.join(loading)}: senders learn when and where "
                           "you read their messages.", *ev)
+        if unread:
+            return unknown("Couldn't read whether Evolution loads remote content in mail (its setting isn't readable "
+                           "here: a Flatpak keeps it in its own sandbox).", *ev)
         return passed("Mail clients block remote content.", *ev)
 
 

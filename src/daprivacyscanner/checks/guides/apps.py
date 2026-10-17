@@ -46,6 +46,7 @@ def photo_dbs(check, scan, outcome):
 def _residue(scan: Scan) -> list[tuple[str, Path, tuple[str, ...]]]:
     h, s = scan.host.home, scan.paths.state_home
     return [("Vim swap files", h / ".vim" / "swap", ("vim", "gvim")), ("Vim undo files", h / ".vim" / "undo", ("vim", "gvim")),
+            ("Vim state", s / "vim", ("vim", "gvim")),
             ("Neovim swap files", s / "nvim" / "swap", ("nvim",)), ("Neovim undo files", s / "nvim" / "undo", ("nvim",)),
             ("Emacs auto-saves", h / ".emacs.d" / "auto-save-list", ("emacs",)),
             ("Kate swap files", scan.paths.data_home / "kate" / "swap", ("kate",))]
@@ -65,12 +66,21 @@ def editor_residue(check, scan, outcome):
             skipped.append(f"{label}: close {procs[0]} first.")
             continue
         acts.append(DeleteFiles(d, files, label, host.display(d), prune=False))
+    from ..fixes import running
+    from .._util import holders
     for label, p, procs in (("Vim history and registers", host.home / ".viminfo", ("vim", "gvim")),
                             ("Neovim history and registers", scan.paths.state_home / "nvim" / "shada", ("nvim",))):
         files = files_under(p)[0] if isdir(p) else [p] if isfile(p) else []
-        if files and not in_use(scan, p if isdir(p) else p.parent, *procs):
-            acts.append(DeleteFiles(p if isdir(p) else p.parent, files, label, host.display(p if isdir(p) else p.parent),
-                                    prune=False))
+        if not files:
+            continue
+        # the editor itself, or whatever holds these files: never their folder (~/.viminfo's is the home folder, which
+        # something always has open, so it was never deleted, and silently)
+        users = sorted(set(running(scan, *procs)) | holders(scan, p))
+        if users:
+            skipped.append(f"{label}: close {', '.join(users)} first (it writes them as it quits).")
+            continue
+        acts.append(DeleteFiles(p if isdir(p) else p.parent, files, label, host.display(p if isdir(p) else p.parent),
+                                prune=False))
     stray, stack = [], [(host.home, 0)]
     while stack:
         d, depth = stack.pop()
@@ -87,11 +97,12 @@ def editor_residue(check, scan, outcome):
                   options=[option(check, "Delete them", acts, side_effects=skipped)] if acts else [],
                   done=not acts and not skipped)]
     if stray:
+        n = len(stray)
         steps.append(Step("Backup files next to your documents",
-                          f"{len(stray)} files named like name~, #name# or .name.swp, in your folders: each is listed "
-                          "with where it is, so you can look at any first. Some may be backups you want; they are "
-                          "deleted for good.",
-                          options=[option(check, f"Delete {len(stray)} backup files",
+                          f"{n} file{'s' if n != 1 else ''} named like name~, #name# or .name.swp, in your folders: "
+                          f"{'each is' if n != 1 else 'it is'} listed with where it is, so you can look first. Some may "
+                          "be backups you want; they are deleted for good.",
+                          options=[option(check, f"Delete {n} backup file{'s' if n != 1 else ''}",
                                           [DeleteFiles(host.home, stray, "editor backup files", "~", prune=False)])]))
     from ..apps import VSCODE_PROCESSES, editor_histories
     from ..fixes import set_jsonc_key
@@ -115,11 +126,11 @@ def editor_residue(check, scan, outcome):
                                           side_effects=["The Timeline view's (or Local History's) earlier versions of "
                                                         "your files are gone; files themselves aren't touched."])]))
     keep = _editor_memory_options(check, scan)
-    steps.append(Step("Keep swap and undo files in memory from now on",
-                      "$XDG_RUNTIME_DIR is a folder in memory that only you can open, emptied when you log out. Vim "
-                      "and Neovim can keep their swap and undo files there instead of on the disk.",
-                      options=keep, done=not keep and any(m in (read_text(host, f) or "") for f in _editor_rcs(scan)
-                                                         for m in (VIM_MARK, LUA_MARK))))
+    if any(host.runner.which(e) for e in ("vim", "gvim", "nvim")):       # nothing to set up without either
+        steps.append(Step("Keep swap and undo files in memory from now on",
+                          "$XDG_RUNTIME_DIR is a folder in memory that only you can open, emptied when you log out. Vim "
+                          "and Neovim can keep their swap and undo files there instead of on the disk.",
+                          options=keep, done=not keep))
     steps.append(Step("History and other editors",
                       "Vim: set viminfo= turns off its history of commands, searches and registers; Neovim: set "
                       "shadafile=NONE. Emacs: (setq make-backup-files nil auto-save-default nil)."))
@@ -156,9 +167,11 @@ LUA_BLOCK = (LUA_MARK + " ($XDG_RUNTIME_DIR, emptied at logout)\n"
 VIM_DEFAULTS = "unlet! skip_defaults_vim\nsource $VIMRUNTIME/defaults.vim\n\n"
 
 
-def _editor_rcs(scan) -> list[Path]:
-    h, c = scan.host.home, scan.paths.config_home / "nvim"
-    return [h / ".vimrc", h / ".vim" / "vimrc", c / "init.lua", c / "init.vim"]
+def _vimrcs(scan) -> list[Path]:
+    """Where Vim looks for the user's vimrc, in its order; it reads the first that exists ($XDG_CONFIG_HOME/vim/vimrc
+    from Vim 9.1.0327). A new ~/.vimrc beside an XDG one would take its place, and the whole config be ignored."""
+    h = scan.host.home
+    return [h / ".vimrc", h / ".vim" / "vimrc", scan.paths.config_home / "vim" / "vimrc"]
 
 
 def _append(block: str, new_file_prefix: str = ""):
@@ -170,7 +183,7 @@ def _editor_memory_options(check, scan) -> list:
     host, acts = scan.host, []
     h, nvim = host.home, scan.paths.config_home / "nvim"
     if host.runner.which("vim") or host.runner.which("gvim"):
-        rc = next((f for f in (h / ".vimrc", h / ".vim" / "vimrc") if isfile(f)), None)
+        rc = next((f for f in _vimrcs(scan) if isfile(f)), None)
         if rc is None:
             acts.append(WriteFile(h / ".vimrc", _append(VIM_BLOCK, VIM_DEFAULTS),
                                   "Create it, loading Vim's defaults, with swap and undo files in $XDG_RUNTIME_DIR",
@@ -226,9 +239,13 @@ def mail_remote_content(check, scan, outcome):
     evo = gset(scan, "org.gnome.evolution.mail", "image-loading-policy", "'never'")
     steps = [Step("Thunderbird", options=opts, done=not opts)]
     if any(e.label == "Evolution" for e in outcome.evidence):
-        steps.append(Step("Evolution", options=[option(check, "Never load remote images", evo, recommended=True,
-                                                       side_effects=["Load them per message with the bar above it."])]
-                          if evo else [], done=not evo))
+        unread = scan.gnome.gsettings("org.gnome.evolution.mail", "image-loading-policy") is None
+        steps.append(Step("Evolution", "Its setting couldn't be read here (a Flatpak keeps it in its own sandbox): in "
+                          "Evolution, Edit → Preferences → Mail Preferences → HTML Messages, choose \"Never load remote "
+                          "content\"." if unread else "",
+                          options=[option(check, "Never load remote images", evo, recommended=True,
+                                          side_effects=["Load them per message with the bar above it."])]
+                          if evo else [], done=not evo and not unread))
     return Guide(check.id, "Stop mail from loading remote content",
                  "A one-pixel image fetched from the sender's server reports the moment, address and device a "
                  "message was opened on.", steps)

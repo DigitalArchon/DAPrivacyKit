@@ -625,15 +625,38 @@ def _protection_step(p, title: str, leaking: bool = False) -> Step:
     return Step(title, text, commands=commands)
 
 
+MINT_OFFICIAL = "/etc/apt/sources.list.d/official-package-repositories.list"
+
+
 @guide("tel.http_repos")
 def http_repos(check, scan, outcome):
-    steps = [Step("Check each mirror answers over HTTPS", "Most do. If one doesn't, choose another mirror in your "
-                  "software sources settings.",
-                  commands=[f"curl -sfI https://{e.label} >/dev/null && echo ok: {e.label}" for e in outcome.evidence])]
-    for e in outcome.evidence:
-        for f in str(e.value).split(", "):
-            steps.append(Step(f"{f}", f"Switch {e.label} to HTTPS in this file.",
-                              commands=[f"sudo sed -i 's|http://{e.label}|https://{e.label}|g' {f}"]))
+    from ..telemetry import NO_HTTPS, _repo_files, http_hosts
+    # the files read again here: the evidence is shortened for the page, and a path cut there broke the command
+    files = [(path, sorted(set(http_hosts(text)))) for path, text in _repo_files(scan)]
+    files = [(path, hosts) for path, hosts in files if hosts]
+    # Linux Mint's own sources are written by Software Sources (mintsources), which writes them again whenever a
+    # setting changes there, and its default, packages.linuxmint.com, has no HTTPS: a sed there broke apt (live)
+    mint = os_release(scan)[0] == "linuxmint" or isfile(scan.host.sys_path(MINT_OFFICIAL))
+    by_hand = [(p, hosts) for p, hosts in files if not (mint and p == MINT_OFFICIAL)]
+    checked = sorted({h for _, hosts in by_hand for h in hosts} - NO_HTTPS)
+    steps = []
+    if checked:
+        steps.append(Step("Check each mirror answers over HTTPS", "Most do. If one doesn't, choose another mirror in "
+                          "your software sources settings.",
+                          commands=[f"curl -sfI https://{h} >/dev/null && echo ok: {h}" for h in checked]))
+    if mint and any(p == MINT_OFFICIAL for p, _ in files):
+        steps.append(Step("Linux Mint's own sources: choose HTTPS mirrors",
+                          "These are written by Software Sources, which writes them again whenever a setting changes "
+                          "there, so editing the file by hand doesn't last; and Mint's default server, "
+                          "packages.linuxmint.com, has no HTTPS. Open Software Sources (Menu → Administration → Software "
+                          "Sources) → Mirrors, and for both Main and Base choose a mirror whose address starts with "
+                          "https://; it refreshes the package lists itself."))
+    for path, hosts in by_hand:
+        good, none = [h for h in hosts if h not in NO_HTTPS], [h for h in hosts if h in NO_HTTPS]
+        steps.append(Step(f"Use HTTPS in {path}",
+                          (f"Switch {', '.join(good)} to HTTPS in this file." if good else "")
+                          + (f" {', '.join(none)} has no HTTPS: choose another mirror for it." if none else ""),
+                          commands=[f"sudo sed -i 's|http://{h}|https://{h}|g' {shlex.quote(path)}" for h in good]))
     steps.append(Step("Refresh the package lists", commands=["sudo apt update" if family(scan) == "debian" else
                                                              "sudo dnf makecache" if family(scan) == "fedora" else
                                                              "sudo zypper refresh" if family(scan) == "suse" else

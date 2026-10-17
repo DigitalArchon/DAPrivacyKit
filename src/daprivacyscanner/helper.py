@@ -977,8 +977,8 @@ def _autologin_overrides() -> dict[str, bytes]:
 # target -> (file patterns -> edit function, allowed values, hooks)
 _SNAP_COUNT = "[0-9]{1,3}(-[0-9]{1,3})?"
 EDITS = {
-    "countme": ({"/etc/yum.repos.d/*.repo": _replace(r"^\s*countme\s*=\s*(1|true|yes)\s*$", "countme=0"),
-                 "/etc/dnf/dnf.conf": _replace(r"^\s*countme\s*=\s*(1|true|yes)\s*$", "countme=0")}, {}, []),
+    "countme": ({"/etc/yum.repos.d/*.repo": _replace(r"^\s*countme\s*=\s*(1|true|yes|on)\s*$", "countme=0"),
+                 "/etc/dnf/dnf.conf": _replace(r"^\s*countme\s*=\s*(1|true|yes|on)\s*$", "countme=0")}, {}, []),
     "autologin": (_DM, {}, []),
     "cups": ({"/etc/cups/cupsd.conf": _cups},
              _keys(PreserveJobFiles="No|Yes|[1-9][0-9]{0,6}[mhdw]?", PreserveJobHistory="No|Yes|[1-9][0-9]{0,6}[mhdw]?"),

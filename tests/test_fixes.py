@@ -148,7 +148,8 @@ def test_ipv6_privacy(cat, tmp_path):
 
 def test_devtools(cat, tmp_path):
     original = '{\n    // my settings\n    "editor.fontSize": 14,\n}\n'
-    host = make_host(tmp_path, installed=["dotnet"], home_files={".config/Code/User/settings.json": original})
+    host = make_host(tmp_path, commands={"dotnet --list-sdks": "10.0.100 [/usr/share/dotnet/sdk]\n"},      # an SDK
+                     home_files={".config/Code/User/settings.json": original})
     plan, res, log = run_fix(cat, host, "tel.devtools")
     settings = (host.home / ".config/Code/User/settings.json").read_text()
     assert '"telemetry.telemetryLevel": "off"' in settings and "// my settings" in settings

@@ -173,9 +173,12 @@ def test_x11(cat, tmp_path, session, status):
 
 
 def test_portal_permissions(cat, tmp_path):
+    # the location portal stores an accuracy and the time it was granted, never "yes" (the review of 2026-10-17: the
+    # fixture had "yes", which the portal never writes, so real location grants were never found)
     out = ("devices\tcamera\torg.gnome.Snapshot\tyes\t\n"
            "background\tbackground\torg.mozilla.firefox\tyes\t0x00\n"
-           "location\tlocation\torg.gnome.Weather\tyes\t0x0\n"
+           "location\tlocation\torg.gnome.Weather\tEXACT,1792247823\t0x0\n"
+           "location\tlocation\torg.gnome.Maps\tNONE,1792247000\t0x0\n"
            "devices\tmicrophone\torg.example.App\tno\t\n"
            "devices\tspeakers\torg.example.Music\tyes\t\n")      # playing sound grants nothing private
     host = make_host(tmp_path, commands={"flatpak permissions": out})

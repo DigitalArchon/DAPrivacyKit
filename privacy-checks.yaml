@@ -1746,11 +1746,14 @@ checks:
       - 'Env vars: DOTNET_CLI_TELEMETRY_OPTOUT, HOMEBREW_NO_ANALYTICS, NEXT_TELEMETRY_DISABLED, CHECKPOINT_DISABLE (HashiCorp),
         AZURE_CORE_COLLECT_TELEMETRY, SAM_CLI_TELEMETRY, GATSBY_TELEMETRY_DISABLED, NUXT_TELEMETRY_DISABLED, ASTRO_TELEMETRY_DISABLED,
         STRIPE_CLI_TELEMETRY_OPTOUT, DO_NOT_TRACK'
+      - '.NET: only with an SDK (dotnet --list-sdks lists one): the runtime''s dotnet alone (dotnet-host, which Pinta
+        pulls in on Omarchy) sends no telemetry'
     fix: Set opt-out env vars in ~/.config/environment.d/*.conf and the VS Code setting.
     remedy: >
       Developer tools here send usage data. Fix… opts out of all of them.
     verify: The JetBrains usage.statistics.xml layout, and which tools honour DO_NOT_TRACK.
-    easy: true
+    easy:
+      cost: "Takes effect from your next login."
 
   - id: tel.http_repos
     title: Package repositories over plain HTTP
@@ -1828,6 +1831,10 @@ checks:
       metadata from LVFS, Snap Store refresh checks, package metadata, and time servers.
     detect:
       - 'systemctl is-enabled fwupd-refresh.timer; snapd.service active; packagekit-background.timer / PackageKit'
+      - 'Arch and CachyOS: archlinux-keyring-wkd-sync.timer (static: counted while active), cachyos-rate-mirrors.timer,
+        and Arch-Update''s user timer arch-update.timer (systemctl --user), all on by default (seen on CachyOS)'
+      - 'What each does, never how often: the distributions set that in their timers and change it (Fedora 44''s
+        dnf-makecache.timer is OnUnitInactiveSec=3h)'
       - 'systemd-timesyncd or chronyd: configured NTP servers (timesyncd.conf, chrony.conf), else the distribution pool'
     fix: Informational; each can be turned off at a cost (no firmware updates, no snap updates, drifting clock).
     remedy: >
@@ -2744,11 +2751,15 @@ checks:
         severity: 3
     scope: system
     tier: guided
+    warn_lower: 2
     why: By default CUPS keeps document files for a day and job history (including titles) indefinitely.
     detect:
       - '/etc/cups/cupsd.conf PreserveJobFiles, PreserveJobHistory (Fedora keeps it root-only: needs administrator access)'
       - 'ls /var/spool/cups (d* = document data)'
       - 'lpstat -W completed -o'
+      - 'Judged apart: documents kept at all is a problem; with none kept, the job list kept for good is a problem, for
+        longer than a day a risk, for a day or less a pass (the guide''s second option; live on Mint it still failed,
+        saying "keeps printed documents")'
     fix: Set PreserveJobFiles No and PreserveJobHistory to No or a short time; purge completed jobs.
     remedy: >
       Copies of documents you've printed are kept. Guide… stops keeping them and deletes completed
@@ -2830,16 +2841,24 @@ checks:
     title: Package manager logs reveal installation history
     category: apps
     severity: 2
+    modifiers:
+      - when: "not multi_user"
+        severity: 0
     kind: hygiene
     scope: system
     tier: advice
     detect:
-      - '/var/log/apt/history.log, /var/log/dpkg.log, /var/log/pacman.log, /var/log/zypp/history, dnf history'
+      - '/var/log/apt/history.log, /var/log/dpkg.log, /var/log/pacman.log, /var/log/zypp/history, dnf history, and
+        DNF''s own logs (/var/log/dnf5.log on Fedora 41+, /var/log/dnf.log and dnf.rpm.log before: world-readable, seen
+        on Fedora 44), each with its rotated copies'
       - 'Their mode: apt history.log, dpkg.log and pacman.log are 0644 (every account can read them; checked on Mint 22)'
+      - 'Only another account could read them: on a computer with one account it isn''t applicable, as
+        auth.login_history'
     fix: Informational.
     remedy: >
-      Nothing to fix: these logs record what was installed and when, and are trimmed over time. Where
-      every account can read them, other users of this computer can see what you installed.
+      Nothing to fix: these logs record what was installed and when. Most are trimmed over time; Arch's
+      pacman.log isn't, and keeps everything since the system was installed. Where every account can read them,
+      other users of this computer can see what you installed.
 
   - id: app.mail_remote_content
     title: Mail clients load remote content (tracking pixels)
@@ -2852,8 +2871,12 @@ checks:
       message. Both clients block it by default; this catches it turned on.
     detect:
       - 'Thunderbird: mailnews.message_display.disable_remote_image (true = blocked, the default)'
-      - 'Evolution: gsettings org.gnome.evolution.mail image-loading-policy (never | sometimes | always)'
-    fix: Thunderbird pref back to blocked (while it is closed); Evolution image-loading-policy never.
+      - 'Evolution: gsettings org.gnome.evolution.mail image-loading-policy (never | sometimes | always); unreadable
+        (a Flatpak keeps it in its sandbox) is couldn''t check, never blocked. Evolution is the program, the Flatpak, or
+        mail in ~/.local/share/evolution: evolution-data-server alone (Mint) makes that folder without Evolution'
+    fix: >
+      Thunderbird pref back to blocked (while it is closed), offered only for profiles that load it (a missing pref is
+      the default, blocked); Evolution image-loading-policy never.
     remedy: >
       Remote images in emails tell the sender when and where you read them. Guide… blocks them by
       default.

@@ -104,12 +104,16 @@ def test_browser_telemetry_chrome_and_brave(cat, tmp_path):
     assert o.status is Status.FAIL and ev(o)["Brave"] == "P3A analytics, daily usage ping on"
 
 
+SDK = "10.0.100 [/usr/share/dotnet/sdk]\n"
+
+
 def test_devtools(cat, tmp_path):
+    # an SDK lists itself; the runtime alone doesn't count (the review of 2026-10-17)
     host = make_host(tmp_path, home_files={".config/Code/User/settings.json": '{\n  // mine\n  "editor.tabSize": 2,\n}'},
-                     installed=["dotnet"])
+                     commands={"dotnet --list-sdks": SDK})
     o = detect(cat, "tel.devtools", make_scan(host))
     assert o.status is Status.FAIL and "VS Code" in o.summary and ".NET SDK" in o.summary
-    host = make_host(tmp_path / "b", installed=["dotnet"],
+    host = make_host(tmp_path / "b", commands={"dotnet --list-sdks": SDK},
                      home_files={".config/Code/User/settings.json": '{"telemetry.telemetryLevel": "off"}',
                                  ".config/environment.d/50-telemetry.conf": "DOTNET_CLI_TELEMETRY_OPTOUT=1\n"})
     assert detect(cat, "tel.devtools", make_scan(host)).status is Status.PASS

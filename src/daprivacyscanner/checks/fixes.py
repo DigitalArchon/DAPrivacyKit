@@ -396,7 +396,7 @@ ENV_FILE = "60-daprivacyscanner-telemetry.conf"
 
 @fix("tel.devtools")
 def devtools(check, scan, outcome):
-    from .telemetry import TELEMETRY_OPT_OUTS, VSCODE_DIRS, configured_env, jetbrains_stats, opted_out
+    from .telemetry import TELEMETRY_OPT_OUTS, VSCODE_DIRS, configured_env, devtool_present, jetbrains_stats, opted_out
     a, effects = [], []
     for rel in VSCODE_DIRS:
         for loc in scan.paths.config(rel, flatpak=["com.visualstudio.code"], snap=["code"]):
@@ -407,7 +407,7 @@ def devtools(check, scan, outcome):
                                    'Set "telemetry.telemetryLevel": "off"', scan.host.display(loc.path / "settings.json")))
     env = configured_env(scan)
     missing = dict.fromkeys((var, value) for prog, (var, _, value) in TELEMETRY_OPT_OUTS.items()
-                            if scan.host.runner.which(prog) and not opted_out(env, var, value))
+                            if devtool_present(scan.host, prog) and not opted_out(env, var, value))
     if missing:
         path = scan.paths.config_home / "environment.d" / ENV_FILE
         lines = "".join(f"{var}={value}\n" for var, value in missing)
@@ -837,6 +837,15 @@ def _clear_vlc_recents(text: str) -> str:
     return re.sub(r"^\[RecentsMRL\][ \t]*\n(?:(?!\[).*(?:\n|$))*", group, text, count=1, flags=re.M)
 
 
+def _clear_smplayer_recents(text: str) -> str:
+    """SMPlayer's recent files emptied: the recents array of its [history] group (QSettings: recents\\N\\filename=,
+    recents\\N\\title=, recents\\size=), its size set to 0; every other setting kept."""
+    def group(m: re.Match) -> str:
+        body = re.sub(r"^recents\\\d+\\.*(?:\n|$)", "", m.group(0), flags=re.M)
+        return re.sub(r"^recents\\size=.*$", r"recents\\size=0", body, flags=re.M)
+    return re.sub(r"^\[history\][ \t]*\n(?:(?!\[).*(?:\n|$))*", group, text, count=1, flags=re.M)
+
+
 @fix("app.media_players")
 def media_players(check, scan, outcome):
     from ..paths import Base
@@ -867,6 +876,11 @@ def media_players(check, scan, outcome):
         if in_use(scan, loc.path, "smplayer"):
             effects.append("Skipped SMPlayer: close it first.")
             continue
+        ini_file = loc.path / "smplayer.ini"
+        text = read_text(scan.host, ini_file) or ""
+        if _clear_smplayer_recents(text) != text:          # it rewrites the file as it quits: only while closed
+            a.append(ClearInFile(ini_file, _clear_smplayer_recents, "Empty SMPlayer's list of recent files",
+                                 scan.host.display(ini_file), settings=True))
         a += delete(scan, loc.path / "file_settings", "SMPlayer per-file settings")
     from .apps import CELLULOID_FLATPAK, HARUNA_NEVER, haruna
     for loc in scan.paths.config("celluloid/watch_later", flatpak=[CELLULOID_FLATPAK]):

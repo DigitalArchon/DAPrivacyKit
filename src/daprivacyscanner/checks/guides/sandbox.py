@@ -59,14 +59,9 @@ def leftover_data(check, scan, outcome):
 
 @guide("sbx.portal_permissions")
 def portal_permissions(check, scan, outcome):
-    from ..sandbox import PORTAL_TABLES
+    from ..sandbox import PORTAL_TABLES, portal_grants
     r = scan.host.run("flatpak", "permissions")
-    grants = []
-    for line in r.stdout.splitlines() if r.ok else []:
-        f = line.split()
-        if len(f) >= 4 and f[0] in PORTAL_TABLES and f[0] != "background" and (f[0], f[1]) != ("devices", "speakers") \
-                and "yes" in " ".join(f[3:]):
-            grants.append((f[0], f[1], f[2]))
+    grants = portal_grants(r.stdout) if r.ok else []
     opts = [option(check, f"{app}: forget {PORTAL_TABLES[t] if t != 'devices' else i}", [Command(
         ["flatpak", "permission-remove", t, i, app], "the app asks again the next time it needs it")])
         for t, i, app in grants]

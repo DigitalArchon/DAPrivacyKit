@@ -475,7 +475,7 @@ def test_editor_residue_skips_running_editors(cat, tmp_path):
     apply(host, options(g)["Delete them"])
     assert (host.home / ".local/state/nvim/swap/%home%alice%notes.md.swp").exists()
     assert not (host.home / ".vim/undo/%home%alice%a.txt").exists() and (host.home / "Documents/report.txt~").exists()
-    apply(host, options(g)["Delete 1 backup files"])
+    apply(host, options(g)["Delete 1 backup file"])            # one file, said so (review of 2026-10-17)
     assert not (host.home / "Documents/report.txt~").exists()
 
 

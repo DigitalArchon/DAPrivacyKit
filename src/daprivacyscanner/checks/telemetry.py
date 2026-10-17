@@ -184,6 +184,18 @@ JETBRAINS_DIR = "JetBrains"
 COPILOT = re.compile(r"^github\.copilot(-chat)?-", re.I)
 
 
+def devtool_present(host, prog: str) -> bool:
+    """Whether a developer tool whose telemetry an opt-out covers is here. dotnet is also the runtime's host alone
+    (dotnet-host, which Pinta pulls in: Omarchy), which sends nothing: the telemetry is the SDK's, so it counts only
+    with an SDK (`dotnet --list-sdks` lists none there)."""
+    if not installed(host, prog):
+        return False
+    if prog == "dotnet":
+        r = host.run("dotnet", "--list-sdks")
+        return r.ok and bool(r.stdout.strip())
+    return True
+
+
 def opted_out(env: dict[str, str], var: str, value: str) -> bool:
     v = env.get(var, "").strip().lower()
     return v == value or (value == "1" and v in ("true", "yes"))
@@ -243,7 +255,7 @@ class Devtools(Check):
                     on.append("VS Code")
         env = configured_env(scan)
         for prog, (var, label, value) in TELEMETRY_OPT_OUTS.items():
-            if installed(host, prog):
+            if devtool_present(host, prog):
                 out = opted_out(env, var, value)
                 ev.append(Evidence.val(label, f"{var}={value} {'set' if out else 'not set'}"))
                 if not out:
@@ -289,8 +301,22 @@ def _repo_files(scan: Scan) -> list[tuple[str, str]]:
     return out
 
 
-_HTTP = re.compile(r"^(?!\s*#)\s*(?:deb(?:-src)?(?:\s+\[[^\]]*\])?\s+|URIs:\s*(?:\S+\s+)*|baseurl\s*=\s*|Server\s*=\s*)"
-                   r"(http://[^\s/]+)", re.M | re.I)
+# the lines that name a mirror: apt's one-line deb entries, deb822's URIs: (several addresses on one line; [ \t] only,
+# since \s crossed into the next lines and found only a file's last address: Ubuntu's ubuntu.sources has two), dnf's and
+# zypper's baseurl=, pacman's Server =
+_SOURCE_LINE = re.compile(r"^[ \t]*(?:deb(?:-src)?(?:[ \t]+\[[^\]\n]*\])?[ \t]+(?P<one>\S+)|URIs:[ \t]*(?P<many>[^\n]*)"
+                          r"|baseurl[ \t]*=[ \t]*(?P<base>[^\n]*)|Server[ \t]*=[ \t]*(?P<server>\S+))", re.M | re.I)
+_HTTP_HOST = re.compile(r"\bhttp://([^\s/]+)", re.I)
+# mirrors with no HTTPS at all (port 443 refused or timing out): never offered a switch to https
+NO_HTTPS = frozenset({"packages.linuxmint.com"})
+
+
+def http_hosts(text: str) -> list[str]:
+    """The hosts of every plain-HTTP mirror a repository file names (comments left out)."""
+    out = []
+    for m in _SOURCE_LINE.finditer(text):
+        out += _HTTP_HOST.findall(" ".join(v for v in m.groupdict().values() if v))
+    return out
 
 
 @register
@@ -303,8 +329,8 @@ class HttpRepos(Check):
             return absent("No apt, dnf, zypper or pacman repositories were found.")
         hosts: dict[str, list[str]] = {}
         for path, text in files:
-            for url in _HTTP.findall(text):
-                hosts.setdefault(url.removeprefix("http://"), []).append(path)
+            for host in http_hosts(text):
+                hosts.setdefault(host, []).append(path)
         ev = [Evidence.val(h, ", ".join(sorted(set(p)))[:200]) for h, p in sorted(hosts.items())]
         if hosts:
             return failed(f"{len(hosts)} package mirror{'s are' if len(hosts) > 1 else ' is'} used over plain HTTP, so "
@@ -413,13 +439,22 @@ class CloudSync(Check):
         return passed("No online accounts or sync clients were found.", notes=[note])
 
 
+# (unit, how it counts as on, what it does, a user unit): what it does, not how often, which each distribution sets
+# in its timer and changes between releases (Fedora 44's dnf-makecache.timer: OnUnitInactiveSec=3h, not hourly)
 BACKGROUND_UNITS = (
-    ("fwupd-refresh.timer", "is-enabled", "fwupd: fetches firmware metadata from LVFS (fwupd.org) daily"),
-    ("snapd.service", "is-active", "snapd: checks the Snap Store for updates several times a day"),
-    ("apt-daily.timer", "is-enabled", "apt: downloads package lists from the mirrors daily"),
-    ("dnf-makecache.timer", "is-enabled", "dnf: refreshes repository metadata hourly"),
-    ("packagekit.service", "is-enabled", "PackageKit: refreshes package metadata for the software centre"),
-    ("flatpak-system-helper.service", None, None),
+    ("fwupd-refresh.timer", "is-enabled", "fwupd: fetches firmware metadata from LVFS (fwupd.org)", False),
+    ("snapd.service", "is-active", "snapd: checks the Snap Store for updates several times a day", False),
+    ("apt-daily.timer", "is-enabled", "apt: downloads package lists from the mirrors", False),
+    ("dnf-makecache.timer", "is-enabled", "dnf: refreshes repository metadata from the mirrors", False),
+    ("packagekit.service", "is-enabled", "PackageKit: refreshes package metadata for the software centre", False),
+    # Arch and CachyOS, all on by default (seen on CachyOS and Omarchy): the keyring timer is static, linked in by its
+    # package, so it counts while active; Arch-Update's is the user's own
+    ("archlinux-keyring-wkd-sync.timer", "is-active",
+     "archlinux-keyring: refreshes the packagers' signing keys from archlinux.org", False),
+    ("cachyos-rate-mirrors.timer", "is-enabled", "cachyos-rate-mirrors: contacts every mirror to rank them by speed",
+     False),
+    ("arch-update.timer", "is-enabled", "Arch-Update: checks the mirrors (and the AUR and Flatpak, where used) for "
+                                        "updates", True),
 )
 
 
@@ -429,10 +464,8 @@ class BackgroundCallers(Check):
 
     def detect(self, scan: Scan) -> Outcome:
         host, ev = scan.host, []
-        for unit, verb, text in BACKGROUND_UNITS:
-            if not text:
-                continue
-            state = systemctl_state(host, verb, unit)
+        for unit, verb, text, user in BACKGROUND_UNITS:
+            state = systemctl_state(host, verb, unit, user=user)
             if state in ("enabled", "active"):
                 ev.append(Evidence.val(text.split(":")[0], text.split(": ", 1)[1]))
         if systemctl_state(host, "is-active", "systemd-timesyncd") == "active":
@@ -449,6 +482,7 @@ class BackgroundCallers(Check):
                     "package updates, and the clock. They are listed so that what the machine does on its own "
                     "is known, not because they should be off.")
         if ev:
-            return warned(f"{len(ev)} service{'s' if len(ev) > 1 else ''} contact servers in the background on a schedule.",
+            n = len(ev)
+            return warned(f"{n} service{'s contact' if n > 1 else ' contacts'} servers in the background on a schedule.",
                           *ev, notes=[note])
         return passed("No scheduled background callers were found.", notes=[note])
