@@ -42,6 +42,14 @@ it showed goes into the code and its comments, and its line goes.
   list of installed programs, names the organisation or the install to a browser that was taken over. Trim per
   browser to what each reads (Tor Browser has its own certificate store; the Go transports read the system bundle
   for the fronted TLS: the bundle file alone, not the folder), tested by starting each without the rest.
+- The browser's sandbox: a time namespace, so that when the computer was started (`/proc/stat`'s btime,
+  `/proc/uptime`, and the clocks CLOCK_BOOTTIME and CLOCK_MONOTONIC) no longer links sessions before a restart (the
+  page says so meanwhile, and to restart between sessions). bubblewrap has no option for one (0.9, 0.11 and 0.13,
+  checked 2026-10-17); `unshare --user --map-root-user --time --boottime N --monotonic N` in front of it works, and
+  Linux 7.0 applies the offset to btime and uptime too (tested); under pasta the fence's script already runs as
+  root of pasta's namespace, so `unshare --time` alone there; Tor Browser's inner sandbox would inherit the outer
+  one's. A random offset per start, and a probe: AppArmor's restriction on user namespaces refuses `unshare`
+  without a profile, and the start goes on without it then, said.
 - On Cinnamon's Wayland session the sandboxed browser's window opens without keyboard focus while the stock one
   gets it (Mullvad Browser, 2026-10-09). Find out why (an activation token the sandbox doesn't pass?), and whether
   KWin does the same.
