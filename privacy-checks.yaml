@@ -1226,10 +1226,14 @@ checks:
     why: Lets public networks and their operators recognise the device across visits.
     detect:
       - 'nmcli -g 802-11-wireless.cloned-mac-address connection show <id>'
-      - 'NetworkManager --print-config [connection] wifi.cloned-mac-address: the default for networks joined from now on
-        (unset = the hardware address)'
-      - 'NetworkManager --print-config [device] wifi.scan-rand-mac-address (default yes; no = the permanent address
-        while scanning; Ubuntu and Mint set no in NetworkManager.conf)'
+      - 'NetworkManager --print-config wifi.cloned-mac-address: the default for networks joined from now on (unset =
+        the hardware address), from the [connection*] sections in the order NetworkManager searches them
+        (NetworkManager.conf(5)): named ones as --print-config lists them (later files first), [connection] last; the
+        first whose match-device covers Wi-Fi (type:wifi, *, or none) and has the key wins; stop-match ends the search.
+        Fedora 40+ sets stable-ssid in [connection.22-wifi-mac-addr] (match-device=type:wifi), which also outranks the
+        app''s [connection] default'
+      - 'NetworkManager --print-config [device*] wifi.scan-rand-mac-address, searched the same way (default yes; no =
+        the permanent address while scanning; Ubuntu and Mint set no in NetworkManager.conf)'
     fix: >
       Every network, including those joined later: a NetworkManager drop-in of the helper's own
       (/etc/NetworkManager/conf.d/99-daprivacyscanner-mac.conf) setting the default for Wi-Fi to "stable" (a random
@@ -1256,18 +1260,27 @@ checks:
     detect:
       - 'hostnamectl hostname; compare with the user''s name from getent passwd (GECOS)'
       - 'nmcli -g ipv4.dhcp-send-hostname,ipv6.dhcp-send-hostname connection show <id>: -1 (NetworkManager 1.52 and
-        later) takes the [connection] default from NetworkManager''s configuration; yes/no only (older) has none, so a
-        network joined later sends the hostname whatever was done to the saved ones'
-      - 'Other DHCP clients: systemd-networkd (a .network file with DHCP= on and [DHCPv4] SendHostname not off, on by
-        default) and dhcpcd (a hostname line in /etc/dhcpcd.conf, as Arch ships it); the guide says what to change'
+        later, by NetworkManager --version, else by a connection showing -1) takes the default from NetworkManager''s
+        [connection*] sections (as for wifi.cloned-mac-address, per kind: Wi-Fi, wired); yes/no only (older) has
+        none, so a network joined later sends the hostname whatever was done to the saved ones'
+      - 'Other DHCP clients: systemd-networkd (the .network file it applies to each interface, the first by name whose
+        [Match] takes it: Name= globs and Virtualization= judged, so systemd''s 80-container-host0.network counts only
+        in a container; with its drop-ins; DHCP= on and [DHCPv4] SendHostname not off, on by default) and dhcpcd (a
+        hostname line in /etc/dhcpcd.conf, as Arch ships it); the guide says what to change'
       - 'systemctl is-active avahi-daemon; /etc/avahi/avahi-daemon.conf [publish]'
-      - 'resolvectl status: a link with MulticastDNS=yes announces the hostname too (resolve only answers)'
+      - 'resolvectl status: a link showing +mDNS or +LLMNR answers for the hostname (the per-link state is the one in
+        effect; mDNS=resolve and LLMNR=resolve only ask: Fedora''s LLMNR=resolve listens on 5355 and announces
+        nothing). Without resolvectl, a listener on port 5355 counts as LLMNR'
     fix: >
       Offer a generic hostname; stop sending it over DHCP: NetworkManager's default for every connection (a conf.d
       drop-in of the app's own, where NetworkManager reads one) and dhcp-send-hostname=no on saved connections that
-      set it themselves; disable Avahi publishing if unused. Tested on NetworkManager 1.58 (CachyOS, tcpdump): with
+      set it themselves; disable Avahi publishing if unused; systemd-resolved's mDNS set to resolve only (the
+      helper's resolved-llmnr drop-in, MulticastDNS=resolve, keeping its LLMNR value); systemd-networkd: commands
+      writing a drop-in ([DHCPv4] SendHostname=no) beside each .network file it applies. Tested on NetworkManager 1.58 (CachyOS, tcpdump): with
       [connection] ipv4.dhcp-send-hostname=0 the DHCP request carried no hostname, and did again once it was removed.
-    verify: That NetworkManager 1.52 is the first to read dhcp-send-hostname's default (the app goes by the -1 it shows).
+    verify: >
+      That NetworkManager 1.52 is the first to read dhcp-send-hostname's default (the app goes by NetworkManager
+      --version, else by the -1 a connection shows; Fedora 44's 1.56 shows -1).
     remedy: >
       This computer's name is announced on every network you join, and names often identify their
       owner. Guide… sets a generic name and stops sending it.
@@ -1449,7 +1462,8 @@ checks:
     scope: system
     tier: guided
     detect:
-      - 'NetworkManager config [connectivity] uri / enabled (NetworkManager --print-config)'
+      - 'NetworkManager config [connectivity] uri / enabled / interval (NetworkManager --print-config); interval=0
+        turns checking off (NetworkManager.conf(5))'
     fix: Informational; can be disabled at the cost of captive-portal detection.
     remedy: >
       The system regularly contacts a server to check the internet works. Guide… turns that off; Wi-Fi

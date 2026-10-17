@@ -1396,6 +1396,7 @@ def test_hostname_sent_by_systemd_networkd_or_dhcpcd(cat, tmp_path):
     host = make_host(tmp_path, files={"/proc/sys/kernel/hostname": "alices-laptop\n",
                                       "/etc/passwd": "alice:x:1000:1000:Alice Smith:/home/alice:/bin/bash\n",
                                       "/etc/systemd/network/20-wired.network": "[Match]\nName=en*\n[Network]\nDHCP=yes\n",
+                                      "/sys/class/net/enp1s0/operstate": "up\n",
                                       "/etc/dhcpcd.conf": "# Inform the DHCP server of our hostname for DDNS.\nhostname\n"},
                      env={"USER": "alice"})
     host.runner.handlers["systemctl"] = FakeSystem({"systemd-networkd": ["enabled", "active"],

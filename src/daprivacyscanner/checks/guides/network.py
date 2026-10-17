@@ -15,10 +15,28 @@ from . import guide, option, evidence, unit_exists, service_off, dropin, install
 LLMNR_DROPIN = "/etc/systemd/resolved.conf.d/60-daprivacyscanner-llmnr.conf"
 
 
+def _resolved_dropin(scan, key: str, value: str):
+    """The app's systemd-resolved drop-in for LLMNR and mDNS, with one of them set: the helper writes the whole file,
+    so the other's value, when the file has it, is written again with it (turning off LLMNR keeps mDNS's setting)."""
+    from ... import ini
+    have = ini.parse(read_text(scan.host, scan.host.sys_path(LLMNR_DROPIN)) or "").get(("Resolve",), {})
+    settings = {k: have[k] for k in ("LLMNR", "MulticastDNS") if have.get(k) in ("no", "resolve")}
+    settings[key] = value
+    return dropin("resolved-llmnr", {k: settings[k] for k in ("LLMNR", "MulticastDNS") if k in settings}, LLMNR_DROPIN)
+
+
 def _llmnr_off(check, scan) -> Option:
-    return option(check, "Turn off LLMNR in systemd-resolved", [dropin("resolved-llmnr", {"LLMNR": "no"}, LLMNR_DROPIN)],
+    return option(check, "Turn off LLMNR in systemd-resolved", [_resolved_dropin(scan, "LLMNR", "no")],
                   side_effects=["Windows-style name lookups of other machines on the local network stop; mDNS "
                                 "(.local names) is unaffected."])
+
+
+def _mdns_resolve_only(check, scan) -> Option:
+    return option(check, "Stop announcing it, and keep finding .local names", [
+        _resolved_dropin(scan, "MulticastDNS", "resolve")], side_effects=[
+            "systemd-resolved stops answering for this computer's name (MulticastDNS=resolve): other machines can no "
+            "longer reach it as NAME.local. It still looks up .local names of printers and other machines.",
+            "Avahi, if it runs, announces on its own: the step for it is separate."])
 
 
 MAC_DROPIN = "/etc/NetworkManager/conf.d/99-daprivacyscanner-mac.conf"
@@ -34,13 +52,16 @@ MAC_MODES = (("stable", "A random address for each network, kept for it (stable)
 @guide("net.mac_permanent", can=lambda scan: bool(scan.host.runner.which("nmcli")) or No(
     "The guide changes NetworkManager's settings with nmcli, which isn't installed."), keys=("stable",))
 def mac_permanent(check, scan, outcome):
-    from ... import ini
-    from ..network import RANDOM_MACS, nm_config, nm_connections, nm_get
+    from ..network import RANDOM_MACS, nm_config, nm_connections, nm_default, nm_get
     host = scan.host
     cfg = nm_config(host)
-    default = (ini.get(cfg, "connection", "wifi.cloned-mac-address") or "").strip()
-    scan_rand = (ini.get(cfg, "device", "wifi.scan-rand-mac-address") or "").strip().lower()
-    eth_default = (ini.get(cfg, "connection", "ethernet.cloned-mac-address") or "").strip()
+    # what NetworkManager gives Wi-Fi now: Fedora's own [connection.22-wifi-mac-addr] says stable-ssid, already a
+    # per-network address, which the app's default must not replace
+    default, where = nm_default(cfg, "wifi.cloned-mac-address", "wifi")
+    default = default or ""
+    scan_rand = (nm_default(cfg, "wifi.scan-rand-mac-address", "wifi", "device")[0] or "").lower()
+    eth_default, eth_where = nm_default(cfg, "ethernet.cloned-mac-address", "ethernet")
+    eth_default = eth_default or ""
     saved = []
     for uuid in nm_connections(host, "802-11-wireless") or []:
         v = nm_get(host, uuid, "connection.id", "802-11-wireless.cloned-mac-address")
@@ -52,22 +73,34 @@ def mac_permanent(check, scan, outcome):
                "own files list) are left out and keep the hardware one, so Wi-Fi keeps working on them.",
                "If Wi-Fi stops finding networks or connecting after this, the driver can't change its address and "
                "isn't on that list: revert this from History, and it works again."]
+    # the app's default goes in NetworkManager's [connection] section, which it searches last: a section of its own
+    # files that sets Wi-Fi's default comes first, and keeps its value
+    shadowed = where not in (None, "connection")
+    scan_off = scan_rand in ("no", "false", "0")
     opts = []
     for mode, label, detail, rec in MAC_MODES:
         acts = []
-        if default != mode or scan_rand in ("no", "false", "0"):
-            acts.append(dropin("nm-mac", {"connection:wifi.cloned-mac-address": mode,
+        if (default != mode and not shadowed) or scan_off:
+            acts.append(dropin("nm-mac", {**({} if shadowed else {"connection:wifi.cloned-mac-address": mode}),
                                           "device:wifi.scan-rand-mac-address": "yes"}, MAC_DROPIN))
         # a saved network that sets the hardware address itself doesn't follow the default
         acts += [NmSet(uuid, name, "802-11-wireless.cloned-mac-address", mode)
                  for uuid, name, value in saved if value in ("preserve", "permanent")]
         opts.append(option(check, label, acts, detail=detail, recommended=rec, side_effects=effects,
                            key="stable" if mode == "stable" else ""))
-    steps = [Step("Wi-Fi: every network, including the ones you join later",
-                  "The default for new connections is set for the whole machine, and scanning for networks uses random "
-                  "addresses too. Saved networks that use the default follow it; those set to the hardware address "
-                  "are changed one by one.", options=opts,
-                  done=default in RANDOM_MACS and scan_rand not in ("no", "false", "0")
+    text = ("The default for new connections is set for the whole machine, and scanning for networks uses random "
+            "addresses too. Saved networks that use the default follow it; those set to the hardware address are "
+            "changed one by one.")
+    if shadowed:
+        text += (f" Networks joined from now on take NetworkManager's [{where}] section: {default}"
+                 + (", already a made-up address for each network." if default in RANDOM_MACS else
+                    ", the hardware address. That section comes before the app's default, so change it to stable "
+                    "in the file that has it (the command below finds it), with a file of the same name in "
+                    "/etc/NetworkManager/conf.d for one in /usr/lib."))
+    steps = [Step("Wi-Fi: every network, including the ones you join later", text, options=opts,
+                  commands=["grep -rl cloned-mac-address /etc/NetworkManager /usr/lib/NetworkManager"]
+                  if shadowed and default not in RANDOM_MACS else [],
+                  done=default in RANDOM_MACS and not scan_off
                   and not any(v in ("preserve", "permanent") for _, _, v in saved))]
     eth = [option(check, f"Wired networks too: {label[0].lower() + label[1:]}",
                   [dropin("nm-mac-ethernet", {"connection:ethernet.cloned-mac-address": mode}, MAC_DROPIN_ETHERNET)],
@@ -75,9 +108,13 @@ def mac_permanent(check, scan, outcome):
                       "Your router sees a new device: an address it reserves for this machine (DHCP reservation), port "
                       "forwarding to it and wired networks that check MAC addresses (802.1X, MAC filtering) need "
                       "updating."]) for mode, label, detail, _ in MAC_MODES if eth_default != mode]
+    eth_shadowed = eth_where not in (None, "connection")
     steps.append(Step("Optional: wired networks",
                       "Mostly matters for networks you plug into away from home (hotels, offices). Leave it if this "
-                      "machine only ever plugs into your own router.", options=eth, done=eth_default in RANDOM_MACS))
+                      "machine only ever plugs into your own router." + (
+                          f" Here NetworkManager's [{eth_where}] section sets it ({eth_default}), and comes before the "
+                          "app's default: change it in the file that has it." if eth_shadowed else ""),
+                      options=[] if eth_shadowed else eth, done=eth_default in RANDOM_MACS))
     return Guide(check.id, "Use made-up MAC addresses on every network",
                  "The hardware (MAC) address is the same everywhere, so every network and its operator can recognise "
                  "this machine across visits.", steps)
@@ -299,21 +336,28 @@ def firewall_off(check, scan, outcome):
 
 @guide("net.hostname_broadcast")
 def hostname_broadcast(check, scan, outcome):
-    from ..network import DHCP_HOSTNAME, NM_DEFAULT, dhcp_hostname, nm_connections, nm_get
+    from ..network import (DHCP_HOSTNAME, NM_DEFAULT, NM_KINDS, NM_TYPES, dhcp_hostname, nm_config, nm_connections,
+                           nm_default, nm_get, resolved_announces, resolved_links)
     host = scan.host
     steps = []
     acts = []
     dhcp = dhcp_hostname(host)
     supported = bool(dhcp and dhcp[2])
+    # the app's default is NetworkManager's [connection] section, searched last: a section of the distribution's that
+    # sets it for a kind of network comes first, and its connections are changed one by one instead
+    cfg = nm_config(host) if dhcp else {}
+    shadow = {kind: [(s, v) for p in DHCP_HOSTNAME for v, s in [nm_default(cfg, p, kind)]
+                     if s not in (None, "connection") and (v or "").lower() not in ("0", "false", "no")]
+              for kind in NM_TYPES}
     if dhcp and dhcp[1] and supported:
         acts.append(dropin("nm-hostname", {f"connection:{p}": "0" for p in DHCP_HOSTNAME},
                            "/etc/NetworkManager/conf.d/99-daprivacyscanner-hostname.conf"))
-    for kind in ("802-11-wireless", "802-3-ethernet"):
-        for uuid in nm_connections(host, kind) or []:
+    for nm_kind, kind in NM_KINDS.items():
+        for uuid in nm_connections(host, nm_kind) or []:
             v = nm_get(host, uuid, "connection.id", *DHCP_HOSTNAME)
             for prop in DHCP_HOSTNAME:
                 value = v[prop].strip().lower()
-                if value not in ("no", "false", "0") and not (supported and value in NM_DEFAULT):
+                if value not in ("no", "false", "0") and not (supported and value in NM_DEFAULT and not shadow[kind]):
                     acts.append(NmSet(uuid, v["connection.id"] or uuid, prop, "no"))
     if acts:
         effects = ["Routers list this machine without a name; local names served by the router's DNS for it stop "
@@ -322,16 +366,30 @@ def hostname_broadcast(check, scan, outcome):
                        "this computer." if supported else
                        "This NetworkManager (before 1.52) has no default for it, so a network joined later sends the "
                        "hostname until it is changed here too: renaming the machine (below) covers those.")
+        effects += [f"NetworkManager's [{sections[0][0]}] section has {'Wi-Fi' if kind == 'wifi' else 'wired'} "
+                    "networks send it, and comes before the app's default: the saved ones are changed one by one, and "
+                    "one joined later sends it until that section is changed by hand." for kind, sections in shadow.items()
+                    if sections and supported]
         steps.append(Step("Don't send the hostname over DHCP", options=[option(check, "Stop sending it", acts,
                           side_effects=effects)]))
-    from ..network import dhcp_hostname_elsewhere
-    other = dhcp_hostname_elsewhere(host)
-    if "systemd-networkd" in other:
+    from ..network import networkd_sending
+    files = networkd_sending(host, scan.context["virtualization"]) \
+        if systemctl_state(host, "is-active", "systemd-networkd") == "active" else []
+    if files:
+        cmds = []
+        for name, _folder in files:
+            d = f"/etc/systemd/network/{name}.d"
+            cmds += [shell(["sudo", "mkdir", "-p", d]),
+                     "printf '[DHCPv4]\\nSendHostname=no\\n' | " + shell(["sudo", "tee", f"{d}/60-no-hostname.conf"])]
         steps.append(Step("systemd-networkd: don't send the hostname",
-                          "In each .network file in /etc/systemd/network that has DHCP=yes (copy one from "
-                          "/usr/lib/systemd/network to /etc/systemd/network to change it), add the two lines "
-                          "\"[DHCPv4]\" and \"SendHostname=no\", then reload its settings.",
-                          commands=["sudoedit /etc/systemd/network/NAME.network", "sudo networkctl reload"]))
+                          "systemd-networkd sends it from " + ", ".join(f"{f}/{n}" for n, f in files) + ". A drop-in "
+                          "file beside each, in /etc/systemd/network, adds [DHCPv4] SendHostname=no and leaves the file "
+                          "itself as its package or you wrote it. The commands write it, then have systemd-networkd "
+                          "read its files again, which renews the address without the name.",
+                          commands=cmds + ["sudo networkctl reload"],
+                          side_effects=["To undo it: sudo rm the drop-in file, then sudo networkctl reload."]))
+    from ..network import dhcp_hostname_elsewhere
+    other = dhcp_hostname_elsewhere(host, scan.context["virtualization"])
     if "dhcpcd" in other:
         steps.append(Step("dhcpcd: don't send the hostname",
                           "Comment out the hostname line in /etc/dhcpcd.conf (put # in front of it), then restart dhcpcd.",
@@ -341,7 +399,15 @@ def hostname_broadcast(check, scan, outcome):
         steps.append(Step("Stop announcing it with mDNS (Avahi)", options=[option(check, "Turn off Avahi", acts,
                           side_effects=["Printers and shares on the local network are no longer found "
                                         "automatically."])] if acts else []))
-    if any(s.port == 5355 and s.wildcard for s in scan.context.listeners or []):
+    links = resolved_links(host)
+    if resolved_announces(links, "mdns"):
+        steps.append(Step("Stop announcing it with mDNS (systemd-resolved)",
+                          "systemd-resolved answers mDNS queries for this computer's name (NAME.local) on the local "
+                          "network. Set to resolve only, it goes on finding other machines' .local names.",
+                          options=[_mdns_resolve_only(check, scan)]))
+    # as the check judges it: systemd-resolved's own word where it can say, the listening port otherwise
+    if resolved_announces(links, "llmnr") if links else \
+            any(s.port == 5355 and s.wildcard for s in scan.context.listeners or []):
         steps.append(Step("Stop answering LLMNR", options=[_llmnr_off(check, scan)]))
     steps.append(Step("Or rename the machine", "A name that doesn't identify you (like \"laptop\") makes all of the "
                       "above harmless. Update the 127.0.1.1 line in /etc/hosts to match, if there is one.",
@@ -438,7 +504,7 @@ def hidden_ssid(check, scan, outcome):
     for uuid in nm_connections(scan.host, "802-11-wireless") or []:
         v = nm_get(scan.host, uuid, "connection.id", "802-11-wireless.hidden")
         if v["802-11-wireless.hidden"] == "yes":
-            names.append(v["connection.id"])
+            names.append((uuid, v["connection.id"].replace("\n", " ")))
             opts.append(option(check, f"{v['connection.id']}: stop probing for it",
                                [NmSet(uuid, v["connection.id"], "802-11-wireless.hidden", "no")],
                                side_effects=["Only once the network is made visible on its router: otherwise this "
@@ -447,8 +513,11 @@ def hidden_ssid(check, scan, outcome):
                  "A hidden network's name is called out wherever you go, so others can see which networks you use.", [
                      Step("Make the network visible", "In the router's Wi-Fi settings, turn off \"hide SSID\". Then "
                           "this machine can stop calling it out.", options=opts),
+                     # by UUID: a network's name may hold quotes, $ or backticks a shell would act on
                      Step("Or forget networks you no longer use",
-                          commands=[f'nmcli connection delete id "{n}"' for n in names]),
+                          "Forgetting a network also deletes its saved password. Each command names the network in a "
+                          "comment after it.",
+                          commands=[f"nmcli connection delete {u}     # {n}" for u, n in names]),
                  ])
 
 

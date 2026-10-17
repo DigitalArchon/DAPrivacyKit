@@ -45,6 +45,54 @@ def nm_config(host: Host) -> dict:
     return ini.parse(r.stdout) if r.ok else {}
 
 
+NM_TYPES = {"wifi": ("wifi", "802-11-wireless"), "ethernet": ("ethernet", "802-3-ethernet")}
+
+
+def _nm_spec_covers(spec: str, kind: str) -> bool:
+    """Whether a match-device value (NetworkManager.conf(5), "Device List Format") covers every device of a kind
+    ("wifi", "ethernet"): "*", "type:KIND", or only negative specs ("except:...") that don't leave the kind out.
+    A spec naming particular devices (interface-name:, driver:, mac:) covers those alone, not the kind."""
+    specs = [s.strip() for s in re.split(r"(?<!\\)[,;]", spec) if s.strip()]
+    types = NM_TYPES[kind]
+    negative = [s[len("except:"):] for s in specs if s.startswith("except:")]
+    positive = [s for s in specs if not s.startswith("except:")]
+    if any(n == "*" or (n.startswith("type:") and n[5:] in types) for n in negative):
+        return False
+    return not positive or any(p == "*" or (p.startswith("type:") and p[5:] in types) for p in positive)
+
+
+def nm_default(cfg: dict, key: str, kind: str, prefix: str = "connection") -> tuple[str | None, str | None]:
+    """The default NetworkManager gives a connection of a kind ("wifi", "ethernet") that doesn't set `key` itself
+    (with `prefix` "device": a device's setting): (value, the section it comes from), or (None, None) when no section
+    sets it. The [connection*] sections are searched in NetworkManager's order (NetworkManager.conf(5)): later files'
+    first, top to bottom within a file, as --print-config lists them, and [connection] last; the first that applies to
+    the kind and has the key wins, and one that applies with stop-match=yes ends the search. Fedora 40 and later set
+    Wi-Fi's MAC address default in [connection.22-wifi-mac-addr] (match-device=type:wifi), not in [connection]."""
+    named = [g[0] for g in cfg if len(g) == 1 and g[0].startswith(prefix) and g[0] != prefix]
+    for section in named + [prefix]:
+        values = cfg.get((section,))
+        if values is None:
+            continue
+        spec = values.get("match-device")
+        if spec is not None and not _nm_spec_covers(spec, kind):
+            continue
+        if values.get(key, "").strip():
+            return values[key].strip(), section
+        if ini.truthy(values.get("stop-match")):
+            return None, section
+    return None, None
+
+
+def nm_version(host: Host) -> tuple[int, int] | None:
+    """NetworkManager's version (major, minor): the daemon's (`NetworkManager --version`), else nmcli's."""
+    for argv in (("NetworkManager", "--version"), ("nmcli", "--version")):
+        r = host.run(*argv)
+        m = re.search(r"(\d+)\.(\d+)\.\d+", r.stdout) if r.ok else None
+        if m:
+            return int(m.group(1)), int(m.group(2))
+    return None
+
+
 def wifi_hardware(host: Host) -> bool:
     return any(isdir(p / "wireless") or isdir(p / "phy80211") for p in children(host.sys_path("/sys/class/net")))
 
@@ -306,9 +354,11 @@ class MacPermanent(Check):
         if not wifi:
             return absent("No saved Wi-Fi networks.")
         cfg = nm_config(host)
-        default = (ini.get(cfg, "connection", "wifi.cloned-mac-address") or "").strip()
-        scan_rand = (ini.get(cfg, "device", "wifi.scan-rand-mac-address") or "").strip().lower()
-        ev = [Evidence.val("Default for Wi-Fi", default or "not set (the hardware address)"),
+        default, where = nm_default(cfg, "wifi.cloned-mac-address", "wifi")
+        default = default or ""
+        scan_rand = (nm_default(cfg, "wifi.scan-rand-mac-address", "wifi", "device")[0] or "").lower()
+        ev = [Evidence.val("Default for Wi-Fi", (f"{default} (from NetworkManager's [{where}] section)" if where != "connection"
+                                                 else default) if default else "not set (the hardware address)"),
               Evidence.val("Random address while scanning for networks", "no" if scan_rand in ("no", "false", "0")
                            else "yes (default)")]
         permanent = []
@@ -361,49 +411,127 @@ DHCP_HOSTNAME = ("ipv4.dhcp-send-hostname", "ipv6.dhcp-send-hostname")
 NM_DEFAULT = ("-1", "default", "unknown", "")
 
 
+NM_KINDS = {"802-11-wireless": "wifi", "802-3-ethernet": "ethernet"}
+NM_HOSTNAME_DEFAULT = (1, 52)       # the first NetworkManager that takes dhcp-send-hostname's default from its config
+
+
+def nm_reads_hostname_default(host: Host, values=()) -> bool:
+    """Whether this NetworkManager takes a default for dhcp-send-hostname from its configuration (1.52 and later):
+    by its version, else by a saved connection showing -1 (older ones have only yes and no)."""
+    version = nm_version(host)
+    if version is not None:
+        return version >= NM_HOSTNAME_DEFAULT
+    return any(v.strip().lower() in ("-1", "default") for v in values)
+
+
 def dhcp_hostname(host: Host) -> tuple[int, bool, bool] | None:
     """NetworkManager and the hostname in DHCP requests: (saved Wi-Fi and Ethernet connections that send it,
     whether a network joined from now on would, whether NetworkManager takes a default for it from its
     configuration: 1.52 and later, where a connection that doesn't set it shows -1). None without nmcli.
     Tested on NetworkManager 1.58: with [connection] ipv4.dhcp-send-hostname=0, the request carried no hostname."""
-    conns = [(u, nm_get(host, u, *DHCP_HOSTNAME)) for kind in ("802-11-wireless", "802-3-ethernet")
+    conns = [(NM_KINDS[kind], u, nm_get(host, u, *DHCP_HOSTNAME)) for kind in NM_KINDS
              for u in nm_connections(host, kind) or []]
     if nm_connections(host) is None:
         return None
     cfg = nm_config(host)
-    default = {p: (ini.get(cfg, "connection", p) or "").strip().lower() for p in DHCP_HOSTNAME}
-    supported = any(v.strip().lower() in ("-1", "default") for _, values in conns for v in values.values())
+    default = {(kind, p): (nm_default(cfg, p, kind)[0] or "").lower() for kind in NM_TYPES for p in DHCP_HOSTNAME}
+    supported = nm_reads_hostname_default(host, [v for _, _, values in conns for v in values.values()])
 
-    def sends(prop: str, value: str) -> bool:
+    def sends(kind: str, prop: str, value: str) -> bool:
         value = value.strip().lower()
         if value in NM_DEFAULT:
-            return not supported or default[prop] not in ("0", "false", "no")
+            return not supported or default[(kind, prop)] not in ("0", "false", "no")
         return value not in ("no", "false", "0")
-    sending = sum(1 for _, values in conns if any(sends(p, v) for p, v in values.items()))
-    future = not supported or any(default[p] not in ("0", "false", "no") for p in DHCP_HOSTNAME)
+    sending = sum(1 for kind, _, values in conns if any(sends(kind, p, v) for p, v in values.items()))
+    future = not supported or any(v not in ("0", "false", "no") for v in default.values())
     return sending, future, supported
 
 
-NETWORKD_DIRS = ("/usr/lib/systemd/network", "/run/systemd/network", "/etc/systemd/network")
+# lowest priority first: a file of the same name in a later folder replaces an earlier one (systemd.network(5))
+NETWORKD_DIRS = ("/usr/lib/systemd/network", "/usr/local/lib/systemd/network", "/run/systemd/network",
+                 "/etc/systemd/network")
+CONTAINER_VIRT = ("container", "docker", "podman", "lxc", "lxc-libvirt", "systemd-nspawn", "openvz", "rkt", "wsl",
+                  "proot", "pouch")
 
 
-def dhcp_hostname_elsewhere(host: Host) -> list[str]:
-    """DHCP clients other than NetworkManager's that send the hostname: systemd-networkd, for a .network file with
-    DHCP= on and [DHCPv4] SendHostname not off (on by default, systemd.network(5)); dhcpcd, whose dhcpcd.conf has
-    a hostname line (Arch's has one)."""
+def _networkd_conf(host: Host, path: Path) -> dict:
+    """A .network file with its drop-ins (NAME.network.d/*.conf in each folder, by name; a later folder's file of the
+    same name replaces an earlier one's), each read over what came before."""
+    conf = ini.parse(read_text(host, path) or "")
+    dropins: dict[str, Path] = {}
+    for d in NETWORKD_DIRS:
+        for f in children(host.sys_path(d) / f"{path.name}.d"):
+            if f.suffix == ".conf":
+                dropins[f.name] = f
+    for name in sorted(dropins):
+        conf = ini.merge(conf, ini.parse(read_text(host, dropins[name]) or ""))
+    return conf
+
+
+def _virt_matches(value: str, virt: str | None) -> bool:
+    """systemd.network's [Match] Virtualization= against the context's virtualization ('none', 'vm', 'container');
+    unknown: it may match."""
+    value = value.strip().lower()
+    invert = value.startswith("!")
+    value = value.lstrip("!")
+    if virt is None:
+        return True
+    if value in ("yes", "true", "1", "on"):
+        hit = virt != "none"
+    elif value in ("no", "false", "0", "off"):
+        hit = virt == "none"
+    else:
+        hit = virt == ("container" if value in CONTAINER_VIRT else "vm")
+    return hit != invert
+
+
+def _networkd_matches(conf: dict, ifname: str, virt: str | None) -> bool:
+    """Whether a .network file's [Match] section takes this interface: Name= (shell globs, "!" inverting the list)
+    and Virtualization= are judged; other conditions are taken as met."""
+    from fnmatch import fnmatchcase
+    m = conf.get(("Match",), {})
+    names = (m.get("Name") or "").split()
+    if names:
+        invert = names[0].startswith("!")
+        hit = any(fnmatchcase(ifname, n.lstrip("!")) for n in names)
+        if hit == invert:
+            return False
+    if m.get("Virtualization") and not _virt_matches(m["Virtualization"], virt):
+        return False
+    return True
+
+
+def networkd_sending(host: Host, virt: str | None = None) -> list[tuple[str, str]]:
+    """The .network files systemd-networkd applies to this computer's interfaces that run DHCP and send the hostname
+    ([DHCPv4] SendHostname, on by default, systemd.network(5)): (file name, its folder). Each interface takes the
+    first file, by name, whose [Match] takes it, so systemd's own 80-container-host0.network ([Match] Name=host0,
+    Virtualization=container) applies inside a container alone."""
+    files: dict[str, tuple[str, Path]] = {}
+    for d in NETWORKD_DIRS:
+        for f in children(host.sys_path(d)):
+            if f.suffix == ".network":
+                files[f.name] = (d, f)
+    confs = [(name, files[name][0], _networkd_conf(host, files[name][1])) for name in sorted(files)]
+    out: list[tuple[str, str]] = []
+    for iface in sorted(p.name for p in children(host.sys_path("/sys/class/net")) if p.name != "lo"):
+        name, folder, conf = next(((n, d, c) for n, d, c in confs if _networkd_matches(c, iface, virt)),
+                                  (None, None, None))
+        if conf is None or (name, folder) in out:
+            continue
+        dhcp = (ini.get(conf, "Network", "DHCP") or "no").strip().lower()
+        if dhcp in ("yes", "true", "ipv4", "1", "on") and \
+                ini.truthy(ini.get(conf, "DHCPv4", "SendHostname")) is not False:
+            out.append((name, folder))
+    return out
+
+
+def dhcp_hostname_elsewhere(host: Host, virt: str | None = None) -> list[str]:
+    """DHCP clients other than NetworkManager's that send the hostname: systemd-networkd, for a .network file it
+    applies with DHCP= on and [DHCPv4] SendHostname not off (on by default, systemd.network(5)); dhcpcd, whose
+    dhcpcd.conf has a hostname line (Arch's has one)."""
     out = []
-    if systemctl_state(host, "is-active", "systemd-networkd") == "active":
-        files: dict[str, Path] = {}
-        for d in NETWORKD_DIRS:                                   # a file of the same name in a later folder wins
-            for f in children(host.sys_path(d)):
-                if f.suffix == ".network":
-                    files[f.name] = f
-        for f in files.values():
-            conf = ini.parse(read_text(host, f) or "")
-            dhcp = (ini.get(conf, "Network", "DHCP") or "no").strip().lower()
-            if dhcp in ("yes", "true", "ipv4", "1") and ini.truthy(ini.get(conf, "DHCPv4", "SendHostname")) is not False:
-                out.append("systemd-networkd")
-                break
+    if systemctl_state(host, "is-active", "systemd-networkd") == "active" and networkd_sending(host, virt):
+        out.append("systemd-networkd")
     if systemctl_state(host, "is-active", "dhcpcd") == "active":
         try:
             conf = host.read_sys("/etc/dhcpcd.conf") or ""
@@ -440,16 +568,20 @@ class HostnameBroadcast(Check):
                     channels.append("DHCP (networks joined from now on)")
                 ev.append(Evidence.val("Networks joined from now on", "send the hostname" + (
                     "" if supported else " (this NetworkManager has no default for it: before 1.52)")))
-        other = dhcp_hostname_elsewhere(host)
+        other = dhcp_hostname_elsewhere(host, scan.context["virtualization"])
         if other:
             channels.append(f"DHCP ({', '.join(other)})")
         if systemctl_state(host, "is-active", "avahi-daemon") == "active":
             conf = ini.parse(host.read_sys("/etc/avahi/avahi-daemon.conf") or "")
             if not ini.truthy(ini.get(conf, "publish", "disable-publishing")):
                 channels.append("mDNS (Avahi)")
-        if any(s.get("mdns") == "yes" for name, s in resolved_links(host).items() if name != "Global"):
+        links = resolved_links(host)
+        if resolved_announces(links, "mdns"):
             channels.append("mDNS (systemd-resolved)")
-        if any(s.port == 5355 and s.wildcard for s in scan.context.listeners or []):
+        # LLMNR: systemd-resolved's own word where it answers (with LLMNR=resolve, Fedora's default, it listens on
+        # port 5355 but only asks, announcing nothing); the listening port where resolvectl can't say
+        if resolved_announces(links, "llmnr") if links else \
+                any(s.port == 5355 and s.wildcard for s in scan.context.listeners or []):
             channels.append("LLMNR")
         ev.append(Evidence.val("Announced via", ", ".join(channels) or "nothing found"))
         if named and channels:
@@ -509,11 +641,21 @@ def resolved_links(host: Host) -> dict[str, dict]:
         m = re.match(r"^(Global|Link \d+ \((\S+)\))", line)
         if m:
             name = m.group(2) or "Global"
-            out[name] = {"servers": False, "default_route": False, "route_all": False, "dot": None, "mdns": None}
+            out[name] = {"servers": False, "default_route": False, "route_all": False, "dot": None, "mdns": None,
+                         "llmnr": None}
             continue
         if name is None:
             continue
         s = out[name]
+        # LLMNR and mDNS: "+LLMNR" (answers, announcing the hostname), "-LLMNR", "LLMNR=resolve" (asks only); older
+        # output has "LLMNR setting: yes|no|resolve" and "MulticastDNS setting: ..."
+        for proto, key, setting in (("LLMNR", "llmnr", "LLMNR"), ("mDNS", "mdns", "MulticastDNS")):
+            m = re.search(rf"(?:^|\s)([+-]){proto}\b", line)
+            if m:
+                s[key] = "yes" if m.group(1) == "+" else "no"
+            m = re.search(rf"(?:^|\s){proto}=(\w+)", line) or re.search(rf"{setting} setting:\s*(\w+)", line)
+            if m:
+                s[key] = m.group(1).lower()
         if re.search(r"DNS Servers?:\s*\S", line) or re.search(r"Current DNS Server:\s*\S", line):
             s["servers"] = True
         if "+DefaultRoute" in line or re.search(r"Default Route:\s*yes", line) or re.search(r"DNS Domain:.*~\.", line):
@@ -526,15 +668,14 @@ def resolved_links(host: Host) -> dict[str, dict]:
         m = re.search(r"DNSOverTLS=(\w+)", line)
         if m:
             s["dot"] = m.group(1)
-        # mDNS: "+mDNS" (answers and announces, or resolve-only: the setting line says which),
-        # "-mDNS", or "MulticastDNS setting: yes|no|resolve" in older output
-        m = re.search(r"([+-])mDNS\b", line)
-        if m:
-            s["mdns"] = "yes" if m.group(1) == "+" else "no"
-        m = re.search(r"MulticastDNS setting:\s*(\w+)", line)
-        if m:
-            s["mdns"] = m.group(1)
     return out
+
+
+def resolved_announces(links: dict[str, dict], proto: str) -> bool:
+    """Whether systemd-resolved answers LLMNR ("llmnr") or mDNS ("mdns") queries for this computer's name on a
+    network link: its per-link state is the one in effect (the global setting caps it: Fedora's LLMNR=resolve shows
+    on each link as LLMNR=resolve), and "resolve" only asks."""
+    return any(s.get(proto) == "yes" for name, s in links.items() if name != "Global")
 
 
 def resolved_answers(host: Host) -> bool | None:
@@ -922,6 +1063,9 @@ class ConnectivityCheck(Check):
         cfg = nm_config(scan.host)
         uri = ini.get(cfg, "connectivity", "uri")
         enabled = ini.truthy(ini.get(cfg, "connectivity", "enabled"))
+        # interval=0 turns checking off too (NetworkManager.conf(5))
+        if (ini.get(cfg, "connectivity", "interval") or "").strip() == "0":
+            return passed("NetworkManager's connectivity check is off (interval=0).")
         if uri and enabled is not False:
             host = re.sub(r"^\w+://([^/]+).*", r"\1", uri)
             return failed(f"NetworkManager checks connectivity by contacting {host}.", Evidence.val("URI", uri[:150]))
