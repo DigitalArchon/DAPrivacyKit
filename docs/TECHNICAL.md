@@ -1603,8 +1603,11 @@ OACS, FNA and SANICAP via the helper's ioctl), read on request and kept for the 
   starts a Box by running that same
   command on its own, so a Box never depends on the window. Each run is watched only while it runs and kept as
   numbers (`record_run`): when, how long, files written and deleted, hosts contacted, how many of those were
-  new, bytes sent; hosts as salted HMACs, never names (a boxed browser's hosts would be a history), the last 30
-  runs. Reverting removes the menu entry, the settings and a copied program; `home` and `Exchange` stay when
+  new, bytes sent; hosts as salted HMACs (64 bits, the salt in the same file), never names (a boxed browser's
+  hosts would be a history), the last 30 runs. The HMACs let anyone who can read `runs.json` test a guess (was
+  this site contacted?), and the panel and the guide say so (the owner's decision of 2026-10-17: they stay, to
+  count new hosts, and the text no longer says that nothing about the sites is kept); the Box's home holds the
+  app's own records anyway. Reverting removes the menu entry, the settings and a copied program; `home` and `Exchange` stay when
   they hold anything, and the message says so. `packaging/uninstall.sh` removes the menu entries and leaves
   `~/Boxes`. Tried through the API on Mint 22.3 (a scripted app with the observed network, twice: the second
   run counted no new host; Flatpak Evince) and CachyOS (KWrite on Wayland), and reverted.

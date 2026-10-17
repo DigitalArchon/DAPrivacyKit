@@ -276,6 +276,19 @@ def test_a_box_whose_program_fails_at_once_says_so_in_a_dialog(tmp_path, monkeyp
     assert app.box_cli("chat-app") == 0 and said == []
 
 
+def test_the_box_says_its_site_codes_can_be_tested(cat, tmp_path):
+    """E7, the owner's decision: the per-host HMACs in runs.json stay (they count the new hosts), and the text that said
+    no names of sites were kept says what they allow: anyone who can read the Box's folder can test a guess."""
+    from pathlib import Path
+    from test_guides import build
+    host = _box_host(tmp_path)
+    g = build(cat, host, "app.boxes")
+    text = " ".join(body for s in g.steps for _head, body in (s.parts or []))
+    assert "No names of sites" not in text and "could check whether it contacted a site" in text
+    js = (Path(__file__).parent.parent / "src/daprivacyscanner/web/app.js").read_text()
+    assert "no names of sites or files are kept" not in js and "could check whether it contacted a site" in js
+
+
 def test_what_a_program_printed_never_goes_to_the_journal(monkeypatch, capsys):
     from daprivacyscanner import app
     monkeypatch.delenv("DISPLAY", raising=False)

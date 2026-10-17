@@ -16,7 +16,9 @@ the runtime folder, never in the Box.
 Each run is watched as a trial is, only while it runs (no monitor is ever left on), and what is kept of it is
 numbers: when, how long, how many files it wrote, how many hosts it contacted and how many of those it had
 never contacted before. The hosts are kept as salted hashes (as the scan's baseline keeps what starts at login),
-never by name: a list of the sites a boxed browser visits would be a history. The last RUNS_KEPT runs are kept;
+never by name: a list of the sites a boxed browser visits would be a history. The salt is in the same file, so
+anyone who can read it can test a guess (was this site contacted?): the panel and the guide say so (the owner's
+decision of 2026-10-17), and the Box's home holds the app's own records anyway. The last RUNS_KEPT runs are kept;
 the panel can clear them. The Tools panel starts a Box as the menu does (the launcher's command, on its own), so
 a Box never depends on the app's window being open.
 

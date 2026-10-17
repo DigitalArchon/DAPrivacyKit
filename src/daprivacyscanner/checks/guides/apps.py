@@ -396,8 +396,11 @@ def boxes(check, scan, outcome):
          "what you type into them. And an app in a Box can't use the desktop's password store, so it may ask you to "
          "sign in again or keep its login in its own home."),
         ("Each run in numbers", "While a Box runs it is watched as a trial is, and what is kept is numbers: when, how "
-         "long, how many files it wrote, how many hosts it contacted and how many of those were new. No names of sites "
-         "or files are kept. Nothing watches while it isn't running.")], done=bool(existing))]
+         "long, how many files it wrote, how many hosts it contacted and how many of those were new. No names of files "
+         "are kept. Sites aren't kept by name either, but each as a code (a salted hash), so the next run can count the "
+         "new ones: anyone who can read the Box's folder could check whether it contacted a site they have in mind. "
+         "The app's own files in its home can say more anyway (a browser's history). Nothing watches while it isn't "
+         "running.")], done=bool(existing))]
     if not choices:
         steps.append(Step("Choose the app", "No app here can be put in a Box: the menu has no app whose program is in the "
                           "system's folders, and no Flatpak app. A program you downloaded can be: open Tools → Try an app, "

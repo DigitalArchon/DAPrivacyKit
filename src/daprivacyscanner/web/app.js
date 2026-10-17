@@ -3944,7 +3944,10 @@ function boxesBody(boxes, spec, reload) {
               h("td", { class: r.hosts === null ? "zero" : "" }, r.hosts === null ? (r.network === "off" ? "no network" : "not observed") : `${r.hosts}`),
               h("td", { class: r.new_hosts ? "" : "zero" }, r.new_hosts === null ? "" : `${r.new_hosts}`),
               h("td", {}, r.sent === null ? "" : fmtSize(r.sent)))))),
-          h("div", { class: "orow" }, clear, h("span", { class: "muted" }, "Numbers only: no names of sites or files are kept.")))
+          h("div", { class: "orow" }, clear, h("span", { class: "muted" }, "Numbers only: no names of files. Sites aren't "
+            + "kept by name either, but each as a code, so the next run can count the new ones: anyone who can read this "
+            + "Box's folder could check whether it contacted a site they have in mind. The app's own files in its home "
+            + "can say more anyway.")))
           : h("div", { class: "small muted" }, "It hasn't run yet."));
     }) : h("p", {}, "No Box is set up yet."),
     spec ? h("div", { class: "orow" }, h("button", { class: "small", onclick: () => openGuide(spec) }, "Set up another…")) : null];

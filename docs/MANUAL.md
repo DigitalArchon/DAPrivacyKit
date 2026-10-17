@@ -584,9 +584,11 @@ fix.
   app at the folder's own path, `~/Boxes/NAME/Exchange`). You can
   make a Box from an installed app, a Flatpak app, or a program you have just tried (**Keep it in a Box…** in
   *Try an app*). **Open…** in the Tools panel lists your Boxes with each one's last runs in numbers: how
-  long, how many files written, how many hosts contacted and how many of those were new. No names of sites
-  or files are kept. Reverting a Box in History removes its menu entry and settings; its data in `~/Boxes`
-  stays until you delete it.
+  long, how many files written, how many hosts contacted and how many of those were new. No names of files
+  are kept. Sites aren't kept by name either, but each as a code, so the next run can count the new ones:
+  anyone who can read the Box's folder could check whether it contacted a site they have in mind (the app's
+  own files in its home, a browser's history, can say more anyway). Reverting a Box in History removes its
+  menu entry and settings; its data in `~/Boxes` stays until you delete it.
 
 ---
 
