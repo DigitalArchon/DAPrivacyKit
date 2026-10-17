@@ -7,6 +7,7 @@ import datetime as dt
 import gzip
 import io
 import json
+import os
 import re
 import time
 from dataclasses import dataclass
@@ -518,6 +519,60 @@ class ReleaseUnsupported(Check):
         return failed(ended, *ev)
 
 
+SYSCTL_DIRS = ("/etc/sysctl.d", "/run/sysctl.d", "/usr/local/lib/sysctl.d", "/usr/lib/sysctl.d")
+
+
+def sysctl_files(host) -> list[str]:
+    """The files systemd-sysctl applies at boot, in its order: every *.conf of these folders by file name (one of the
+    same name in /etc hides /run's, which hides /usr's), later ones winning; then /etc/sysctl.conf, which procps reads
+    last (Debian and Ubuntu link it in as 99-sysctl.conf)."""
+    names: dict[str, str] = {}
+    for d in reversed(SYSCTL_DIRS):
+        for p in children(host.sys_path(d)):
+            if p.name.endswith(".conf"):
+                names[p.name] = f"{d}/{p.name}"
+    out = [names[n] for n in sorted(names)]
+    if host.sys_path("/etc/sysctl.conf").is_file() and not any(
+            host.sys_path(f).is_symlink() and os.path.basename(os.readlink(host.sys_path(f))) == "sysctl.conf" for f in out):
+        out.append("/etc/sysctl.conf")
+    return out
+
+
+def sysctl_set_after(host, key: str, dropin: str) -> list[tuple[str, str]]:
+    """(file, value) for each file read after the app's drop-in (its name) that sets `key`: what is in force after the
+    next start is the last of them, not the drop-in's."""
+    files = sysctl_files(host)
+    after = files[next((i for i, f in enumerate(files) if f.endswith("/" + dropin)), -1) + 1:] if any(
+        f.endswith("/" + dropin) for f in files) else [f for f in files if os.path.basename(f) > dropin]
+    out = []
+    for f in after:
+        try:
+            text = host.read_sys(f) or ""
+        except Unreadable:
+            continue
+        for line in text.splitlines():
+            k, sep, v = line.strip().lstrip("-").partition("=")
+            if sep and not line.lstrip().startswith(("#", ";")) and k.strip().replace("/", ".") == key:
+                out.append((f, v.strip()))
+    return out
+
+
+def sysctl_undone_note(host, key: str, want: str, dropin: str) -> tuple[str | None, Note | None]:
+    """The value a file read after the app's drop-in sets at the next start, when it isn't `want`, and a note saying
+    so: the drop-in alone doesn't decide (an /etc/sysctl.conf with the opposite would undo the fix at the restart)."""
+    later = sysctl_set_after(host, key, dropin)
+    if not later or later[-1][1] == want:
+        return None, None
+    f, v = later[-1]
+    return v, Note("risk", "A file read later sets it back at the next start",
+                   f"{f} sets {key} = {v}, and is read after the app's own setting (/etc/sysctl.d/{dropin}): at the "
+                   f"next start {key} is {v} again. Change it there (sudoedit {f}), or delete that line.")
+
+
+PTRACE_DROPIN = "60-daprivacyscanner.conf"
+DMESG_DROPIN = "60-daprivacyscanner-dmesg.conf"
+
+
 @register
 class PtraceScope(Check):
     id = "kern.ptrace_scope"
@@ -530,6 +585,10 @@ class PtraceScope(Check):
         ev = [Evidence.val("ptrace_scope", v)]
         if v == "0":
             return failed("Any process you run can read the memory of your other processes.", *ev)
+        later, note = sysctl_undone_note(scan.host, "kernel.yama.ptrace_scope", v, PTRACE_DROPIN)
+        if note is not None and later == "0":
+            return warned("Processes can't read each other's memory now, but at the next start a setting read later "
+                          "lets them again.", *ev, notes=[note])
         return passed("Processes can't read each other's memory unless one started the other.", *ev)
 
 
@@ -710,6 +769,10 @@ class DmesgRestrict(Check):
         if v == "0":
             return failed("Every account and program can read the kernel log, which records devices plugged in "
                           "and drives mounted.", *ev, notes=notes)
+        later, note = sysctl_undone_note(scan.host, "kernel.dmesg_restrict", v, DMESG_DROPIN)
+        if note is not None and later == "0":
+            return warned("Only administrators can read the kernel log now, but at the next start a setting read later "
+                          "lets every account read it again.", *ev, notes=notes + [note])
         return passed("Only administrators can read the kernel log.", *ev, notes=notes)
 
 

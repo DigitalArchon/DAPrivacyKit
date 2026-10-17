@@ -448,12 +448,20 @@ def countme(check, scan, outcome):
 
 @fix("kern.dmesg_restrict", needs_root=True)
 def dmesg_restrict(check, scan, outcome):
-    return FixPlan(check.id, "Let only administrators read the kernel log", [
-        RootChange("set_sysctl", {"key": "kernel.dmesg_restrict", "value": "1"}, "sysctl kernel.dmesg_restrict=1 (now)"),
-        RootChange("write_dropin", {"name": "sysctl-dmesg", "settings": {"kernel.dmesg_restrict": "1"}},
-                   "Write /etc/sysctl.d/60-daprivacyscanner-dmesg.conf with kernel.dmesg_restrict = 1 (at boot)")],
-        side_effects=["`dmesg` then needs sudo; members of adm, wheel or systemd-journal can still read kernel "
-                      "messages with journalctl."])
+    from .kernel import DMESG_DROPIN, sysctl_undone_note
+    later, note = sysctl_undone_note(scan.host, "kernel.dmesg_restrict", "1", DMESG_DROPIN)
+    actions = []
+    if (scan.host.read_sys("/proc/sys/kernel/dmesg_restrict") or "").strip() != "1":
+        actions.append(RootChange("set_sysctl", {"key": "kernel.dmesg_restrict", "value": "1"},
+                                  "sysctl kernel.dmesg_restrict=1 (now)"))
+    if not scan.host.sys_path(f"/etc/sysctl.d/{DMESG_DROPIN}").is_file():
+        actions.append(RootChange("write_dropin", {"name": "sysctl-dmesg", "settings": {"kernel.dmesg_restrict": "1"}},
+                                  f"Write /etc/sysctl.d/{DMESG_DROPIN} with kernel.dmesg_restrict = 1 (at boot)"))
+    # a file read after the drop-in decides at boot: said (with nothing else to do, it is the reason there is no fix
+    # here), and the app doesn't edit someone else's file
+    effects = (["`dmesg` then needs sudo; members of adm, wheel or systemd-journal can still read kernel messages with "
+                "journalctl."] if actions else []) + ([note.text] if note is not None else [])
+    return FixPlan(check.id, "Let only administrators read the kernel log", actions, side_effects=effects)
 
 
 # ------------------------------------------------------------------ browsers

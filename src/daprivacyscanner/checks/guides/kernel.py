@@ -74,12 +74,36 @@ def updates(check, scan, outcome):
 
 @guide("kern.ptrace_scope", keys=("scope_1",))
 def ptrace(check, scan, outcome):
-    return Guide(check.id, "Stop processes reading each other's memory", "", [
+    from ..kernel import PTRACE_DROPIN, _kernel_option, sysctl_set_after, sysctl_undone_note
+    host = scan.host
+    title = "Stop processes reading each other's memory"
+    now = (host.read_sys("/proc/sys/kernel/yama/ptrace_scope") or "").strip()
+    if not now:
+        # no Yama: there is no ptrace_scope to set (the option failed in the helper, and Easy offered it for ever)
+        from .advice import kernel_option_steps
+        active = [m for m in (host.read_sys("/sys/kernel/security/lsm") or "").strip().split(",") if m and m != "capability"]
+        built, _ = _kernel_option(scan, "yama", "CONFIG_SECURITY_YAMA")
+        if built and active:
+            return Guide(check.id, title, "This kernel has the Yama security module built in, but it isn't among the "
+                         "modules started at boot, so there is no ptrace_scope to set. lsm= on the kernel command line "
+                         "names them: this keeps every module active now and adds yama. After the restart, check again: "
+                         "the guide then offers the setting.", kernel_option_steps(scan, "lsm=" + ",".join(active + ["yama"])))
+        return Guide(check.id, title, "", [Step(
+            "Use a kernel with the Yama security module",
+            "This kernel has no Yama, which decides who may read a process's memory (ptrace_scope), so there is no "
+            "setting to change here. Every major distribution's own kernel has it: this one is probably a custom "
+            "build. Install your distribution's standard kernel and choose it in the boot menu.")])
+    later, note = sysctl_undone_note(host, "kernel.yama.ptrace_scope", "1", PTRACE_DROPIN)
+    if now != "0" and host.sys_path(f"/etc/sysctl.d/{PTRACE_DROPIN}").is_file() and note is not None:
+        f = sysctl_set_after(host, "kernel.yama.ptrace_scope", PTRACE_DROPIN)[-1][0]
+        return Guide(check.id, title, "", [Step("Keep it after the next start", note.text,
+                                                commands=[f"sudoedit {f}     # delete its kernel.yama.ptrace_scope line"])])
+    return Guide(check.id, title, "", [
         Step("Restrict ptrace to a process's own children", options=[option(check, "Set ptrace_scope to 1", [
             RootChange("set_sysctl", {"key": "kernel.yama.ptrace_scope", "value": "1"},
                        "sysctl kernel.yama.ptrace_scope=1 (now)"),
-            dropin("sysctl", {"kernel.yama.ptrace_scope": "1"}, "/etc/sysctl.d/60-daprivacyscanner.conf")],
-            recommended=True, key="scope_1")],
+            dropin("sysctl", {"kernel.yama.ptrace_scope": "1"}, f"/etc/sysctl.d/{PTRACE_DROPIN}")],
+            recommended=True, key="scope_1", side_effects=[note.text] if note is not None else [])],
             side_effects=["Debuggers (gdb, strace) can only attach to programs they start, unless run with sudo."]),
     ])
 

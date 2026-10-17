@@ -876,6 +876,52 @@ def _guide_with(cat, check_id, host, outcome):
     return load_all()[check_id](cat[check_id]).plan_guide(make_scan(host), outcome)
 
 
+# ------------------------------------------------------------------ ptrace and dmesg
+
+def test_without_yama_nothing_is_offered_that_would_fail(cat, tmp_path):
+    """Guide… and the Easy fix offered "Set ptrace_scope to 1", which failed in the helper (no such file)."""
+    host = make_host(tmp_path, files={"/sys/kernel/security/lsm": "capability,lockdown,landlock,apparmor\n",
+                                      "/proc/sys/kernel/osrelease": "6.12.0\n", "/boot/config-6.12.0": "CONFIG_SECURITY_YAMA=y\n",
+                                      "/etc/kernel/cmdline": "root=/dev/x quiet\n"})
+    g = _guide_with(cat, "kern.ptrace_scope", host, detect(cat, "kern.ptrace_scope", make_scan(host)))
+    assert not any(s.options for s in g.steps) and "lsm=lockdown,landlock,apparmor,yama" in " ".join(g.steps[0].commands)
+    host = make_host(tmp_path / "b", files={"/sys/kernel/security/lsm": "capability,apparmor\n",
+                                            "/proc/sys/kernel/osrelease": "6.12.0\n", "/boot/config-6.12.0": "\n"})
+    g = _guide_with(cat, "kern.ptrace_scope", host, detect(cat, "kern.ptrace_scope", make_scan(host)))
+    assert not any(s.options for s in g.steps) and g.steps[0].title == "Use a kernel with the Yama security module"
+
+
+def test_a_sysctl_file_read_later_sets_ptrace_back(cat, tmp_path, system, monkeypatch):
+    """The app's 60-…conf is read before /etc/sysctl.conf (and 99-… files): one setting 0 there undid the fix at the
+    next start, shown then as "fix undone"."""
+    from test_guides import apply, options, rooted
+    host = make_host(tmp_path, files={"/proc/sys/kernel/yama/ptrace_scope": "0\n",
+                                      "/etc/sysctl.conf": "kernel.yama.ptrace_scope = 0\n"})
+    rooted(host, system, monkeypatch)
+    o = detect(cat, "kern.ptrace_scope", make_scan(host))
+    g = _guide_with(cat, "kern.ptrace_scope", host, o)
+    plan = options(g)["Set ptrace_scope to 1"]
+    assert any("/etc/sysctl.conf sets kernel.yama.ptrace_scope = 0" in e for e in plan.side_effects)
+    apply(host, plan)
+    o = detect(cat, "kern.ptrace_scope", make_scan(host))
+    assert o.status is Status.WARN and "at the next start" in o.summary
+    [step] = _guide_with(cat, "kern.ptrace_scope", host, o).steps
+    assert not step.options and step.commands[0].startswith("sudoedit /etc/sysctl.conf")
+
+
+def test_dmesg_fix_says_which_later_file_undoes_it(cat, tmp_path):
+    from daprivacyscanner.checks import load_all
+    host = make_host(tmp_path, files={"/proc/sys/kernel/dmesg_restrict": "1\n",
+                                      "/etc/sysctl.d/60-daprivacyscanner-dmesg.conf": "kernel.dmesg_restrict = 1\n",
+                                      "/etc/sysctl.d/99-local.conf": "kernel.dmesg_restrict=0\n"})
+    check = load_all()["kern.dmesg_restrict"](cat["kern.dmesg_restrict"])
+    scan = make_scan(host)
+    o = check.detect(scan)
+    assert o.status is Status.WARN
+    plan = check.plan_fix(scan, o)
+    assert plan.empty and "/etc/sysctl.d/99-local.conf sets kernel.dmesg_restrict = 0" in plan.side_effects[0]
+
+
 def test_the_panels_say_what_the_scan_says(tmp_path):
     """The RAM disk and browser panels said "this computer can hibernate" where the scan said it can't."""
     from daprivacyscanner.tools import ramdisk as R

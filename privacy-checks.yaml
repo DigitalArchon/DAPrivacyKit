@@ -3339,12 +3339,19 @@ checks:
     title: Processes can read each other's memory (ptrace_scope 0)
     category: kernel
     severity: 4
+    warn_lower: 2
     scope: system
     tier: guided
     why: Any process running as the user can read password manager and browser memory.
     detect:
       - 'cat /proc/sys/kernel/yama/ptrace_scope'
-    fix: sysctl.d drop-in kernel.yama.ptrace_scope=1 (note it affects attaching debuggers).
+      - 'A sysctl file read after the app''s 60-daprivacyscanner.conf (systemd-sysctl''s order: *.conf of /etc, /run,
+        /usr/local/lib and /usr/lib sysctl.d by name, then /etc/sysctl.conf) that sets it to 0: back at the next start, a
+        warning'
+    fix: >
+      sysctl.d drop-in kernel.yama.ptrace_scope=1 (note it affects attaching debuggers). Without Yama there is nothing
+      to set: no option (the helper's write failed); built in but not started, lsm= with yama added, as commands. A
+      later file setting 0: said, with the command to edit it.
     remedy: >
       Guide… stops programs reading the memory of other programs you run.
     easy:
@@ -3355,6 +3362,7 @@ checks:
     title: Any user can read the kernel log (dmesg_restrict 0)
     category: kernel
     severity: 3
+    warn_lower: 2
     modifiers:
       - when: "multi_user"
         severity: 5
@@ -3367,6 +3375,8 @@ checks:
     detect:
       - 'cat /proc/sys/kernel/dmesg_restrict (0 = anyone may read)'
       - 'Members of adm / systemd-journal can still read kernel messages through the journal'
+      - 'A sysctl file read after the app''s 60-daprivacyscanner-dmesg.conf that sets it to 0: back at the next start, a
+        warning (the fix then has nothing of its own to do, and says which file to change)'
     fix: sysctl kernel.dmesg_restrict=1 now and a sysctl.d drop-in for boot (root, reversible).
     remedy: >
       Fix… makes the kernel log readable by administrators only.
