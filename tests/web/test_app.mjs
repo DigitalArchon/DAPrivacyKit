@@ -931,6 +931,8 @@ check(text(".modal .browser-tool").includes("Tor Browser has no network of its o
 check(text(".modal .browser-tool").includes("This kernel doesn't have Landlock's scopes")
       && $$(".modal .browser-tool button").some(b => b.textContent === "How to get a kernel with it…"),
       "without Landlock it says so, with the way to a kernel that has it");
+check(text(".modal .browser-tool").includes("a flaw in tor, or in a bridge's program, could still reach the display's hidden socket"),
+      "and that tor's sandbox, on the computer's network, keeps the display's cookie from tor but not its hidden socket");
 check(text(".modal .browser-tool").includes("Mullvad VPN") && text(".modal .browser-tool").includes("A trustworthy VPN underneath"),
       "it says what a VPN adds to each browser");
 const bridgeSelect = $(".modal .browser-tool .toolcard select");

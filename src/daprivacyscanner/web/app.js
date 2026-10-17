@@ -2896,7 +2896,9 @@ function browserSandbox(data, opts) {
         + "such as XWayland's, through which a browser taken over by a website could read and type into other windows. "
         + "Here, Tor Browser has no network of its own, so it can't reach them"
         + (shared ? "; Mullvad Browser shares the network, so it could, until passt is installed or the kernel is newer."
-          : ", and nor can Mullvad Browser in its own network: Landlock would be a second wall, for tor's sandbox too."),
+          : ", and nor can Mullvad Browser in its own network.")
+        + " tor itself needs this computer's network: its sandbox keeps your display's socket and cookie from it, but "
+        + "without Landlock a flaw in tor, or in a bridge's program, could still reach the display's hidden socket.",
         h("div", { class: "orow" }, guide("kern.landlock", "How to get a kernel with it…"))));
     }
   } else {
