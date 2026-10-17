@@ -633,6 +633,69 @@ while True:
 status = status or 0
 sys.exit(status if status >= 0 else 128 - status)
 """ % (HELPERS,)
+# A trial (and a Box's run) ends with the copy of the app that started it. bubblewrap's --die-with-parent answers to
+# bubblewrap's parent, which under the observed network is pasta, not the app: with the app killed, pasta was adopted by
+# init and the sandbox ran on, online and unobserved (the tools review of 2026-10-17, on p330-2). The kernel's
+# parent-death signal (PR_SET_PDEATHSIG) answers to the parent thread, and the app starts trials from a pool of worker
+# threads. So the command runs under TETHER, the computer's python3, one thread: it starts the command with the
+# parent-death signal (SIGKILL) set, which only its own end can set off, and ends as soon as the app's process has (a
+# pidfd on it; its parent's number changing where the kernel has no pidfds), killing the command first: pasta or
+# bubblewrap, and the sandbox with it. What the app sends the group (Stop's SIGTERM) reaches the command as before:
+# TETHER ignores it, and passes the command's exit status on (a signal as 128 plus its number, as STAY does).
+TETHER = """\
+import ctypes, os, select, signal, sys, time
+app, me, quiet = int(sys.argv[1]), os.getpid(), (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
+for s in quiet:
+    signal.signal(s, signal.SIG_IGN)
+child = os.fork()
+if not child:
+    for s in quiet:
+        signal.signal(s, signal.SIG_DFL)
+    ctypes.CDLL(None, use_errno=True).prctl(1, signal.SIGKILL, 0, 0, 0)
+    if os.getppid() != me:
+        os._exit(1)
+    try:
+        os.execvp(sys.argv[2], sys.argv[2:])
+    except OSError as e:
+        sys.stderr.write("It couldn't be started: %s\\n" % e.strerror)
+    os._exit(127)
+null = os.open("/dev/null", os.O_RDWR)               # the command's output and the sync pipe are its own to close
+for fd in (0, 1, 2):
+    os.dup2(null, fd)
+os.closerange(3, 65536)
+def gone():
+    os.kill(child, signal.SIGKILL)
+    os._exit(1)
+try:
+    fds = [os.pidfd_open(app), os.pidfd_open(child)]
+except (AttributeError, OSError):
+    fds = None
+while True:
+    if os.getppid() != app:
+        gone()
+    if fds:
+        if fds[0] in select.select(fds, [], [])[0]:
+            gone()
+    else:
+        time.sleep(0.5)
+    try:
+        pid, st = os.waitpid(child, os.WNOHANG)
+    except ChildProcessError:
+        os._exit(1)
+    if pid:
+        code = os.waitstatus_to_exitcode(st)
+        os._exit(code if code >= 0 else 128 - code)
+"""
+
+
+def tethered(host: Host, argv: list[str]) -> list[str]:
+    """`argv` under TETHER: it ends with this process. As it is where there is no python3 (bubblewrap's own
+    --die-with-parent is all there is then)."""
+    if not host.sys_path(sandbox.PYTHON).exists():
+        return argv
+    return [sandbox.PYTHON, "-I", "-c", TETHER, str(os.getpid()), *argv]
+
+
 # "$1" is mount, "$2" the package's usr folder: its ":" "," and "\" escaped as overlayfs's options want them (a trial's
 # folder is under the runtime or cache folder, whose path is the user's to choose), then the command after the two
 OVERLAY = (r"""lower=$(printf %s "$2" | sed -e 's/\\/\\\\/g' -e 's/,/\\,/g' -e 's/:/\\:/g'); """
@@ -891,7 +954,7 @@ def _nested(host: Host, t: Trial, spawn: Callable):
     nest = sandbox.nested(host, t.private, f"Try an app: {t.name}", sandbox.screen_size(host))
     if nest is None:
         raise TrialError("A display of its own works on this computer's own X11 display only. Untick it.")
-    proc = spawn(sandbox.fresh_keyring(host, nest.argv), cwd="/", env=host_env(host.environ), stdin=subprocess.DEVNULL,
+    proc = spawn(tethered(host, sandbox.fresh_keyring(host, nest.argv)), cwd="/", env=host_env(host.environ), stdin=subprocess.DEVNULL,
                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
     if not hasattr(proc, "poll"):
         return nest.display, proc
@@ -965,7 +1028,7 @@ def start(host: Host, t: Trial, options: dict, spawn: Callable = subprocess.Pope
             etc = {}
         devices = tuple(sandbox.gpu(host)) if t.options["gpu"] and t.xephyr is None and eng.id == "bubblewrap" else ()
         parts = Parts(disp, etc, pasta_path, t.private / "packets" if pasta_path else None, sync, devices, t.options["sound"])
-        cmd = sandbox.fresh_keyring(host, eng.command(host, t, parts))
+        cmd = tethered(host, sandbox.fresh_keyring(host, eng.command(host, t, parts)))
         env = dict(sandbox.SPAWN_ENV)                   # none of the app's: the program could read it (bubblewrap's)
         if eng.id == "flatpak":
             env = host_env(host.environ)
@@ -999,7 +1062,8 @@ def start(host: Host, t: Trial, options: dict, spawn: Callable = subprocess.Pope
     return t.how
 
 
-SCRIPTS = {STAY: "<wait for everything it starts>", sandbox.KEYRING: "<a keyring of its own, no crash dumps>"}
+SCRIPTS = {STAY: "<wait for everything it starts>", sandbox.KEYRING: "<a keyring of its own, no crash dumps>",
+           TETHER: "<end it if the app ends>"}
 
 
 def shown(cmd: list[str]) -> str:

@@ -1533,7 +1533,14 @@ OACS, FNA and SANICAP via the helper's ioctl), read on request and kept for the 
     feels as the app would) and sound when ticked. Its command is `STAY`, a subreaper that waits for everything
     the program starts (a launcher that starts the real program and ends) but not for the session's own helpers
     once the program has ended (`HELPERS`: a D-Bus daemon started on demand stays for good, and the trial would
-    never end by itself: seen with Xed).
+    never end by itself: seen with Xed). The whole command (and Xephyr's) runs under `TETHER`, the computer's
+    python3, which ends it as soon as the copy of the app that started it has ended (a pidfd on it): bubblewrap's
+    `--die-with-parent` answers to its parent, which under the observed network is pasta, so with the app killed
+    pasta was adopted by init and the sandbox ran on, online and unobserved (found in the 2026-10-17 review on
+    Mint 22.3). The kernel's parent-death signal answers to the parent thread, and the app starts trials from
+    worker threads, so `TETHER` (one thread) sets it on its command and ends with the app; Stop's signals pass
+    through it to the command, and the command's exit status comes back through it. A Box's run is started the
+    same way, by its `--box` process.
   - **A .deb's files where it expects them**: a first bubblewrap that is root of its own user namespace mounts an
     overlay of the package's `usr` over `/usr`, then starts the sandbox proper inside that view; the package's
     `opt` is bound at `/opt`. Bubblewrap 0.9 (Mint 22.3) has no overlay option of its own; this needs none
