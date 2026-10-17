@@ -241,16 +241,34 @@ def remote_desktop(check, scan, outcome):
 
 @guide("auth.ssh_key_no_passphrase")
 def ssh_keys(check, scan, outcome):
-    keys = evidence(outcome, value="no passphrase")
+    shown = {e.label: e.value for e in outcome.evidence if isinstance(e.value, str) and "no passphrase" in e.value}
+    usable = [k for k, v in shown.items() if "can't load it" not in v]
+    dropped = [k for k, v in shown.items() if "can't load it" in v]
+    cmds = []
+    for k in usable:
+        mode = mode_of(scan.host.home / ".ssh" / k)
+        if mode is not None and mode & 0o077:
+            # ssh-keygen refuses a key its group or others can read ("bad permissions"), -p included
+            cmds.append(f"chmod 600 ~/.ssh/{k}     # ssh-keygen won't open it while others can read it (mode {mode:o})")
+        cmds.append(f"ssh-keygen -p -f ~/.ssh/{k}")
+    steps = []
+    if usable:
+        steps.append(Step("Set a passphrase on each key", "ssh-keygen asks for the new passphrase twice. The key "
+                          "itself doesn't change, so servers that trust it keep doing so.", commands=cmds))
+    if dropped:
+        steps.append(Step("Replace the keys this ssh can't use",
+                          f"This OpenSSH can't load {', '.join(dropped)}: a key type it no longer supports (DSA was "
+                          "removed in OpenSSH 10), or a damaged file. It can't add a passphrase either, but the key "
+                          "still works for anyone with an ssh that loads it. Make "
+                          "a new key, put its .pub file on the servers that trusted the old one, then delete the old "
+                          "key and its .pub file.",
+                          commands=["ssh-keygen -t ed25519"] + [f"rm ~/.ssh/{k} ~/.ssh/{k}.pub     # once the new key "
+                                                                f"works everywhere" for k in dropped]))
+    steps.append(Step("Type it once per session",
+                      "An agent remembers the unlocked key: GNOME Keyring and KDE's ssh-agent do it at login, or "
+                      "run ssh-add. KeePassXC can hold keys too.", commands=["ssh-add"]))
     return Guide(check.id, "Add passphrases to SSH keys",
-                 "A key without a passphrase works for anyone who copies the file.", [
-                     Step("Set a passphrase on each key", "ssh-keygen asks for the new passphrase twice. The key "
-                          "itself doesn't change, so servers that trust it keep doing so.",
-                          commands=[f"ssh-keygen -p -f ~/.ssh/{k}" for k in keys]),
-                     Step("Type it once per session",
-                          "An agent remembers the unlocked key: GNOME Keyring and KDE's ssh-agent do it at login, or "
-                          "run ssh-add. KeePassXC can hold keys too.", commands=["ssh-add"]),
-                 ])
+                 "A key without a passphrase works for anyone who copies the file.", steps)
 
 
 @guide("auth.plaintext_credentials")
@@ -564,7 +582,7 @@ SSH_EFFECTS = {
 @guide("auth.ssh_client_settings")
 def ssh_client_settings(check, scan, outcome):
     from ...fix import MakeDir
-    from ..auth import SSH_NAMES, SSH_SAFE, ssh_agent, ssh_config_lines, ssh_weak_settings
+    from ..auth import SSH_NAMES, SSH_SAFE, added_keys_limit, ssh_agent, ssh_config_lines, ssh_weak_settings
     host = scan.host
     weak = ssh_weak_settings(ssh_config_lines(host))
     by_file: dict = {}
@@ -598,7 +616,9 @@ def ssh_client_settings(check, scan, outcome):
                           + " there, or delete the line to get ssh's default.",
                           commands=[f"sudoedit {f}" for f in files]))
     agent = ssh_agent(scan)
-    if agent.kind and agent.keys and not agent.lifetime:
+    # AddKeysToAgent with a time already makes the keys ssh adds leave the agent: the advice below is in place
+    limited = agent.kind == "ssh-agent" and added_keys_limit(ssh_config_lines(host)) is not None
+    if agent.kind and agent.keys and not agent.lifetime and not limited:
         if agent.kind == "ssh-agent":
             text = ("ssh-agent keeps keys until you log out unless they are added with a time limit. ssh-add -t sets one "
                     "for the keys you add by hand. For keys ssh adds as you connect, add the line AddKeysToAgent 1h to "

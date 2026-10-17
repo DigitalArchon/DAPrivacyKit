@@ -242,3 +242,127 @@ def test_keyring_evidence_names_the_keyring(cat, tmp_path):
     # an encrypted keyring's name follows its header: version, cipher and hash bytes, then a length and the name
     head = KEYRING_MAGIC + bytes(4) + len("Login").to_bytes(4, "big") + b"Login" + b"\x00" * 40
     assert keyring_name(head) == "Login" and keyring_name(KEYRING_MAGIC + b"\x00\x01binary") is None
+
+
+# ------------------------------------------------------------------ SSH keys without a passphrase
+
+def _keys_host(tmp_path, keys: dict, results: dict, modes: dict | None = None):
+    import os
+    host = make_host(tmp_path, home_files={f".ssh/{k}": text for k, text in keys.items()})
+    for k in keys:
+        os.chmod(host.home / ".ssh" / k, (modes or {}).get(k, 0o600))
+        host.runner.outputs[("ssh-keygen", "-y", "-P", "", "-f", str(host.home / ".ssh" / k))] = results[k]
+    host.runner.installed.add("ssh-keygen")
+    return host
+
+
+def test_a_key_this_ssh_cant_load_is_never_called_protected(cat, tmp_path):
+    """Any ssh-keygen error counted as "protected by a passphrase": an unencrypted id_dsa on OpenSSH 10, which dropped
+    DSA, passed. Only "incorrect passphrase" means it asks for one; otherwise the key file itself says, or it is
+    couldn't check."""
+    from test_checks_auth import openssh_key
+    gone = CommandResult((), 255, "", 'Load key "/home/alice/.ssh/id_dsa": invalid format\n')
+    host = _keys_host(tmp_path, {"id_dsa": "-----BEGIN DSA PRIVATE KEY-----\nMIIBuwIBAAKBgQ\n-----END DSA PRIVATE KEY-----\n",
+                                 "work": openssh_key(b"aes256-ctr"), "odd": "-----BEGIN OPENSSH PRIVATE KEY-----\nnot base64 at all\n"},
+                      {"id_dsa": gone, "work": CommandResult((), 255, "", 'Load key "x": incorrect passphrase supplied '
+                                                             "to decrypt private key\n"), "odd": gone})
+    o = detect(cat, "auth.ssh_key_no_passphrase", make_scan(host))
+    assert o.status is Status.FAIL and o.summary.endswith("id_dsa.")
+    assert ev(o)["id_dsa"] == "no passphrase; this ssh-keygen can't load it (invalid format)"
+    assert ev(o)["work"] == "protected by a passphrase" and ev(o)["odd"].startswith("couldn't check")
+    assert "/home/alice" not in repr(o.evidence)
+    g = build(cat, host, "auth.ssh_key_no_passphrase")
+    assert [s.title for s in g.steps] == ["Replace the keys this ssh can't use", "Type it once per session"]
+    # unknown alone is unknown, not a pass
+    host = _keys_host(tmp_path / "b", {"odd": "-----BEGIN OPENSSH PRIVATE KEY-----\nnot base64 at all\n"}, {"odd": gone})
+    assert detect(cat, "auth.ssh_key_no_passphrase", make_scan(host)).status is Status.UNKNOWN
+
+
+def test_passphrase_command_for_a_key_others_can_read_starts_with_chmod(cat, tmp_path):
+    from test_checks_auth import openssh_key
+    refused = CommandResult((), 255, "", "Permissions 0644 for 'x' are too open.\nLoad key: bad permissions\n")
+    host = _keys_host(tmp_path, {"id_ed25519": openssh_key(), "id_rsa": openssh_key()},
+                      {"id_ed25519": refused, "id_rsa": CommandResult((), 0, "ssh-rsa AAAA\n")},
+                      modes={"id_ed25519": 0o644})
+    g = build(cat, host, "auth.ssh_key_no_passphrase")
+    assert g.steps[0].commands == [
+        "chmod 600 ~/.ssh/id_ed25519     # ssh-keygen won't open it while others can read it (mode 644)",
+        "ssh-keygen -p -f ~/.ssh/id_ed25519", "ssh-keygen -p -f ~/.ssh/id_rsa"]
+
+
+# ------------------------------------------------------------------ the SSH agent
+
+def _agent_host(tmp_path, config):
+    agent = CommandResult(("ssh-add", "-l"), 0, "256 SHA256:x me (ED25519)\n")
+    host = make_host(tmp_path, home_files={".ssh/config": config}, installed=("ssh",),
+                     env={"SSH_AUTH_SOCK": "/tmp/ssh-XXXX/agent.99"},
+                     files={"/proc/100/comm": "ssh-agent\n", "/proc/100/cmdline": "ssh-agent\0"})
+    host.runner.handlers["ssh-add"] = lambda argv: agent
+    return host
+
+
+def test_add_keys_to_agent_with_a_lifetime_is_a_limit(cat, tmp_path):
+    """The guide's own advice, AddKeysToAgent 1h, still counted as keys kept until logout, and was given again."""
+    for value in ("1h", "3600", "1h30m", "confirm 10m", "confirm"):
+        host = _agent_host(tmp_path / value.replace(" ", "_"), f"Host *\n    AddKeysToAgent {value}\n")
+        o = detect(cat, "auth.ssh_client_settings", make_scan(host))
+        assert o.status is Status.PASS and o.findings["agent_keys_unlimited"] is False, value
+        assert any(n.title == "Keys added by hand" for n in o.notes)
+        g = load_all()["auth.ssh_client_settings"](cat["auth.ssh_client_settings"]).plan_guide(make_scan(host), o)
+        assert [s.title for s in g.steps] == ["Your SSH settings"] and g.steps[0].done
+    for value in ("yes", "ask", "no"):
+        host = _agent_host(tmp_path / value, f"AddKeysToAgent {value}\n")
+        o = detect(cat, "auth.ssh_client_settings", make_scan(host))
+        assert o.status is Status.WARN and o.findings["agent_keys_unlimited"], value
+        g = build(cat, host, "auth.ssh_client_settings")
+        assert any(s.title == "Let keys leave the agent" for s in g.steps)
+    # only for every server: one server's setting doesn't cover the others
+    host = _agent_host(tmp_path / "one", "Host pi\n    AddKeysToAgent 1h\n")
+    assert detect(cat, "auth.ssh_client_settings", make_scan(host)).status is Status.WARN
+
+
+# ------------------------------------------------------------------ the SSH server's port
+
+from daprivacyscanner.network import parse_ss            # noqa: E402
+from daprivacyscanner.privileged import FakePrivileged    # noqa: E402
+
+from conftest import skip_if_root                         # noqa: E402
+
+ED = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFQsIvI0z3bygb1udZnZw4BxHi8M+W0EHgBYsNZSaeIv alice@example.com"
+ON_2222 = parse_ss("tcp   LISTEN 0      128          [::]:2222        [::]:*\n")
+
+
+@skip_if_root
+def test_sshd_port_root_only_as_on_fedora(cat, tmp_path):
+    """Fedora's sshd_config is 0600 and its drop-in folder 0700: a Port 2222 was never read, and the check said no
+    server was listening (a lower severity). Through the helper, sshd -T says; without it the port couldn't be read."""
+    import os
+    host = make_host(tmp_path, home_files={".ssh/authorized_keys": ED + "\n"},
+                     files={"/etc/ssh/sshd_config": "Include /etc/ssh/sshd_config.d/*.conf\nPort 2222\n",
+                            "/etc/ssh/sshd_config.d/50-redhat.conf": "SyslogFacility AUTHPRIV\n"})
+    cfg, folder = host.sys_path("/etc/ssh/sshd_config"), host.sys_path("/etc/ssh/sshd_config.d")
+    os.chmod(cfg, 0)
+    os.chmod(folder, 0)
+    try:
+        o = detect(cat, "auth.ssh_authorized_keys", make_scan(host, listeners=ON_2222))
+        assert o.findings["sshd_reachable"] is None and o.status is Status.WARN
+        assert ev(o)["SSH server"] == "couldn't tell: its port couldn't be read"
+        assert any(n.title == "The SSH server's port couldn't be read" for n in o.notes)
+        # something on 22, the default, still counts
+        o = detect(cat, "auth.ssh_authorized_keys",
+                   make_scan(host, listeners=parse_ss("tcp   LISTEN 0      128          0.0.0.0:22        0.0.0.0:*\n")))
+        assert o.findings["sshd_reachable"] is True
+        host.privileged = FakePrivileged(sshd={"port": ["2222"], "listenaddress": ["[::]:2222", "0.0.0.0:2222"]})
+        o = detect(cat, "auth.ssh_authorized_keys", make_scan(host, listeners=ON_2222))
+        assert o.findings["sshd_reachable"] is True and ev(o)["SSH server"].startswith("listening")
+    finally:
+        os.chmod(folder, 0o755)
+        os.chmod(cfg, 0o644)
+
+
+def test_sshd_port_from_listen_address_and_equals(cat, tmp_path):
+    from daprivacyscanner.checks.auth import sshd_ports
+    host = make_host(tmp_path, files={"/etc/ssh/sshd_config": "Port=2200\nListenAddress 10.0.0.5:2201\nListenAddress ::\n"
+                                                              "ListenAddress [::1]:2202\n"})
+    assert sshd_ports(make_scan(host)) == {2200, 2201, 2202}
+    assert sshd_ports(make_scan(make_host(tmp_path / "none"))) == {22}

@@ -816,7 +816,13 @@ checks:
       - 'For each private key in ~/.ssh: "ssh-keygen -y -P \"\" -f <key>" succeeds = no passphrase'
       - 'ssh-keygen refuses a key others can read ("bad permissions"): then read the key itself (openssh-key-v1
         cipher name "none", or a PEM key without ENCRYPTED) and report the loose permissions too'
-    fix: 'ssh-keygen -p -f <key>; recommend an agent (ssh-agent, gnome-keyring, KeePassXC).'
+      - 'Only "incorrect passphrase" means it asks for one. Any other failure (a key type this OpenSSH dropped, DSA in
+        OpenSSH 10; a damaged file): read the key itself as above, its reason in the evidence; a format the app doesn''t
+        know is couldn''t check, never protected'
+    fix: >
+      ssh-keygen -p -f <key>, after chmod 600 where its group or others can read it (ssh-keygen refuses the key
+      otherwise, -p included); a key this ssh-keygen can't load: a new key in its place. Recommend an agent
+      (ssh-agent, gnome-keyring, KeePassXC).
     remedy: >
       Anyone who copies these SSH keys can use them. Guide… gives the command to add a passphrase, and
       how an agent saves typing it.
@@ -1082,6 +1088,9 @@ checks:
         otherwise ssh-agent); keys loaded: ssh-add -l (the count only, never the comments); the default lifetime:
         ssh-agent''s -t argument (/proc/PID/cmdline), gpg-agent''s max-cache-ttl-ssh (default 7200), none for
         GNOME''s agents'
+      - 'AddKeysToAgent for every server with a time (1h, 600, confirm 1h) or confirm: the keys ssh adds as it
+        connects leave the agent, or ask before each use, so ssh-agent without -t is not "until logout" (keys added
+        by hand without -t: a note), and the guide doesn''t give that advice again'
     fix: >
       One option, WriteFile: a setting in the user's own files is changed on its line (ForwardAgent no,
       StrictHostKeyChecking accept-new, UserKnownHostsFile back to ssh's default); a setting from /etc is
@@ -1121,8 +1130,10 @@ checks:
         size (RSA modulus, DSA p, from the key itself), options (from=, command=, restrict, cert-authority) and
         SHA256 fingerprint; counts per type in the evidence, never the comments (they often hold an email address)'
       - 'Weak: DSA, or RSA under 2048 bits'
-      - 'An SSH server reachable from other machines: a TCP listener (ss) on the Port of /etc/ssh/sshd_config and
-        sshd_config.d (22 by default) not bound to loopback; systemd''s ssh.socket counts'
+      - 'An SSH server reachable from other machines: a TCP listener (ss) not bound to loopback on a port sshd uses:
+        sshd -T through the helper with administrator access, else Port and ListenAddress in /etc/ssh/sshd_config and
+        sshd_config.d (22 by default); systemd''s ssh.socket counts. Both are root''s alone on Fedora (0600, the
+        folder 0700): without administrator access a listener on 22 still counts, otherwise it can''t be told (a note)'
       - '~/.ssh and the key files writable by group or others'
     fix: >
       One option per key: WriteFile removing exactly that line (found again by its text when applied).

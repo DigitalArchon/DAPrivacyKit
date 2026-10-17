@@ -502,13 +502,19 @@ class SshKeyNoPassphrase(Check):
                 loose.append(k.name)
             # an empty passphrase opens it: no passphrase. -P never prompts.
             r = host.run("ssh-keygen", "-y", "-P", "", "-f", str(k))
+            err = r.stderr + r.stdout
             if r.ok:
                 state = "sk" if r.stdout.startswith("sk-") else "none"
-            elif re.search(r"bad permissions|too open", r.stderr + r.stdout, re.I):
+            elif re.search(r"incorrect passphrase", err, re.I):
+                state = "encrypted"                     # it asked for a passphrase, and an empty one isn't it
+            elif re.search(r"bad permissions|too open", err, re.I):
                 # ssh-keygen won't load a key others can read, passphrase or not: read the key itself
                 state = key_protection(read_text(host, k) or "")
             else:
-                state = "encrypted"
+                # it couldn't load the key at all: a type this OpenSSH dropped (DSA, in OpenSSH 10), a damaged file.
+                # Never "protected" for that: the file itself says, or it couldn't be checked
+                state = key_protection(read_text(host, k) or "")
+                others += f"; this ssh-keygen can't load it ({load_error(err)})"
             if state == "sk":
                 ev.append(Evidence.val(k.name, "hardware key (needs the security key)" + others, named=True))
             elif state == "none":
@@ -529,6 +535,13 @@ class SshKeyNoPassphrase(Check):
             return unknown(f"Couldn't tell whether {', '.join(unsure)} {'have' if len(unsure) > 1 else 'has'} a "
                            "passphrase.", *ev, notes=notes)
         return passed("Every SSH private key has a passphrase.", *ev, notes=notes)
+
+
+def load_error(output: str) -> str:
+    """ssh-keygen's reason for not loading a key, without the 'Load key "PATH": ' in front (the path names the user)."""
+    lines = [ln.strip() for ln in output.splitlines() if ln.strip()]
+    reason = re.sub(r'^Load key "[^"]*":\s*', "", lines[-1]) if lines else ""
+    return reason[:80] or "no reason given"
 
 
 def key_protection(text: str) -> str | None:
@@ -1519,6 +1532,22 @@ def ssh_agent(scan: Scan) -> SshAgent:
     return SshAgent(kind, keys, lifetime, preloads=kind is not None and kind.startswith("GNOME"))
 
 
+SSH_TIME = re.compile(r"(?:\d+[smhdw]?)+", re.I)       # sshd_config(5) TIME FORMATS: 600, 10m, 1h30m
+
+
+def added_keys_limit(lines: list[SshLine]) -> str | None:
+    """What AddKeysToAgent, for every server, does to the keys ssh adds to the agent as it connects, when it keeps them
+    from staying unlocked until logout: a lifetime ("1h": they leave the agent then), or confirm (each use is asked
+    for). None when it doesn't (yes, ask, no, or not set)."""
+    add = ssh_setting(lines, "AddKeysToAgent")
+    args = [a.lower() for a in add.args] if add is not None else []
+    if args and SSH_TIME.fullmatch(args[-1]) and args[0] in (args[-1], "confirm"):
+        return f"leave the agent after {args[-1]}" + (", and each use is confirmed" if args[0] == "confirm" else "")
+    if args == ["confirm"]:
+        return "ask before each use"
+    return None
+
+
 def _duration(seconds: int) -> str:
     if seconds >= 86400 and seconds % 86400 == 0:
         return f"{seconds // 86400} day{'s' if seconds > 86400 else ''}"
@@ -1563,7 +1592,15 @@ class SshClientSettings(Check):
             if agent.lifetime is not None:
                 ev.append(Evidence.val("The agent's time limit for keys", agent.lifetime or "none: until you log out"))
             unlimited = None if agent.keys is None or agent.lifetime is None else bool(agent.keys and not agent.lifetime)
-            if agent.preloads and agent.keys:
+            limit = added_keys_limit(lines) if agent.kind == "ssh-agent" else None
+            if unlimited and limit:
+                # AddKeysToAgent with a time (the guide's advice): the keys ssh adds as it connects leave by themselves
+                unlimited = False
+                notes.append(Note("limitation", "Keys added by hand",
+                                  f"Keys ssh adds to the agent as you connect {limit} (AddKeysToAgent). One added by hand "
+                                  "with ssh-add, without -t, stays until you log out; the agent doesn't tell other "
+                                  "programs which is which."))
+            elif agent.preloads and agent.keys:
                 unlimited = None                 # it can't be told which of them are unlocked
                 notes.append(Note("info", "Keys stay unlocked until you log out once used",
                                   f"{agent.kind} offers every key in ~/.ssh with a .pub file, and asks for its passphrase "
@@ -1689,27 +1726,59 @@ def authorized_keys(host) -> list[AuthorizedKey]:
     return out
 
 
-def sshd_ports(host) -> set[int]:
-    ports = set()
-    files = [host.sys_path("/etc/ssh/sshd_config")] + sorted(host.sys_path("/etc/ssh/sshd_config.d").glob("*.conf"))
-    for f in files:
+def _listen_port(address: str) -> int | None:
+    """The port of a ListenAddress that names one: 0.0.0.0:2222, [::]:2222 (a bare :: names none)."""
+    m = re.search(r"(?:\]|^[^:\s]*):(\d+)$", address.strip())
+    return int(m.group(1)) if m else None
+
+
+def sshd_ports(scan: Scan) -> set[int] | None:
+    """The ports the SSH server listens on: from `sshd -T` through the helper when administrator access was given (what
+    sshd itself makes of its files), else from Port and ListenAddress lines in /etc/ssh/sshd_config and
+    sshd_config.d/*.conf (22 when none is set). None when they couldn't be read: on Fedora both are root's alone (0600,
+    and the folder 0700), and without administrator access a custom port can't be known."""
+    if scan.privileged is not None:
         try:
-            text = host.read_file(f) or ""
-        except Unreadable:
-            continue
-        ports |= {int(m) for m in re.findall(r"^\s*Port\s+(\d+)\s*$", text, re.M | re.I)}
+            got = scan.privileged.sshd_settings()
+        except HelperError:
+            got = {}
+        ports = {int(p) for p in got.get("port", []) if p.strip().isdigit()}
+        ports |= {p for p in (_listen_port(a) for a in got.get("listenaddress", [])) if p is not None}
+        if ports:
+            return ports
+    host = scan.host
+    try:
+        texts = [host.read_sys("/etc/ssh/sshd_config") or ""]
+        folder = host.sys_path("/etc/ssh/sshd_config.d")
+        try:
+            names = sorted(p.name for p in folder.iterdir() if p.name.endswith(".conf"))
+        except (FileNotFoundError, NotADirectoryError):
+            names = []
+        except PermissionError:
+            return None                         # its drop-ins can't be listed: one may set the port
+        texts += [host.read_sys(f"/etc/ssh/sshd_config.d/{n}") or "" for n in names]
+    except Unreadable:
+        return None
+    ports = set()
+    for text in texts:
+        ports |= {int(m) for m in re.findall(r"^\s*Port\s*[=\s]\s*(\d+)\s*$", text, re.M | re.I)}
+        ports |= {p for p in (_listen_port(m) for m in re.findall(r"^\s*ListenAddress\s*[=\s]\s*(\S+)", text, re.M | re.I))
+                  if p is not None}
     return ports or {22}
 
 
 def ssh_server_reachable(scan: Scan) -> bool | None:
     """Whether an SSH server listens on an address other machines can reach (sshd itself, or
-    systemd's ssh.socket on Ubuntu 24.04 and later); None when the listening sockets couldn't be read."""
+    systemd's ssh.socket on Ubuntu 24.04 and later); None when the listening sockets couldn't be read,
+    or when sshd's port couldn't be and nothing listens on 22, its default."""
     listeners = scan.context.listeners
     if listeners is None:
         return None
-    ports = sshd_ports(scan.host)
-    return any(s.proto == "tcp" and s.port in ports and not s.host_part.startswith(("127.", "[::1]", "::1"))
-               for s in listeners)
+    ports = sshd_ports(scan)
+    outside = [s for s in listeners if s.proto == "tcp" and not s.host_part.startswith(("127.", "[::1]", "::1"))]
+    if ports is None:
+        return True if any(s.port == 22 for s in outside) else None
+    return any(s.port in ports for s in outside)
 
 
 @register
@@ -1742,8 +1811,15 @@ class SshAuthorizedKeys(Check):
                 ev.append(Evidence.val(f"~/{rel}", f"mode {mode:o}: other accounts can change it"))
         reachable = ssh_server_reachable(scan)
         weak = [k for k in keys if k.weak]
+        unread = reachable is None and scan.context.listeners is not None     # sshd's port couldn't be read
         ev.append(Evidence.val("SSH server", "listening for connections from other machines" if reachable else
-                               "not listening for other machines" if reachable is False else "couldn't tell"))
+                               "not listening for other machines" if reachable is False else
+                               "couldn't tell: its port couldn't be read" if unread else "couldn't tell"))
+        if unread:
+            notes.append(Note("limitation", "The SSH server's port couldn't be read",
+                              "It is set in /etc/ssh/sshd_config, which only an administrator can read here, and "
+                              "nothing listens on 22, the default. Scan with administrator access to tell whether an "
+                              "SSH server listens on another port."))
         findings = {"sshd_reachable": reachable, "weak_authorized_keys": bool(weak)}
         n = len(keys)
         if weak:
