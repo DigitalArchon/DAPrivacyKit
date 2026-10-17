@@ -242,3 +242,131 @@ def test_a_picture_rewritten_as_a_program_with_its_time_put_back_is_judged_again
     dest = host.home / "Documents"
     dest.mkdir()
     assert T.save(host, "tor-browser", "photo.png", dest, e.check).read_bytes().startswith(b"\x7fELF")
+
+
+# ------------------------------------------------------------------ C6, C8, C10: the TempOutbox
+
+@pytest.fixture
+def outbox(host, request):
+    """Tor Browser set up with its TempOutbox, this copy of the app its owner, and mat2 that drops "+gps"."""
+    from daprivacyscanner.host import CommandResult
+    from daprivacyscanner.tools import browser as B, owner
+    from daprivacyscanner.tools.metadata import cleaned_name
+    installed_tor(host)
+    T.prepare(host, "tor-browser")
+    T.forget_recent()
+    seen = []
+
+    def mat2(argv):
+        p = Path(argv[-1])
+        seen.append(p)
+        if p.suffix == ".xyz":
+            return CommandResult(tuple(argv), 0, f"[-] {p}'s format (chemical/x-xyz) is not supported\n")
+        cleaned_name(p).write_bytes(p.read_bytes().replace(b"+gps", b""))
+        for hook in list(hooks):
+            hook(p)
+        return CommandResult(tuple(argv), 0)
+    hooks: list = []
+    host.runner.handlers["mat2"] = mat2
+    assert B.default_outbox(host, B.BROWSERS["tor"])
+    assert owner.claim(host, "TempBrowser", host.home / "TempBrowser")
+    request.addfinalizer(lambda: owner.release(host, "TempBrowser"))
+    box = host.home / "TempBrowser/Outbox for Tor Browser"
+    return box, (lambda: B.run_outboxes(host)), hooks
+
+
+def writer(host, path: Path, pid: int = 4242):
+    """A process of the user's holding `path` open for writing, as a file manager copying it in does while it
+    pauses: its descriptor and fdinfo in the fixture's /proc."""
+    d = host.root / f"proc/{pid}"
+    (d / "fd").mkdir(parents=True, exist_ok=True)
+    (d / "fdinfo").mkdir(exist_ok=True)
+    os.symlink(path, d / "fd/7")
+    (d / "fdinfo/7").write_text("pos:\t98304\nflags:\t0100001\nmnt_id:\t31\n")
+    return d
+
+
+def test_a_copy_that_pauses_isn_t_cleaned_half_way(host, outbox):
+    """Live on Mint: a copy into the TempOutbox that paused 5 seconds was cleaned half-way (95 KB) into To upload
+    and reported cleaned. A file still open for writing waits, however long ago it last changed."""
+    box, run, _ = outbox
+    (box / "photo.jpg").write_bytes(b"half+gps")
+    old(box / "photo.jpg")
+    proc = writer(host, box / "photo.jpg")
+    run()
+    run()
+    up = T.uploads_dir(host, "tor-browser")
+    assert list(up.iterdir()) == [] and (box / "photo.jpg").exists()
+    assert T.outbox_view(host, "tor-browser", "Tor Browser")["waiting"] == 1
+    (proc / "fd/7").unlink()                                         # the copy has finished
+    (box / "photo.jpg").write_bytes(b"whole+gps")
+    old(box / "photo.jpg")
+    run()
+    assert list(up.iterdir()) == []                                  # changed since the last look: once more
+    run()
+    assert (up / "photo.jpg").read_bytes() == b"whole" and (box / "Originals/photo.jpg").read_bytes() == b"whole+gps"
+
+
+def test_a_file_that_changes_while_it_is_cleaned_goes_no_further(host, outbox):
+    box, run, hooks = outbox
+    (box / "photo.jpg").write_bytes(b"part+gps")
+    old(box / "photo.jpg")
+
+    def more(p):                                                     # the copy in goes on meanwhile
+        with open(box / "photo.jpg", "ab") as f:
+            f.write(b"+more")
+        hooks.clear()
+    hooks.append(more)
+    run()
+    run()
+    up = T.uploads_dir(host, "tor-browser")
+    assert list(up.iterdir()) == [] and (box / "photo.jpg").exists() and not list((box / "Originals").iterdir())
+    assert T.recent("tor-browser") == []                             # nothing said: it is still arriving
+    old(box / "photo.jpg")
+    run()
+    run()
+    assert (up / "photo.jpg").read_bytes() == b"part+more"
+
+
+def test_partial_copies_are_left_alone_and_counted_apart_and_unreadable_files_don_t_wait_for_ever(host, outbox):
+    box, run, _ = outbox
+    (box / "film.mp4.part").write_bytes(b"p")
+    (box / "notes.txt~").write_bytes(b"n")
+    (box / "locked.jpg").write_bytes(b"l+gps")
+    for n in ("film.mp4.part", "notes.txt~", "locked.jpg"):
+        old(box / n)
+    v = T.outbox_view(host, "tor-browser", "Tor Browser")
+    assert v["waiting"] == 1 and v["partial"] == 2
+    if os.geteuid() != 0:
+        os.chmod(box / "locked.jpg", 0)
+        run()
+        run()
+        assert (box / "Not cleaned/locked.jpg").exists()
+        v = T.outbox_view(host, "tor-browser", "Tor Browser")
+        assert v["waiting"] == 0 and v["partial"] == 2 and v["not_cleaned"] == ["locked.jpg"]
+        assert "can't be read" in T.recent("tor-browser")[0]["detail"]
+    assert (box / "film.mp4.part").exists() and (box / "notes.txt~").exists()
+
+
+def test_closing_the_disk_stops_the_tempoutbox_after_the_file_under_way(host, outbox):
+    """Quitting waited for a whole pass, every file's mat2 (up to 300 s each), under OUTBOX_LOCK."""
+    box, run, hooks = outbox
+    for n in ("a.jpg", "b.jpg", "c.jpg"):
+        (box / n).write_bytes(b"x+gps")
+        old(box / n)
+    run()
+    hooks.append(lambda p: T.STOP.set())
+    try:
+        run()
+    finally:
+        T.STOP.clear()
+    assert sorted(x.name for x in T.uploads_dir(host, "tor-browser").iterdir()) == ["a.jpg"]
+    assert (box / "b.jpg").exists() and (box / "c.jpg").exists()
+
+
+def test_the_page_shows_partial_copies_apart():
+    import inspect as _inspect
+    from daprivacyscanner.tools import browser as B
+    assert "transfer.STOP.set()" in _inspect.getsource(B.wipe_disk)
+    js = (Path(__file__).resolve().parents[1] / "src/daprivacyscanner/web/app.js").read_text()
+    assert "o.partial ?" in js and "b.outbox.partial" in js

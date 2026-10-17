@@ -380,8 +380,9 @@ lower it with the shield button in the browser's toolbar. Mullvad Browser starts
 - **The Outbox** (`~/TempBrowser/Outbox for Tor Browser`, or for Mullvad Browser): copy files into it with
   your file manager, and the app removes their metadata and puts the clean copies in *To upload*. The
   originals go to *Originals* inside it, and a file that can't be cleaned to *Not cleaned* (it isn't passed
-  on). It is made with the browser, and the panel lists what it did; **Turn it off** removes it once it is
-  empty. Copy rather than move: everything in `~/TempBrowser` goes when it is closed. The app empties it
+  on). A file is passed on once it has finished arriving; one named as a copy still under way (`.part`,
+  `.crdownload`) is left alone until it has its real name. It is made with the browser, and the panel lists what
+  it did; **Turn it off** removes it once it is empty. Copy rather than move: everything in `~/TempBrowser` goes when it is closed. The app empties it
   while it is open. If you have the permanent Outbox (`~/Outbox`) set up, the panel says to use that one
   instead, and to copy the clean files from `~/Outbox/Cleaned` into *To upload*.
 - **Add a file to upload…** copies one of your files into the browser's *To upload* folder, cleaned of

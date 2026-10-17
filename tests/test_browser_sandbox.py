@@ -716,8 +716,10 @@ def test_the_tempoutbox_cleans_into_to_upload_and_keeps_the_originals(host, requ
     from daprivacyscanner.tools import owner
     assert owner.claim(host, "TempBrowser", host.home / "TempBrowser")      # this copy's (only the owner empties it)
     request.addfinalizer(lambda: owner.release(host, "TempBrowser"))
-    B.run_outboxes(host)
+    B.run_outboxes(host)                                        # the first look: nothing has been seen unchanged yet
     up = T.uploads_dir(host, "tor-browser")
+    assert list(up.iterdir()) == []
+    B.run_outboxes(host)
     assert sorted(x.name for x in up.iterdir()) == ["photo.jpg"] and (up / "photo.jpg").read_bytes() == b"jpeg"
     assert (box / "Originals/photo.jpg").read_bytes() == b"jpeg+gps" and (box / "Not cleaned/notes.xyz").exists()
     assert sorted(x.name for x in box.iterdir()) == [".hidden", "Album", "Not cleaned", "Originals", "film.mp4.part",
@@ -725,12 +727,13 @@ def test_the_tempoutbox_cleans_into_to_upload_and_keeps_the_originals(host, requ
     assert all(x.parent.name.startswith(".adding-") for x in seen)          # cleaned out of the browser's sight
     v = T.outbox_view(host, "tor-browser", "Tor Browser")
     assert v["on"] and v["folder"] == "~/TempBrowser/Outbox for Tor Browser" and v["originals"] == 1
-    assert v["not_cleaned"] == ["notes.xyz"] and v["waiting"] == 2 and not v["permanent"]
+    assert v["not_cleaned"] == ["notes.xyz"] and v["waiting"] == 1 and v["partial"] == 1 and not v["permanent"]
     assert [(r["what"], r["name"]) for r in v["recent"]] == [("cleaned", "photo.jpg"), ("not_cleaned", "notes.xyz")]
     assert "can't clean this kind of file" in v["recent"][1]["detail"]          # newest first
     # a second photo of the same name: To upload keeps both, the originals too
     (box / "photo.jpg").write_bytes(b"two+gps")
     old(box / "photo.jpg")
+    B.run_outboxes(host)
     B.run_outboxes(host)
     assert (up / "photo (2).jpg").read_bytes() == b"two" and (box / "Originals/photo (2).jpg").exists()
     # turning it off is refused while it holds files (an original may be the only copy)

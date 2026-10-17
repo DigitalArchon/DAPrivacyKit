@@ -1031,13 +1031,19 @@ can ask every few seconds); then the panel says to use `~/Outbox` and copy from 
 turns it off (`remove_outbox`: refused while anything is in it, since an original may be the user's only copy)
 and on. A thread of the app's (`create_app(watch_outbox=True)`, every 2 seconds) looks into each set-up
 browser's TempOutbox while `~/TempBrowser` is mounted (`ramdisk.mounted`: the mount table only): every regular
-file at its top, not hidden or partial and unchanged for 2 seconds, is opened without following links, cleaned
-through the staging folder into that browser's To upload under a free name (`_add_fd`, what Add a file to
-upload… does), and moved into `Originals`; one that can't be cleaned (mat2 doesn't know the format, no room)
-goes into `Not cleaned` and is never passed on. Folders put there are left as they are; without mat2 nothing is
-touched. No desktop notification is sent (a notification history can keep the names on the disk): the last 20
-events are kept in memory for the panel, which follows the status every 2 seconds while a TempOutbox is on, and
-forgotten when `~/TempBrowser` is wiped, which waits for a run in progress (`OUTBOX_LOCK`).
+file at its top, not hidden or named as a partial copy (`.part`, `.crdownload`, `~`: counted apart on the panel), is
+taken once it has finished arriving: its size and mtime the same as at the last look, unchanged for 2 seconds, and
+open for writing by no program of the user's (`open_for_writing`, from `/proc/PID/fdinfo`: a file manager holds
+the file so while a copy pauses; with the mtime alone, a copy that paused 5 seconds was cleaned half-way and passed
+on as cleaned, found in the 2026-10-17 review). It is opened without following links, cleaned through the staging
+folder, and looked at again before anything reaches To upload: one that changed while it was cleaned goes no
+further and waits. Then it goes into that browser's To upload under a free name (`_add_fd`, what Add a file to
+upload… does), and the original into `Originals`; one that can't be cleaned (mat2 doesn't know the format, no
+room) or can't be read goes into `Not cleaned` and is never passed on. Folders put there are left as they are;
+without mat2 nothing is touched. No desktop notification is sent (a notification history can keep the names on the
+disk): the last 20 events are kept in memory for the panel, which follows the status every 2 seconds while a
+TempOutbox is on, and forgotten when `~/TempBrowser` is wiped, which stops a run after the file under way
+(`transfer.STOP`) and waits for that one (`OUTBOX_LOCK`).
 
 **Downloads.** The browser owns its Downloads folder and could fill it with anything, including a link to
 `~/.ssh/id_ed25519` that points nowhere inside the sandbox but at the real key outside. So

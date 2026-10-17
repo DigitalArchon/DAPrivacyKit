@@ -2736,7 +2736,8 @@ const FOLLOW_AFTER = 20000;          // ms the panel keeps following after somet
 function browserShown(d) {
   return JSON.stringify([d.ramdisk?.open, d.job?.state, (d.browsers || []).map(b => [b.running, b.installed,
     b.start_error, b.connection, b.downloads, b.downloads_other, b.uploads,
-    b.outbox && [b.outbox.on, b.outbox.waiting, b.outbox.originals, b.outbox.not_cleaned, b.outbox.recent]])]);
+    b.outbox && [b.outbox.on, b.outbox.waiting, b.outbox.partial, b.outbox.originals, b.outbox.not_cleaned,
+      b.outbox.recent]])]);
 }
 
 function browserIntro(data) {
@@ -3274,7 +3275,10 @@ function browserOutbox(b, data, reload, showBtn) {
     !o.watched ? h("div", { class: "warnbox small" }, "This copy of the app isn't watching it: files wait there until the app "
       + "is started again.") : h("div", { class: "muted" }, "The app empties it while it is open; quit the app and files wait "
       + "there until it is opened again."),
-    o.waiting ? h("div", {}, `${plural(o.waiting, "file")} waiting (a file still being copied in waits a moment).`) : null,
+    o.waiting ? h("div", {}, `${plural(o.waiting, "file")} waiting (a file still being copied in waits until it has `
+      + "all arrived).") : null,
+    o.partial ? h("div", { class: "muted" }, `${plural(o.partial, "file")} named as a copy still under way (.part, `
+      + `.crdownload, a name ending in ~) ${o.partial === 1 ? "is" : "are"} left alone until renamed.`) : null,
     recent.length ? h("ul", {}, recent.map(r => h("li", {}, r.what === "cleaned"
       ? [h("code", {}, r.name), " → To upload", r.detail !== r.name ? ` as ${r.detail}` : "", h("span", { class: "okmsg" }, " (cleaned)")]
       : [h("code", {}, r.name), " → Not cleaned: ", h("span", { class: "errmsg" }, r.detail)]))) : null,

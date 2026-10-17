@@ -45,6 +45,7 @@ import time
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 from ..host import Host
 from . import ramdisk, sniff
@@ -490,7 +491,14 @@ def add(host: Host, folder: str, src: Path, clean: bool) -> dict:
         os.close(sfd)
 
 
-def _add_fd(host: Host, folder: str, sfd: int, src_name: str, clean: bool) -> dict:
+class StillArriving(TransferError):
+    """The file changed while it was cleaned: it was still being copied in."""
+
+
+def _add_fd(host: Host, folder: str, sfd: int, src_name: str, clean: bool,
+            settled: Callable[[], bool] | None = None) -> dict:
+    """`sfd`'s file into To upload, cleaned first with `clean`; with `settled`, asked once it is cleaned and before
+    anything reaches To upload, a file that changed meanwhile goes no further (StillArriving)."""
     from . import metadata
     st = os.fstat(sfd)
     if not stat.S_ISREG(st.st_mode):
@@ -513,6 +521,8 @@ def _add_fd(host: Host, folder: str, sfd: int, src_name: str, clean: bool) -> di
             finally:
                 os.close(sdir)
             res = metadata.clean(host, stage_path / name, check_after=False)
+            if settled is not None and not settled():
+                raise StillArriving(f"{src_name} changed while it was cleaned.")
             if not res.ok:
                 raise TransferError(f"{src_name} couldn't be cleaned: {res.message}")
             cfd = os.open(res.output, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
@@ -590,6 +600,44 @@ def _outbox_files(fd: int) -> list[str]:
     return out
 
 
+def _partial(name: str) -> bool:
+    """Named as a copy still under way (.part, .crdownload, ~…): left alone until it has its real name."""
+    from .metadata import SKIP_NAMES
+    return bool(SKIP_NAMES.search(name))
+
+
+def open_for_writing(host: Host, wanted: set[tuple[int, int]]) -> set[tuple[int, int]]:
+    """Which of `wanted` (device, inode) a process of the user's has open for writing (/proc/PID/fdinfo's flags):
+    a file manager copying a file in holds it so while it pauses."""
+    from ..checks._util import children
+    found: set[tuple[int, int]] = set()
+    if not wanted:
+        return found
+    for p in children(host.sys_path("/proc")):
+        if not p.name.isdigit():
+            continue
+        try:
+            if host.root == Path("/") and p.stat().st_uid != host.uid:
+                continue
+        except OSError:
+            continue
+        for link in children(p / "fd"):
+            try:
+                st = os.stat(link)
+            except OSError:
+                continue
+            if (st.st_dev, st.st_ino) not in wanted:
+                continue
+            try:
+                info = (p / "fdinfo" / link.name).read_text()
+                flags = int(next(ln.split()[1] for ln in info.splitlines() if ln.startswith("flags:")), 8)
+            except (OSError, StopIteration, IndexError, ValueError):
+                flags = os.O_RDWR                       # couldn't be told: taken as written to
+            if flags & (os.O_WRONLY | os.O_RDWR):
+                found.add((st.st_dev, st.st_ino))
+    return found
+
+
 def remove_outbox(host: Host, name: str) -> None:
     """Turns the TempOutbox off: removes its folder, refused while it holds files (an original there may be
     the user's only copy)."""
@@ -639,12 +687,14 @@ def recent(folder: str) -> list[dict]:
 def forget_recent() -> None:
     with _RECENT_LOCK:
         _RECENT.clear()
+    _LOOKS.clear()
 
 
 def outbox_view(host: Host, folder: str, name: str) -> dict:
     """What the panel shows of a browser's TempOutbox."""
     box = outbox_dir(host, name)
-    view = {"folder": f"~/{ramdisk.BROWSER}/{box.name}", "on": False, "waiting": 0, "originals": 0, "not_cleaned": [],
+    view = {"folder": f"~/{ramdisk.BROWSER}/{box.name}", "on": False, "waiting": 0, "partial": 0, "originals": 0,
+            "not_cleaned": [],
             "permanent": permanent_outbox(host), "recent": recent(folder), "watched": WATCHED["on"],
             "mat2": bool(host.runner.which("mat2"))}
     try:
@@ -652,7 +702,8 @@ def outbox_view(host: Host, folder: str, name: str) -> dict:
     except (TransferError, ValueError, OSError):
         return view
     try:
-        view.update(on=True, waiting=len(_outbox_files(fd)))
+        files = _outbox_files(fd)
+        view.update(on=True, waiting=sum(not _partial(n) for n in files), partial=sum(_partial(n) for n in files))
         for sub, key in ((OUTBOX_ORIGINALS, "originals"), (OUTBOX_NOT_CLEANED, "not_cleaned")):
             try:
                 sfd = os.open(sub, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=fd)
@@ -668,14 +719,19 @@ def outbox_view(host: Host, folder: str, name: str) -> dict:
     return view
 
 
+_LOOKS: dict[str, dict[str, tuple[int, int, int]]] = {}    # browser folder -> name -> (inode, size, mtime), last look
+
+
 def run_outbox(host: Host, folder: str, name: str, settle: float = SETTLE) -> dict:
     """Each file put directly in the browser's TempOutbox: cleaned of metadata into its To upload
     (`_add_fd`, as Add a file to upload… with the box ticked), the original moved into Originals; a file
-    that couldn't be cleaned (a format mat2 doesn't know, no room) into "Not cleaned", never into To upload.
-    Hidden files, partial downloads and files changed in the last `settle` seconds (still being copied in)
-    wait. Folders put there are left as they are. Does nothing without mat2 (the panel says so).
-    Returns {"cleaned": [...], "not_cleaned": [(name, why)]}."""
-    from . import metadata
+    that couldn't be cleaned (a format mat2 doesn't know, no room, one that can't be read) into "Not cleaned",
+    never into To upload. A file is taken once it has finished arriving: unchanged (size and mtime) since the
+    last look and for `settle` seconds, and open for writing by no program of the user's; a copy in from the
+    file manager that paused 5 seconds was cleaned half-way and passed on as cleaned (the 2026-10-17 review). One
+    that changes while it is cleaned goes no further and waits for the next look. Hidden files, partial copies
+    (.part…) and folders are left as they are. Stops after the file under way when ~/TempBrowser is being closed
+    (STOP). Does nothing without mat2 (the panel says so). Returns {"cleaned": [...], "not_cleaned": [(name, why)]}."""
     done: dict = {"cleaned": [], "not_cleaned": []}
     if not host.runner.which("mat2"):
         return done
@@ -686,25 +742,53 @@ def run_outbox(host: Host, folder: str, name: str, settle: float = SETTLE) -> di
     try:
         if os.fstat(fd).st_dev != _ramdisk_dev(host):
             return done
+        before, looks, ready = _LOOKS.get(folder, {}), {}, {}
         for entry in _outbox_files(fd):
-            if metadata.SKIP_NAMES.search(entry):
+            if _partial(entry):
                 continue
             try:
                 st = os.stat(entry, dir_fd=fd, follow_symlinks=False)
-                if time.time() - st.st_mtime < settle or not stat.S_ISREG(st.st_mode):
-                    continue
-                sfd = os.open(entry, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=fd)
             except OSError:
                 continue
+            if not stat.S_ISREG(st.st_mode):
+                continue
+            looks[entry] = (st.st_ino, st.st_size, st.st_mtime_ns)
+            if before.get(entry) == looks[entry] and time.time() - st.st_mtime >= settle:
+                ready[entry] = st
+        _LOOKS[folder] = looks
+        writing = open_for_writing(host, {(st.st_dev, st.st_ino) for st in ready.values()})
+        for entry, st in ready.items():
+            if STOP.is_set():
+                break
+            if (st.st_dev, st.st_ino) in writing:
+                continue
+            got, why = None, ""
             try:
-                got = _add_fd(host, folder, sfd, entry, True)
-                sub, why = OUTBOX_ORIGINALS, ""
-            except (TransferError, OSError) as e:
-                sub = OUTBOX_NOT_CLEANED
-                why = str(e) if isinstance(e, TransferError) else f"{entry} couldn't be copied: {e.strerror or e}"
-                got = None
-            finally:
-                os.close(sfd)
+                sfd = os.open(entry, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=fd)
+            except FileNotFoundError:
+                continue
+            except OSError as e:                        # unreadable: it would wait for ever
+                sfd, why = None, f"{entry} can't be read: {e.strerror or e}"
+            if sfd is not None:
+                first = os.fstat(sfd)
+                if first.st_ino != st.st_ino:
+                    os.close(sfd)
+                    continue
+
+                def settled(sfd=sfd, first=first) -> bool:
+                    now = os.fstat(sfd)
+                    return (now.st_size, now.st_mtime_ns, now.st_ctime_ns) == \
+                        (first.st_size, first.st_mtime_ns, first.st_ctime_ns)
+                try:
+                    got = _add_fd(host, folder, sfd, entry, True, settled)
+                except StillArriving:
+                    looks.pop(entry, None)              # looked at afresh next time
+                    continue
+                except (TransferError, OSError) as e:
+                    why = str(e) if isinstance(e, TransferError) else f"{entry} couldn't be copied: {e.strerror or e}"
+                finally:
+                    os.close(sfd)
+            sub = OUTBOX_ORIGINALS if got is not None else OUTBOX_NOT_CLEANED
             try:
                 tfd = os.open(sub, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=fd)
             except FileNotFoundError:
@@ -714,6 +798,7 @@ def run_outbox(host: Host, folder: str, name: str, settle: float = SETTLE) -> di
                 os.rename(entry, _free(tfd, entry), src_dir_fd=fd, dst_dir_fd=tfd)
             finally:
                 os.close(tfd)
+            looks.pop(entry, None)
             if got is not None:
                 done["cleaned"].append(got["name"])
                 _note(folder, "cleaned", entry, got["name"])
