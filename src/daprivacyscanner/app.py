@@ -157,9 +157,12 @@ def dry_run(cat, check_id: str, host=None) -> int:
         items = runner.plan_easy()
         if not items:
             print("No Easy fixes apply here now.")
+        covered = Runner.merge_shared_easy(items, lambda cid: cat[cid].title)
         for result, plans in items:
             spec = cat[result.id]
             print(f"Easy fix for {result.id}: {spec.title}" + (f"\n  What it costs: {spec.easy.cost}" if spec.easy.cost else ""))
+            if result.id in covered:
+                print(f"    The same change as “{covered[result.id]}”: applying that one deals with this too.")
             for plan in plans:
                 print(plan.dry_run("    "))
             print()
@@ -178,7 +181,8 @@ def dry_run(cat, check_id: str, host=None) -> int:
             print(f"{cid}: an online test; its guide is built from its last result, and it hasn't run yet "
                   "(the app's Online tests, or daprivacyscanner --online)\n")
         elif plan is None:
-            print(f"{cid}: can't be fixed automatically here ({STATUS_WORD[result.status.value].lower()}: {result.summary})\n")
+            print(f"{cid}: can't be fixed automatically here ({STATUS_WORD[result.status.value].lower()}: {result.summary})"
+                  + (f"\n  {result.no_fix}" if result.no_fix else "") + "\n")
         elif isinstance(plan, Guide):
             print(plan.dry_run(), end="\n\n")
         else:

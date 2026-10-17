@@ -769,21 +769,9 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
                 app.state.report["results"][result.id] = d
             if not hidden(accepted, result.id, d):
                 visible.append((result, item_plans))
-        # one change that two checks offer (Ubuntu's apport off, for crash dumps and for crash reporting) is applied once:
-        # twice, it would be two History entries, and reverting one would have the other reported undone. The second
-        # check stays listed, saying which fix covers it, so the dialog lists what the count counts
-        first: dict[tuple, tuple] = {}
-        covered: dict[str, str] = {}
-        for result, item_plans in visible:
-            for p in list(item_plans):
-                same = tuple((a.kind, a.describe()) for a in p.actions)
-                if p.actions and same in first:
-                    by_result, by_plan = first[same]
-                    by_plan.side_effects.append(f"This also deals with “{catalogue[result.id].title}”.")
-                    item_plans.remove(p)
-                    covered[result.id] = catalogue[by_result.id].title
-                elif p.actions:
-                    first[same] = (result, p)
+        # a change two checks offer is applied once; the second check stays listed, saying which fix covers it, so
+        # the dialog lists what the count counts
+        covered = Runner.merge_shared_easy(visible, lambda cid: catalogue[cid].title)
         out = []
         for result, item_plans in visible:
             for p in item_plans:

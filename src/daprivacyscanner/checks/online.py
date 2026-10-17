@@ -816,11 +816,21 @@ class UpdatesRefreshed(OnlineCheck):
         in the runtime folder, in memory, removed at once (they took 269 MB in ~/.cache on Ubuntu 26.04, for good)."""
         import shutil
         import tempfile
+        own = scan.paths.cache_home / "daprivacyscanner"
+        shutil.rmtree(own / "apt", ignore_errors=True)    # where versions before 0.1.0b3 kept them, for good (269 MB)
         runtime = scan.host.environ.get("XDG_RUNTIME_DIR") or ""
-        if not runtime or not os.path.isdir(runtime):
-            return None, 0, ("apt needs a folder of its own to download the package lists into, and there is no "
-                             "runtime folder ($XDG_RUNTIME_DIR) to keep it in memory")
-        d = Path(tempfile.mkdtemp(prefix="daprivacyscanner-apt.", dir=runtime))
+        # the lists take about 170 MB while they download (Ubuntu 26.04), and the runtime folder is a tenth of memory:
+        # with too little room there they go in the app's cache folder, on the disk, and are removed all the same
+        try:
+            room = os.statvfs(runtime).f_bavail * os.statvfs(runtime).f_frsize if runtime else 0
+        except OSError:
+            room = 0
+        if room >= 400 * 2**20:
+            base = runtime
+        else:
+            own.mkdir(parents=True, exist_ok=True)
+            base = str(own)
+        d = Path(tempfile.mkdtemp(prefix="daprivacyscanner-apt.", dir=base))
         try:
             for sub in ("lists/partial", "cache/archives/partial"):
                 (d / sub).mkdir(parents=True, exist_ok=True)

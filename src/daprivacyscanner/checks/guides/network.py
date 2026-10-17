@@ -204,8 +204,8 @@ def _firewall_step(scan, listeners) -> Step:
         zones = [ln.split()[0] for ln in r.stdout.splitlines() if ln.strip() and not ln[0].isspace()] if r.ok else []
         if "FedoraWorkstation" in zones:
             text += (" Fedora Workstation's own zone, FedoraWorkstation, lets in every port from 1025 to 65535, and SSH. "
-                     "The public zone lets in only SSH and DHCPv6 (what this computer needs to get an address): make it "
-                     "the default, or take the range out of FedoraWorkstation. A program you want to reach from "
+                     "The public zone lets in only SSH, mDNS and DHCPv6 (what this computer needs to get an address): "
+                     "make it the default, or take the range out of FedoraWorkstation. A program you want to reach from "
                      "other machines then needs its port opened (sudo firewall-cmd --permanent --add-port=PORT/tcp).")
             cmds = ["sudo firewall-cmd --set-default-zone=public",
                     "# or keep the zone, without the range:",

@@ -186,6 +186,27 @@ class Runner:
             out.append((result, plans))
         return out
 
+    @staticmethod
+    def merge_shared_easy(items: list, title) -> dict[str, str]:
+        """One change that two checks offer (Ubuntu's apport off, for crash dumps and for crash reporting) is applied
+        once: twice, it would be two History entries, and reverting one would have the other reported undone. The
+        later check's copy is dropped from `items` (in place), the first plan saying it deals with that check too.
+        Returns {check id: the title of the check whose fix covers it}, for the list to say so. Called after the
+        findings the user accepted are left out (the server's), or on the whole list (--dry-run easy)."""
+        first: dict[tuple, tuple] = {}
+        covered: dict[str, str] = {}
+        for result, plans in items:
+            for p in list(plans):
+                same = tuple((a.kind, a.describe()) for a in p.actions)
+                if p.actions and same in first:
+                    by_result, by_plan = first[same]
+                    by_plan.side_effects.append(f"This also deals with “{title(result.id)}”.")
+                    plans.remove(p)
+                    covered[result.id] = title(by_result.id)
+                elif p.actions:
+                    first[same] = (result, p)
+        return covered
+
     def _title(self, check_id: str) -> str | None:
         return self.catalogue[check_id].title if check_id in self.catalogue.checks else None
 

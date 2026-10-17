@@ -212,7 +212,8 @@ def journal(check, scan, outcome):
                 "journald deletes a whole file at a time, once its newest entry is older than the limit: "
                 + (f"{old} file{'s' if old != 1 else ''} ({human_size(size)}) at once, the rest as they age. "
                    if old else "nothing is that old now; files go as they age. ")
-                + "A file holds about a month of entries by default, so some entries stay a while longer."), **kw)
+                + "journald starts a new file when one fills up, or after a month at the latest, so some entries "
+                  "stay a while past the limit."), **kw)
         opts = ([] if weaker(14 * 86400) else [keep("Keep two weeks", "2week", 14, recommended=True,
                                                     key="two_weeks")]) + \
                ([] if weaker(7 * 86400) else [keep("Keep one week", "1week", 7)]) + [memory]

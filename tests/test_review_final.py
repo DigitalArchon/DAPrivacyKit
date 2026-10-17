@@ -316,3 +316,30 @@ def test_a_minisign_signature_without_key_or_program_says_both(tmp_path):
     sig.write_text("untrusted comment: x\nRWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3\n")
     s = verify.check_minisign(host, verify.KeySet(host, []), sig, host.home / "x")
     assert s.status == "no_key" and "isn't installed" in s.detail and s.install == "sudo apt install minisign"
+
+
+def test_apts_lists_go_to_the_cache_when_memory_is_short_and_old_ones_go(cat, tmp_path, monkeypatch):
+    """The runtime folder is a tenth of memory; apt's lists took 170 MB while downloading. With less room than that they
+    go in the app's cache, and are removed all the same; the lists older versions kept there for good go too."""
+    import os
+    from types import SimpleNamespace
+    calls = []
+
+    def apt(argv):
+        calls.append(argv)
+        return CommandResult(argv, 0, "Listing...\n")
+    (tmp_path / "run").mkdir()
+    host = make_host(tmp_path, env={"XDG_RUNTIME_DIR": str(tmp_path / "run")})
+    old = host.home / ".cache/daprivacyscanner/apt/lists"
+    old.mkdir(parents=True)
+    (old / "x_Packages").write_text("old")
+    host.runner.handlers["apt-get"] = apt
+    host.runner.handlers["apt"] = apt
+    real = os.statvfs
+    monkeypatch.setattr(os, "statvfs", lambda p: SimpleNamespace(f_bavail=1000, f_frsize=4096) if str(p).endswith("run")
+                        else real(p))
+    run(cat, "kern.updates_refreshed", host, FakeNet())
+    lists = f"Dir::State::Lists={host.home}/.cache/daprivacyscanner/daprivacyscanner-apt."
+    assert all(any(x.startswith(lists) for x in a) for a in calls)
+    assert not (host.home / ".cache/daprivacyscanner/apt").exists()
+    assert list((host.home / ".cache/daprivacyscanner").iterdir()) == []         # removed after

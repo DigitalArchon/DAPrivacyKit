@@ -517,10 +517,11 @@ def cups_spool(check, scan, outcome):
             "Set PreserveJobFiles No and PreserveJobHistory 1d in /etc/cups/cupsd.conf")], side_effects=effects))
     return Guide(check.id, "Stop CUPS keeping printed documents", "", [
         Step("Choose what CUPS keeps", options=opts, done=day,
-             text="When CUPS restarts, it applies the new limits to the jobs it already keeps: the documents of "
-                  "finished jobs are deleted, and with the first option their history too."
-                  + (" It keeps no documents now, and the job list for a day at most." if day and history else
-                     " It keeps neither now." if day else "")),
+             text=("It keeps no documents now, and the job list for a day at most." if day and history else
+                   "It keeps neither now." if day else "")
+                  + (" When CUPS restarts, it applies the new limits to the jobs it already keeps: the documents of "
+                     "finished jobs are deleted"
+                     + (", and with the first option their history too." if len(opts) > 1 else ".") if opts else "")),
     ])
 
 
