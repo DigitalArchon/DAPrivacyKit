@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "daprivacyscanner"
-version = "0.1.0b2"
+version = "0.1.0b3"
 description = "Linux privacy auditor: finds common privacy issues and, where it is safe, fixes them."
 readme = "README.md"
 license = "GPL-3.0-or-later"
