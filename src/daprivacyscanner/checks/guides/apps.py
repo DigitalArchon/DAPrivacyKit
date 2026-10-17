@@ -253,34 +253,35 @@ def mail_remote_content(check, scan, outcome):
 
 LO_REMOVE_ITEM = ('<item oor:path="/org.openoffice.Office.Common/Security/Scripting"><prop oor:name='
                   '"RemovePersonalInfoOnSaving" oor:op="fuse"><value>true</value></prop></item>')
+# LibreOffice writes each setting as one <item> line; this finds RemovePersonalInfoOnSaving's, whatever its value
+LO_REMOVE_LINE = (r'<item oor:path="/org\.openoffice\.Office\.Common/Security/Scripting"><prop '
+                  r'oor:name="RemovePersonalInfoOnSaving"')
+LO_NEW_FILE = ('<?xml version="1.0" encoding="UTF-8"?>\n<oor:items xmlns:oor="http://openoffice.org/2001/registry" '
+               'xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">\n'
+               '</oor:items>\n')
 
 
-def _set_remove_personal_info(old: str | None) -> str:
-    """registrymodifications.xcu with RemovePersonalInfoOnSaving=true, the rest untouched."""
-    from ..apps import LO_REMOVE_INFO
-    text = old or ('<?xml version="1.0" encoding="UTF-8"?>\n<oor:items xmlns:oor="http://openoffice.org/2001/registry" '
-                   'xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">\n'
-                   '</oor:items>\n')
-    if LO_REMOVE_INFO.search(text):
-        return LO_REMOVE_INFO.sub(lambda m: m.group(0).replace(f"<value>{m.group(1)}</value>", "<value>true</value>"), text)
-    return text.replace("</oor:items>", LO_REMOVE_ITEM + "\n</oor:items>", 1)
+def _lo_remove_personal_info(xcu: Path, display: str):
+    """RemovePersonalInfoOnSaving=true, its one line set and put back alone: LibreOffice rewrites the rest of the file
+    every time it quits."""
+    from ...fix import SettingLines
+    return SettingLines(xcu, display, "Set RemovePersonalInfoOnSaving to true", [(LO_REMOVE_LINE, LO_REMOVE_ITEM)],
+                        anchor="</oor:items>", new_file=LO_NEW_FILE,
+                        by_hand="Tools → Options → LibreOffice → Security → Options: untick \"Remove personal information "
+                                "on saving\"")
 
 
-def _gimp_no_export(old: str | None) -> str:
-    """gimprc with the three export-metadata options off: changed where they are, added otherwise
-    (before GIMP's closing comment, when it has one)."""
+def _gimp_no_export(rc: Path, display: str, label: str):
+    """The three export-metadata options off, each line set and put back alone (GIMP rewrites gimprc as it quits),
+    changed where they are and added otherwise, before GIMP's closing comment when it has one."""
     import re
+    from ...fix import SettingLines
     from ..apps import GIMP_EXPORT_KEYS
-    text = old or ""
-    for k in GIMP_EXPORT_KEYS:
-        line = re.compile(rf"^\({re.escape(k)}\s+\w+\)", re.M)
-        if line.search(text):
-            text = line.sub(f"({k} no)", text)
-        elif "# end of gimprc" in text:
-            text = text.replace("# end of gimprc", f"({k} no)\n\n# end of gimprc", 1)
-        else:
-            text += ("" if not text or text.endswith("\n") else "\n") + f"({k} no)\n"
-    return text
+    return SettingLines(rc, display, f"{label}: set export-metadata-exif, -xmp and -iptc to no",
+                        [(rf"^\({re.escape(k)}\s+\w+\)", f"({k} no)") for k in GIMP_EXPORT_KEYS],
+                        anchor="# end of gimprc",
+                        by_hand="Edit → Preferences → Image Import & Export: tick the three \"Export … metadata by "
+                                "default\" boxes")
 
 
 @guide("app.shared_file_metadata")
@@ -293,7 +294,7 @@ def shared_file_metadata(check, scan, outcome):
         m = LO_REMOVE_INFO.search(read_text(host, xcu) or "")
         if m and m.group(1) == "true":
             continue
-        acts.append(WriteFile(xcu, _set_remove_personal_info, "Set RemovePersonalInfoOnSaving to true", host.display(xcu)))
+        acts.append(_lo_remove_personal_info(xcu, host.display(xcu)))
         if in_use(scan, loc.path, "soffice.bin", "soffice"):
             blockers.append("Close LibreOffice first: it rewrites its settings as it exits.")
     steps = [Step("LibreOffice: remove personal information when saving",
@@ -307,8 +308,7 @@ def shared_file_metadata(check, scan, outcome):
         gacts, gblock = [], []
         for label, rc in gimps:
             if gimp_exported(read_text(host, rc) or ""):
-                gacts.append(WriteFile(rc, _gimp_no_export, f"{label}: set export-metadata-exif, -xmp and -iptc to no",
-                                       host.display(rc)))
+                gacts.append(_gimp_no_export(rc, host.display(rc), label))
                 if in_use(scan, rc.parent, *GIMP_PROCESSES) and not gblock:
                     gblock.append("Close GIMP first: it rewrites its settings as it exits.")
         steps.append(Step("GIMP: don't copy a photo's details into exported images",

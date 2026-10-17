@@ -768,6 +768,111 @@ class QSettingsSet(Action):
 
 
 @action
+class SettingLines(Action):
+    """Settings that are whole lines of a file its program rewrites as it quits (LibreOffice's registrymodifications.xcu,
+    an <item> a line; GIMP's gimprc): each line is set, and put back, on its own, never the whole file. A whole-file
+    backup (WriteFile) conflicted with every revert, the program having rewritten the file, and forced it put back an
+    old file over everything changed since. Each entry: a pattern that finds its line, and the line to set; a line
+    that isn't there yet goes before the first line holding `anchor`, else at the end. `new_file` is the file made
+    when there is none (with `anchor` in it); reverting removes it again while it holds nothing more."""
+    kind = "setting_lines"
+
+    def __init__(self, path: Path, display: str, label: str, entries: list[tuple[str, str]], anchor: str = "",
+                 new_file: str = "", by_hand: str = ""):
+        self.path, self.display, self.label, self.entries = path, display, label, entries
+        self.anchor, self.new_file, self.by_hand = anchor, new_file, by_hand
+
+    def describe(self) -> str:
+        return f"{self.label} ({self.display}: {len(self.entries)} line{'s' if len(self.entries) != 1 else ''})"
+
+    @staticmethod
+    def _find(lines: list[str], pattern: str) -> int | None:
+        rx = re.compile(pattern)
+        return next((i for i, ln in enumerate(lines) if rx.search(ln)), None)
+
+    @staticmethod
+    def _put(text: str, pattern: str, line: str | None, anchor: str) -> tuple[str, str | None]:
+        """`text` with the line `pattern` finds set to `line` (removed for None): (the new text, the line before)."""
+        lines = text.split("\n")
+        i = SettingLines._find(lines, pattern)
+        before = lines[i] if i is not None else None
+        if i is not None:
+            if line is None:
+                del lines[i]
+            else:
+                lines[i] = line
+        elif line is not None:
+            at = next((j for j, ln in enumerate(lines) if anchor and anchor in ln), None)
+            if at is None:
+                at = len(lines) - 1 if lines and lines[-1] == "" else len(lines)
+            lines.insert(at, line)
+        return "\n".join(lines), before
+
+    def _new(self, old: str | None) -> str:
+        text = old if old is not None else self.new_file
+        for pattern, line in self.entries:
+            text = self._put(text, pattern, line, self.anchor)[0]
+        return text
+
+    def preview(self) -> list[str]:
+        old = Host.read_file(self.path)
+        return changed_lines(old, self._new(old))
+
+    def apply(self, ctx: FixContext) -> dict:
+        old = Host.read_file(self.path)
+        text, entries = old if old is not None else self.new_file, []
+        for pattern, line in self.entries:
+            text, before = self._put(text, pattern, line, self.anchor)
+            entries.append({"pattern": pattern, "line": line, "before": before})
+        dirs = made_dirs(self.path)
+        for d in dirs:
+            did(shell(["mkdir", d]))
+        _write_atomic(self.path, text.encode(), None if old is not None else 0o600)
+        return {"kind": self.kind, "path": str(self.path), "display": self.display, "entries": entries,
+                "anchor": self.anchor, "new_file": self.new_file if old is None else None, "created_file": old is None,
+                "dirs": dirs, "by_hand": self.by_hand, "lines": changed_lines(old, text),
+                "text": f"{self.label} ({self.display})"}
+
+    @staticmethod
+    def undo_hint(record: dict) -> str:
+        parts = [f"put back {e['before']}" if e["before"] is not None else f"delete the line {e['line']}"
+                 for e in record["entries"]]
+        return ((record.get("by_hand") + "; or " if record.get("by_hand") else "")
+                + f"in {record['display']}, with the program closed: " + "; ".join(parts))
+
+    @staticmethod
+    def changed_back(record: dict, host: Host) -> str | None:
+        lines = (Host.read_file(Path(record["path"])) or "").split("\n")
+        for e in record["entries"]:
+            i = SettingLines._find(lines, e["pattern"])
+            if (lines[i] if i is not None else None) != e["line"]:
+                return f"{record['display']} no longer has {e['line']}"
+        return None
+
+    @staticmethod
+    def revert(record: dict, ctx: FixContext, force: bool = False) -> RevertResult:
+        p = Path(record["path"])
+        text = Host.read_file(p)
+        if text is None:
+            return RevertResult(True, f"{record['display']} isn't there any more: nothing to put back")
+        for e in reversed(record["entries"]):
+            i = SettingLines._find(text.split("\n"), e["pattern"])
+            now = text.split("\n")[i] if i is not None else None
+            if now not in (e["line"], e["before"]) and not force:
+                return RevertResult(False, f"{record['display']}: {e['line']} has changed since (now {now})", True)
+        for e in reversed(record["entries"]):
+            text = SettingLines._put(text, e["pattern"], e["before"], record.get("anchor") or "")[0]
+        if record.get("created_file") and text.strip() == (record.get("new_file") or "").strip():
+            p.unlink()
+            did(shell(["rm", str(p)]))
+            return RevertResult(True, _with_notes(f"{record['display']} removed (the fix made it)",
+                                                  remove_made_dirs(record.get("dirs") or [])))
+        _write_atomic(p, text.encode())
+        return RevertResult(True, f"{record['display']}: {len(record['entries'])} line"
+                                  f"{'s' if len(record['entries']) != 1 else ''} put back")
+
+
+@action
 class KConfigLock(Action):
     """Marks one group of a KDE settings file immutable (`[Recent Files][$i]`, KConfig's Kiosk marker), so the program
     can't write it: an app's own list of recently opened files stays empty (tested on KDE Gear 26.08 with KolourPaint

@@ -797,8 +797,9 @@ def test_a_mount_unit_skipped_at_boot_is_explained(cat, tmp_path, system, monkey
         if argv[1] == "show" else CommandResult(tuple(argv), 0, "")
     o = thumbnails_check(cat).detect(make_scan(host, devices=[]))
     assert any(n.title == "The in-memory thumbnail cache was skipped at boot" for n in o.notes)
-    opt = build(cat, host, "desk.thumbnails", devices=[]).steps[-1].options[0]
-    assert opt.plan.blockers and "isn't mounted now" in opt.plan.blockers[0] and not opt.plan.actions
+    # said in the step, not a blocked option (an Easy fix counted that as still to apply: review of 2026-10-17)
+    step = build(cat, host, "desk.thumbnails", devices=[]).steps[-1]
+    assert not step.options and "isn't mounted now" in step.text
 
 
 def test_thumbnails_in_memory_only_for_the_usual_cache_folder(cat, tmp_path):
@@ -809,8 +810,7 @@ def test_thumbnails_in_memory_only_for_the_usual_cache_folder(cat, tmp_path):
     (other / "thumbnails/normal").mkdir(parents=True)
     (other / "thumbnails/normal/gone.png").write_bytes(png((host.home / "deleted.jpg").as_uri()))
     g = build(cat, host, "desk.thumbnails", devices=[])
-    opt = g.steps[-1].options[0]
-    assert opt.plan.blockers and "set elsewhere" in opt.plan.blockers[0] and not opt.plan.actions
+    assert not g.steps[-1].options and "set elsewhere" in g.steps[-1].text      # said, not a blocked option
 
 
 # ------------------------------------------------------------------ KDE Connect and GSConnect

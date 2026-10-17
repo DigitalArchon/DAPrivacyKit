@@ -440,6 +440,11 @@ def test_screenshots_expire_by_a_rule_of_the_apps_own(cat, tmp_path):
     log, res = apply(host, plan)
     conf = host.home / ".config/user-tmpfiles.d/60-daprivacyscanner-screenshots.conf"
     assert conf.read_text() == rule and sc.units["systemd-tmpfiles-clean.timer"] == "enabled"
+    # the screenshot straight in Pictures isn't the rule's: it is kept for good, and said so (it passed before the
+    # review of 2026-10-17, "each for at most 30 days")
+    o = detect(cat, "desk.screenshots", make_scan(host))
+    assert o.status is Status.WARN and "kept for good outside the folder the rule empties" in o.summary
+    (host.home / "Pictures/Screenshot keep.png").unlink()
     o = detect(cat, "desk.screenshots", make_scan(host))
     assert o.status is Status.PASS and ev(o)["Deleted after"].startswith("30 days")
     revert(host, log, res)

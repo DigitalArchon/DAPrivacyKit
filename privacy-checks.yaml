@@ -2969,8 +2969,11 @@ checks:
       - 'mat2 / exiftool installed, for the Remove metadata tool'
     fix: >
       Turn on "Remove personal information on saving" (while LibreOffice is closed); set GIMP's three
-      export-metadata options to no in gimprc (while GIMP is closed: it rewrites gimprc as it exits). Point to
-      the Remove metadata tool and the Outbox (app.metadata_outbox) for photos and other files.
+      export-metadata options to no in gimprc (while GIMP is closed: it rewrites gimprc as it exits). Both apps
+      rewrite these files every time they quit, so each change is its own lines (SettingLines: RemovePersonalInfoOnSaving's
+      <item> line, gimprc's three lines), recorded and put back alone; a whole-file backup conflicted with every revert,
+      and forced, put back an old file over everything changed since. Point to the Remove metadata tool and the Outbox
+      (app.metadata_outbox) for photos and other files.
     remedy: >
       Documents and pictures you save carry your name, or where a photo was taken. Guide… makes LibreOffice
       remove personal information when saving and stops GIMP copying a photo's details into what it exports;

@@ -717,30 +717,61 @@ class Screenshots(Check):
     id = "desk.screenshots"
 
     def detect(self, scan: Scan) -> Outcome:
+        import shlex
         host = scan.host
         pictures = xdg_user_dir(host, scan.paths, "PICTURES") or host.home / "Pictures"
+        # Spectacle's save folder holds its screenshots, whatever its name (screenshot_dirs keeps it only when named
+        # like one: the rule may empty only those), but never Pictures, Videos or the home itself, where they sit among
+        # photos and everything else (a Spectacle saving to Pictures made every photo count): what is there is judged
+        # by name, below
         dirs = set(screenshot_dirs(scan))
+        videos = xdg_user_dir(host, scan.paths, "VIDEOS") or host.home / "Videos"
         spectacle = (scan.kde.get("spectaclerc", "ImageSave", "imageSaveLocation")           # Plasma 6 (VERIFY)
                      or scan.kde.get("spectaclerc", "General", "defaultSaveLocation"))      # Plasma 5
         if spectacle:
-            dirs.add(Path(uri_path(spectacle) or spectacle))
-        t = Tally()
-        for d in dirs:
-            t += tally(d, pattern=IMAGE, max_depth=2)
+            d = Path(uri_path(spectacle) or spectacle)
+            if d not in (pictures, videos, host.home):
+                dirs.add(d)
         rule = _expiry(scan, "screenshots")
         expires = re.search(r":(\d+)d\s*$", rule or "", re.M)
-        t += tally(pictures, pattern=re.compile(r"^(Screenshot|Screen ?shot|Bildschirmfoto|Capture).*\.(png|jpe?g)$", re.I),
-                   max_depth=0)
+        covered = set()                         # the folders the rule empties (tmpfiles.d: type, path, ...)
+        for line in (rule or "").splitlines():
+            try:
+                f = shlex.split(line, comments=True)
+            except ValueError:
+                continue
+            if len(f) >= 2:
+                covered.add(f[1].replace("%%", "%"))
+        kept, loose = Tally(), Tally()          # in a folder the rule empties; anywhere else, kept for good
+        for d in dirs:
+            if str(d) in covered:
+                kept += tally(d, pattern=IMAGE, max_depth=2)
+            else:
+                loose += tally(d, pattern=IMAGE, max_depth=2)
+        loose += tally(pictures, pattern=re.compile(r"^(Screenshot|Screen ?shot|Bildschirmfoto|Capture).*\.(png|jpe?g)$",
+                                                    re.I), max_depth=0)
+        t = Tally()
+        t += kept
+        t += loose
         if not t.files:
             return passed("No screenshots or screen recordings are piling up.")
-        age = int((time.time() - (t.oldest or time.time())) / 86400)
-        what = f"{t.files} screenshot{'s and screen recordings are' if t.files > 1 else ' or screen recording is'} kept"
+        ev = [Evidence.val("Screenshots and recordings", t.describe())]
         if expires:
-            return passed(f"{what}, each for at most {expires.group(1)} days.",
-                          Evidence.val("Screenshots and recordings", t.describe()),
-                          Evidence.val("Deleted after", f"{expires.group(1)} days (a rule of this app's, daily)"))
-        return warned(f"{what}; the oldest is {age} day{'' if age == 1 else 's'} old.",
-                      Evidence.val("Screenshots and recordings", t.describe()), Evidence.val("Oldest", f"{age} days"))
+            ev.append(Evidence.val("Deleted after", f"{expires.group(1)} days (a rule of this app's, daily), in "
+                                   + ", ".join(host.display(Path(c)) for c in sorted(covered))))
+            if not loose.files:
+                what = f"{t.files} screenshot{'s and screen recordings are' if t.files > 1 else ' or screen recording is'}"
+                return passed(f"{what} kept, each for at most {expires.group(1)} days.", *ev)
+        age = int((time.time() - (loose.oldest or time.time())) / 86400)
+        n = loose.files
+        what = f"{n} screenshot{'s and screen recordings are' if n > 1 else ' or screen recording is'}"
+        if expires:
+            ev.append(Evidence.val("Outside those folders", loose.describe()))
+            return warned(f"{what} kept for good outside the folder{'s' if len(covered) > 1 else ''} the rule empties "
+                          f"(such as straight in Pictures); the oldest is {age} day{'' if age == 1 else 's'} old.",
+                          *ev, Evidence.val("Oldest", f"{age} days"))
+        return warned(f"{what} kept; the oldest is {age} day{'' if age == 1 else 's'} old.", *ev,
+                      Evidence.val("Oldest", f"{age} days"))
 
 
 @register

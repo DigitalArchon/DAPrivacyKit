@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 from ...context import read_swaps
 from ...fix import Command, DeleteFiles, MakeDir, RootChange, WriteFile, shell
@@ -51,23 +52,25 @@ def thumbnails(check, scan, outcome):
                                           side_effects=["Thumbnails you still browse are kept; the rest are made again "
                                                         "if you open their folder."])], done=not acts))
     cache, shown = tm.path, scan.host.display(tm.path)
-    blockers = []
+    # what stops it that closing an app can't clear is said in the step, never as a blocked option: an Easy fix
+    # counts a blocked option as one still to apply, and listed it greyed for as long as the check warned
+    cant = ""
     # the helper only ever mounts the asking user's own ~/.cache/thumbnails, from their account
     if cache != scan.host.home / ".cache" / "thumbnails":
-        blockers.append(f"Your cache folder is set elsewhere ({shown}); only ~/.cache/thumbnails can be kept in "
-                        "memory this way.")
+        cant = (f" Your cache folder is set elsewhere ({shown}, by XDG_CACHE_HOME); only ~/.cache/thumbnails can be "
+                "kept in memory this way.")
     elif tm.unit_exists and not tm.in_memory:
-        blockers.append(f"It is set up ({tm.unit_file}) but isn't mounted now: the check says why. Revert it from "
-                        "History to start over.")
-    actions = [] if tm.in_memory or blockers else thumbnail_deletions(scan, everything=True, only=cache) + [
+        cant = (f" It is set up ({tm.unit_file}) but isn't mounted now: the check says why. Revert it from History to "
+                "start over.")
+    actions = [] if tm.in_memory or cant else thumbnail_deletions(scan, everything=True, only=cache) + [
         RootChange("mount_tmpfs", {"size_mb": THUMBNAILS_IN_MEMORY_MB},
                    f"Add the systemd mount unit {tm.unit_file}, keeping {shown} in memory (tmpfs, "
                    f"{THUMBNAILS_IN_MEMORY_MB} MB, noexec,nosuid,nodev), and mount it now", phase=3)]
     steps.append(Step("Keep the thumbnail cache in memory",
                       "Mounted as tmpfs, the cache lives in RAM: it is empty again at every boot, and nothing about "
-                      "what you looked at is written to disk." + (" It is set up that way now." if tm.in_memory else ""),
-                      options=[option(check, f"Mount {shown} in memory (needs administrator access)", actions,
-                                      blockers=blockers, key="in_memory",
+                      "what you looked at is written to disk." + (" It is set up that way now." if tm.in_memory else cant),
+                      options=[] if tm.in_memory or cant else [option(
+                          check, f"Mount {shown} in memory (needs administrator access)", actions, key="in_memory",
                                       detail="Deletes the thumbnails cached now first: a mount over the folder would hide "
                                              "them on disk, not remove them.",
                                       side_effects=[
@@ -82,7 +85,7 @@ def thumbnails(check, scan, outcome):
                                           "Reverting stops and deletes the unit, or leaves the cache in memory until the "
                                           "next reboot if a program is using the folder.",
                                           "Flatpak apps keep their own thumbnail caches; those aren't covered.",
-                                      ])]))
+                                      ])], done=tm.in_memory))
     return Guide(check.id, "Thumbnails that outlive their pictures",
                  "Each cached thumbnail shows what a picture looked like and where it was, long after it is gone.",
                  steps)
@@ -385,6 +388,20 @@ def screenshots(check, scan, outcome):
             "move one you want to keep somewhere else.",
             "Only the screenshots folder: screenshots saved elsewhere are left alone.",
             "What the rule deletes is deleted for good; reverting stops the rule, it doesn't bring anything back."]))
+    from .._util import uri_path, xdg_user_dir
+    pictures = xdg_user_dir(host, scan.paths, "PICTURES") or host.home / "Pictures"
+    loose = [f for f in files_under(pictures)[0] if f.parent == pictures
+             and re.match(r"^(Screenshot|Screen ?shot|Bildschirmfoto|Capture).*\.(png|jpe?g)$", f.name, re.I)]
+    if loose:
+        spectacle = scan.kde.get("spectaclerc", "ImageSave", "imageSaveLocation") or \
+            scan.kde.get("spectaclerc", "General", "defaultSaveLocation")
+        to_pictures = spectacle and Path(uri_path(spectacle) or spectacle) == pictures
+        steps.append(Step("Screenshots saved straight into Pictures",
+                          f"{len(loose)} screenshot{'s are' if len(loose) != 1 else ' is'} in {host.display(pictures)} "
+                          "itself, where a rule can't tell them from your photos, so they are kept for good: move the "
+                          f"ones to let expire into {host.display(screenshot_dirs(scan)[0])}, and delete the rest."
+                          + (" Spectacle saves there now: in Spectacle, Configure… → Save → Save location, choose "
+                             f"{host.display(screenshot_dirs(scan)[0])}." if to_pictures else "")))
     return Guide(check.id, "Let screenshots expire",
                  "Screenshots often catch what was on screen by accident: messages, account pages, documents.", steps + [
                      Step("Choose how long to keep them", options=opts if dirs else [],

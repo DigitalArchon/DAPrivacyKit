@@ -256,6 +256,23 @@ def test_png_text_reads_what_qt_writes():
     assert png_text(bomb) == {}                          # inflated only so far: a path, never megabytes
 
 
+def test_a_thumbnail_cache_set_elsewhere_is_no_easy_fix(cat, tmp_path):
+    """With XDG_CACHE_HOME elsewhere the in-memory option could never be applied, yet "Easy fixes (n)" listed it, greyed,
+    for as long as the check warned: what closing an app can't clear is said in the step instead."""
+    from daprivacyscanner.runner import _easy_left
+    cache = tmp_path / "elsewhere"
+    host = make_host(tmp_path, env={"XDG_CACHE_HOME": str(cache)})
+    (cache / "thumbnails/normal").mkdir(parents=True)
+    check = load_all()["desk.thumbnails"](cat["desk.thumbnails"])
+    scan = make_scan(host, desktop=("kde",), plasma_major=6)
+    o = check.detect(scan)
+    assert o.status is Status.WARN
+    g = check.plan_guide(scan, o)
+    step = _step(g, "Keep the thumbnail cache in memory")
+    assert not step.options and "set elsewhere" in step.text
+    assert not _easy_left(check, scan, o)
+
+
 def test_kde_thumbnails_are_seen_and_deleted_before_the_cache_goes_into_memory(cat, tmp_path):
     host = make_host(tmp_path)
     cache = host.home / ".cache/thumbnails/normal"
@@ -324,6 +341,72 @@ def test_private_downloads_in_kde_records(cat, tmp_path):
     e = ev(o)
     assert o.status is Status.FAIL and e["Downloads in KDE apps' lists of what they opened"] == 2
     assert e["Downloads in KDE's activity history"] == 2
+
+
+# ------------------------------------------------------------------ screenshots
+
+def test_spectacle_saving_to_pictures_counts_no_photos(cat, tmp_path):
+    host = make_host(tmp_path, home_files={"Pictures/holiday.jpg": "x", "Pictures/cat.png": "x",
+                                           "Pictures/Screenshot_20261017_101010.png": "x"})
+    host.home.joinpath(".config").mkdir()
+    host.home.joinpath(".config/spectaclerc").write_text(
+        f"[ImageSave]\nimageSaveLocation={(host.home / 'Pictures').as_uri()}\n")
+    o = detect(cat, "desk.screenshots", make_scan(host, desktop=("kde",), plasma_major=6))
+    assert o.summary.startswith("1 screenshot or screen recording is kept")
+    g = _guide(cat, host, "desk.screenshots", desktop=("kde",), plasma_major=6)
+    step = _step(g, "Screenshots saved straight into Pictures")
+    assert "Spectacle saves there now" in step.text
+
+
+# ------------------------------------------------------------------ settings lines in files their apps rewrite
+
+XCU = ('<?xml version="1.0" encoding="UTF-8"?>\n<oor:items xmlns:oor="http://openoffice.org/2001/registry" '
+       'xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">\n'
+       '<item oor:path="/org.openoffice.UserProfile/Data"><prop oor:name="givenname" oor:op="fuse"><value>Alice</value>'
+       '</prop></item>\n'
+       '<item oor:path="/org.openoffice.Office.Common/Security/Scripting"><prop oor:name="RemovePersonalInfoOnSaving" '
+       'oor:op="fuse"><value>false</value></prop></item>\n'
+       '<item oor:path="/org.openoffice.Office.Common/Misc"><prop oor:name="FirstRun" oor:op="fuse"><value>false</value>'
+       '</prop></item>\n</oor:items>\n')
+
+
+def test_libreoffice_and_gimp_settings_revert_alone_after_the_app_rewrote_its_file(cat, tmp_path):
+    """Both apps rewrite the file as they quit: a whole-file backup conflicted with every revert, and forced, wiped
+    everything changed since. Only the lines the fix changed are put back."""
+    xcu = ".config/libreoffice/4/user/registrymodifications.xcu"
+    rc = ".config/GIMP/3.0/gimprc"
+    host = make_host(tmp_path, home_files={xcu: XCU, rc: '(theme "Dark")\n\n# end of gimprc\n'})
+    g = build(cat, host, "app.shared_file_metadata")
+    log1, res1 = apply(host, options(g)["Turn it on"])
+    log2, res2 = apply(host, options(g)["Turn them off"])
+    assert detect(cat, "app.shared_file_metadata", make_scan(host)).status is Status.PASS
+    # the apps quit, rewriting their files with something new in them
+    x, r = host.home / xcu, host.home / rc
+    x.write_text(x.read_text().replace("</oor:items>", '<item oor:path="/x"><prop oor:name="New" oor:op="fuse">'
+                                                       '<value>1</value></prop></item>\n</oor:items>'))
+    r.write_text(r.read_text().replace('(theme "Dark")', '(theme "Light")'))
+    revert(host, log1, res1)
+    revert(host, log2, res2)
+    assert x.read_text() == XCU.replace("</oor:items>", '<item oor:path="/x"><prop oor:name="New" oor:op="fuse">'
+                                                        '<value>1</value></prop></item>\n</oor:items>')
+    assert r.read_text() == '(theme "Light")\n\n# end of gimprc\n'
+
+
+def test_a_settings_line_changed_back_is_seen_and_a_file_the_fix_made_goes(cat, tmp_path):
+    from daprivacyscanner.fix import SettingLines
+    rc = ".config/GIMP/2.10/gimprc"
+    host = make_host(tmp_path, home_files={".config/GIMP/2.10/.keep": ""})
+    g = build(cat, host, "app.shared_file_metadata")
+    log, res = apply(host, options(g)["Turn them off"])
+    record = log.get(res.entry_id)["records"][0]
+    assert SettingLines.changed_back(record, host) is None
+    f = host.home / rc
+    f.write_text(f.read_text().replace("(export-metadata-exif no)", "(export-metadata-exif yes)"))
+    assert "export-metadata-exif" in SettingLines.changed_back(record, host)
+    assert "Image Import & Export" in SettingLines.undo_hint(record)
+    f.write_text(f.read_text().replace("(export-metadata-exif yes)", "(export-metadata-exif no)"))
+    revert(host, log, res)
+    assert not f.exists()
 
 
 # ------------------------------------------------------------------ package repositories, DNF's counter
