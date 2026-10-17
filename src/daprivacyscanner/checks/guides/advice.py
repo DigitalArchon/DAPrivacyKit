@@ -372,16 +372,81 @@ def removable_unencrypted(check, scan, outcome):
     ])
 
 
+# Where the key that signs the drivers built on this machine (DKMS, akmods) is kept, by the tool that makes it: shim-signed
+# on Debian, Ubuntu and Mint (seen on Mint 22.3: NVIDIA's DKMS module signed by it), dkms 3 elsewhere (DER, whatever its
+# name says), Fedora's akmods
+MOK_KEYS = ("/var/lib/shim-signed/mok/MOK.der", "/var/lib/dkms/mok.pub", "/etc/pki/akmods/certs/public_key.der")
+
+
+def mok_state(scan) -> tuple[str, str | None]:
+    """("enrolled" | "queued" | "missing" | "unknown" | "none", the key file) for the key that signs the drivers this
+    machine builds itself: whether the firmware's shim will trust them once Secure Boot is on. mokutil --test-key reads
+    the enrolled and pending lists, which every account may read (tested on Mint 22.3)."""
+    key = next((k for k in MOK_KEYS if isfile(scan.host.sys_path(k))), None)
+    if key is None:
+        return "none", None
+    r = scan.host.run("mokutil", "--test-key", key)
+    said = r.stdout + r.stderr
+    for words, state in (("is already enrolled", "enrolled"), ("already in the enrollment request", "queued"),
+                         ("is not enrolled", "missing")):
+        if words in said:
+            return state, key
+    return "unknown", key
+
+
+def built_modules(scan) -> list[str]:
+    """The drivers built on this machine for the running kernel (DKMS's updates/dkms, akmods' extra), by name."""
+    release = (scan.host.read_sys("/proc/sys/kernel/osrelease") or "").strip()
+    if not release:
+        return []
+    names = set()
+    for base in (f"/usr/lib/modules/{release}/updates/dkms", f"/lib/modules/{release}/updates/dkms",
+                 f"/usr/lib/modules/{release}/extra", f"/lib/modules/{release}/extra"):
+        for p in scan.host.sys_path(base).rglob("*.ko*") if scan.host.sys_path(base).is_dir() else []:
+            names.add(p.name.split(".ko")[0])
+    return sorted(names)
+
+
+def _mok_step(scan) -> tuple[str, Step | None]:
+    """What turning Secure Boot on means for the drivers built here: a sentence for the firmware step, and a step that
+    enrols their key first when the firmware doesn't trust it yet (they wouldn't load: NVIDIA's driver among them)."""
+    state, key = mok_state(scan)
+    modules = built_modules(scan)
+    which = (f" ({', '.join(modules[:4])}{', …' if len(modules) > 4 else ''})" if modules else "")
+    if state == "enrolled":
+        return (f" The key that signs the drivers built on this machine{which} is enrolled already, so they keep "
+                "loading."), None
+    if state == "queued":
+        return (f" The key that signs the drivers built on this machine{which} is waiting to be enrolled: at the next "
+                "restart a blue screen (MokManager) asks for it. Choose Enroll MOK, Continue, Yes, and type the password "
+                "chosen when it was imported."), None
+    if state == "missing":
+        return "", Step("First: enrol the key that signs the drivers built on this machine",
+                        f"This computer builds some drivers itself{which} and signs them with a key of its own ({key}), "
+                        "which the firmware doesn't trust yet: with Secure Boot on they wouldn't load (without NVIDIA's "
+                        "driver, the screen falls back to a basic one). The first command asks you to choose a one-time "
+                        "password. At the next restart a blue screen (MokManager) appears: choose Enroll MOK, Continue, "
+                        "Yes, and type that password. The second command then says it is enrolled; turn Secure Boot on "
+                        "only after that.",
+                        commands=[f"sudo mokutil --import {key}", f"mokutil --test-key {key}"],
+                        side_effects=["The blue screen waits about ten seconds for a key press, then starts the "
+                                      "computer without enrolling: import it again then."])
+    return (" If you use drivers built on this machine (NVIDIA's, VirtualBox's), their signing key has to be enrolled "
+            "first (sudo mokutil --import with the key's file, then a blue screen at the next restart), or they won't "
+            "load."), None
+
+
 @guide("enc.boot_no_secureboot")
 def boot_no_secureboot(check, scan, outcome):
     signed = family(scan) in ("debian", "fedora", "suse")          # shim and GRUB signed by the distribution
     steps = []
     if signed:
+        mok, first = _mok_step(scan)
+        if first is not None:
+            steps.append(first)
         steps.append(Step("Turn it on in the firmware",
                           "Your distribution's boot files are already signed. Restart into the firmware setup, find "
-                          "Secure Boot (often under Boot or Security) and enable it with the standard keys. If you use "
-                          "drivers built on this machine (NVIDIA's, VirtualBox's), you'll be asked to enrol a key "
-                          "(MOK) at the next boot: follow the blue screen, with the password you set.",
+                          "Secure Boot (often under Boot or Security) and enable it with the standard keys." + mok,
                           commands=["systemctl reboot --firmware-setup", "mokutil --sb-state"],
                           side_effects=["This stops a changed bootloader or kernel from starting, not a changed "
                                         "initramfs: with shim and GRUB the initramfs isn't signed. The firmware "

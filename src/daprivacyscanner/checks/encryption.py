@@ -1118,8 +1118,11 @@ class Trash(Check):
 
 # ------------------------------------------------------------------ boot
 
-EFI_SECURE_BOOT = "/sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-e39e1ffa9b81"
-EFI_SECURE_BOOT_OLD = "/sys/firmware/efi/vars/SecureBoot-8be4df61-93ca-11d2-aa0d-e39e1ffa9b81/data"   # old sysfs interface
+# EFI_GLOBAL_VARIABLE, the UEFI specification's vendor GUID of SecureBoot, SetupMode, BootOrder... (seen on a P330:
+# SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c; a wrong one made every UEFI machine "not supported")
+EFI_GLOBAL = "8be4df61-93ca-11d2-aa0d-00e098032b8c"
+EFI_SECURE_BOOT = f"/sys/firmware/efi/efivars/SecureBoot-{EFI_GLOBAL}"
+EFI_SECURE_BOOT_OLD = f"/sys/firmware/efi/vars/SecureBoot-{EFI_GLOBAL}/data"   # old sysfs interface
 
 
 NEEDS_ADMIN = "needs administrator access"
@@ -1173,12 +1176,18 @@ class BootNoSecureboot(Check):
         devices = _devices(scan)
         if devices is None:
             return unknown("Couldn't list block devices (lsblk).")
-        boot = blockdev.holding(devices, "/boot")
+        places = boot_places(scan, devices)
         notes = _lockdown_notes(scan)
-        if boot is not None and boot.encrypted:
-            return passed("/boot is on encrypted storage.", Evidence.val("/boot", boot.name), notes=notes)
+        if places and all(d is not None and d.encrypted for _, d in places):
+            if [w for w, _ in places] == ["/boot"]:
+                return passed("/boot is on encrypted storage.", Evidence.val("/boot", places[0][1].name), notes=notes)
+            return passed("The kernel and initramfs are on encrypted storage.",
+                          *(Evidence.val(w, d.name) for w, d in places), notes=notes)
         sb, how = secure_boot(scan)
-        ev = [Evidence.val("/boot", f"{boot.name} ({boot.fstype}), not encrypted" if boot else "not found")]
+        ev = [Evidence.val(w, f"{d.name} ({d.fstype}), {'encrypted' if d.encrypted else 'not encrypted'}" if d else
+                           "not found") for w, d in places] or [Evidence.val("/boot", "not found")]
+        plain = [w for w, d in places if d is None or not d.encrypted]
+        where = plain[0] if len(plain) == 1 else " and ".join(plain)
         efi = isdir(scan.host.sys_path("/sys/firmware/efi"))
         ev.append(Evidence.val("Firmware", "UEFI" if efi else "legacy BIOS"))
         if sb is None and how == NEEDS_ADMIN:
@@ -1190,18 +1199,76 @@ class BootNoSecureboot(Check):
                            "mokutil and the kernel's boot messages didn't say.", *ev, notes=notes)
         ev.append(Evidence.val("Secure Boot", ("on" if sb else "off") + f" ({how})"))
         if not sb:
-            return failed("/boot isn't encrypted and Secure Boot is off.", *ev, notes=notes)
+            return failed(f"{where} isn't encrypted and Secure Boot is off." if where == "/boot" else
+                          f"The kernel and initramfs on {where} aren't encrypted, and Secure Boot is off.", *ev, notes=notes)
         uki = booted_uki(scan)
         ev.append(Evidence.val("Booted a unified kernel image (UKI)", "yes" if uki else "no"))
         if uki:
-            return passed("/boot isn't encrypted, but Secure Boot is on and checks the whole boot image (a UKI).", *ev,
-                          notes=notes)
-        return warned("Secure Boot is on, but the initramfs on the unencrypted /boot isn't checked by it.", *ev,
+            return passed(f"{where} isn't encrypted, but Secure Boot is on and checks the whole boot image (a UKI).",
+                          *ev, notes=notes)
+        return warned(f"Secure Boot is on, but the initramfs on the unencrypted {where} isn't checked by it.", *ev,
                       notes=notes + [Note("risk", "What Secure Boot checks here, and what it doesn't",
                                           "The firmware checks the bootloader, and the bootloader the kernel. The "
                                           "initramfs, which asks for the disk passphrase, and GRUB's configuration "
                                           "aren't signed, so a changed one still runs. A unified kernel image (UKI) "
                                           "puts the kernel and initramfs in one signed file.")])
+
+
+ESP_MOUNTS = ("/efi", "/boot/efi", "/boot")                    # where an EFI system partition (or XBOOTLDR) is mounted
+KERNEL_FILES = re.compile(r"^(vmlinuz|vmlinux|bzImage|initrd|initramfs)")
+
+
+def _boot_files_on(scan: Scan, mp: str) -> bool | None:
+    """Whether kernels or initramfs images are stored on the filesystem mounted at `mp`: vmlinuz-* or initrd* at its
+    top (GRUB, Limine), unified kernel images in EFI/Linux, or what systemd-boot's entries (loader/entries/*.conf, their
+    linux and initrd lines, paths from the partition's top) name. None when it can't be listed (an EFI partition is
+    often 0700, or mounted with umask=0077)."""
+    host, root = scan.host, scan.host.sys_path(mp)
+    try:
+        names = [p.name for p in root.iterdir()]
+    except PermissionError:
+        return None
+    except OSError:
+        return False
+    if any(KERNEL_FILES.match(n) for n in names):
+        return True
+    try:
+        if any(p.suffix.lower() == ".efi" for p in (root / "EFI" / "Linux").iterdir()):
+            return True
+    except PermissionError:
+        return None
+    except OSError:
+        pass
+    for entry in children(root / "loader" / "entries"):
+        for m in re.finditer(r"^\s*(?:linux|initrd|efi)\s+(\S+)", read_text(host, entry) or "", re.M):
+            if (root / m.group(1).lstrip("/")).exists():
+                return True
+    return False
+
+
+def boot_places(scan: Scan, devices: list[blockdev.Device]) -> list[tuple[str, blockdev.Device | None]]:
+    """Where the kernels and their initramfs are stored, with the device each is on: /boot (its own partition, or the
+    root filesystem's folder) when it holds them, and an EFI partition mounted at /efi, /boot/efi or /boot that holds
+    them (systemd-boot copies them there, and unified kernel images live in its EFI/Linux). A booted unified kernel
+    image came from the EFI partition, even where that can't be listed. Without any of that, the device holding /boot,
+    as before: the root filesystem's when /boot is a folder of it."""
+    places: list[tuple[str, blockdev.Device | None]] = []
+    mounted = {mp: d for mp, d in blockdev.mounted(devices)}
+    unlisted = []
+    for mp in ESP_MOUNTS:
+        d = mounted.get(mp)
+        if d is None or mp == "/boot" and (d.fstype or "").lower() != "vfat":
+            continue
+        found = _boot_files_on(scan, mp)
+        if found:
+            places.append((mp, d))
+        elif found is None:
+            unlisted.append((mp, d))
+    if not any(mp == "/boot" for mp, _ in places) and _boot_files_on(scan, "/boot"):
+        places.insert(0, ("/boot", blockdev.holding(devices, "/boot")))
+    if booted_uki(scan) and unlisted and not any(d is not None and not d.encrypted for _, d in places):
+        places.append(unlisted[0])                      # the image this boot started from was on it
+    return places or [("/boot", blockdev.holding(devices, "/boot"))]
 
 
 SYSTEMD_VENDOR_GUID = "4a67b082-0a4c-41cf-b6c7-440b29bb8c4f"

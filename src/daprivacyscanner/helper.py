@@ -146,7 +146,7 @@ READABLE = (
     "/etc/cups/cupsd.conf", "/etc/snapper/configs/*", "/etc/doas.conf",
     "/etc/ssh/sshd_config", "/etc/ssh/sshd_config.d/*.conf",
     # the firmware's Secure Boot setting, where efivarfs lets only root read it
-    "/sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-e39e1ffa9b81",
+    "/sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c",
 )
 SSHD_KEYS = ("passwordauthentication", "permitrootlogin", "permitemptypasswords", "kbdinteractiveauthentication",
              "pubkeyauthentication", "port", "listenaddress")

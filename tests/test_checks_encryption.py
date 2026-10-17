@@ -328,10 +328,10 @@ def test_trash_survives_unreadable_mounts(cat, tmp_path):
 
 # ------------------------------------------------------------------ boot, tmp, TRIM
 
-SB = "/sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-e39e1ffa9b81"
+SB = "/sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c"
 
 
-OTHER_VAR = "/sys/firmware/efi/efivars/BootOrder-8be4df61-93ca-11d2-aa0d-e39e1ffa9b81"
+OTHER_VAR = "/sys/firmware/efi/efivars/BootOrder-8be4df61-93ca-11d2-aa0d-00e098032b8c"
 STUB = "/sys/firmware/efi/efivars/StubInfo-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f"
 
 

@@ -483,13 +483,23 @@ checks:
       as distributions ship it (shim, GRUB, a signed kernel) doesn't check the initramfs or GRUB's configuration;
       a unified kernel image (UKI), signed as a whole, does.
     detect:
-      - 'Check /boot has no crypt ancestor'
+      - 'Where the kernels and initramfs are, and that none of it has no crypt ancestor: /boot when it holds vmlinuz* or
+        initrd* (its own partition, or a folder of the root filesystem), and an EFI partition mounted at /efi, /boot/efi
+        or /boot that holds them (unified kernel images in EFI/Linux, what systemd-boot''s loader/entries/*.conf name in
+        their linux and initrd lines); a booted UKI came from the EFI partition even where it can''t be listed (umask=0077)'
       - 'A UKI booted: systemd-stub sets the StubInfo-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f EFI variable'
-      - 'Secure Boot: the SecureBoot EFI variable (efivarfs, readable by all; old sysfs efi/vars); UEFI with efivars visible but no SecureBoot variable = not supported (off); then mokutil --sb-state (stdout and stderr); then the kernel log line "secureboot: Secure boot enabled|disabled"'
+      - 'Secure Boot: the SecureBoot EFI variable under the EFI global GUID, SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c
+        (efivarfs, readable by all; old sysfs efi/vars); UEFI with efivars visible but no SecureBoot variable = not
+        supported (off); then mokutil --sb-state (stdout and stderr); then the kernel log line "secureboot: Secure boot
+        enabled|disabled"'
       - 'Kernel lockdown (/sys/kernel/security/lockdown): mentioned only in confidentiality mode, in plain words'
     fix: >
       Explain Secure Boot, and that only a signed UKI brings the initramfs under the signature: with shim and GRUB,
       Secure Boot on is a warning, not a pass. A TPM bound to PCR 7 alone doesn't notice a changed initramfs either.
+      Drivers built on the machine (DKMS, akmods) are signed with its own key (/var/lib/shim-signed/mok/MOK.der,
+      /var/lib/dkms/mok.pub, /etc/pki/akmods/certs/public_key.der): `mokutil --test-key` (as the user) says whether it is
+      enrolled, waiting, or neither; neither: `sudo mokutil --import` it first, or they won't load with Secure Boot on
+      (seen on Mint 22.3: NVIDIA's module signed by a key that was neither).
     remedy: >
       Someone with a few minutes alone with the computer could change the unencrypted boot files to
       capture your disk passphrase. Secure Boot stops a changed bootloader or kernel from running, but
