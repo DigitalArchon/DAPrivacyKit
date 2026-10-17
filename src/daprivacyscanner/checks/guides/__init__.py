@@ -412,6 +412,10 @@ def _swap_steps(check: Check, scan: Scan) -> list[Step]:
 
 
 def _hibernate_off(check: Check, scan: Scan, recommended: bool = True) -> Step:
+    from ...context import sleep_modes
+    if not sleep_modes(scan.host)[0]:
+        # systemd's sleep settings already allow none of the modes that write memory to the disk
+        return Step("Turn hibernation off", "systemd's sleep settings allow no hibernation here.", done=True)
     return Step("Turn hibernation off",
                 "Stops the machine from ever writing its memory to the swap device. Suspend (sleep) still works.",
                 options=[option(check, "Turn hibernation off", [dropin(

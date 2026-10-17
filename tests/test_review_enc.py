@@ -139,6 +139,22 @@ def test_hibernation_turned_off_in_sleep_conf_is_off(cat, tmp_path):
     assert o.status is Status.PASS and "turned off in systemd's sleep settings" in o.summary
 
 
+def test_turning_hibernation_off_makes_the_check_pass_and_the_step_done(cat, tmp_path, system, monkeypatch):
+    from daprivacyscanner.checks import load_all
+    from daprivacyscanner.context import detect_hibernation
+    from test_guides import apply, options, revert, rooted
+    host, _ = _hib_host(tmp_path, logind="yes")
+    rooted(host, system, monkeypatch)
+    check = load_all()["enc.hibernate_unencrypted"](cat["enc.hibernate_unencrypted"])
+    log, res = apply(host, options(check.plan_guide(make_scan(host), Outcome(Status.FAIL, "x")))["Turn hibernation off"])
+    v = detect_hibernation(host)
+    assert v.value is False
+    assert check.detect(make_scan(host, hibernation=v)).status is Status.PASS
+    assert check.plan_guide(make_scan(host, hibernation=v), Outcome(Status.PASS, "x")).steps[0].done
+    revert(host, log, res)
+    assert detect_hibernation(host).value is True
+
+
 def test_a_mode_switched_back_on_still_hibernates(tmp_path):
     """sleep.conf(5): AllowHibernation=no turns suspend-then-hibernate and hybrid sleep off too, unless they say yes."""
     from daprivacyscanner.context import detect_hibernation
