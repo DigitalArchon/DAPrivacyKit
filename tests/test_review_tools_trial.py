@@ -168,7 +168,11 @@ def test_dns_over_tcp_is_read_and_a_hung_lookup_is_one_connection():
          eth(ip4(FWD, ME, 6, _tcp(53, 6000, 0x18, 901, framed_a))),
          eth(ip4(ME, "203.0.113.5", 6, _tcp(6001, 443, 0x02))),
          eth(ip4(ME, "203.0.113.5", 6, _tcp(6001, 443, 0x18, 1, b"\x17\x03\x03hello"))),
-         *[eth(ip4(ME, "192.0.2.53", 6, _tcp(6002, 53, 0x02, 5000))) for _ in range(5)],   # a server of its own, silent
+         # a server of its own, silent: the SYN sent again and again, pasta answering some with RST meanwhile (as
+         # captured on Mint 22.3: SYN, SYN, RST, SYN, SYN, RST, SYN, every SYN with the same first sequence number)
+         *[eth(ip4(*((ME, "192.0.2.53") if f == 0x02 else ("192.0.2.53", ME)), 6,
+                   _tcp(*((6002, 53) if f == 0x02 else (53, 6002)), f, 5000 if f == 0x02 else 77)))
+           for f in (0x02, 0x02, 0x04, 0x02, 0x02, 0x04, 0x02)],
          eth(ip4(ME, "8.8.8.8", 17, udp(6003, 53, _query(8, "own-server.example")))),
          eth(ip4("8.8.8.8", ME, 17, udp(53, 6003, _answer(8, "own-server.example", "198.51.100.1"))))]
     r = _flows(p)
@@ -181,8 +185,8 @@ def test_dns_over_tcp_is_read_and_a_hung_lookup_is_one_connection():
 
 
 def test_a_connection_made_again_on_the_same_ports_counts_again():
-    p = [eth(ip4(ME, "203.0.113.9", 6, _tcp(7000, 443, 0x02))), eth(ip4(ME, "203.0.113.9", 6, _tcp(7000, 443, 0x11, 1))),
-         eth(ip4(ME, "203.0.113.9", 6, _tcp(7000, 443, 0x02)))]
+    p = [eth(ip4(ME, "203.0.113.9", 6, _tcp(7000, 443, 0x02, 1000))), eth(ip4(ME, "203.0.113.9", 6, _tcp(7000, 443, 0x11, 1001))),
+         eth(ip4(ME, "203.0.113.9", 6, _tcp(7000, 443, 0x02, 555000)))]                  # a new first sequence number
     assert _flows(p)["hosts"][0]["connections"] == 2
 
 

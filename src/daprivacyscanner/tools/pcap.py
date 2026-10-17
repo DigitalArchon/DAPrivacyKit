@@ -229,11 +229,11 @@ class Flows:
 
     # ------------------------------------------------------------------ connections
 
-    def _open(self, key: tuple, address: str, port: int, proto: str) -> dict:
+    def _open(self, key: tuple, address: str, port: int, proto: str, isn: int | None = None) -> dict:
         if len(self.conns) >= CONNS_MAX:
             self._fold()
         c = self.conns[key] = {"address": address, "port": port, "proto": proto, "dns": self.names.get(address),
-                               "said": None, "sent": 0, "received": 0, "closed": False}
+                               "said": None, "sent": 0, "received": 0, "closed": False, "isn": isn}
         return c
 
     def _fold(self) -> None:
@@ -271,15 +271,18 @@ class Flows:
         out, back = (src, sport, dst, dport, "tcp"), (dst, dport, src, sport, "tcp")
         if flags & 0x02 and not flags & 0x10:               # SYN: the program connects out
             c = self.conns.get(out)
-            if c is not None and not c["closed"]:
-                return                                      # the same SYN sent again: the same attempt
+            if c is not None and (not c["closed"] or seq == c["isn"]):
+                # the same SYN sent again, its first sequence number the same: the same attempt, also after the
+                # RST pasta answers each with while its own connection to the server waits (seen on Mint 22.3)
+                c["closed"] = False
+                return
             if c is not None:                               # these ports used again: the earlier one is summed up
                 self._retire(out)
             if dport == 53:                                 # DNS over TCP: its questions are read
                 self.streams[out] = [(seq + 1) & 0xFFFFFFFF, bytearray()]
                 if self._resolver(dst):
                     return                                  # a lookup through the sandbox's own resolver
-            self._open(out, dst, dport, "tcp")
+            self._open(out, dst, dport, "tcp", seq)
             return
         if flags & 0x12 == 0x12:                            # SYN-ACK: where the answers' bytes start
             if sport == 53 and back in self.streams:
