@@ -343,6 +343,28 @@ def stop(proc, wait=10):
             proc.wait()
 
 
+def ender(proc, wait=5):
+    """The gate's SIGTERM handler: the inner sandbox is told to stop, and killed `wait` seconds later if it hasn't.
+    Signals only: the main thread is in proc.wait(), and a second wait here, on the lock that one holds, waited for
+    ever (the gate hung on SIGTERM, found in the review of 2026-10-17 on Mint); that wait returns once it has ended."""
+    def end(signum, frame):
+        try:
+            proc.send_signal(signal.SIGTERM)
+        except OSError:
+            return
+        t = threading.Timer(wait, lambda: proc.returncode is None and _kill(proc))
+        t.daemon = True
+        t.start()
+    return end
+
+
+def _kill(proc):
+    try:
+        proc.kill()
+    except OSError:
+        pass
+
+
 def main(cfg):
     if cfg.get("landlock"):
         apply_landlock()
@@ -377,8 +399,7 @@ def main(cfg):
     srv = listen(cfg["control"], cfg["upstream"], cookie)
     inner = subprocess.Popen(cfg["inner"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
 
-    def end(signum, frame):
-        stop(inner, 5)
+    end = ender(inner, 5)
     signal.signal(signal.SIGTERM, end)
     signal.signal(signal.SIGINT, end)
     rc = inner.wait()

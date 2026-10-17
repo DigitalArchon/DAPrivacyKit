@@ -9,6 +9,7 @@ import os
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -116,3 +117,27 @@ def test_from_inside_pid_1_names_nothing_of_the_user(tmp_path):
     assert got["pids"][0] == 1 and "bwrap" not in got["cmdline"] and str(tmp_path) not in got["cmdline"]
     assert "SESSION_MANAGER" not in got["environ"] and secret not in got["environ"] and "HOME=" not in got["environ"]
     assert not any(str(tmp_path) in f for f in got["fds"])
+
+
+GATE = r"""
+import os, signal, subprocess, sys, threading, time
+from daprivacyscanner.tools import torgate
+inner = subprocess.Popen([sys.executable, "-c", sys.argv[1]])
+time.sleep(0.5)
+end = torgate.ender(inner, 1)
+signal.signal(signal.SIGTERM, end)
+threading.Timer(0.5, lambda: os.kill(os.getpid(), signal.SIGTERM)).start()
+print(inner.wait(), flush=True)
+"""
+
+
+@pytest.mark.parametrize("child, code", [
+    ("import time; time.sleep(30)", -15),                                                   # ends on SIGTERM
+    ("import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(30)", -9),   # killed after
+])
+def test_the_gate_ends_on_sigterm_instead_of_hanging(child, code):
+    """Its handler waited on the lock the main thread's inner.wait() held: the gate hung (tested on Mint)."""
+    src = str(Path(__file__).resolve().parents[1] / "src")
+    r = subprocess.run([sys.executable, "-c", GATE, child], capture_output=True, text=True, timeout=20,
+                       env={**os.environ, "PYTHONPATH": src})
+    assert r.stdout.strip() == str(code), r.stderr
