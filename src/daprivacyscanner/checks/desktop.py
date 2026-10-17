@@ -242,8 +242,9 @@ class Thumbnails(Check):
                 ev += [Evidence.path("App cache on the disk", scan.host.display(d)) for d in apps[:5]]
                 n = disk_sensitive or disk_orphans
                 what = "files from removable drives or encrypted containers" if disk_sensitive else "deleted files"
-                return failed(f"{n} thumbnail{'s' if n > 1 else ''} in apps' own caches show {what}: the desktop's "
-                              "cache is in memory, but Flatpak and Snap apps keep theirs on the disk.", *ev,
+                return failed(f"{n} thumbnail{'s' if n > 1 else ''} in apps' own caches show{'' if n > 1 else 's'} "
+                              f"{what}: the desktop's cache is in memory, but Flatpak and Snap apps keep theirs on the "
+                              "disk.", *ev,
                               notes=[memory_note, Note("risk", "Apps' own thumbnail caches",
                                                        "A Flatpak or Snap app keeps a thumbnail cache of its own in its "
                                                        "folder (~/.var/app or ~/snap), on the disk. Guide… deletes the "
@@ -263,11 +264,11 @@ class Thumbnails(Check):
             notes.append(Note("risk", "Thumbnails outlive the drive they came from",
                               "Each thumbnail is a small copy of the image and records the file's full path. Browsing an "
                               "encrypted container or a USB stick leaves these copies on this disk after it's removed."))
-            return failed(f"{sensitive} thumbnail{'s' if sensitive > 1 else ''} show files from removable drives or "
-                          "encrypted containers.", *ev, notes=notes, findings=findings)
+            return failed(f"{sensitive} thumbnail{'s' if sensitive > 1 else ''} show{'' if sensitive > 1 else 's'} "
+                          "files from removable drives or encrypted containers.", *ev, notes=notes, findings=findings)
         if orphans:
-            return failed(f"{orphans} thumbnail{'s' if orphans > 1 else ''} of deleted files are still cached.", *ev,
-                          notes=notes, findings=findings)
+            return failed(f"{orphans} thumbnail{'s' if orphans > 1 else ''} of deleted files "
+                          f"{'are' if orphans > 1 else 'is'} still cached.", *ev, notes=notes, findings=findings)
         if not notes:              # the in-memory unit's own note already says why it is on disk
             notes.append(Note("risk", "The first USB stick you browse starts the record",
                               "Every picture a file manager or image viewer shows gets a small copy here, with the "
