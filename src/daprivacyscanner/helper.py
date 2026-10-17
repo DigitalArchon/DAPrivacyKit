@@ -4516,7 +4516,7 @@ def planned(request: str, args: dict, home: str | None = None) -> list[str]:
             # ufw.service, where it is installed and not enabled (read from its .wants link: no root, no systemctl)
             if any(os.path.exists(_p(f"{d}/{UFW_UNIT}")) for d in ("/usr/lib/systemd/system", "/lib/systemd/system")) \
                     and not os.path.lexists(_p(f"/etc/systemd/system/multi-user.target.wants/{UFW_UNIT}")):
-                out += [q(["systemctl", "enable", UFW_UNIT]), q(["systemctl", "start", UFW_UNIT])]
+                out.append(q(["systemctl", "enable", "--now", UFW_UNIT]))
         elif request == "mount_tmpfs" and home:
             target = args.get("target", "thumbnails")
             path = in_memory_path(home, target)

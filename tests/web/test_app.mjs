@@ -304,7 +304,7 @@ routes["GET /api/tools/presentation"] = () => ({ on: presOn, since: presOn ? 179
 routes["POST /api/tools/presentation/on"] = () => { presCalls.push("on"); presOn = true; return { on: true, since: 1790000000 }; };
 routes["POST /api/tools/presentation/renew"] = () => { presCalls.push("renew"); return { on: true, since: 1790000000, lapsed: [] }; };
 routes["POST /api/tools/presentation/off"] = () => { presCalls.push("off"); presOn = false;
-  return { on: false, since: null, messages: ["back"], kept: ["org.gnome.desktop.notifications show-banners has changed since (now true)"], failed: [] }; };
+  return { on: false, since: null, messages: ["back"], kept: ["Notification banners were changed meanwhile, so they are left as they are now."], failed: [] }; };
 // Try an app: a trial prepared, started, ended and discarded
 let trialNow = null;
 const trialCalls = [];
@@ -1333,7 +1333,8 @@ check($$(".modal #tool-presentation button").some(b => b.textContent === "Turn o
 while ($$(".modal").length) { $$(".modal .buttons button").at(-1).click(); await tick(); }
 $("#presentation-chip").click(); await tick(); await tick();
 check(presCalls.at(-1) === "off" && $("#presentation-chip").classList.contains("hidden"), "the top bar's button turns it off");
-check($$("#toasts .toast").some(t => t.textContent.includes("yours was kept")), "and says when a setting the user changed was kept");
+check($$("#toasts .toast").some(t => t.textContent.includes("Notification banners were changed meanwhile")),
+      "and says, in plain words, when a setting the user changed was kept");
 window.eval("S").presentation = { on: true, since: 1790000000, lapsed: ["Do Not Disturb on"] }; window.renderTop();
 check($("#presentation-chip").textContent.includes("Do Not Disturb ended"),
       "after a restart on KDE the top bar says Do Not Disturb ended, though Presentation mode is on");

@@ -254,8 +254,9 @@ def test_ufw_enable_enables_its_unit_where_the_package_didnt(root):
     helper.RUN.units = {"ufw.service": ["disabled", "inactive"]}
     r = call("ufw_enable", allow=[])
     assert helper.RUN.ufw_active and helper.RUN.units["ufw.service"] == ["enabled", "active"]
-    assert ["systemctl", "enable", "ufw.service"] in helper.RUN.calls
-    assert "systemctl enable ufw.service" in r["ran"] and "systemctl start ufw.service" in r["ran"]
+    # enabled and started in one call (set_service's _set_units, which keeps a unit from being started again between)
+    assert ["systemctl", "enable", "--now", "ufw.service"] in helper.RUN.calls
+    assert "systemctl enable --now ufw.service" in r["ran"]
     back = call("revert", change_id=r["change_id"])
     assert back["ok"] and not helper.RUN.ufw_active and helper.RUN.units["ufw.service"] == ["disabled", "inactive"]
 
@@ -281,8 +282,7 @@ def test_ufw_enabled_unit_is_left_alone(root):
 def test_ufw_dry_run_names_the_unit_when_it_isnt_enabled(root):
     (root / "usr/lib/systemd/system").mkdir(parents=True)
     (root / "usr/lib/systemd/system/ufw.service").write_text("[Unit]\n")
-    assert helper.planned("ufw_enable", {"allow": []})[-2:] == ["systemctl enable ufw.service",
-                                                                 "systemctl start ufw.service"]
+    assert helper.planned("ufw_enable", {"allow": []})[-1:] == ["systemctl enable --now ufw.service"]
     wants = root / "etc/systemd/system/multi-user.target.wants"
     wants.mkdir(parents=True)
     (wants / "ufw.service").symlink_to("/usr/lib/systemd/system/ufw.service")
