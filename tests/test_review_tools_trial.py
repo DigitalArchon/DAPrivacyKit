@@ -192,3 +192,30 @@ def test_a_full_table_folds_the_older_connections_into_their_hosts(monkeypatch):
     r = _flows(p)
     assert sum(h["connections"] for h in r["hosts"]) == 9 and len(r["hosts"]) == 2
     assert _flows(p)["hosts"] == r["hosts"], "summing up twice changes nothing"
+
+
+# ------------------------------------------------------------------ E10: a trial's and a Box's own words
+
+def test_no_display_says_what_has_nowhere_to_show(tmp_path):
+    """Found live: a trial and a Box with no display said "There is no display to show the browser on"."""
+    from daprivacyscanner.host import CommandResult, FakeRunner, Host
+    from daprivacyscanner.tools import sandbox
+    root = tmp_path / "root"
+    (root / "run/user/1000").mkdir(parents=True)
+    ok = lambda argv: CommandResult(argv, 0, "")                                         # noqa: E731
+    host = Host(home=root / "home/a", environ={"XDG_RUNTIME_DIR": "/run/user/1000"},
+                runner=FakeRunner(handlers={"bwrap": ok}), root=root, uid=1000)
+    assert sandbox.display(host, tmp_path, False).note == "There is no display to show the browser on."
+    folder = tmp_path / "t"
+    for sub in ("home", "app", "private"):
+        (folder / sub).mkdir(parents=True)
+    t = trial.Trial("0a1b2c3d4e5f", folder, "memory", "program", "tool", "a Linux program", argv=["/app/tool"])
+    with pytest.raises(trial.TrialError, match="^There is no display to show the program on.$"):
+        trial.start(host, t, {}, lambda *a, **k: None)
+    box = trial.Trial("0a1b2c3d4e5e", folder, "disk", "installed", "Chat", "a Box", argv=["/usr/bin/chat"],
+                      private_at=folder / "private")
+    with pytest.raises(trial.TrialError, match="^There is no display to show the app on.$"):
+        trial.start(host, box, {}, lambda *a, **k: None)
+    host.environ["DISPLAY"] = "localhost:10.0"                                     # forwarded over SSH
+    with pytest.raises(trial.TrialError, match="over the network.*can't reach it"):
+        trial.start(host, t, {}, lambda *a, **k: None)

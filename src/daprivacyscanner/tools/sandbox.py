@@ -842,9 +842,10 @@ def _free_display(host: Host) -> str:
     return "99"
 
 
-def display(host: Host, private: Path, landlock: bool) -> Display:
+def display(host: Host, private: Path, landlock: bool, what: str = "the browser") -> Display:
     """How the browser reaches the screen from inside the sandbox; writes the X authority file
-    into `private` (the app's folder in the RAM disk, never shown to the browser) when it needs one."""
+    into `private` (the app's folder in the RAM disk, never shown to the browser) when it needs one. `what` is
+    what the words say has nowhere to show (a trial's program, a Box's app)."""
     env = host.environ
     runtime = env.get("XDG_RUNTIME_DIR", f"/run/user/{host.uid}")
     wl = env.get("WAYLAND_DISPLAY", "")
@@ -885,7 +886,7 @@ def display(host: Host, private: Path, landlock: bool) -> Display:
             xenv["XAUTHORITY"] = "/tmp/.Xauthority"
         return Display("x11", binds, xenv, network=True,
                        note="This display is reached over the network (SSH forwarding)")
-    return Display("none", note="There is no display to show the browser on.")
+    return Display("none", note=f"There is no display to show {what} on.")
 
 
 # ------------------------------------------------------------------ a display of its own (X11)

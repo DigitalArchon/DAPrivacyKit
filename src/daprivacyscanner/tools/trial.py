@@ -989,9 +989,13 @@ def start(host: Host, t: Trial, options: dict, spawn: Callable = subprocess.Pope
         raise TrialError("A Flatpak app's network can't be observed from here: choose none, or its usual network.")
     t.options = {"network": network, "gpu": bool(options.get("gpu")), "sound": bool(options.get("sound")),
                  "nested": bool(options.get("nested")), "decoys": options.get("decoys") is not False}
-    disp = sandbox.display(host, t.private, landlock=False)
-    if disp.kind == "none" or disp.network:
-        raise TrialError(disp.note or "There is no display to show it on.")
+    what = "the app" if t.private_at is not None else "the program"         # a Box's, a trial's
+    disp = sandbox.display(host, t.private, landlock=False, what=what)
+    if disp.network:
+        raise TrialError(f"{disp.note}: the sandbox, which never has the computer's own network, can't reach it. "
+                         f"Start {what} from the computer's own desktop.")
+    if disp.kind == "none":
+        raise TrialError(disp.note or f"There is no display to show {what} on.")
     sync, context, pasta_path = None, None, None
     if t.options["decoys"] and not t.decoys:
         t.decoys = bait.plant(t.home)
