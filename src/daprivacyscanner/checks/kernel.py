@@ -202,7 +202,11 @@ def _dnf_pending(scan: Scan) -> Pending:
     from pathlib import Path
     host = scan.host
     ev = [Evidence.val("Automatic updates", "on" if dnf_automatic(host) else "off")]
-    if installed(host, "dnf5"):
+    # dnf is DNF5 from Fedora 41 (/usr/bin/dnf a link to dnf5); before, dnf5 could be installed beside DNF4, whose cache
+    # it doesn't use. Told from the link, never by running it: even `dnf --version` writes ~/.local/state/dnf5.log
+    dnf_link = next((host.sys_path(f"{d}/dnf") for d in ("/usr/bin", "/bin") if host.sys_path(f"{d}/dnf").exists()), None)
+    dnf5 = installed(host, "dnf5") and (dnf_link is None or os.path.basename(os.path.realpath(dnf_link)) == "dnf5")
+    if dnf5:
         age = _age([p.stat().st_mtime for p in host.sys_path("/var/cache/libdnf5").glob("*/repodata/repomd.xml")])
         runtime = host.environ.get("XDG_RUNTIME_DIR") or ""
         if not runtime or not Path(runtime).is_dir():

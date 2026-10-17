@@ -207,7 +207,6 @@ def test_plasma_and_cinnamon_decide_the_lid_themselves(cat, tmp_path):
     """PowerDevil and Cinnamon's settings daemon hold logind's lid inhibitor: their own settings count, and the guide
     says where they are."""
     from daprivacyscanner.checks import load_all
-    from daprivacyscanner.desktop import GNOME
     from fakes import FakeGSettings
     check = load_all()["kern.suspend_keys_in_ram"](cat["kern.suspend_keys_in_ram"])
     host = make_host(tmp_path, files=SWAPFILE,
@@ -271,7 +270,6 @@ def test_crash_dumps_go_by_the_limit_of_the_programs_you_run(cat, tmp_path, patt
 
 def test_crash_dumps_kept_but_none_there_is_a_risk(cat, tmp_path):
     """"Crash dumps are kept on disk" at severity 5 with none there: now a risk, rated below the problem."""
-    from daprivacyscanner.runner import Runner
     host = _core_host(tmp_path, "|/usr/share/apport/apport -p%p -s%s -c%c", files={"/etc/default/apport": "enabled=1\n"})
     host.sys_path("/var/crash").mkdir(parents=True)
     o = detect(cat, "enc.coredumps_retained", make_scan(host))
@@ -789,6 +787,26 @@ def test_dnf5_never_writes_to_the_home_folder(cat, tmp_path):
     host, calls = _dnf5_host(tmp_path / "b", runtime=False)
     o = detect(cat, "kern.updates", make_scan(host))
     assert o.status is Status.UNKNOWN and "runtime folder" in o.summary and not calls
+
+
+def test_dnf4_beside_an_installed_dnf5_keeps_its_own_cache(cat, tmp_path):
+    """Before Fedora 41, dnf5 could be installed beside DNF4, whose cache it doesn't read: which one dnf is comes from
+    its link, never from running it (even `dnf --version` writes dnf5's log in the home folder, seen on Fedora 44)."""
+    import os
+    host, calls = _dnf5_host(tmp_path)
+    host.sys_path("/usr/bin").mkdir(parents=True)
+    host.sys_path("/usr/bin/dnf-3").write_text("#!/usr/bin/python3\n")
+    os.symlink("dnf-3", host.sys_path("/usr/bin/dnf"))
+    host.runner.outputs[("dnf", "-C", "-q", "check-update")] = CommandResult((), 0, "")
+    host.runner.installed.add("dnf")
+    o = detect(cat, "kern.updates", make_scan(host))
+    assert not calls and ("dnf", "-C", "-q", "check-update") in host.runner.calls and o.status is not Status.UNKNOWN
+    assert ("dnf", "--version") not in host.runner.calls
+    os.remove(host.sys_path("/usr/bin/dnf"))
+    os.symlink("dnf5", host.sys_path("/usr/bin/dnf"))
+    host.sys_path("/usr/bin/dnf5").write_text("")
+    detect(cat, "kern.updates", make_scan(host))
+    assert calls
 
 
 def test_pacman_without_its_lists_couldnt_check(cat, tmp_path):
