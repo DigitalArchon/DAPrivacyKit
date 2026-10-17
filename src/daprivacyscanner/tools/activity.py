@@ -18,8 +18,10 @@ for. Nothing here is kept: the caller holds the result in memory for as long as 
 from __future__ import annotations
 
 import os
+import re
 import stat
 import time
+import zlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable
@@ -163,6 +165,8 @@ def sensitive(path: str, w: Where) -> str | None:
 MAGIC = ((b"SQLite format 3\0", "an SQLite database"), (b"\x89PNG\r\n\x1a\n", "a PNG picture"),
          (b"\xff\xd8\xff", "a JPEG picture"), (b"mozLz40\0", "a compressed Firefox file"),
          (b"PK\x03\x04", "a ZIP archive"), (b"\x1f\x8b", "a gzip file"), (b"<?xml", "an XML file"),
+         (b"\xda\x1ameta", "the desktop's notes on files (GVFS metadata)"),
+         (b"\xda\x1ajour", "the desktop's notes on files (GVFS metadata, its journal)"),
          (b"{", "a JSON file"), (b"[", "a settings or JSON file"))
 
 
@@ -292,49 +296,110 @@ SEARCH_TOTAL_MAX = 2 << 30               # nor anything past this much in all
 SEARCH_SECONDS = 45.0
 NEEDLES_MAX = 2000
 CHUNK = 4 << 20
+TEXT_MAX = 1 << 20                       # a PNG's text chunk read (and unpacked) this far at most
+PNG_CHUNKS_MAX = 4096
+
+# a file in a temporary folder that the app opened but another program made (a mail attachment, a download opened
+# from the browser) is the user's too: looked for as theirs
+TEMP_OPENED = ("/tmp", "/var/tmp")
+
+# how programs percent-encode a path in a file:// address (letters, digits and -._~ stay as they are everywhere):
+# Python's quote() leaves "/" alone; GLib's g_filename_to_uri also !$&'()*+,:=@ (tested with GLib 2.80: "Report
+# (final).txt" is Report%20(final).txt, which the first version missed); Qt's QUrl what RFC 3986 allows in a path
+# (";" too)
+URI_SAFE = ("/", "/!$&'()*+,:=@", "/!$&'()*+,;:=@")
+
+# GVFS's metadata (gvfsd-metadata, for Nemo, Nautilus, Xed and other GLib programs): a database per filesystem
+# ("home" for the home folder, "root" for /, others by their UUID) and its journal, home-1a2b3c4d.log, which hold
+# paths relative to the filesystem's top or, for "home", to the home folder: "/Documents/letter.odt" (tested on
+# Mint 22.3, with gio set as Xed does; the database splits a path into its names, the journal holds it whole)
+GVFS_FOLDER = "gvfs-metadata"
+GVFS_JOURNAL = re.compile(r"(.+)-[0-9a-f]{8}\.log")
+GVFS_PATHS_MAX = 200000
 
 
 def needles(records: Iterable[list], w: Where) -> list[str]:
-    """The user's own files the app opened (not folders, not programs' data): the names to look for."""
+    """The user's own files the app opened (not folders, not programs' data), and the files it opened in /tmp
+    or /var/tmp that another program made: the names to look for."""
     out = []
     for rec in records:
         path, flags, who = rec[0], rec[1], rec[5]
         if who or flags & DIR or len(out) >= NEEDLES_MAX:
             continue
-        if place(path, w)[0] in ("yours", "media"):
+        kind = place(path, w)[0]
+        if kind in ("yours", "media") or kind == "temp" and _temp_opened(path, flags):
             out.append(path)
     return out
 
 
-def _forms(path: str) -> set[bytes]:
-    """How a path is written in the files that record it: as it is, as a file:// address (percent-encoded and
-    not), in UTF-8 and in UTF-16 (Qt's settings, some databases)."""
-    texts = {path, "file://" + path, "file://" + quote(path), quote(path)}
+def _temp_opened(path: str, flags: int) -> bool:
+    """A file in /tmp or /var/tmp the app only opened (another program made it), none of whose names is hidden
+    (a program's own: .X0-lock, .ICE-unix)."""
+    if not flags & OPENED or flags & (CREATED | WRITTEN | MOVED | DELETED):
+        return False
+    for base in TEMP_OPENED:
+        rel = _under(path, base)
+        if rel:
+            return not any(part.startswith(".") for part in rel.split("/"))
+    return False
+
+
+def _xml(text: str) -> set[str]:
+    """The text as an XML file holds it: & < > escaped, an apostrophe and a quotation mark either way (GLib's
+    bookmark file writes &apos;, older GLib &#39;; Qt's writer leaves an apostrophe as it is)."""
+    if not any(c in text for c in "&<>'\""):
+        return set()
+    base = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    return {base.replace("'", a).replace('"', q) for a in ("'", "&apos;", "&#39;") for q in ('"', "&quot;", "&#34;")}
+
+
+def _spellings(path: str) -> set[str]:
+    """How a path is written in the files that record it: as it is, percent-encoded as each kind of program does
+    (URI_SAFE), and each of those as an XML file escapes it."""
+    raw = path.encode("utf-8", "surrogateescape")
+    texts = {path} | {quote(raw, safe=safe) for safe in URI_SAFE}
+    return texts | {x for t in texts for x in _xml(t)}
+
+
+def _encoded(texts: Iterable[str]) -> set[bytes]:
+    """In UTF-8 and in UTF-16 (Qt's settings, some databases)."""
+    texts = set(texts)
     return {t.encode("utf-8", "surrogateescape") for t in texts} | {t.encode("utf-16-le", "surrogatepass") for t in texts}
+
+
+def _forms(path: str) -> set[bytes]:
+    """Every way the files that record a path may hold it: its spellings, as they are and as file:// addresses."""
+    return _encoded(prefix + t for t in _spellings(path) for prefix in ("", "file://"))
+
+
+def _root(path: str, w: Where) -> str:
+    """Where a path is looked for from: the home folder, or the folder of disks or temporary files it is in."""
+    if _under(path, w.home) is not None:
+        return w.home
+    return next((base for base in (*MEDIA, *TEMP_OPENED) if _under(path, base)), path)
 
 
 def find_records(records: list[list], w: Where, skip: Callable[[str], bool] = lambda p: False,
                  deadline: float | None = None) -> dict:
     """Which files written during the session hold the names of the user's own files the app opened: by the
-    app itself or by another program of the user's (`who`). Read as the user, raw (a thumbnail's text chunk, a
-    database's pages, a recent-files list all hold the path as bytes); compressed or encrypted stores can't be
-    read this way, and the result says so. Returns {"found": [{path, who, names, type}], "searched", "skipped",
-    "names"}: `names` is how many of the user's files were looked for."""
+    app itself or by another program of the user's (`who`). Read as the user, raw (a database's pages, a
+    recent-files list hold the path as bytes), a PNG's text chunks unpacked (a thumbnail's Thumb::URI), GVFS's
+    metadata by the paths it holds; other compressed or encrypted stores can't be read this way, and the result
+    says so. Returns {"found": [{path, who, names, type}], "searched", "skipped", "names"}: `names` is how many
+    of the user's files were looked for."""
     wanted = needles(records, w)
     forms: dict[bytes, int] = {}
     for i, path in enumerate(wanted):
         for f in _forms(path):
             forms[f] = i
-    markers = {m for m in (w.home.encode("utf-8", "surrogateescape"), w.home.encode("utf-16-le", "surrogatepass"),
-                           quote(w.home).encode()) if m}
-    for base in MEDIA:                                   # a file on another disk is recorded under its own path
-        if any(p.startswith(base + "/") for p in wanted):
-            markers |= {base.encode(), base.encode("utf-16-le")}
+    # a file is recorded under its own path: from the home folder, or from the disk's or temporary folder's
+    markers = {m for root in {_root(p, w) for p in wanted} for m in _encoded(_spellings(root)) if m}
     lengths = sorted({len(f) for f in forms}, reverse=True)
     longest = lengths[0] if lengths else 0
     found, searched, skipped, total = [], 0, 0, 0
     deadline = deadline if deadline is not None else time.monotonic() + SEARCH_SECONDS
     own = set(wanted)
+    gvfs = _GvfsKeys(wanted, w)
     hay = sorted({(rec[0], rec[5]) for rec in records
                   if rec[1] & (WRITTEN | CREATED | MOVED) and not rec[1] & (DELETED | DIR) and rec[0] not in own})
     for path, who in hay if forms else []:
@@ -354,7 +419,13 @@ def find_records(records: list[list], w: Where, skip: Callable[[str], bool] = la
             if st.st_size > SEARCH_FILE_MAX:
                 skipped += 1
                 continue
-            hits = _search(fd, forms, markers, lengths, longest)
+            if os.path.basename(os.path.dirname(path)) == GVFS_FOLDER:
+                hits = gvfs.hits(fd, os.path.basename(path))
+            else:
+                hits = _scan(iter(lambda: os.read(fd, CHUNK), b""), forms, markers, lengths, longest)
+                if os.pread(fd, 8, 0) == b"\x89PNG\r\n\x1a\n":
+                    for text in _png_texts(fd, st.st_size):
+                        hits |= _scan((text,), forms, markers, lengths, longest)
             total += st.st_size
             searched += 1
         except OSError:
@@ -367,15 +438,13 @@ def find_records(records: list[list], w: Where, skip: Callable[[str], bool] = la
     return {"found": found, "searched": searched, "skipped": skipped, "names": len(wanted)}
 
 
-def _search(fd: int, forms: dict[bytes, int], markers: set[bytes], lengths: list[int], longest: int) -> set[int]:
-    """Which of the names (by index) the file holds: every place a marker (the home folder's path) starts is
-    compared with the forms of each length."""
+def _scan(chunks: Iterable[bytes], forms: dict[bytes, int], markers: set[bytes], lengths: list[int],
+          longest: int) -> set[int]:
+    """Which of the names (by index) the data holds: every place a marker (the home folder's path, in each of its
+    spellings) starts is compared with the forms of each length."""
     hits: set[int] = set()
     tail = b""
-    while True:
-        chunk = os.read(fd, CHUNK)
-        if not chunk:
-            break
+    for chunk in chunks:
         data = tail + chunk
         for marker in markers:
             i = data.find(marker)
@@ -391,6 +460,112 @@ def _search(fd: int, forms: dict[bytes, int], markers: set[bytes], lengths: list
                 i = data.find(marker, i + 1)
         tail = data[-(longest + 16):] if longest else b""
     return hits
+
+
+def _png_texts(fd: int, size: int) -> list[bytes]:
+    """A PNG's text chunks: tEXt as it is, zTXt and a compressed iTXt unpacked (Qt writes a thumbnail's Thumb::URI
+    longer than 40 characters as zTXt, which a search of the raw bytes never matched: Dolphin's thumbnails on
+    CachyOS)."""
+    out, pos = [], 8
+    for _ in range(PNG_CHUNKS_MAX):
+        head = os.pread(fd, 8, pos)
+        if len(head) < 8:
+            break
+        n, kind = int.from_bytes(head[:4], "big"), head[4:]
+        if kind == b"IEND" or pos + 12 + n > size:
+            break
+        if kind in (b"tEXt", b"zTXt", b"iTXt") and n <= 4 * TEXT_MAX:
+            _key, _nul, rest = os.pread(fd, n, pos + 8).partition(b"\0")
+            if kind == b"tEXt":
+                out.append(rest[:TEXT_MAX])
+            elif kind == b"zTXt" and rest[:1] == b"\0":
+                out.append(_inflate(rest[1:]))
+            elif kind == b"iTXt" and len(rest) >= 2:
+                packed, method = rest[0], rest[1]
+                _lang, _nul, rest = rest[2:].partition(b"\0")
+                _translated, _nul, text = rest.partition(b"\0")
+                out.append(_inflate(text) if packed == 1 and method == 0 else text[:TEXT_MAX])
+        pos += 12 + n
+    return out
+
+
+def _inflate(data: bytes) -> bytes:
+    try:
+        return zlib.decompressobj().decompress(data, TEXT_MAX)
+    except zlib.error:
+        return b""
+
+
+class _GvfsKeys:
+    """The names looked for, as GVFS's metadata holds them, per database: relative to the home folder ("home"), as
+    they are ("root"), or relative to the top of the filesystem they are on (another disk's, named by its UUID)."""
+
+    def __init__(self, wanted: list[str], w: Where):
+        self.wanted, self.w, self.keys = wanted, w, {}
+
+    def _key(self, tree: str, path: str) -> str | None:
+        if tree == "home":
+            rel = _under(path, self.w.home)
+            return "/" + rel if rel else None
+        if tree == "root":
+            return path
+        top = os.path.dirname(path)
+        while top != "/" and not os.path.ismount(top):
+            top = os.path.dirname(top)
+        return path[len(top):] if top != "/" else None
+
+    def hits(self, fd: int, name: str) -> set[int]:
+        journal = GVFS_JOURNAL.fullmatch(name)
+        tree = journal.group(1) if journal else name
+        if tree not in self.keys:
+            self.keys[tree] = {key.encode("utf-8", "surrogateescape"): i for i, path in enumerate(self.wanted)
+                               if (key := self._key(tree, path))}
+        keys = self.keys[tree]
+        data = b"".join(iter(lambda: os.read(fd, CHUNK), b""))
+        return {keys[p] for p in (_gvfs_journal(data) if journal else _gvfs_tree(data)) if p in keys}
+
+
+def _gvfs_journal(data: bytes) -> set[bytes]:
+    """The paths in a GVFS metadata journal: after its 20-byte header, entries of [size, crc32, time (8 bytes),
+    type, path NUL, …], a copy's (type 3) source path second."""
+    out, pos = set(), 20
+    if not data.startswith(b"\xda\x1ajour"):
+        return out
+    while pos + 21 <= len(data) and len(out) < GVFS_PATHS_MAX:
+        size = int.from_bytes(data[pos:pos + 4], "big")
+        if size < 21 or pos + size > len(data):
+            break
+        first, _nul, rest = data[pos + 17:pos + size].partition(b"\0")
+        out.add(first)
+        if data[pos + 16] == 3:
+            out.add(rest.partition(b"\0")[0])
+        pos += size
+    return out
+
+
+def _gvfs_tree(data: bytes) -> set[bytes]:
+    """The paths in a GVFS metadata database: from the root entry its header points to, entries of [name,
+    children, metadata, time] (offsets, big-endian), the children a count and their entries."""
+    out: set[bytes] = set()
+    if not data.startswith(b"\xda\x1ameta") or len(data) < 32:
+        return out
+    stack, seen = [(int.from_bytes(data[16:20], "big"), None)], set()
+    while stack and len(out) < GVFS_PATHS_MAX:
+        at, parent = stack.pop()
+        if at in seen or at + 16 > len(data):
+            continue
+        seen.add(at)
+        name_at, children = int.from_bytes(data[at:at + 4], "big"), int.from_bytes(data[at + 4:at + 8], "big")
+        end = data.find(b"\0", name_at) if name_at < len(data) else -1
+        if end == -1:
+            continue
+        path = b"" if parent is None else parent + b"/" + data[name_at:end]
+        if parent is not None:
+            out.add(path)
+        if children and children + 4 <= len(data):
+            count = min(int.from_bytes(data[children:children + 4], "big"), (len(data) - children - 4) // 16)
+            stack.extend((children + 4 + 16 * k, path) for k in range(count))
+    return out
 
 
 def folders_only(path: str) -> str:

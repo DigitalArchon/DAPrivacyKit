@@ -1453,10 +1453,17 @@ OACS, FNA and SANICAP via the helper's ioctl), read on request and kept for the 
     by kind; and how many of the user's own files it opened. The user's own files are never listed: that list
     would itself be a recent-files record.
   - **Who recorded what was opened** (`activity.find_records`): the files written during the watch, by the app
-    or by another program of the user's, are read as the user for the paths of the user's files the app opened
-    (as they are, as `file://` addresses, percent-encoded, in UTF-8 and UTF-16). Those that hold them are named
-    with who wrote them: the thumbnail with the file's path in its text chunk, the recent-files list, the app's
-    own history. Compressed and encrypted stores can't be read this way, and the result says so.
+    or by another program of the user's, are read as the user for the paths of the user's files the app opened,
+    and of the files it opened in `/tmp` or `/var/tmp` that another program made (an attachment, a download), in
+    every spelling programs use (`activity._spellings`): as they are, and as `file://` addresses percent-encoded as
+    Python, GLib (which leaves `()'&!$*+,=@`) and Qt (`;` too) do, each also escaped for XML as a bookmark file
+    has it (`&amp;`, `&apos;` or `&#39;`), in UTF-8 and UTF-16 (the first version missed "Report (final).txt" in
+    the recent-files list). A PNG's text chunks are unpacked (Qt writes a thumbnail's `Thumb::URI` longer than 40
+    characters compressed, as zTXt: Dolphin's thumbnails were never matched), and GVFS's metadata is read by its
+    own paths, relative to the home folder (`/Documents/x`), whole in its journal and split into names in its
+    database (`_gvfs_journal`, `_gvfs_tree`: Xed's cursor positions were never matched). Those that hold them
+    are named with who wrote them: the thumbnail, the recent-files list, the desktop's notes on files, the app's
+    own history. Other compressed and encrypted stores can't be read this way, and the result says so.
   - **Administrator access** is held from start to end, which the page says before it starts
     (`appwatch.WARNING`); it is dropped as soon as the watch ends, unless it was active before. Never always
     on: one app, one session, started and ended by the user. The result lives in the app's memory until it is

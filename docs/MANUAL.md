@@ -450,7 +450,8 @@ moment it ends.
 You get:
 
 - **Who recorded what you opened**: files written during the watch that hold the names of the files you
-  opened, such as a thumbnail, a recent-files list or the app's own history, and which program wrote each.
+  opened (an attachment or download opened from a temporary folder counts too), such as a thumbnail, a
+  recent-files list, the desktop's notes on files or the app's own history, and which program wrote each.
 - **Files it writes to all the time**, by name, with what kind of file each is. Your own documents saved
   again and again are counted here, not named.
 - **Sensitive places it opened**, such as your SSH keys or a browser's profile. An app opening its own
