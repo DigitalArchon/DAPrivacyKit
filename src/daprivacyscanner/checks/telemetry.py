@@ -61,6 +61,15 @@ class CrashReporters(Check):
         return passed("No crash reporter or usage survey is reporting.", *ev, notes=notes)
 
 
+def wifi_adapters(scan: Scan) -> bool | None:
+    """Whether this computer has a Wi-Fi adapter (a network interface with a wireless or phy80211 entry in /sys);
+    None when /sys/class/net can't be read."""
+    net = scan.host.sys_path("/sys/class/net")
+    if not net.is_dir():
+        return None
+    return any((d / "wireless").exists() or (d / "phy80211").exists() for d in children(net))
+
+
 @register
 class Location(Check):
     id = "tel.location"
@@ -81,20 +90,25 @@ class Location(Check):
             url = ini.get(conf, "wifi", "url") or ""
             ev.append(Evidence.val("GeoClue Wi-Fi lookup", ("on, via " + re.sub(r"^\w+://([^/]+).*", r"\1", url))
                                    if wifi and url else "on" if wifi else "off"))
+        # what the lookup sends: GeoClue asks with the Wi-Fi networks it sees, and the service always has the address
+        # the request comes from; with no Wi-Fi adapter that address is all (it looks the location up by it)
+        adapters = wifi_adapters(scan)
+        what = ("nearby Wi-Fi networks and this computer's internet address" if adapters is not False else
+                "this computer's internet address (it has no Wi-Fi adapter, so no networks)")
         if scan.context.desktop.is_gnome:
             on = scan.gnome.gsettings("org.gnome.system.location", "enabled")
             if on is None:
                 return unknown("Couldn't read GNOME's location setting.", *ev)
             ev.insert(0, Evidence.val("GNOME location services", on))
             if on:
-                return failed("Location services are on: nearby Wi-Fi networks are sent to an online lookup service.", *ev)
+                return failed(f"Location services are on: apps that ask send {what} to an online lookup service.", *ev)
             return passed("Location services are off.", *ev)
         if conf_text is None:
             return absent("GeoClue (location services) isn't installed.")
         if wifi:
-            return warned("Apps can ask GeoClue for your location, which sends nearby Wi-Fi networks to an online "
-                          "lookup service. This desktop has no central switch for it.", *ev)
-        return passed("GeoClue's Wi-Fi lookup is off.", *ev)
+            return warned(f"Apps can ask GeoClue for your location, which sends {what} to an online lookup service. "
+                          "This desktop has no central switch for it.", *ev)
+        return passed("GeoClue's online lookup is off.", *ev)
 
 
 MOZILLA_TELEMETRY_APPS = ("Firefox", "LibreWolf", "Thunderbird")

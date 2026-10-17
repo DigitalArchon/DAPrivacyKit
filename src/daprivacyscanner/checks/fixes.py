@@ -361,10 +361,14 @@ def _location_can(scan: Scan) -> bool | No:
 
 @fix("tel.location", can=_location_can)
 def location(check, scan, outcome):
-    effects = ["Apps such as Weather and Maps can no longer find your location automatically."]
     if _is_gnome(scan):
         return FixPlan(check.id, "Turn off location services",
-                       gset(scan, "org.gnome.system.location", "enabled", "false"), side_effects=effects)
+                       gset(scan, "org.gnome.system.location", "enabled", "false"), side_effects=[
+                           "Apps such as Weather and Maps can no longer find your location by themselves: type a place "
+                           "in them instead."])
+    # GeoClue's other sources (a GPS, a modem) aren't online lookups, and stay
+    effects = ["Apps such as Weather and Maps can no longer have GeoClue look your location up online; a GPS, if this "
+               "computer has one, still works, and you can type a place in them instead."]
     # no desktop switch: GeoClue's own Wi-Fi lookup, for every account. GeoClue 2.7 reads conf.d
     # (later files win); older releases only geoclue.conf, edited by the helper's fixed rule.
     if isdir(scan.host.sys_path(GEOCLUE_DROPINS)):
@@ -372,9 +376,9 @@ def location(check, scan, outcome):
                         f"Write {GEOCLUE_DROPIN} with [wifi] enable=false")]
     else:
         a = [RootChange("edit_config", {"target": "geoclue"}, f"Set enable=false in the [wifi] section of {GEOCLUE_CONF}")]
-    effects += ["For every account on this computer: GeoClue no longer sends nearby Wi-Fi networks to an online "
-                "lookup service. It applies when GeoClue next starts (it stops by itself a minute after no app uses "
-                "it), or after a restart."]
+    effects += ["For every account on this computer: GeoClue no longer asks an online lookup service where this computer "
+                "is (from nearby Wi-Fi networks and its internet address). It applies when GeoClue next starts (it stops "
+                "by itself a minute after no app uses it), or after a restart."]
     return FixPlan(check.id, "Turn off GeoClue's online location lookup", a, side_effects=effects)
 
 

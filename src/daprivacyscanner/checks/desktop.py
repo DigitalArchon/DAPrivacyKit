@@ -956,20 +956,29 @@ class FileManagerActions(Check):
                       "menu.", *ev)
 
 
+def _tmpfs_size(size: str | None) -> str:
+    """A tmpfs mount's size option in words: "512000k" is 500 MB (the kernel shows it in k, m or g), "50%" as it is."""
+    m = re.fullmatch(r"(\d+)([kmg]?)", (size or "").strip().lower())
+    if not m:
+        return size or "unknown"
+    return human_size(int(m.group(1)) * {"": 1, "k": 1024, "m": 1024 ** 2, "g": 1024 ** 3}[m.group(2)])
+
+
 @register
 class EphemeralFolder(Check):
     id = "desk.ephemeral_folder"
 
     def detect(self, scan: Scan) -> Outcome:
-        from .guides.desktop import memory_leaks_to_disk
+        from .guides.desktop import memory_leaks_to_disk, swap_unencrypted
         mm = MemoryMount(scan, "ephemeral")
         leaks = memory_leaks_to_disk(scan)
         notes = [Note("risk", "Memory can still reach the disk", " ".join(leaks),
-                      ("enc.swap_persistent", "enc.swap_unencrypted"))] if leaks else []
+                      ("enc.swap_persistent",) + (("enc.swap_unencrypted",) if swap_unencrypted(scan) else ()))] \
+            if leaks else []
         if mm.in_memory:
             o = mm.options
             return passed("~/Ephemeral is kept in memory.",
-                          Evidence.val("Size", o.get("size", "?")),
+                          Evidence.val("Size", _tmpfs_size(o.get("size"))),
                           Evidence.val("Programs can run from it", "no" if "noexec" in o else "yes"),
                           Evidence.val("Emptied", "at logout and every reboot" if mm.until == "logout" else "at every reboot"),
                           notes=notes)

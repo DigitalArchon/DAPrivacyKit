@@ -443,6 +443,22 @@ def file_manager_actions(check, scan, outcome):
 
 # ------------------------------------------------------------------ ~/Ephemeral
 
+def swap_unencrypted(scan) -> bool:
+    """Whether a swap on the disk is known not to be encrypted: only then does the unencrypted-swap check fail, and is
+    it worth sending the user to (it passes with the swap inside LUKS)."""
+    from ... import blockdev
+    devices = scan.context.devices
+    if devices is None:
+        return False                                    # can't tell: that check says it couldn't
+    for name, kind, _ in read_swaps(scan.host):
+        if name.startswith("/dev/zram"):
+            continue
+        dev = blockdev.find(devices, scan.host, name) if kind == "partition" else blockdev.holding(devices, name)
+        if dev is not None and not dev.encrypted:
+            return True
+    return False
+
+
 def memory_leaks_to_disk(scan) -> list[str]:
     """Why a tmpfs may still end up on disk: swap on disk, zram writing back, hibernation."""
     from ..encryption import zram_backing
@@ -450,8 +466,8 @@ def memory_leaks_to_disk(scan) -> list[str]:
     disk = [n for n, _, _ in read_swaps(scan.host) if not n.startswith("/dev/zram")]
     if disk:
         out.append(f"Swap on disk ({', '.join(disk)}): under memory pressure, the kernel moves parts of memory there, "
-                   "the folder's files included, and they stay on the disk after a reboot (see enc.swap_persistent "
-                   "and enc.swap_unencrypted).")
+                   "the folder's files included, and they stay on the disk after a reboot (see enc.swap_persistent"
+                   + (" and enc.swap_unencrypted)." if swap_unencrypted(scan) else ")."))
     back = [n for n, _, _ in read_swaps(scan.host) if n.startswith("/dev/zram") and zram_backing(scan.host, n)]
     if back:
         out.append("zram writes pages back to a disk (a writeback device): the same as swap on disk.")
@@ -546,15 +562,24 @@ def ephemeral(check, scan, outcome):
                       options=[option(check, "Set it up (needs administrator access)", acts, blockers=blockers,
                                       recommended=True, side_effects=effects)],
                       done=mm.in_memory))
-    from ..desktop import ThumbnailMount
+    from .._util import installed
+    from ..desktop import ThumbnailMount, recoll_dir
     tm_note = "" if ThumbnailMount(scan).in_memory else " Keep the thumbnail cache in memory too (desk.thumbnails)."
+    # only the indexers that are here: KDE's steps on Cinnamon, with none installed, were noise
+    indexers = []
+    if installed(host, "balooctl", "balooctl6") or isfile(scan.paths.config_home / "baloofilerc"):
+        indexers.append("Baloo: System Settings → Search → File Search → exclude ~/Ephemeral")
+    if scan.gnome.indexer_command():
+        indexers.append("GNOME's search: Settings → Search → Search Locations, ~/Ephemeral off")
+    if installed(host, "recoll", "recollindex") or isdir(recoll_dir(scan)):
+        indexers.append("Recoll: Preferences → Index configuration → Skipped paths, add ~/Ephemeral")
     steps.append(Step("What else records the files you open",
                       "The folder keeps its files off the disk, but other parts of the desktop note what you open: "
                       "thumbnails of pictures and documents in it are cached in ~/.cache/thumbnails." + tm_note +
-                      " The recent files list records their names (desk.recent_files). A file indexer may index it "
-                      "(KDE: System Settings → Search → File Search → exclude ~/Ephemeral). Backups of your home may "
-                      "copy it while it is mounted: exclude it there. To download into it, choose ~/Ephemeral in the "
-                      "browser's download settings, or when it asks where to save."))
+                      " The recent files list records their names (desk.recent_files)."
+                      + (f" A file indexer here may index it ({'; '.join(indexers)})." if indexers else "")
+                      + " Backups of your home may copy it while it is mounted: exclude it there. To download into it, "
+                      "choose ~/Ephemeral in the browser's download settings, or when it asks where to save."))
     steps.append(cryptomator_step(scan))
     return Guide(check.id, "A folder in memory for temporary work",
                  "For downloads, scans and working copies that shouldn't outlive the task.", steps)

@@ -1132,25 +1132,31 @@ class ContentBlocking(Check):
         if not known:
             return absent("No browser the app knows is installed.")
         default, did, _how = _default_of(scan, found)
-        ev, lacking, partial = [], [], []
+        ev, lacking, partial, unused, blocks = [], [], [], [], False
         for f in known:
             b = f.browser
+            judged = default is not None and default.browser is b or (did is None)
             if b.blocking == "builtin":
                 ev.append(Evidence.val(f.name, b.blocker))
+                blocks |= judged
                 continue
             if b.blocking == "none_allowed":
                 ev.append(Evidence.val(f.name, "no extensions, by design"))
+                blocks |= judged
                 continue
             statuses = blocking_status(scan, b)
             if not statuses:
-                ev.append(Evidence.val(f.name, "no profile found (not used yet?)"))
+                ev.append(Evidence.val(f.name, "not used yet: no profile"))
+                if judged:
+                    unused.append(f.name)
             for where, status in statuses:
                 ev.append(Evidence.val(where[:150], status))
-            judged = default is not None and default.browser is b or (did is None)
             if judged and any(s == "none" for _, s in statuses):
                 lacking.append(f.name)
             elif judged and any(s == "uBlock Origin Lite" for _, s in statuses):
                 partial.append(f.name)
+            elif judged and statuses:
+                blocks = True
         notes = [Note("info", "Chrome and Edge can't block properly any more",
                       "Since 2025 Chrome and Edge can't run the full uBlock Origin, only the weaker uBlock Origin "
                       "Lite. Firefox-based browsers, ungoogled-chromium and Brave still can.")]
@@ -1160,4 +1166,16 @@ class ContentBlocking(Check):
         if partial:
             return warned(f"{' and '.join(dict.fromkeys(partial))} has only uBlock Origin Lite, which blocks less.",
                           *ev, notes=notes)
-        return passed("Your browser blocks ads and trackers.", *ev)
+        if not blocks:
+            # a fresh install (no profile yet: nothing to judge, and nothing blocks either), or a default the app
+            # doesn't know: never a pass that claims blocking
+            if unused:
+                n = len(dict.fromkeys(unused))
+                return absent(f"{' and '.join(dict.fromkeys(unused))} {'hasn' if n == 1 else 'haven'}'t been used yet, "
+                              "so there is nothing to check: add uBlock Origin when you first open "
+                              f"{'it' if n == 1 else 'them'}.", *ev, notes=notes)
+            return absent("Your default browser isn't one the app knows.", *ev, notes=notes)
+        return passed("Your browser blocks ads and trackers.", *ev,
+                      notes=[Note("info", "Not used yet", f"{', '.join(dict.fromkeys(unused))}: no profile yet, so "
+                                  "there is nothing to check there; add uBlock Origin when you first open it.")]
+                      if unused else [])

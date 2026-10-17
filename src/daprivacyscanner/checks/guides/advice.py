@@ -763,10 +763,20 @@ def default_browser_guide(check, scan, outcome):
                           commands=[f"xdg-settings set default-web-browser {f.desktop_ids[0]}    # {f.name}"
                                     for f in good]))
     else:
+        from .._util import installed
+        flatpak = installed(scan.host, "flatpak")
+        setup = [] if flatpak else [c for c in [install(scan, debian="flatpak", fedora="flatpak", arch="flatpak",
+                                                         suse="flatpak")] if c] + [
+            "flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo"]
+        tor = install(scan, debian="torbrowser-launcher", fedora="torbrowser-launcher", arch="torbrowser-launcher",
+                      suse="torbrowser-launcher")
         steps.append(Step("Install one built for privacy",
                           "None is installed yet. Brave Origin is free on Linux: brave.com/origin explains how to install "
-                          "it for your distribution. These are on Flathub:",
-                          commands=[f"flatpak install flathub {fid}    # {name}" for name, fid in FLATHUB]))
+                          "it for your distribution. These are on Flathub"
+                          + ("" if flatpak else ", which needs Flatpak: the first lines install it and add Flathub")
+                          + (f". Tor Browser's launcher is also a package of your distribution's own ({tor})." if tor
+                             else ":"),
+                          commands=setup + [f"flatpak install flathub {fid}    # {name}" for name, fid in FLATHUB]))
         steps.append(Step("Then make it your default", "Open the new browser; it offers to become the default. Or "
                           "use your desktop's Default Applications settings."))
     steps.append(Step("Which to choose", "For every day, Brave (Brave Origin is better still), LibreWolf, Waterfox or "

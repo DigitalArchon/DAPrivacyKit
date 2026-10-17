@@ -1698,10 +1698,12 @@ checks:
     warn_lower: 2
     scope: user
     tier: auto
-    why: GeoClue sends nearby Wi-Fi access points to an online lookup service.
+    why: GeoClue sends nearby Wi-Fi access points, and the computer's internet address, to an online lookup service.
     detect:
       - 'GNOME: gsettings get org.gnome.system.location enabled'
       - '/etc/geoclue/geoclue.conf, then /etc/geoclue/conf.d/*.conf in name order (GeoClue 2.7+, later files win): [wifi] enable'
+      - 'Wi-Fi adapters (/sys/class/net/*/wireless or phy80211): without one the lookup has only the internet address to
+        go on, and the summary says so, never "nearby Wi-Fi networks"'
     fix: >
       GNOME: the location switch (gsettings). Other desktops have no switch of their own, so GeoClue's
       online Wi-Fi lookup is turned off for every account through the helper: a drop-in
@@ -1988,6 +1990,8 @@ checks:
     detect:
       - 'Per profile: a blocker built in (browsers.yaml blocking: Brave Shields, uBlock Origin in Helium, LibreWolf and Mullvad Browser, Cromite''s own), else the uBlock Origin extension (uBlock0@raymondhill.net; cjpalhdlnbpafiamejdnhcphjbkeiagm) or uBlock Origin Lite (ddkjiahejlhfcafbddmgiahcphecmpfh, partial)'
       - 'Fails for the default browser (or, when it is unknown, any browser with profiles) with none; Tor Browser is exempt: the Tor Project advises adding no extensions'
+      - 'A browser with no profile yet (every fresh install) is "not used yet": not applicable, never a pass that claims
+        blocking; nor a default browser the app doesn''t know'
     fix: >
       How to… links uBlock Origin for that browser: addons.mozilla.org for Firefox-family browsers; on Chromium-family
       ones the full version needs Manifest V2 (ungoogled-chromium, Brave for now); Chrome and Edge get only uBlock Origin Lite.

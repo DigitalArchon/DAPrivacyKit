@@ -108,7 +108,53 @@ def test_enhanced_safe_browsing_has_a_step(cat, tmp_path):
     assert chromium.done and not chromium.options       # the policy doesn't turn it off: no option for it
 
 
-# ------------------------------------------------------------------ Firefox-family prefs
+def test_a_browser_never_used_isnt_said_to_block(cat, tmp_path):
+    """Every fresh install: "Your browser blocks ads and trackers." with no profile to look in (live, three machines)."""
+    from test_browsers import entry, machine
+    host = machine(tmp_path, default="firefox.desktop", files={"/usr/share/applications/firefox.desktop": entry("Firefox")})
+    o = detect(cat, "br.content_blocking", make_scan(host))
+    assert o.status is Status.NOT_APPLICABLE and o.summary.startswith("Firefox hasn't been used yet")
+    assert ev(o)["Firefox"] == "not used yet: no profile"
+
+
+def test_choosing_a_browser_without_flatpak_installs_it_first(cat, tmp_path):
+    from test_browsers import entry, machine
+    host = machine(tmp_path, default="google-chrome.desktop",
+                   files={"/usr/share/applications/google-chrome.desktop": entry("Google Chrome"),
+                          "/etc/os-release": "ID=arch\n"})
+    g = _how_to(cat, host, "br.default_browser")
+    step = _step(g, "Install one built for privacy")
+    assert step.commands[:2] == ["sudo pacman -S flatpak",
+                                 "flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo"]
+    assert "sudo pacman -S torbrowser-launcher" in step.text
+
+
+# ------------------------------------------------------------------ texts
+
+def test_location_without_a_wifi_adapter_says_what_it_sends(cat, tmp_path):
+    host = make_host(tmp_path, files={"/etc/geoclue/geoclue.conf": "[wifi]\nenable=true\n",
+                                      "/sys/class/net/eno1/address": "x", "/sys/class/net/lo/address": "x"})
+    o = detect(cat, "tel.location", make_scan(host, desktop=("x-cinnamon",)))
+    assert o.status is Status.WARN and "it has no Wi-Fi adapter" in o.summary and "Wi-Fi networks to" not in o.summary
+    (host.root / "sys/class/net/wlp2s0/wireless").mkdir(parents=True)
+    o = detect(cat, "tel.location", make_scan(host, desktop=("x-cinnamon",)))
+    assert "nearby Wi-Fi networks and this computer's internet address" in o.summary
+
+def test_ephemeral_folder_words(cat, tmp_path):
+    """The size in words, the unencrypted-swap check named only where it fails, and only the indexers that are here."""
+    from conftest import lsblk
+    host = make_host(tmp_path, files={"/proc/swaps": "Filename Type Size Used Priority\n/swap.img file 999 0 -2\n",
+                                      "/proc/mounts": f"tmpfs {tmp_path}/home/alice/Ephemeral tmpfs "
+                                                      "rw,nosuid,nodev,noexec,size=512000k,mode=700 0 0\n"})
+    (host.home / "Ephemeral").mkdir()
+    scan = make_scan(host, desktop=("x-cinnamon",), devices=lsblk("ubuntu-24.04-luks-lvm.json"))
+    o = detect(cat, "desk.ephemeral_folder", scan)
+    assert ev(o)["Size"] == "500.0 MB"
+    note = next(n for n in o.notes if n.title == "Memory can still reach the disk")
+    assert "enc.swap_unencrypted" not in note.text and "enc.swap_unencrypted" not in note.related
+    g = load_all()["desk.ephemeral_folder"](cat["desk.ephemeral_folder"]).plan_guide(scan, o)
+    assert "Baloo" not in _step(g, "What else records").text and "indexer" not in _step(g, "What else records").text
+
 
 def test_thunderbird_running_holds_up_only_thunderbird(cat, tmp_path):
     host = make_host(tmp_path)
