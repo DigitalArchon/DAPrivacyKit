@@ -58,7 +58,9 @@ from .viewer import _program
 FOLDER = "daprivacyscanner-trial"
 APP_IN = "/app"
 COPY_MAX = 8 << 30                       # the largest file copied in
-UNPACK_MAX = 8 << 30                     # the most an archive may unpack to
+UNPACK_MAX = 8 << 30                     # the most an archive may unpack to (and no more than there is room for)
+MEMBERS_MAX = 200000                     # the most files and folders it may unpack to
+ROOM_KEPT = 128 << 20                    # what unpacking leaves free where the trial lives (the runtime folder's for the session)
 CANDIDATES_MAX = 60
 OUTPUT_KEPT = 16000                      # the last of the program's own output, shown when it fails
 START_WAIT = 2.0
@@ -307,19 +309,22 @@ def clear_leftovers(host: Host) -> None:
 
 # ------------------------------------------------------------------ unpacking, inside a sandbox
 
-# runs inside the sandbox: unpacks argv[1] into argv[2], at most argv[3] bytes in all. A .deb is an ar archive
+# runs inside the sandbox: unpacks argv[1] into argv[2], at most argv[3] bytes and argv[4] files and folders in all,
+# counted before each is written (a zip by the sizes it declares, which zipfile holds it to). A .deb is an ar archive
 # holding data.tar.*; tar's own filter keeps every member inside the folder (and the sandbox would anyway).
 UNPACK = r"""
 import io, os, subprocess, sys, tarfile, zipfile
-src, dst, limit = sys.argv[1], sys.argv[2], int(sys.argv[3])
+src, dst, limit, most = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
+def too_much():
+    sys.exit("It unpacks to more than %d MB or %d files, the most there is room for here." % (limit >> 20, most))
 def tar(f):
     kw = {"filter": "tar"} if hasattr(tarfile, "tar_filter") else {}
-    total = 0
+    total = count = 0
     with tarfile.open(fileobj=f, mode="r|*") as t:
         for m in t:
-            total += m.size
-            if total > limit:
-                sys.exit("It unpacks to more than this allows.")
+            total, count = total + m.size, count + 1
+            if total > limit or count > most:
+                too_much()
             if m.isdev():
                 continue
             t.extract(m, dst, **kw)
@@ -335,8 +340,11 @@ with open(src, "rb") as f:
             name, size = h[:16].decode().strip().rstrip("/"), int(h[48:58])
             if name.startswith("data.tar"):
                 if name.endswith(".zst") and sys.version_info < (3, 14):      # tarfile reads zstd from 3.14
-                    if os.path.exists("/usr/bin/dpkg-deb"):
-                        sys.exit(subprocess.run(["/usr/bin/dpkg-deb", "-x", src, dst]).returncode)
+                    if os.path.exists("/usr/bin/dpkg-deb"):     # its tar, through the same counts (not dpkg-deb -x)
+                        p = subprocess.Popen(["/usr/bin/dpkg-deb", "--fsys-tarfile", src], stdout=subprocess.PIPE)
+                        tar(p.stdout)
+                        p.stdout.close()
+                        sys.exit(p.wait())
                     p = subprocess.Popen(["zstd", "-dc"], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
                     import threading
                     def pump(left=size):
@@ -353,8 +361,8 @@ with open(src, "rb") as f:
             f.seek(size + size % 2, 1)
     elif zipfile.is_zipfile(src):
         with zipfile.ZipFile(src) as z:
-            if sum(i.file_size for i in z.infolist()) > limit:
-                sys.exit("It unpacks to more than this allows.")
+            if sum(i.file_size for i in z.infolist()) > limit or len(z.infolist()) > most:
+                too_much()
             for i in z.infolist():
                 out = z.extract(i, dst)
                 mode = (i.external_attr >> 16) & 0o777
@@ -365,13 +373,21 @@ with open(src, "rb") as f:
 """
 
 
-def unpack_argv(host: Host, source: Path, dest: Path, limit: int = UNPACK_MAX) -> list[str]:
+def unpack_argv(host: Host, source: Path, dest: Path, limit: int = UNPACK_MAX, most: int = MEMBERS_MAX) -> list[str]:
     """The archive or .deb `source` unpacked into `dest` by the computer's python3 in a sandbox with no network,
-    which sees only the file (read-only) and the folder."""
+    which sees only the file (read-only) and the folder: at most `limit` bytes and `most` files and folders."""
     return [sandbox._need(host, sandbox.BWRAP), *sandbox.namespaces(False), *sandbox.system(host),
             "--ro-bind", str(source), "/in/source", "--bind", str(dest), "/out", "--chdir", "/out",
             "--setenv", "PATH", "/usr/bin:/bin", "--",
-            sandbox.PYTHON, "-I", "-c", UNPACK, "/in/source", "/out", str(limit)]
+            sandbox.PYTHON, "-I", "-c", UNPACK, "/in/source", "/out", str(limit), str(most)]
+
+
+def unpack_limit(place: dict) -> int:
+    """The most an archive may unpack to in `place`: UNPACK_MAX, or what is free there less ROOM_KEPT, whichever is
+    less. An archive that unpacks to more than it says (a "zip bomb", a .deb of the kind dpkg-deb unpacked without
+    a limit) would otherwise fill the runtime folder, which the whole session uses (found in the 2026-10-17 review:
+    8 GB allowed whatever was free)."""
+    return max(0, min(UNPACK_MAX, place["free"] - ROOM_KEPT))
 
 
 def _looks_runnable(path: Path, st: os.stat_result) -> str | None:
@@ -494,7 +510,7 @@ def prepare_file(host: Host, path: Path, where: str, run: Callable = subprocess.
         if sub.kind in ("archive", "deb"):
             if not sandbox.program(host, sandbox.BWRAP):
                 raise TrialError("Unpacking it safely needs bubblewrap (the bubblewrap package).")
-            r = run(unpack_argv(host, path, t.app), cwd="/", env=host_env(host.environ), stdin=subprocess.DEVNULL,
+            r = run(unpack_argv(host, path, t.app, unpack_limit(place)), cwd="/", env=host_env(host.environ), stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=900)
             if r.returncode:
                 err = (r.stderr or b"").decode(errors="replace").strip().splitlines()

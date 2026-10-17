@@ -1508,7 +1508,11 @@ OACS, FNA and SANICAP via the helper's ioctl), read on request and kept for the 
   - **What can be tried** (`prepare_file`, `prepare_app`; a file is judged by its first bytes, `classify`): an
     AppImage (type 2: run with `APPIMAGE_EXTRACT_AND_RUN`, since it can't mount itself in a sandbox; type 1 is
     refused, saying why), a program, a script; an archive (tar, zip), unpacked by the computer's python3 inside a
-    sandbox with no network that sees only the file and the folder (`UNPACK`), after which the user picks the
+    sandbox with no network that sees only the file and the folder (`UNPACK`: at most 8 GB, and never more than
+    is free where the trial lives less 128 MB, `unpack_limit`, and 200,000 files, counted before each is written;
+    a .deb compressed with zstd, which tarfile reads only from Python 3.14, through `dpkg-deb --fsys-tarfile`
+    into the same counts: found in the 2026-10-17 review, a zip bomb was unpacked in full into the runtime folder
+    the whole session uses, and `dpkg-deb -x` had no limit at all), after which the user picks the
     program in it (`candidates`: a menu entry's program first, then programs near the top; a link is resolved
     inside the tree, never onto the computer); a .deb, unpacked the same way and never installed (its maintainer
     scripts aren't run, its dependencies aren't installed, and the page says so); an installed app from the menu,

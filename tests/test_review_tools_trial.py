@@ -276,6 +276,76 @@ def test_a_box_whose_program_fails_at_once_says_so_in_a_dialog(tmp_path, monkeyp
     assert app.box_cli("chat-app") == 0 and said == []
 
 
+# ------------------------------------------------------------------ E8: unpacking stops at the room there is
+
+def _unpack(src, dst, limit, most=1000):
+    dst.mkdir(exist_ok=True)
+    return subprocess.run([sys.executable, "-I", "-c", trial.UNPACK, str(src), str(dst), str(limit), str(most)],
+                          capture_output=True, text=True, timeout=60)
+
+
+def test_unpacking_never_takes_more_than_there_is_room_for(tmp_path):
+    """Found in the review: a zip bomb was unpacked in full (8 GB allowed whatever was free, in the runtime folder the
+    whole session uses), and a .deb of the kind dpkg-deb -x unpacked had no limit at all."""
+    import io
+    import tarfile
+    import zipfile
+    assert trial.unpack_limit({"free": 1 << 30}) == (1 << 30) - trial.ROOM_KEPT
+    assert trial.unpack_limit({"free": 64 << 30}) == trial.UNPACK_MAX and trial.unpack_limit({"free": 1 << 20}) == 0
+    z = tmp_path / "bomb.zip"
+    with zipfile.ZipFile(z, "w", zipfile.ZIP_DEFLATED) as f:
+        for i in range(3):
+            f.writestr(f"part{i}", b"\0" * (1 << 20))
+    r = _unpack(z, tmp_path / "z", 2 << 20)
+    assert r.returncode and "the most there is room for here" in r.stderr and not list((tmp_path / "z").iterdir())
+    t = tmp_path / "bomb.tar.gz"
+    with tarfile.open(t, "w:gz") as f:
+        for i in range(5):
+            info = tarfile.TarInfo(f"part{i}")
+            info.size = 1 << 20
+            f.addfile(info, io.BytesIO(b"\0" * info.size))
+    r = _unpack(t, tmp_path / "t", (5 << 20) // 2)
+    assert r.returncode and len(list((tmp_path / "t").iterdir())) == 2, "it stops before writing past the limit"
+    assert _unpack(t, tmp_path / "t2", 64 << 20, most=3).returncode, "and at the most files"
+    assert _unpack(t, tmp_path / "t3", 64 << 20).returncode == 0 and len(list((tmp_path / "t3").iterdir())) == 5
+
+
+@pytest.mark.skipif(not os.path.exists("/usr/bin/dpkg-deb") or sys.version_info >= (3, 14), reason="dpkg-deb's path")
+def test_a_zstd_package_goes_through_the_same_limit(tmp_path):
+    pkg = tmp_path / "pkg"
+    (pkg / "DEBIAN").mkdir(parents=True)
+    (pkg / "DEBIAN/control").write_text("Package: big\nVersion: 1\nArchitecture: all\nMaintainer: x <x@example.org>\n"
+                                        "Description: test\n")
+    (pkg / "usr/share/big").mkdir(parents=True)
+    (pkg / "usr/share/big/blob").write_bytes(os.urandom(3 << 20))
+    deb = tmp_path / "big.deb"
+    built = subprocess.run(["/usr/bin/dpkg-deb", "--root-owner-group", "-Zzstd", "--build", str(pkg), str(deb)],
+                           capture_output=True)
+    if built.returncode:
+        pytest.skip("this dpkg-deb can't build a zstd package")
+    r = _unpack(deb, tmp_path / "out", 1 << 20)
+    assert r.returncode and "the most there is room for here" in r.stderr
+    assert not (tmp_path / "out/usr/share/big/blob").exists()
+    assert _unpack(deb, tmp_path / "ok", 64 << 20).returncode == 0 and (tmp_path / "ok/usr/share/big/blob").stat().st_size == 3 << 20
+
+
+def test_preparing_passes_the_room_there_is(tmp_path, monkeypatch):
+    from daprivacyscanner.host import FakeRunner, Host
+    root = tmp_path / "root"
+    (root / "home/a/Downloads").mkdir(parents=True)
+    host = Host(home=root / "home/a", environ={}, runner=FakeRunner(), root=root, uid=1000)
+    src = host.home / "Downloads/a.tar.gz"
+    src.write_bytes(b"\x1f\x8b\x08" + b"\0" * 20)
+    got = []
+    monkeypatch.setattr(trial, "places", lambda h: [{"id": "memory", "words": "In memory", "free": 900 << 20,
+                                                    "noexec": False, "folder": str(tmp_path / "rt/daprivacyscanner-trial")}])
+    monkeypatch.setattr(trial.sandbox, "program", lambda h, n: "/usr/bin/bwrap")
+    run = lambda argv, **kw: got.append(argv) or subprocess.CompletedProcess(argv, 1, b"", b"stop here")   # noqa: E731
+    with pytest.raises(trial.TrialError):
+        trial.prepare_file(host, src, "memory", run=run)
+    assert got[0][-2:] == [str((900 << 20) - trial.ROOM_KEPT), str(trial.MEMBERS_MAX)]
+
+
 def test_the_box_says_its_site_codes_can_be_tested(cat, tmp_path):
     """E7, the owner's decision: the per-host HMACs in runs.json stay (they count the new hosts), and the text that said
     no names of sites were kept says what they allow: anyone who can read the Box's folder can test a guess."""
