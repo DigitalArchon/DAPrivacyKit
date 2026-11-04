@@ -157,7 +157,8 @@ def test_nvme_sanitize_from_its_facts(host):
 
 def test_an_encrypted_external_drive_is_unmounted_inside_out(tmp_path):
     """The mounted filesystem is inside the LUKS volume (and LVM inside that): unmounted first, then
-    the volume group, then the encrypted volume: cryptsetup close alone would fail on a mounted one."""
+    the volume group, then the encrypted volume: cryptsetup close alone would fail on a mounted one.
+    LUKS inside LVM the other way round: vgchange refuses while the encrypted volume on it is open."""
     tree = {"blockdevices": [
         node("nvme0n1", "disk", tran="nvme", children=[node("nvme0n1p1", fstype="ext4", mp="/")]),
         node("sdf", "disk", tran="usb", children=[node("sdf1", fstype="crypto_LUKS", children=[
@@ -165,9 +166,12 @@ def test_an_encrypted_external_drive_is_unmounted_inside_out(tmp_path):
         node("sdg", "disk", tran="usb", children=[node("sdg1", fstype="crypto_LUKS", children=[
             node("luks-cd34", "crypt", "LVM2_member", children=[
                 node("my--vg-data", "lvm", "ext4", "/media/me/Data"), node("my--vg-swap", "lvm", "swap")])])]),
-        node("sdh", "disk", tran="usb", fstype="vfat", mp="/media/me/STICK")]}
+        node("sdh", "disk", tran="usb", fstype="vfat", mp="/media/me/STICK"),
+        node("sdi", "disk", tran="usb", children=[node("sdi1", fstype="LVM2_member", children=[
+            node("vault-secret", "lvm", "crypto_LUKS", children=[node("luks-ef56", "crypt", "ext4", "/media/me/Secret")]),
+            node("vault-plain", "lvm", "ext4", "/media/me/Plain")])])]}
     h = make_host(tmp_path, commands={LSBLK: json.dumps(tree)})
-    for name in ("nvme0n1", "sdf", "sdg", "sdh"):
+    for name in ("nvme0n1", "sdf", "sdg", "sdh", "sdi"):
         real = h.root / "sys/devices/usb1/block" / name
         (real / "queue").mkdir(parents=True)
         (real / "queue/rotational").write_text("0\n")
@@ -181,6 +185,9 @@ def test_an_encrypted_external_drive_is_unmounted_inside_out(tmp_path):
     assert RT.guide(h, "sdg", "sdg").steps[0].commands == ["udisksctl unmount -b /dev/mapper/my--vg-data",
                                                            "sudo vgchange -an my-vg", "sudo cryptsetup close luks-cd34"]
     assert RT.guide(h, "sdh", "sdh").steps[0].commands == ["udisksctl unmount -b /dev/sdh"]   # no partition table
+    assert RT.guide(h, "sdi", "sdi").steps[0].commands == ["udisksctl unmount -b /dev/mapper/vault-plain",
+                                                           "udisksctl unmount -b /dev/mapper/luks-ef56",
+                                                           "sudo cryptsetup close luks-ef56", "sudo vgchange -an vault"]
 
 
 def test_volume_group_names():

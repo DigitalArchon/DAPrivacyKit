@@ -295,7 +295,9 @@ def guide(host: Host, name: str, typed: str, kind: str | None = None, from_start
 def _unmount_commands(host: Host, d: Disk) -> list[str]:
     """What is on the drive, closed from the top down: every mounted filesystem (on a partition, the
     whole disk, an encrypted volume or LVM inside it), the mount points a btrfs spread over this and
-    another drive is mounted on, then its LVM volume groups, then its open encrypted volumes."""
+    another drive is mounted on, then the layers under them, the deepest first: the volume group
+    before the encrypted volume it is on (LVM on LUKS), the encrypted volume before the volume group
+    it is on (LUKS on LVM: vgchange refuses while it is open)."""
     try:
         devices = blockdev.read_devices(host)
     except blockdev.LsblkError:
@@ -304,9 +306,16 @@ def _unmount_commands(host: Host, d: Disk) -> list[str]:
     cmds = [f"udisksctl unmount -b {x.path}" for x in reversed(tree) if any(m.startswith("/") for m in x.mountpoints)]
     shown = {m for x in tree for m in x.mountpoints}
     cmds += [f"sudo umount {shlex.quote(mp)}" for mp in d.mounted if mp not in shown]
-    cmds += [f"sudo vgchange -an {shlex.quote(vg)}" for vg in d.volume_groups]
-    cmds += [f"sudo cryptsetup close {shlex.quote(x.name)}" for x in reversed(tree) if x.type == "crypt"]
-    return cmds
+    # reversed, the tree has every device after all those on top of it; a volume group goes where the last of its
+    # volumes comes (lsblk lists a volume, and what is on it, under each drive of its group)
+    layers = list(reversed(tree))
+    last = {volume_group(x.name): i for i, x in enumerate(layers) if x.type == "lvm"}
+    for i, x in enumerate(layers):
+        if x.type == "crypt":
+            cmds.append(f"sudo cryptsetup close {shlex.quote(x.name)}")
+        elif x.type == "lvm" and last[volume_group(x.name)] == i:
+            cmds.append(f"sudo vgchange -an {shlex.quote(volume_group(x.name))}")
+    return list(dict.fromkeys(cmds))
 
 
 def _crypto_erase(d: Disk, from_start: bool) -> Step | None:
