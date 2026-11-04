@@ -416,7 +416,9 @@ def export_cli(cat, path: str, redact: bool) -> int:
     text = report.export_all(last, cat, UndoLog.for_user(paths).entries(), Accepted(paths).all(),
                              "json" if path.endswith(".json") else "text", host, redact)
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as f:
+    # a file name that isn't UTF-8 (a lone surrogate in Python) goes in as the bytes it has: strictly, the write
+    # failed and left the file empty
+    with os.fdopen(fd, "w", errors="surrogateescape") as f:
         f.write(text + "\n")
     print(f"Written to {path}" + (" (redacted)" if redact else "") + ".")
     return 0
@@ -606,8 +608,20 @@ def quiet_tracebacks() -> None:
         if a.exc_type is not SystemExit else None
 
 
+def escaped_output() -> None:
+    """A file name that isn't UTF-8 (an old archive's, a Windows drive's) is a lone surrogate in Python, which print()
+    can't encode for a UTF-8 terminal: --scan stopped on it with exit status 1, as for findings, and --verify,
+    --dry-run and --online the same way. It is printed as an escape (\\udcfc) instead."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="backslashreplace")
+        except (AttributeError, ValueError):        # not a text stream of the usual kind, or closed
+            pass
+
+
 def main(argv: list[str] | None = None) -> None:
     no_core_dumps()
+    escaped_output()
     if not sys.stderr.isatty():
         quiet_tracebacks()
     ap = argparse.ArgumentParser(

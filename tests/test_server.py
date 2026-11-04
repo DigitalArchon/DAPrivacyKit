@@ -341,6 +341,31 @@ def test_report_export_and_redaction(cat, tmp_path):
     assert data["report"]["redacted"] and data["format"] == "daprivacyscanner-report"
 
 
+def odd_name_host(tmp_path):
+    """A .env file with a password in a folder whose name isn't UTF-8 (Latin-1, as an old zip has it): in the report
+    it is a lone surrogate, ~/Projekt-M\\udcfcnchen/.env."""
+    import os
+    host = make_host(tmp_path, commands={LSBLK: sample("lsblk/debian-12-partial.json")})
+    odd = os.path.join(os.fsencode(host.home), b"Projekt-M\xfcnchen")
+    os.makedirs(odd)
+    with open(os.path.join(odd, b".env"), "w") as f:
+        f.write("DB_PASSWORD=hunter2hunter2\n")
+    return host
+
+
+def test_a_file_name_that_isnt_utf8_is_exported_as_text(cat, tmp_path):
+    """The page's JSON escapes the surrogate, but the text exports encoded it strictly and failed with a 500. They
+    carry the name's bytes, as they are on the disk."""
+    host = odd_name_host(tmp_path)
+    c = TestClient(create_app(TOKEN, cat, make_host=lambda: host))
+    h = {"X-Token": TOKEN}
+    c.post("/api/scan", headers=h)
+    for path in ("/api/report", "/api/export"):
+        r = c.get(f"{path}?format=text", headers=h)
+        assert r.status_code == 200 and b"~/Projekt-M\xfcnchen/.env" in r.content, path
+        assert c.get(f"{path}?format=json", headers=h).content.isascii()
+
+
 def test_accept_a_finding(cat, tmp_path):
     c = client(cat, tmp_path)
     h = {"X-Token": TOKEN}
@@ -486,6 +511,27 @@ def test_scan_cli_prints_text_or_json_and_sets_the_exit_status(cat, tmp_path, mo
     data = json.loads(capsys.readouterr().out)
     assert data["report"]["redacted"] and data["report"]["changes"] is not None
     assert ("notify-send",) not in {c[:1] for c in host.runner.calls}          # nothing new since the first scan
+
+
+def test_the_terminal_and_export_take_a_file_name_that_isnt_utf8(cat, tmp_path, monkeypatch, capsys):
+    """print() encodes strictly for a UTF-8 terminal: --scan stopped on the lone surrogate, with exit status 1 as for
+    findings, and --export left an empty file. The terminal gets an escape, the file the name's bytes."""
+    import pytest
+
+    from daprivacyscanner import app as app_mod
+    from daprivacyscanner.host import Host
+
+    host = odd_name_host(tmp_path)
+    monkeypatch.setattr(Host, "local", classmethod(lambda cls: host))
+    monkeypatch.setattr(app_mod, "no_core_dumps", lambda: None)
+    monkeypatch.setattr(app_mod.os, "geteuid", lambda: 1000)
+    with pytest.raises(SystemExit) as e:
+        app_mod.main(["--scan"])
+    assert e.value.code == 1 and "~/Projekt-M\\udcfcnchen/.env" in capsys.readouterr().out
+    out = tmp_path / "everything.txt"
+    with pytest.raises(SystemExit) as e:
+        app_mod.main(["--export", str(out)])
+    assert e.value.code == 0 and b"~/Projekt-M\xfcnchen/.env" in out.read_bytes()
 
 
 def test_scan_cli_leaves_accepted_findings_out_of_what_changed(cat, tmp_path, monkeypatch, capsys):

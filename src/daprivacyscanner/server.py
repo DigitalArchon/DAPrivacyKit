@@ -60,6 +60,15 @@ class JSONResponse(_JSONResponse):
         return json.dumps(content, ensure_ascii=True, allow_nan=False, separators=(",", ":")).encode("ascii")
 
 
+class TextResponse(PlainTextResponse):
+    """A report as text. A file name that isn't UTF-8 is in it as the bytes it has on the disk: as a lone surrogate
+    (above) it can't be encoded, and Export… as Text failed with an error. The page shows it as a replacement
+    character, as it does a name in JSON."""
+
+    def render(self, content) -> bytes:
+        return content.encode(self.charset, "surrogateescape")
+
+
 WEB_DIR = Path(__file__).resolve().parent / "web"
 
 
@@ -501,7 +510,7 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
         host = make_host()
         text = await asyncio.to_thread(report_mod.export, app.state.report, catalogue, fmt, host, redact,
                                        Accepted(paths_of(host)).all())
-        return PlainTextResponse(text, media_type="application/json" if fmt == "json" else "text/plain; charset=utf-8")
+        return TextResponse(text, media_type="application/json" if fmt == "json" else "text/plain; charset=utf-8")
 
     @app.get("/api/export", dependencies=[Depends(auth)])
     async def export_everything(request: Request):
@@ -513,7 +522,7 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
         host = make_host()
         text = await asyncio.to_thread(lambda: report_mod.export_all(
             app.state.report, catalogue, undo_log(host).entries(), Accepted(paths_of(host)).all(), fmt, host, redact))
-        return PlainTextResponse(text, media_type="application/json" if fmt == "json" else "text/plain; charset=utf-8")
+        return TextResponse(text, media_type="application/json" if fmt == "json" else "text/plain; charset=utf-8")
 
     def online_settings(host: Host) -> tuple[dict, str]:
         try:
