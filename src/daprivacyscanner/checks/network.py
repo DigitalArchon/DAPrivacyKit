@@ -1395,16 +1395,19 @@ class WifiHistory(Check):
         return passed(f"Every saved network was used in the last {STALE_DAYS} days.", *ev, notes=[note])
 
 
-def open_autoconnect(host: Host) -> list[tuple[str, str]] | None:
-    """(uuid, name) of saved networks without a password that connect on their own."""
+def open_autoconnect(host: Host) -> list[tuple[str, str, bool]] | None:
+    """(uuid, name, Enhanced Open) of saved networks without a password that connect on their own. Enhanced Open
+    (key-mgmt owe) encrypts the traffic, but with no password nothing proves which hotspot it is: an evil twin of the
+    same name is joined as an open network's is."""
     wifi = nm_connections(host, "802-11-wireless")
     if wifi is None:
         return None
     out = []
     for uuid in wifi:
         v = nm_get(host, uuid, "connection.id", "802-11-wireless-security.key-mgmt", "connection.autoconnect")
-        if not v["802-11-wireless-security.key-mgmt"] and v["connection.autoconnect"] not in ("no", "false"):
-            out.append((uuid, v["connection.id"] or uuid))
+        km = v["802-11-wireless-security.key-mgmt"].strip().lower()
+        if km in ("", "owe") and v["connection.autoconnect"] not in ("no", "false"):
+            out.append((uuid, v["connection.id"] or uuid, km == "owe"))
     return out
 
 
@@ -1418,10 +1421,16 @@ class OpenAutoconnect(Check):
             return unknown("NetworkManager (nmcli) isn't available.") if wifi_hardware(scan.host) else absent("No Wi-Fi hardware.")
         if not nm_connections(scan.host, "802-11-wireless"):
             return absent("No saved Wi-Fi networks.")
-        ev = [Evidence.val("Open network that reconnects by itself", n) for _, n in found[:20]]
+        ev = [Evidence.val("Open network that reconnects by itself", n + (" (Enhanced Open)" if owe else ""))
+              for _, n, owe in found[:20]]
         if found:
-            return failed(f"{len(found)} saved open network{'s' if len(found) > 1 else ''} reconnect{'' if len(found) > 1 else 's'} "
-                          "automatically: any hotspot with the same name is joined without asking.", *ev)
+            n, owe = len(found), sum(1 for *_, enhanced in found if enhanced)
+            text = (f"{n} saved open network{'s' if n > 1 else ''} reconnect{'' if n > 1 else 's'} automatically: any "
+                    "hotspot with the same name is joined without asking.")
+            if owe:
+                text += (f" {'It uses' if n == 1 else f'{owe} of them use'} Enhanced Open (OWE), which encrypts the "
+                         "traffic but doesn't prove which hotspot it is.")
+            return failed(text, *ev)
         return passed("No saved open network connects on its own.")
 
 # ------------------------------------------------------------------ the outgoing firewall (a feature)

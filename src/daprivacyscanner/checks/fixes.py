@@ -316,7 +316,7 @@ def startup_files_writable(check, scan, outcome):
 @fix("net.open_autoconnect", can=_need_nmcli)
 def open_autoconnect_fix(check, scan, outcome):
     from .network import open_autoconnect
-    a = [NmSet(uuid, name, "connection.autoconnect", "no") for uuid, name in open_autoconnect(scan.host) or []]
+    a = [NmSet(uuid, name, "connection.autoconnect", "no") for uuid, name, _ in open_autoconnect(scan.host) or []]
     return FixPlan(check.id, "Stop open networks from reconnecting by themselves", a,
                    side_effects=["You pick these networks from the Wi-Fi menu when you want them; they no longer join "
                                  "on their own."])

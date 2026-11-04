@@ -1627,6 +1627,8 @@ checks:
       same name (an attacker's) gets this machine to join it without asking.
     detect:
       - 'nmcli: 802-11-wireless connections with no 802-11-wireless-security.key-mgmt and connection.autoconnect yes'
+      - 'key-mgmt owe (Enhanced Open) too: it encrypts the traffic, but with no password nothing proves which hotspot
+        it is, and the summary says so'
     fix: connection.autoconnect no for each; they still connect when chosen by hand.
     remedy: >
       This computer joins open Wi-Fi networks by itself, so a fake hotspot with the same name can

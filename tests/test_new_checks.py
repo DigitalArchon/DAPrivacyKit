@@ -230,6 +230,23 @@ def test_open_autoconnect_fix(cat, tmp_path):
     assert nm.connections["u2"]["connection.autoconnect"] == "yes"
 
 
+def test_an_enhanced_open_network_is_open_too(cat, tmp_path):
+    """Enhanced Open (key-mgmt owe) has no password and nothing that authenticates the hotspot: an evil twin of the
+    same name is joined automatically, as an open network's is. It wasn't flagged."""
+    host = make_host(tmp_path)
+    nm = FakeNmcli({"u1": {"type": "802-11-wireless", "connection.id": "Airport", "connection.autoconnect": "yes",
+                           "802-11-wireless-security.key-mgmt": "owe"},
+                    "u2": {"type": "802-11-wireless", "connection.id": "Home", "connection.autoconnect": "yes",
+                           "802-11-wireless-security.key-mgmt": "sae"}})
+    host.runner.handlers["nmcli"] = nm
+    o = detect(cat, "net.open_autoconnect", make_scan(host))
+    assert o.status is Status.FAIL and "It uses Enhanced Open (OWE)" in o.summary
+    assert ev(o)["Open network that reconnects by itself"] == "Airport (Enhanced Open)"
+    plan, res, log = run_fix(cat, host, "net.open_autoconnect")
+    assert res.ok and nm.connections["u1"]["connection.autoconnect"] == "no"
+    assert nm.connections["u2"]["connection.autoconnect"] == "yes"
+
+
 def test_mac_permanent_scan_randomisation_off(cat, tmp_path):
     nm = FakeNmcli({"u1": {"type": "802-11-wireless", "connection.id": "Home", "802-11-wireless.cloned-mac-address": "stable"}})
     host = make_host(tmp_path, commands={("NetworkManager", "--print-config"): "[device]\nwifi.scan-rand-mac-address=no\n"})
