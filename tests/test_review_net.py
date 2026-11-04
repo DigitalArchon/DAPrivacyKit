@@ -418,6 +418,18 @@ def test_keys_only_option_is_done_once_the_apps_file_is_in_place(cat, tmp_path):
     assert not ssh.done and "a setting read before this file says yes" in ssh.text and ssh.commands
 
 
+@pytest.mark.parametrize("config, says", [
+    ("PasswordAuthentication yes\n", "Anyone who can reach port 22 can try passwords."),
+    ("PasswordAuthentication no\n", "sshd's settings turn passwords off already (PasswordAuthentication no)")])
+def test_ssh_step_says_what_sshd_does_with_passwords(cat, tmp_path, config, says):
+    """"Anyone who can reach port 22 can try passwords." was said where the scan read PasswordAuthentication no."""
+    host = make_host(tmp_path, files={"/etc/ssh/sshd_config": config})
+    listeners = [Listener("tcp", "0.0.0.0", 22, None)]
+    o = detect(cat, "net.exposed_services", make_scan(host, listeners=listeners, exposed_services=exposed()))
+    ssh = load_guide(cat, host, o, listeners).steps[0]
+    assert ssh.text.startswith(says) and "Keep SSH, but only with keys" in [x.label for x in ssh.options]
+
+
 def load_guide(cat, host, outcome, listeners):
     from daprivacyscanner.checks import load_all
     check = load_all()["net.exposed_services"](cat["net.exposed_services"])

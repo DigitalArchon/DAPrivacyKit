@@ -290,7 +290,13 @@ def exposed_services(check, scan, outcome):
                                side_effects=["Check you can log in with a key first (ssh -o PasswordAuthentication=no "
                                              "you@this-machine): passwords stop working for everyone.",
                                              "Root can no longer log in over SSH."]))
-            text, cmds = "Anyone who can reach port 22 can try passwords.", []
+            # as the scan read sshd's settings: it said passwords could be tried where they were turned off already
+            off = any(str(v).lower().startswith("no") for v in evidence(outcome, "SSH password logins"))
+            text, cmds = ("Anyone who can reach port 22 can try passwords." if still else
+                          "sshd's settings turn passwords off already (PasswordAuthentication no). The app's file makes "
+                          "sure of it, also for keyboard-interactive logins, which can ask for a password too, and "
+                          "turns root logins off." if off else
+                          "If sshd takes passwords, anyone who can reach port 22 can try them."), []
         elif still:
             text = (f"The app's file {SSHD_DROPIN} turns passwords and root logins off, but sshd still accepts "
                     "passwords: it keeps the first value it reads, and a setting read before this file says yes. The "
