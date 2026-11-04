@@ -962,6 +962,52 @@ def test_snapshots_keep_fewer(cat, tmp_path, system, monkeypatch):
     assert (host.root / "etc/snapper/configs/root").read_text() == SNAPPER_ROOT
 
 
+def test_snapshots_keep_fewer_never_raises_a_limit(cat, tmp_path, system, monkeypatch):
+    """The same limits went into every config: a home config keeping 5 update snapshots, 3 important ones, 2 hourly
+    and 3 daily was raised to 10, 5, 5 and 7, and the step was offered again once applied."""
+    from daprivacyscanner.checks.encryption import SNAPPER_DEFAULTS
+    home = ('SUBVOLUME="/home"\nNUMBER_LIMIT="5"\nNUMBER_LIMIT_IMPORTANT="3"\nTIMELINE_CREATE="yes"\n'
+            'TIMELINE_LIMIT_HOURLY="2"\nTIMELINE_LIMIT_DAILY="3"\nTIMELINE_LIMIT_MONTHLY="0"\nTIMELINE_LIMIT_YEARLY="0"\n')
+    host = rooted(make_host(tmp_path, files={"/etc/snapper/configs/root": SNAPPER_ROOT,
+                                             "/etc/snapper/configs/home": home}), system, monkeypatch)
+    assert helper.SNAPPER_DEFAULTS == SNAPPER_DEFAULTS            # what a config leaving a key out keeps
+    g = build(cat, host, "enc.snapshots_retain_deleted")
+    plan = options(g)["Keep at most 10 update snapshots, 5 hourly and 7 daily"]
+    assert "# /etc/snapper/configs/home" not in plan.dry_run() and '+ NUMBER_LIMIT="10"' in plan.dry_run()
+    log, res = apply(host, plan)
+    assert (host.root / "etc/snapper/configs/home").read_text() == home
+    assert 'NUMBER_LIMIT="10"' in (host.root / "etc/snapper/configs/root").read_text()
+    check = load_all()["enc.snapshots_retain_deleted"](cat["enc.snapshots_retain_deleted"])
+
+    def keep_fewer(**params):
+        scan = make_scan(host)
+        scan.params = params
+        return next(s for s in check.plan_guide(scan, check.detect(scan)).steps if s.title.endswith("keep fewer"))
+    assert keep_fewer().done and not keep_fewer().options
+    # a smaller number than a config keeps: offered again
+    assert not keep_fewer(keep=4).done
+    assert [o.label for o in keep_fewer(keep=4).options] == ["Keep at most 4 update snapshots, 4 hourly and 4 daily"]
+    revert(host, log, res)
+    # a range is judged by its top, and the timeline is never turned on
+    assert helper.lowered("snapper", {"NUMBER_LIMIT": "2-10"}, {"NUMBER_LIMIT": "10"}) == {}
+    assert helper.lowered("snapper", {"NUMBER_LIMIT": "2-10"}, {"NUMBER_LIMIT": "4"}) == {"NUMBER_LIMIT": "4"}
+    assert helper.lowered("snapper", {"TIMELINE_CREATE": "no"}, {"TIMELINE_CREATE": "yes"}) == {}
+
+
+def test_timeshift_keep_fewer_is_done_once_nothing_is_higher(cat, tmp_path, system, monkeypatch):
+    ts = {"btrfs_mode": "true", "backup_device_uuid": "abc", "schedule_daily": "true", "count_daily": "3",
+          "schedule_boot": "true", "count_boot": "2", "count_hourly": "6", "include_btrfs_home_for_backup": "true"}
+    host = rooted(make_host(tmp_path, files={"/etc/timeshift/timeshift.json": json.dumps(ts, indent=2) + "\n"}),
+                  system, monkeypatch)
+    g = build(cat, host, "enc.snapshots_retain_deleted")
+    log, res = apply(host, options(g)["Keep at most 7 daily and no weekly or monthly snapshots"])
+    data = json.loads((host.root / "etc/timeshift/timeshift.json").read_text())
+    assert (data["count_daily"], data["count_boot"], data["count_hourly"]) == ("3", "2", "5")
+    step = next(s for s in build(cat, host, "enc.snapshots_retain_deleted").steps if s.title == "Timeshift: keep fewer")
+    assert step.done and not step.options
+    revert(host, log, res)
+
+
 def test_snapshots_keep_count_is_an_input(cat, tmp_path, system, monkeypatch):
     host = rooted(make_host(tmp_path, files={"/etc/snapper/configs/root": SNAPPER_ROOT}), system, monkeypatch)
     g = build(cat, host, "enc.snapshots_retain_deleted", )
@@ -993,7 +1039,8 @@ def test_timeshift_keep_fewer(cat, tmp_path, system, monkeypatch):
     g = build(cat, host, "enc.snapshots_retain_deleted")
     log, res = apply(host, options(g)["Keep at most 7 daily and no weekly or monthly snapshots"])
     data = json.loads((host.root / "etc/timeshift/timeshift.json").read_text())
-    assert data["schedule_monthly"] == "false" and data["count_daily"] == "7" and data["backup_device_uuid"] == "abc"
+    # 5 daily is fewer than 7 already: it stays (it was raised to 7)
+    assert data["schedule_monthly"] == "false" and data["count_daily"] == "5" and data["backup_device_uuid"] == "abc"
     revert(host, log, res)
 
 

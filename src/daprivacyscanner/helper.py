@@ -898,10 +898,48 @@ def _cups(lines: list[str], values: dict) -> list[str]:
     return out
 
 
-def _assign(lines: list[str], values: dict) -> list[str]:
-    """Shell-style KEY="value" lines (snapper's configs): each key set where it is, or added."""
-    out = list(lines)
+# what snapper keeps for a key its config leaves out (snapper-configs(5)), and Timeshift for a count its
+# timeshift.json leaves out (the default.json it ships)
+SNAPPER_DEFAULTS = {"NUMBER_LIMIT": "50", "NUMBER_LIMIT_IMPORTANT": "10", "TIMELINE_CREATE": "yes",
+                    "TIMELINE_LIMIT_HOURLY": "10", "TIMELINE_LIMIT_DAILY": "10", "TIMELINE_LIMIT_WEEKLY": "0",
+                    "TIMELINE_LIMIT_MONTHLY": "10", "TIMELINE_LIMIT_QUARTERLY": "0", "TIMELINE_LIMIT_YEARLY": "10"}
+TIMESHIFT_DEFAULTS = {"count_hourly": "6", "count_daily": "5", "count_weekly": "3", "count_monthly": "2",
+                      "count_boot": "5"}
+
+
+def lowered(target: str, now: dict, values: dict) -> dict:
+    """The values of a snapper or Timeshift edit that keep fewer snapshots than a config does now (`now`, its values; a
+    key it leaves out has the program's default): the only ones the edit writes, so a limit already lower is never
+    raised (a home config keeping 5 update snapshots was set to 10). A count is compared by its top ("2-10" keeps up
+    to 10; one that isn't a count is replaced); "no" and "false" are lower than anything else, and "yes" and "true"
+    are never written."""
+    defaults = SNAPPER_DEFAULTS if target == "snapper" else TIMESHIFT_DEFAULTS
+
+    def top(v) -> int | None:
+        m = re.fullmatch(r"\s*(?:[0-9]+-)?([0-9]+)\s*", str(v))
+        return int(m.group(1)) if m else None
+    out = {}
     for key, value in values.items():
+        was = now.get(key, defaults.get(key))
+        if value in ("no", "false"):
+            lower = was is None or str(was).strip().lower() not in ("no", "false")
+        else:
+            lower = value not in ("yes", "true") and (was is None or top(was) is None or top(value) < top(was))
+        if lower:
+            out[key] = value
+    return out
+
+
+def _assign(lines: list[str], values: dict) -> list[str]:
+    """Shell-style KEY="value" lines (snapper's configs): each key set where it is, or added, where that keeps fewer
+    snapshots (`lowered`)."""
+    now = {}
+    for line in lines:
+        m = re.match(r'^\s*([A-Z_]+)\s*=\s*"?([^"\n]*)"?', line)
+        if m:
+            now[m.group(1)] = m.group(2)
+    out = list(lines)
+    for key, value in lowered("snapper", now, values).items():
         for i, line in enumerate(out):
             if re.match(rf"^\s*{key}\s*=", line):
                 out[i] = f'{key}="{value}"'
@@ -913,14 +951,16 @@ def _assign(lines: list[str], values: dict) -> list[str]:
 
 def _json_keys(lines: list[str], values: dict) -> list[str]:
     """Top-level string values of a JSON object (Timeshift's timeshift.json keeps every value as a
-    string); a file that isn't a JSON object is left as it is."""
+    string), where that keeps fewer snapshots (`lowered`); a file that isn't a JSON object, or where
+    nothing would be lower, is left as it is."""
     try:
         data = json.loads("\n".join(lines))
     except ValueError:
         return lines
-    if not isinstance(data, dict):
+    lower = lowered("timeshift", data, values) if isinstance(data, dict) else {}
+    if not lower:
         return lines
-    data.update(values)
+    data.update(lower)
     return (json.dumps(data, indent=2) + "\n").split("\n")
 
 

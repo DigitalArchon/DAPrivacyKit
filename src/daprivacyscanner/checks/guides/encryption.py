@@ -424,6 +424,7 @@ SNAPSHOT_HOOKS = (   # what makes a snapshot at every package change: (file it i
 def snapshots(check, scan, outcome):
     from ...fix import RootChange, RootClear
     from ...guide import Input
+    from ...helper import lowered
     from ..encryption import SNAPPER_SHORT_MAX, snapper_configs, snapper_keeps, timeshift_keeps, timeshift_settings
     from . import family, remove
     host = scan.host
@@ -448,11 +449,19 @@ def snapshots(check, scan, outcome):
         off = {"TIMELINE_CREATE": "no", "NUMBER_LIMIT": "0", "NUMBER_LIMIT_IMPORTANT": "0",
                **{f"TIMELINE_LIMIT_{k}": "0" for k in ("HOURLY", "DAILY", "WEEKLY", "MONTHLY", "QUARTERLY", "YEARLY")}}
         cleanup = RootClear("snapper_cleanup", {}, "Run snapper's clean-up now, deleting the snapshots beyond the new limits")
-        steps.append(Step(f"Snapper ({names}): keep fewer", f"Now: {now}.", inputs=[pick], options=[option(
-            check, f"Keep at most {keep} update snapshots, {min(keep, 5)} hourly and {min(keep, 7)} daily", [RootChange("edit_config", {"target": "snapper", "values": fewer},
-                                                                "Set snapper's limits in /etc/snapper/configs/*"), cleanup],
-            recommended=True, side_effects=["Snapshots beyond the new limits are deleted now; they can't be brought "
-                                            "back. Undoing a bad update still works within the ones kept."])]))
+        # the helper only lowers a limit (helper.lowered): a config that keeps fewer already stays as it is, and with
+        # none keeping more there is nothing left to do here
+        lower = [n for n, c in configs if lowered("snapper", c, fewer)]
+        most = f"{keep} update snapshots, {min(keep, 5)} hourly and {min(keep, 7)} daily"
+        steps.append(Step(f"Snapper ({names}): keep fewer", f"Now: {now}. " + (
+            "A limit that is lower already stays as it is." if lower else
+            f"That is no more than {most} already, and no weekly or longer ones."), inputs=[pick], options=[option(
+                check, f"Keep at most {most}", [RootChange("edit_config", {"target": "snapper", "values": fewer},
+                                                           f"Lower snapper's limits in /etc/snapper/configs/* "
+                                                           f"({', '.join(lower)})"), cleanup],
+                recommended=True, side_effects=["Snapshots beyond the new limits are deleted now; they can't be brought "
+                                                "back. Undoing a bad update still works within the ones kept."])]
+            if lower else [], done=not lower))
         hook = next(((f, pkg, fam) for f, pkg, fam in SNAPSHOT_HOOKS if isfile(host.sys_path(f))), None)
         cmds = []
         if hook and hook[1] and family(scan) == hook[2]:
@@ -475,12 +484,15 @@ def snapshots(check, scan, outcome):
     if ts is not None and str(ts.get("btrfs_mode")).lower() == "true" and ts.get("backup_device_uuid"):
         fewer = {"count_hourly": str(min(keep, 5)), "count_daily": str(min(keep, 7)), "count_boot": str(min(keep, 3)),
                  "count_weekly": "0", "count_monthly": "0", "schedule_weekly": "false", "schedule_monthly": "false"}
-        steps.append(Step("Timeshift: keep fewer", f"Now: {timeshift_keeps(ts)}. Timeshift deletes the extra snapshots "
-                          "at its next scheduled run.", inputs=[] if configs else [pick], options=[option(
-                              check, f"Keep at most {min(keep, 7)} daily and no weekly or monthly snapshots",
-                              [RootChange("edit_config", {"target": "timeshift", "values": fewer},
-                                          "Set Timeshift's schedule and counts in /etc/timeshift/timeshift.json")],
-                              recommended=True)]))
+        lower = lowered("timeshift", ts, fewer)
+        steps.append(Step("Timeshift: keep fewer", f"Now: {timeshift_keeps(ts)}. " + (
+            "Timeshift deletes the extra snapshots at its next scheduled run. A count that is lower already stays as "
+            "it is." if lower else f"That is no more than {min(keep, 7)} daily and no weekly or monthly snapshots "
+            "already."), inputs=[] if configs else [pick], options=[
+                option(check, f"Keep at most {min(keep, 7)} daily and no weekly or monthly snapshots",
+                       [RootChange("edit_config", {"target": "timeshift", "values": fewer},
+                                   "Lower Timeshift's schedule and counts in /etc/timeshift/timeshift.json")],
+                       recommended=True)] if lower else [], done=not lower))
         steps.append(Step("Timeshift: or turn it off", "Stops scheduled snapshots. Existing ones stay until you delete "
                           "them; the command deletes every Timeshift snapshot.", options=[option(
                               check, "Stop Timeshift's scheduled snapshots",
