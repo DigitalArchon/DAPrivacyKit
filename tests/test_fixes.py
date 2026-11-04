@@ -126,7 +126,8 @@ def nm_host(tmp_path):
                "ipv6.ip6-privacy": "2"},
         "u3": {"type": "802-3-ethernet", "connection.id": "Wired", "ipv6.ip6-privacy": "0"}})
     host = make_host(tmp_path, files={"/sys/class/net/enp1s0/device/vendor": "x",
-                                      "/proc/sys/net/ipv6/conf/enp1s0/use_tempaddr": "0\n"})
+                                      "/proc/sys/net/ipv6/conf/enp1s0/use_tempaddr": "0\n"},
+                     commands={"NetworkManager --print-config": "[main]\n"})          # its settings set nothing
     host.runner.handlers["nmcli"] = nm
     return host, nm
 

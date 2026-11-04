@@ -15,7 +15,7 @@ from ..network import carrying_vpn_links, vpn_links
 from ..privileged import HelperError
 from . import Check, Scan, register
 from ._util import (absent, children, failed, installed, isdir, mentions_name, passed, processes, read_text,
-                    removed_while_running, systemctl_state, unknown, user_names, warned)
+                    removed_while_running, system_program, systemctl_state, unknown, user_names, warned)
 
 
 # ------------------------------------------------------------------ NetworkManager
@@ -40,10 +40,21 @@ def nm_get(host: Host, uuid: str, *fields: str) -> dict[str, str]:
     return {f: (lines[i].replace("\\:", ":") if i < len(lines) else "") for i, f in enumerate(fields)}
 
 
+def nm_config_read(host: Host) -> dict | None:
+    """NetworkManager's merged configuration (`NetworkManager --print-config`), by its full path where the user's
+    PATH has no /usr/sbin (Debian, openSUSE): run by name there, every default read as unset, and the checks of them
+    failed again right after the fixes that set them. None when it couldn't be run: its defaults are then unknown,
+    never unset."""
+    r = host.run(system_program(host, "NetworkManager"), "--print-config")
+    return ini.parse(r.stdout) if r.ok else None
+
+
 def nm_config(host: Host) -> dict:
-    """NetworkManager's merged configuration (`NetworkManager --print-config`)."""
-    r = host.run("NetworkManager", "--print-config")
-    return ini.parse(r.stdout) if r.ok else {}
+    """nm_config_read, {} when it couldn't be read: for what only looks for a value that is set."""
+    return nm_config_read(host) or {}
+
+
+NM_UNREAD = "unknown (NetworkManager's settings couldn't be read: NetworkManager --print-config failed)"
 
 
 NM_TYPES = {"wifi": ("wifi", "802-11-wireless"), "ethernet": ("ethernet", "802-3-ethernet")}
@@ -86,7 +97,7 @@ def nm_default(cfg: dict, key: str, kind: str, prefix: str = "connection") -> tu
 
 def nm_version(host: Host) -> tuple[int, int] | None:
     """NetworkManager's version (major, minor): the daemon's (`NetworkManager --version`), else nmcli's."""
-    for argv in (("NetworkManager", "--version"), ("nmcli", "--version")):
+    for argv in ((system_program(host, "NetworkManager"), "--version"), ("nmcli", "--version")):
         r = host.run(*argv)
         m = re.search(r"(\d+)\.(\d+)\.\d+", r.stdout) if r.ok else None
         if m:
@@ -455,20 +466,22 @@ class MacPermanent(Check):
                 if wifi_hardware(host) else absent("No Wi-Fi hardware.")
         if not wifi:
             return absent("No saved Wi-Fi networks.")
-        cfg = nm_config(host)
-        default, where = nm_default(cfg, "wifi.cloned-mac-address", "wifi")
+        cfg = nm_config_read(host)
+        default, where = nm_default(cfg or {}, "wifi.cloned-mac-address", "wifi")
         default = default or ""
-        scan_rand = (nm_default(cfg, "wifi.scan-rand-mac-address", "wifi", "device")[0] or "").lower()
-        ev = [Evidence.val("Default for Wi-Fi", (f"{default} (from NetworkManager's [{where}] section)" if where != "connection"
-                                                 else default) if default else "not set (the hardware address)"),
-              Evidence.val("Random address while scanning for networks", "no" if scan_rand in ("no", "false", "0")
-                           else "yes (default)")]
+        scan_rand = (nm_default(cfg or {}, "wifi.scan-rand-mac-address", "wifi", "device")[0] or "").lower()
+        ev = [Evidence.val("Default for Wi-Fi", NM_UNREAD if cfg is None else (
+                  (f"{default} (from NetworkManager's [{where}] section)" if where != "connection" else default)
+                  if default else "not set (the hardware address)")),
+              Evidence.val("Random address while scanning for networks", NM_UNREAD if cfg is None else
+                           "no" if scan_rand in ("no", "false", "0") else "yes (default)")]
         permanent = []
         for uuid in wifi:
             v = nm_get(host, uuid, "connection.id", "802-11-wireless.cloned-mac-address")
             value = v["802-11-wireless.cloned-mac-address"] or "default"
             effective = default if value == "default" and default else value
-            if effective in ("default", "preserve", "permanent", ""):
+            # one that follows a default that couldn't be read uses what isn't known
+            if effective in ("preserve", "permanent") or (cfg is not None and effective in ("default", "")):
                 permanent.append(v["connection.id"])
             # under a label of its own, never as the label: the saved report leaves the names out (NOT_KEPT_LABELS)
             ev.append(Evidence.val("Saved Wi-Fi network", f"{v['connection.id'] or uuid} ({value})"))
@@ -476,16 +489,21 @@ class MacPermanent(Check):
         if permanent:
             problems.append(f"{len(permanent)} of {len(wifi)} saved Wi-Fi network{'s use' if len(wifi) > 1 else ' uses'} "
                             "the device's permanent MAC address")
-        if default not in RANDOM_MACS:
+        if cfg is not None and default not in RANDOM_MACS:
             problems.append("networks joined from now on will too (no default is set for new connections)" if permanent
                             else "networks joined from now on will use the device's permanent MAC address (no default "
                                  "is set for new connections)")
         if scan_rand in ("no", "false", "0"):
             problems.append("scanning for networks uses the permanent address (wifi.scan-rand-mac-address=no), "
                             "which is what trackers see most")
+        unread = "What the saved networks that follow NetworkManager's default use, and networks joined from now on, " \
+                 "isn't known: its settings couldn't be read (NetworkManager --print-config failed)."
         if problems:
             text = "; ".join(problems)
-            return failed(text[0].upper() + text[1:] + ".", *ev[:22])
+            return failed(text[0].upper() + text[1:] + ".", *ev[:22], notes=[
+                Note("limitation", "NetworkManager's settings couldn't be read", unread)] if cfg is None else [])
+        if cfg is None:
+            return unknown(unread, *ev[:22])
         return passed("Wi-Fi networks, saved and new, use a random or per-network MAC address.", *ev[:22])
 
 
@@ -528,26 +546,31 @@ def nm_reads_hostname_default(host: Host, values=()) -> bool:
     return any(v.strip().lower() in ("-1", "default") for v in values)
 
 
-def dhcp_hostname(host: Host) -> tuple[int, bool, bool] | None:
+def dhcp_hostname(host: Host) -> tuple[int, bool | None, bool] | None:
     """NetworkManager and the hostname in DHCP requests: (saved Wi-Fi and Ethernet connections that send it,
     whether a network joined from now on would, whether NetworkManager takes a default for it from its
     configuration: 1.52 and later, where a connection that doesn't set it shows -1). None without nmcli.
+    Where the default counts and NetworkManager's settings couldn't be read, a network joined from now on is None
+    (unknown), and the saved ones that take the default aren't counted.
     Tested on NetworkManager 1.58: with [connection] ipv4.dhcp-send-hostname=0, the request carried no hostname."""
     conns = [(NM_KINDS[kind], u, nm_get(host, u, *DHCP_HOSTNAME)) for kind in NM_KINDS
              for u in nm_connections(host, kind) or []]
     if nm_connections(host) is None:
         return None
-    cfg = nm_config(host)
-    default = {(kind, p): (nm_default(cfg, p, kind)[0] or "").lower() for kind in NM_TYPES for p in DHCP_HOSTNAME}
+    cfg = nm_config_read(host)
+    default = {(kind, p): (nm_default(cfg or {}, p, kind)[0] or "").lower() for kind in NM_TYPES for p in DHCP_HOSTNAME}
     supported = nm_reads_hostname_default(host, [v for _, _, values in conns for v in values.values()])
 
-    def sends(kind: str, prop: str, value: str) -> bool:
+    def sends(kind: str, prop: str, value: str) -> bool | None:
         value = value.strip().lower()
         if value in NM_DEFAULT:
+            if supported and cfg is None:
+                return None
             return not supported or default[(kind, prop)] not in ("0", "false", "no")
         return value not in ("no", "false", "0")
     sending = sum(1 for kind, _, values in conns if any(sends(kind, p, v) for p, v in values.items()))
-    future = not supported or any(v not in ("0", "false", "no") for v in default.values())
+    future = (True if not supported else None if cfg is None
+              else any(v not in ("0", "false", "no") for v in default.values()))
     return sending, future, supported
 
 
@@ -673,6 +696,8 @@ class HostnameBroadcast(Check):
                     channels.append("DHCP (networks joined from now on)")
                 ev.append(Evidence.val("Networks joined from now on", "send the hostname" + (
                     "" if supported else " (this NetworkManager has no default for it: before 1.52)")))
+            elif future is None:
+                ev.append(Evidence.val("Networks that take NetworkManager's default", NM_UNREAD))
         other = dhcp_hostname_elsewhere(host, scan.context["virtualization"])
         if other:
             channels.append(f"DHCP ({', '.join(other)})")
@@ -691,6 +716,9 @@ class HostnameBroadcast(Check):
         ev.append(Evidence.val("Announced via", ", ".join(channels) or "nothing found"))
         if named and channels:
             return failed(f"The hostname contains your name and is announced via {', '.join(channels)}.", *ev)
+        if named and dhcp is not None and dhcp[1] is None:
+            return unknown("The hostname contains your name; whether networks send it over DHCP isn't known: "
+                           "NetworkManager's settings couldn't be read (NetworkManager --print-config failed).", *ev)
         if named:
             return passed("The hostname contains your name, but it doesn't seem to be announced.", *ev)
         return passed("The hostname doesn't contain your name.", *ev)
@@ -1136,18 +1164,21 @@ class DnsUnencrypted(Check):
 PRIVACY_ON = ("2", "enabled (prefer temporary address)")
 
 
-def ip6_privacy_defaults(host: Host) -> dict[str, tuple[str, str, str | None]] | None:
+def ip6_privacy_defaults(host: Host) -> dict[str, tuple[str | None, str, str | None]] | None:
     """What a NetworkManager connection of each kind ("wifi", "ethernet") that doesn't set ipv6.ip6-privacy gets
     (NetworkManager.conf(5)): the [connection*] sections' default, else the kernel's default for new interfaces.
-    {kind: (value, where from, the section)}; None without nmcli."""
+    {kind: (value, where from, the section)}, the value None when NetworkManager's settings couldn't be read; None
+    without nmcli."""
     if nm_connections(host) is None:
         return None
-    cfg = nm_config(host)
+    cfg = nm_config_read(host)
     kernel = (host.read_sys("/proc/sys/net/ipv6/conf/default/use_tempaddr") or "").strip()
     out = {}
     for kind in NM_TYPES:
-        v, section = nm_default(cfg, "ipv6.ip6-privacy", kind)
-        if v and v != "-1":
+        v, section = nm_default(cfg or {}, "ipv6.ip6-privacy", kind)
+        if cfg is None:
+            out[kind] = (None, "NetworkManager's settings couldn't be read", None)       # unknown, never unset
+        elif v and v != "-1":
             out[kind] = (v, "NetworkManager's default" if section == "connection" else
                          f"NetworkManager's [{section}] section", section)
         else:
@@ -1201,7 +1232,7 @@ class Ipv6Privacy(Check):
                         saved_off.append(uuid)
             ev.append(Evidence.count("Saved networks that turn them off", len(saved_off)))
             ev.append(Evidence.val("Networks joined from now on", _defaults_text(defaults)))
-        later = [d for d in (defaults or {}).values() if d[0] not in ("2", "")]
+        later = [d for d in (defaults or {}).values() if d[0] not in ("2", "", None)]
         if off:
             return failed(f"IPv6 privacy addresses aren't used on {', '.join(off)}: on a network that offers IPv6, "
                           "every site you visit sees the same address for as long as you stay on it (and on every "
@@ -1218,6 +1249,9 @@ class Ipv6Privacy(Check):
             return failed(f"{saved[0].upper()}{saved[1:].replace('them off', 'IPv6 privacy addresses off')}: on "
                           f"{'those networks' if n != 1 else 'that network'}, every site you visit sees the same address "
                           "for as long as you stay.", *ev)
+        if any(d[0] is None for d in (defaults or {}).values()):
+            return unknown("What networks joined from now on use isn't known: NetworkManager's settings couldn't be "
+                           "read (NetworkManager --print-config failed).", *ev)
         return passed("IPv6 privacy addresses are preferred, on networks joined from now on too.", *ev)
 
 
@@ -1258,9 +1292,12 @@ class ConnectivityCheck(Check):
     id = "net.connectivity_check"
 
     def detect(self, scan: Scan) -> Outcome:
-        if not installed(scan.host, "NetworkManager"):
+        if not installed(scan.host, system_program(scan.host, "NetworkManager")):
             return absent("NetworkManager isn't installed.")
-        cfg = nm_config(scan.host)
+        cfg = nm_config_read(scan.host)
+        if cfg is None:
+            return unknown("NetworkManager's settings couldn't be read (NetworkManager --print-config failed), so "
+                           "whether it checks connectivity isn't known.")
         uri = ini.get(cfg, "connectivity", "uri")
         enabled = ini.truthy(ini.get(cfg, "connectivity", "enabled"))
         # interval=0 turns checking off too (NetworkManager.conf(5))

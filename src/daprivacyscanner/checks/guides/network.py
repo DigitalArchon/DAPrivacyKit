@@ -474,7 +474,7 @@ def hostname_broadcast(check, scan, outcome):
     shadow = {kind: [(s, v) for p in DHCP_HOSTNAME for v, s in [nm_default(cfg, p, kind)]
                      if s not in (None, "connection") and (v or "").lower() not in ("0", "false", "no")]
               for kind in NM_TYPES}
-    if dhcp and dhcp[1] and supported:
+    if dhcp and dhcp[1] is not False and supported:          # None: NetworkManager's settings couldn't be read
         acts.append(dropin("nm-hostname", {f"connection:{p}": "0" for p in DHCP_HOSTNAME},
                            "/etc/NetworkManager/conf.d/99-daprivacyscanner-hostname.conf"))
     for nm_kind, kind in NM_KINDS.items():

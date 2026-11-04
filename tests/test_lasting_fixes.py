@@ -276,7 +276,7 @@ def nm_world(tmp_path, monkeypatch, system, saved, files=None):
 
 def test_mac_check_counts_networks_joined_later(cat, tmp_path):
     nm = FakeNmcli({"u1": {"type": "802-11-wireless", "connection.id": "Home", "802-11-wireless.cloned-mac-address": "stable"}})
-    host = make_host(tmp_path)
+    host = make_host(tmp_path, commands={"NetworkManager --print-config": "[main]\n"})      # no default set
     host.runner.handlers["nmcli"] = nm
     o = detect(cat, "net.mac_permanent", make_scan(host))
     assert o.status is Status.FAIL and o.summary.startswith("Networks joined from now on")

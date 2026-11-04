@@ -145,7 +145,8 @@ def nm(uuid, *fields):
 
 WIFI = {NM_LIST: "u1:802-11-wireless\nu2:802-11-wireless\nu3:802-3-ethernet\n",
         nm("u1", "connection.id", "802-11-wireless.cloned-mac-address"): "Home\n\n",
-        nm("u2", "connection.id", "802-11-wireless.cloned-mac-address"): "Cafe\\: Free\nrandom\n"}
+        nm("u2", "connection.id", "802-11-wireless.cloned-mac-address"): "Cafe\\: Free\nrandom\n",
+        "NetworkManager --print-config": "[main]\n"}                     # its settings set nothing
 
 
 def test_mac_permanent(cat, tmp_path):
@@ -337,6 +338,40 @@ def test_connectivity_check(cat, tmp_path):
     assert o.status is Status.FAIL and "connectivity-check.ubuntu.com." in o.summary
     host = make_host(tmp_path / "b", commands={"NetworkManager --print-config": "[connectivity]\nenabled=false\nuri=x\n"})
     assert detect(cat, "net.connectivity_check", make_scan(host)).status is Status.PASS
+
+
+def test_networkmanager_is_run_by_its_full_path_where_the_path_leaves_out_sbin(cat, tmp_path):
+    """Debian's and openSUSE's users have no /usr/sbin in their PATH: by name, NetworkManager --print-config wasn't
+    found, every default read as unset (net.mac_permanent failed again right after its fix), and
+    net.connectivity_check said NetworkManager isn't installed. Where it can't be run, a default is unknown."""
+    full = {**WIFI, "/usr/sbin/NetworkManager --print-config":
+            "[connection]\nwifi.cloned-mac-address=stable\n[connectivity]\nuri=http://nmcheck.gnome.org/check\n"}
+    del full["NetworkManager --print-config"]
+    host = make_host(tmp_path, commands=full)
+    assert detect(cat, "net.mac_permanent", make_scan(host)).status is Status.PASS
+    assert detect(cat, "net.connectivity_check", make_scan(host)).status is Status.FAIL
+    host = make_host(tmp_path / "b", commands={**WIFI, "NetworkManager --print-config": CommandResult((), 1, "")})
+    o = detect(cat, "net.mac_permanent", make_scan(host))
+    assert o.status is Status.UNKNOWN and ev(o)["Default for Wi-Fi"].startswith("unknown")
+    assert detect(cat, "net.connectivity_check", make_scan(host)).status is Status.UNKNOWN
+    permanent = {**WIFI, nm("u1", "connection.id", "802-11-wireless.cloned-mac-address"): "Home\npermanent\n"}
+    host = make_host(tmp_path / "c", commands={**permanent, "NetworkManager --print-config": CommandResult((), 1, "")})
+    o = detect(cat, "net.mac_permanent", make_scan(host))        # set for itself: a problem whatever the default
+    assert o.status is Status.FAIL and o.summary.startswith("1 of 2") and "joined from now on" not in o.summary
+
+
+def test_defaults_networkmanager_couldnt_be_asked_for_are_unknown(cat, tmp_path):
+    from fakes import FakeNmcli
+    host = make_host(tmp_path, env={"USER": "alice"}, files={
+        "/proc/sys/kernel/hostname": "alices-laptop\n", "/sys/class/net/enp1s0/device/vendor": "x",
+        "/proc/sys/net/ipv6/conf/default/use_tempaddr": "2\n"},
+        commands={"NetworkManager --print-config": CommandResult((), 1, ""), "NetworkManager --version": "1.52.0\n"})
+    host.runner.handlers["nmcli"] = FakeNmcli({"u1": {
+        "type": "802-11-wireless", "connection.id": "Home", "ipv4.dhcp-send-hostname": "-1",
+        "ipv6.dhcp-send-hostname": "-1", "ipv6.ip6-privacy": "-1"}})
+    # with no default read, IPv6 privacy was taken as the kernel's default (2, a pass), the hostname as sent (a problem)
+    assert detect(cat, "net.ipv6_privacy", make_scan(host)).status is Status.UNKNOWN
+    assert detect(cat, "net.hostname_broadcast", make_scan(host)).status is Status.UNKNOWN
 
 
 # ------------------------------------------------------------------ exposed services behind a firewall

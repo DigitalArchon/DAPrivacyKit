@@ -460,6 +460,20 @@ def installed(host: Host, *programs: str) -> bool:
     return any(host.runner.which(p) for p in programs)
 
 
+SYSTEM_PROGRAM_DIRS = ("/usr/sbin", "/sbin", "/usr/bin")
+
+
+def system_program(host: Host, name: str) -> str:
+    """How to run a program kept in a system folder the user's PATH may leave out (Debian's and openSUSE's have no
+    /usr/sbin, where NetworkManager is): its full path when only that finds it, else its name (where it isn't in any
+    of them, it is then not found, as `installed` says)."""
+    if not host.runner.which(name):
+        for d in SYSTEM_PROGRAM_DIRS:
+            if host.runner.which(f"{d}/{name}"):
+                return f"{d}/{name}"
+    return name
+
+
 def xdg_user_dir(host: Host, paths: PathResolver, name: str) -> Path | None:
     """XDG_<name>_DIR from user-dirs.dirs (e.g. "DOWNLOAD", "PICTURES"), or None."""
     text = read_text(host, paths.config_home / "user-dirs.dirs") or ""
