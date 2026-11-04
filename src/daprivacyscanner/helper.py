@@ -5022,6 +5022,8 @@ class _Tally:
         if rec is None:
             if len(self.app) >= WATCH_FILES_MAX:
                 folder = os.path.dirname(path)
+                if folder not in self.folded and len(self.folded) >= WATCH_FOLDERS_MAX:
+                    folder = ""                         # past that many folders too: counted, in no folder
                 self.folded[folder] = self.folded.get(folder, 0) + 1
                 return
             rec = self.app[path] = [0, 0, 0, 0, -1]

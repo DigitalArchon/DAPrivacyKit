@@ -216,6 +216,13 @@ def test_past_the_limit_files_are_counted_per_folder(monkeypatch):
         t.add(helper.FAN_OPEN, 10, f"/home/alice/.cache/Foo/{i}")
     r = t.result()
     assert len(r["files"]) == 2 and r["folded"] == {"/home/alice/.cache/Foo": 3} and t.counts()["files"] == 5
+    # and past as many folders as the other programs' writes are counted under, in no folder: the root watch's
+    # memory stays bounded however many folders an app touches
+    monkeypatch.setattr(helper, "WATCH_FOLDERS_MAX", 3)
+    for i in range(10):
+        t.add(helper.FAN_OPEN, 10, f"/home/alice/.cache/Foo/d{i}/x")
+    r = t.result()
+    assert len(r["folded"]) == 4 and r["folded"][""] == 8 and t.counts()["files"] == 15
 
 
 def _event(mask, pid, handle=b"\x01" * 8, name=b"a.txt", kind=helper.FAN_INFO_DFID_NAME):
