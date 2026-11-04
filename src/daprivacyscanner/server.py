@@ -2341,6 +2341,10 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
     async def tools_retire():
         from .tools import retire
         drives = await asyncio.to_thread(retire.disks, make_host())
+        now = {d.name: retire.identity(d) for d in drives}
+        for name, f in list(app.state.erase_facts.items()):        # its drive gone, or another one under its name
+            if f.get("drive") != now.get(name):
+                del app.state.erase_facts[name]
         return {"drives": [d.to_dict() for d in drives], "facts": app.state.erase_facts, "admin_active": admin.active()}
 
     @app.post("/api/tools/retire/facts", dependencies=[Depends(auth)])
@@ -2361,7 +2365,7 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
             facts = await asyncio.to_thread(host.privileged.call, "erase_facts", {"disk": d.name})
         except HelperError as e:
             return JSONResponse({"error": f"The helper refused: {e}"}, status_code=400)
-        app.state.erase_facts[d.name] = facts
+        app.state.erase_facts[d.name] = facts = {**facts, "drive": retire.identity(d)}     # this drive's, not the name's
         return {"facts": facts, "admin_active": admin.active()}
 
     @app.post("/api/tools/retire/guide", dependencies=[Depends(auth)])

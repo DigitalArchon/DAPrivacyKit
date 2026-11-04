@@ -228,6 +228,12 @@ def find(host: Host, name: str) -> Disk:
     return d
 
 
+def identity(d: Disk) -> list:
+    """What tells a drive from another given its name later (sdb is whichever drive came second): its model, serial
+    and size. What a drive said about erasing (erase_facts) is kept with this, and used for that drive only."""
+    return [d.model, d.serial, d.size]
+
+
 # ------------------------------------------------------------------ the guide
 
 def _size(n: int) -> str:
@@ -242,8 +248,10 @@ def guide(host: Host, name: str, typed: str, kind: str | None = None, from_start
     """The steps for this drive, with its exact device in every command. `typed`: what the user typed
     (must be the drive's name). `kind`: the user's answer for an external disk the app can't tell
     ("hdd" or "ssd"). `from_start`: the user says everything on it was encrypted from its first use.
-    `facts`: the helper's erase_facts for it, when read."""
+    `facts`: the helper's erase_facts for it, when read (with the `identity` of the drive they came from, `drive`)."""
     d = find(host, name)
+    if facts and "drive" in facts and facts["drive"] != identity(d):
+        facts = None                         # another drive's, which had this name then: its frozen state, its erases
     if blocked(d):
         raise Refused(blocked(d))
     if typed.strip().removeprefix("/dev/") != d.name:

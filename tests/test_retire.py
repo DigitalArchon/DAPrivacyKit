@@ -328,3 +328,8 @@ def test_endpoints(cat, host, hroot, monkeypatch):
     g = c.post("/api/tools/retire/guide", headers=H, json={"disk": "sdb", "typed": "sdb"}).json()["guide"]
     assert any(st["title"] == "Unfreeze it" for st in g["steps"])          # the facts read this session are used
     assert c.get("/api/tools/retire", headers=H).json()["facts"]["sdb"]["ata"]["frozen"]
+    # another drive plugged in later as sdb: what the first one said isn't its (frozen, its Secure Erase)
+    (host.root / "run/udev/data/b8:16").write_text("E:ID_SERIAL_SHORT=S6PNNS0W999999\n")
+    g = c.post("/api/tools/retire/guide", headers=H, json={"disk": "sdb", "typed": "sdb"}).json()["guide"]
+    assert not any(st["title"] == "Unfreeze it" for st in g["steps"])
+    assert c.get("/api/tools/retire", headers=H).json()["facts"] == {}

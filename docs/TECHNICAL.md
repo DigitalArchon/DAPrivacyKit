@@ -1476,7 +1476,9 @@ types the drive's name:
 - **Virtual disks:** delete it on the host.
 
 What the drive supports comes from `erase_facts` (smartctl/hdparm identify words; NVMe Identify Controller
-OACS, FNA and SANICAP via the helper's ioctl), read on request and kept for the session only.
+OACS, FNA and SANICAP via the helper's ioctl), read on request and kept for the session only, with the
+drive they came from (its model, serial and size, `retire.identity`): another drive given its name later
+(sdb is whichever drive came second) doesn't get them.
 
 ---
 
