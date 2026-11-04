@@ -90,7 +90,7 @@ const browserState = () => ({ platform: "linux-x86_64", min_mb: 1024, can_pick: 
   risks: { swap: toolBodies.swap?.off ? { on_disk: [], used_mb: 0, paused: ["/dev/sda3"], off_commands: [], on_commands: ["sudo swapon /dev/sda3"] }
                                        : { on_disk: ["/dev/sda3"], used_mb: 102, paused: [], off_commands: ["sudo swapoff /dev/sda3"],
                                            on_commands: ["sudo swapon /dev/sda3"] },
-           thumbnails: { in_memory: false, folder: "~/.cache/thumbnails" },
+           thumbnails: { in_memory: !!toolBodies.thumbnails, folder: "~/.cache/thumbnails" },
            crash_dumps: { kept: true, start: ["echo 0 > /proc/self/coredump_filter", "prlimit --pid $$ --core=1:1"] },
            indexing: { baloo: toolBodies.baloo_off ? null : { on: true, contents: true, covers: true, index: true }, localsearch: null },
            hibernation: true, opensnitch: { log_level: 2, log: "/var/log/opensnitchd.log", database: "/home/a/opensnitch.sqlite" },
@@ -2081,6 +2081,60 @@ while ($$(".modal").length) { $$(".modal .buttons button").at(-1).click(); await
         "and so does one that was stopped");
   routes["GET /api/tools/names/job"] = job0;
   $$(".modal").at(-1).querySelector(".buttons button").click(); await tick(); }
+
+// a box "Before you start" in the browser panel goes once its guide has been applied and closed, and the panel's poll
+// draws it again when it comes back (the 2026-11-04 review: it stayed, as the panel was never drawn again)
+{ routes["POST /api/fix/desk.thumbnails/plan"] = () => ({ guide: { check_id: "desk.thumbnails", title: "Thumbnails", intro: "", steps: [
+    { title: "Keep them in memory", text: "", commands: [], side_effects: [], done: !!toolBodies.thumbnails, inputs: [], options: [
+      { label: "In memory", detail: "", recommended: true, dry_run: "", plan: { id: "th1", check_id: "desk.thumbnails",
+        title: "Thumbnails in memory", blockers: [], side_effects: [], needs_root: false, irreversible_files: 0,
+        steps: [{ kind: "mount", text: "Keep ~/.cache/thumbnails in memory", reversible: true, irreversible: false, needs_root: false }] } }] }] },
+    dry_run: "", result: null });
+  routes["POST /api/fix/apply"] = () => { toolBodies.thumbnails = true; return { ok: true, entry_id: null, entry: null, undone: [] }; };
+  await window.openBrowserTool(); await tick(); await tick();
+  const onDisk = () => text(".modal .browser-tool").includes("thumbnails are kept on the disk");
+  check(onDisk(), "(the browser panel says thumbnails are kept on the disk)");
+  $$(".modal .browser-tool button").find(b => b.textContent === "Keep thumbnails in memory…").click(); await tick(); await tick();
+  $$(".modal").at(-1).querySelector(".gactions button").click(); await tick(); await tick();
+  [...$$(".modal").at(-1).querySelectorAll(".buttons button")].at(-1).click(); await tick(); await tick();     // the guide's Close
+  check($$(".modal").length === 1 && !onDisk(), "applied and closed, the guide's box goes from the browser panel");
+  toolBodies.thumbnails = false;                         // back on the disk, by another way than this panel
+  await new Promise(r => setTimeout(r, 2300));
+  check(onDisk(), "and the panel's poll draws it again when it comes back");
+  $$(".modal").at(-1).querySelector(".buttons button").click(); await tick();
+  delete routes["POST /api/fix/desk.thumbnails/plan"]; delete routes["POST /api/fix/apply"]; }
+
+// Before you travel: a row fixed from the checklist says done once the fix is closed, without Check again
+{ const S = window.eval("S"), id = travelIds[0], r0 = S.report.results[id], spec = S.state.catalogue.find(s => s.id === id), tier0 = spec.tier;
+  spec.tier = "auto";
+  S.report.results[id] = { ...r0, status: "fail", effective_severity: 5, fixable: true };
+  routes[`POST /api/fix/${id}/plan`] = () => ({ plan: { id: "tr1", check_id: id, title: "Fix it", blockers: [], side_effects: [],
+    needs_root: false, steps: [{ kind: "setting", text: "a → b", reversible: true, irreversible: false, needs_root: false }] },
+    dry_run: "", result: null });
+  routes["POST /api/fix/apply"] = () => ({ ok: true, entry_id: null, entry: null, undone: [],
+                                           result: { ...r0, status: "pass", effective_severity: 5 } });
+  await window.openTravel(); await tick(); await tick();
+  const row = () => $$(".modal .travel .trow")[0];
+  check(row().classList.contains("todo"), "(a problem on the checklist is to do)");
+  row().querySelector("button.primary").click(); await tick(); await tick();
+  [...$$(".modal").at(-1).querySelectorAll(".buttons button")].at(-1).click(); await tick(); await tick(); await tick();   // Apply
+  check($$(".modal").length === 1 && row().classList.contains("done"), "a row fixed from the checklist says done once the fix is closed");
+  $$(".modal").at(-1).querySelectorAll(".buttons button")[1].click(); await tick();
+  spec.tier = tier0; S.report.results[id] = r0;
+  delete routes[`POST /api/fix/${id}/plan`]; delete routes["POST /api/fix/apply"]; }
+
+// the Tools panel's set-ups: one set up from its guide shows so once the guide is closed
+{ const S = window.eval("S"), f0 = S.report.results["desk.file_manager_actions"];
+  routes["POST /api/fix/desk.file_manager_actions/plan"] = () => ({ guide: { check_id: "desk.file_manager_actions",
+    title: "Right-click entries", intro: "", steps: [] }, dry_run: "", result: { ...f0, status: "pass", summary: "Set up in Nemo." } });
+  await window.openTools(); await tick(); await tick();
+  $(".modal .feature button").click(); await tick(); await tick();
+  [...$$(".modal").at(-1).querySelectorAll(".buttons button")].at(-1).click(); await tick(); await tick();     // the guide's Close
+  check($$(".modal").length === 1 && text(".modal .feature").includes("Set up in Nemo.") && $(".modal .feature button")?.textContent === "Review…",
+        "a set-up done from its guide shows so in the Tools panel once the guide is closed: " + text(".modal .feature").slice(0, 80));
+  $$(".modal").at(-1).querySelector(".buttons button").click(); await tick();
+  S.report.results["desk.file_manager_actions"] = f0;
+  delete routes["POST /api/fix/desk.file_manager_actions/plan"]; }
 
 // Escape in a search box with text in it clears the box (WebKit would only in its default action, once the dialog had
 // been closed); the next Escape closes the dialog

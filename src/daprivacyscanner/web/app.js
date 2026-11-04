@@ -1034,7 +1034,8 @@ async function openGuideOption(id, key, after) {
       } }] });
 }
 
-async function openFix(spec) {
+// after: what opened it brings itself up to date once the dialog is closed (a panel that shows the check's state)
+async function openFix(spec, after = null) {
   let data;
   try {
     data = await api("POST", `/api/fix/${encodeURIComponent(spec.id)}/plan`);
@@ -1058,6 +1059,7 @@ async function openFix(spec) {
         disabled: nothing || plan.blockers.length || irreversible, ref: (el) => { applyBtn = el; },
         onclick: (close, el) => applyFix(plan, !!confirm?.checked, close, el) },
     ],
+    onClose: after,
   });
   // the tick confirms the deletions; it doesn't lift a blocker ("Close Firefox first"), which the server refuses
   if (confirm) confirm.addEventListener("change", () => { applyBtn.disabled = plan.blockers.length > 0 || !confirm.checked; });
@@ -1386,7 +1388,8 @@ function guideStep(step, n, refresh, params = {}, rebuild = refresh) {
   return box;
 }
 
-async function openGuide(spec) {
+// after: as for openFix, run once the guide is closed
+async function openGuide(spec, after = null) {
   const body = h("div", { class: "guide" });
   const params = {};          // the guide's inputs as set here
   let m;
@@ -1415,7 +1418,7 @@ async function openGuide(spec) {
   let data;
   try { data = await load(); } catch (e) { toast(e.message, "error"); return; }
   m = modal({ title: data.guide.title, wide: true, body,
-    buttons: [{ label: "Check again", onclick: () => refresh() }, { label: "Close", kind: "primary" }] });
+    buttons: [{ label: "Check again", onclick: () => refresh() }, { label: "Close", kind: "primary" }], onClose: after });
   render(data);
   return m;
 }
@@ -1735,7 +1738,7 @@ async function openTools() {
         h("div", { class: `toolgrid cols-${g.tools.length % 2 === 0 ? 2 : 3}` }, g.tools.map(t => toolCard(t, d, reload))))),
       h("h4", {}, "Set-ups that last"),
       h("p", { class: "muted small" }, "Each is set up step by step, and can be undone from History."),
-      h("div", { class: "features" }, d.features.map(featureRow)));
+      h("div", { class: "features" }, d.features.map(id => featureRow(id, reload))));
   };
   modal({ title: "Tools", wide: true, body, buttons: [{ label: "Close", kind: "primary" }] });
   render(data);
@@ -1844,7 +1847,7 @@ function toolCard(t, data, reload) {
   return card;
 }
 
-function featureRow(id) {
+function featureRow(id, reload = null) {
   const spec = S.state.catalogue.find(s => s.id === id);
   if (!spec) return null;
   const r = S.report?.results?.[id];
@@ -1858,7 +1861,7 @@ function featureRow(id) {
       h("div", { class: "small" }, spec.remedy)),
     id === "app.boxes" ? h("button", { class: "small primary", title: "Your Boxes: start one, see its runs",
       onclick: () => openBoxes() }, "Open…") : null,
-    h("button", { class: `small ${done ? "" : "primary"}`, onclick: () => openGuide(spec) },
+    h("button", { class: `small ${done ? "" : "primary"}`, onclick: () => openGuide(spec, reload) },
       id === "app.boxes" && done ? "Add one…" : done ? "Review…" : "Set up…"));
 }
 
@@ -2538,11 +2541,12 @@ function retireDrive(d, data, answers, render, m) {
 // A checklist made of the scan's own checks, with why each matters on a trip; no detection of its own.
 
 // the button a check's row offers (Fix…, Guide…, Set up…, Clean…), and How to… for advice with steps
-function fixButtons(spec, r) {
+// after: what shows these buttons brings itself up to date once the fix or guide is closed
+function fixButtons(spec, r, after = null) {
   return [
-    r?.fixable ? h("button", { class: "small primary", onclick: () => hasGuide(spec) ? openGuide(spec) : openFix(spec) },
+    r?.fixable ? h("button", { class: "small primary", onclick: () => hasGuide(spec) ? openGuide(spec, after) : openFix(spec, after) },
       spec.tier === "feature" ? "Set up…" : spec.tier === "guided" ? "Guide…" : (spec.kind === "hygiene" ? "Clean…" : "Fix…")) : null,
-    r?.how_to ? h("button", { class: "small", onclick: () => openGuide(spec) }, "How to…") : null,
+    r?.how_to ? h("button", { class: "small", onclick: () => openGuide(spec, after) }, "How to…") : null,
   ];
 }
 
@@ -2578,7 +2582,7 @@ async function openTravel() {
           h("div", { class: "small" }, it.why),
           st === "accepted" ? h("div", { class: "small muted" }, ACCEPTED_HERE) : null,
           r?.needs_admin ? h("div", { class: "small muted" }, "Needs a scan with administrator access to check.") : null),
-        h("div", { class: "orow" }, st === "todo" ? fixButtons(spec, r) : null,
+        h("div", { class: "orow" }, st === "todo" ? fixButtons(spec, r, reload) : null,
           h("button", { class: "small ghost", onclick: () => { m.close(); reveal(it.id); } }, "In the list")));
     });
     const counted = data.items.map(it => travelState(S.report?.results?.[it.id], it.id));
@@ -2789,9 +2793,13 @@ async function openBrowserTool(reloadTools) {
 
 const FOLLOW_AFTER = 20000;          // ms the panel keeps following after something was done in it
 
-// What the panel shows that changes while a browser runs: it is drawn again when this changes.
+// What the panel shows that changes while a browser runs: it is drawn again when this changes. The boxes "Before you
+// start" too, which a fix applied meanwhile clears, but not the numbers in them that move by themselves (memory free,
+// swap in use): those would draw it again every few seconds.
 function browserShown(d) {
+  const r = d.risks || {};
   return JSON.stringify([d.ramdisk?.open, d.job?.state, (d.kept?.copies || []).map(c => [c.browser, c.version, c.kept]),
+    { ...r, memory: null, swap: r.swap && { ...r.swap, used_mb: null } },
     (d.browsers || []).map(b => [b.running, b.installed,
     b.start_error, b.connection, b.downloads, b.downloads_other, b.uploads,
     b.outbox && [b.outbox.on, b.outbox.waiting, b.outbox.partial, b.outbox.originals, b.outbox.not_cleaned,
@@ -3070,9 +3078,10 @@ function memoryNote(mem, rd, running = false) {
 function browserRisks(data, reload) {
   const r = data.risks || {};
   const sw = r.swap || {}, th = r.thumbnails || {};
+  // a box goes once what it names is dealt with: the panel is drawn again when the guide or fix is closed
   const guide = (id, label) => {
     const spec = S.state.catalogue.find(s => s.id === id);
-    return spec ? h("button", { class: "small", onclick: () => openGuide(spec) }, label) : null;
+    return spec ? h("button", { class: "small", onclick: () => openGuide(spec, reload) }, label) : null;
   };
   const cmds = (list) => commandBlock(list);
   const swapButton = (off, label) => h("button", { class: `small ${off ? "primary" : ""}`, onclick: async (e) => {
@@ -3175,7 +3184,7 @@ function browserRisks(data, reload) {
       `${clip.summary} Whatever you copy in the browser, an address or a password, is kept there. The browser's own `
       + "display (X11 with a display of its own) keeps the clipboard to itself; otherwise turn the history off first "
       + "(as of the last scan).",
-      h("div", { class: "orow" }, fixButtons(clipSpec, clip))));
+      h("div", { class: "orow" }, fixButtons(clipSpec, clip, reload))));
   }
   const cd = r.crash_dumps || {};
   if (cd.kept) {
