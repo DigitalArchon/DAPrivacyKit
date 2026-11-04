@@ -1001,6 +1001,8 @@ function applyFailed(e) {
   return e.data?.entry || e.data?.rolled_back?.length ? `The fix failed and was rolled back: ${e.message}`
     : `Nothing was changed: ${e.message}`;
 }
+// A fix whose every step was already so makes no History entry (no entry_id): there is nothing there to revert.
+const nothingNeeded = (title) => `${title}: nothing needed changing, it was already so. Nothing was added to History.`;
 
 // One option of a check's guide (by its key), confirmed with its dry run and applied like any fix (History reverts it):
 // for a panel that offers the one change it needs, such as the browser's keeping file search out of ~/TempBrowser.
@@ -1021,7 +1023,7 @@ async function openGuideOption(id, key, after) {
         try {
           const r = await applyPlan(plan, false);
           close();
-          toast(`Done: ${opt.label}. Revert it from History if you need to.`, "ok");
+          toast(r.entry_id ? `Done: ${opt.label}. Revert it from History if you need to.` : nothingNeeded(opt.label), "ok");
           doneDialog([r.entry]);
           await after?.();
         } catch (e) {
@@ -1085,7 +1087,8 @@ async function applyFix(plan, confirmed, close, btn) {
   try {
     const r = await applyPlan(plan, confirmed);
     close();
-    toast(`Done: ${plan.title}.` + (plan.steps.some(s => s.reversible && s.kind !== "command") ? " Revert it from History if you need to." : ""), "ok");
+    toast(!r.entry_id ? nothingNeeded(plan.title) : `Done: ${plan.title}.`
+      + (plan.steps.some(s => s.reversible && s.kind !== "command") ? " Revert it from History if you need to." : ""), "ok");
     renderChecks();
     doneDialog([r.entry]);
   } catch (e) {

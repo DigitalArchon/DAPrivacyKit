@@ -692,7 +692,7 @@ $$(".modal .buttons button").at(-1).click();
   await window.openGuide({ id: "desk.ephemeral_folder", tier: "feature" }); await tick();
   let release;
   routes["POST /api/fix/desk.ephemeral_folder/plan"] = (body) => new Promise(r => { release = () => r(plain(body)); });
-  routes["POST /api/fix/apply"] = () => ({ ok: true, entry: { id: "u1", check_id: "desk.ephemeral_folder", title: "Set it up",
+  routes["POST /api/fix/apply"] = () => ({ ok: true, entry_id: "u1", entry: { id: "u1", check_id: "desk.ephemeral_folder", title: "Set it up",
     applied: 1790000000, state: "applied", can_revert: true, needs_root: true, via_text: "", steps: [] } });
   $(".modal .gactions button").click(); await tick(); await tick();
   check($$(".modal").at(-1).querySelector("h2")?.textContent === "Done: Set it up", "what the step did is shown before the guide is built again");
@@ -862,6 +862,11 @@ delete routes["POST /api/undo/forget"];
   [...$$(".modal").at(-1).querySelectorAll(".buttons button")].at(-1).click(); await tick();    // the failure's Close
   $$(".modal").at(-1).querySelector(".buttons button").click(); await tick();                  // the fix's Cancel
   check(!$$(".modal").length, "(closed)");
+  // every step already so: the server makes no History entry, so the page doesn't send the user there to revert it
+  routes["POST /api/fix/apply"] = () => ({ ok: true, entry_id: null, applied: ["kernel.sysrq 176 → 176"], entry: null, undone: [] });
+  await tryIt();
+  check(!$$(".modal").length && said() === "Restrict SysRq: nothing needed changing, it was already so. Nothing was added to History.",
+        "a fix that found nothing to change says so, and that nothing went into History: " + said());
   delete routes["POST /api/fix/kern.sysrq/plan"]; delete routes["POST /api/fix/apply"]; }
 
 // reads dialog
@@ -1158,7 +1163,7 @@ routes["POST /api/fix/desk.indexers/plan"] = () => ({ guide: { check_id: "desk.i
       plan: { id: "off", check_id: "desk.indexers", title: "off", blockers: [], side_effects: [], needs_root: false, irreversible_files: 0,
               steps: [{ kind: "kconfig", text: "kwriteconfig6 --file baloofilerc --group Basic Settings --key Indexing-Enabled --notify false",
                         reversible: true, irreversible: false, needs_root: false }] } }] }] }, dry_run: "" });
-routes["POST /api/fix/apply"] = (body) => { toolBodies.applied = body; toolBodies.baloo_off = true; return { ok: true,
+routes["POST /api/fix/apply"] = (body) => { toolBodies.applied = body; toolBodies.baloo_off = true; return { ok: true, entry_id: "u9",
   entry: { id: "u9", check_id: "desk.indexers", title: "Turn indexing off and delete the index", applied: 1790000000, state: "applied",
     can_revert: true, needs_root: false, via_text: "From the guide “File search”, step 1 (Baloo)", steps: [
       { text: "baloofilerc [Basic Settings] Indexing-Enabled: (default) → false", reversible: true, reverted: false, as_root: false,
@@ -1186,6 +1191,14 @@ check(toolBodies.applied?.plan_id === "off" && !text(".modal .browser-tool").inc
         && [...done.querySelectorAll(".buttons button")].some(b => b.textContent === "Open History"),
         "then says exactly what it did, the commands open, with the way to History: " + done.textContent.slice(0, 120));
   [...done.querySelectorAll(".buttons button")].at(-1).click(); await tick(); }
+{ const real = routes["POST /api/fix/apply"];             // already so: nothing in History to revert
+  routes["POST /api/fix/apply"] = () => ({ ok: true, entry_id: null, applied: [], entry: null, undone: [] });
+  await window.openGuideOption("desk.indexers", "baloo_off", null); await tick();
+  $$(".modal").at(-1).querySelectorAll(".buttons button")[1].click(); await tick(); await tick();
+  check($$("#toasts .toast").at(-1)?.textContent
+        === "Turn indexing off and delete the index: nothing needed changing, it was already so. Nothing was added to History.",
+        "the option, already so, says nothing needed changing: " + $$("#toasts .toast").at(-1)?.textContent);
+  routes["POST /api/fix/apply"] = real; }
 {
   const soundBox = $$(".modal .browser-tool label").find(l => l.textContent.includes("Allow sound"))?.querySelector("input");
   const note = () => $(".modal .browser-tool .sound-risks");
