@@ -248,6 +248,29 @@ def test_a_display_of_its_own_is_ended_when_the_browser_has_quit(host, monkeypat
     assert not B.end_display(host, disk, kill=lambda *a: pytest.fail("killed while the browser runs"))
 
 
+def test_only_the_display_holding_tempbrowser_is_ended(host, monkeypatch):  # noqa: F811
+    """Every Xephyr of the user's was taken for the browser's display, and all of them were ended once one held
+    ~/TempBrowser: a trial's display of its own, the user's own Xephyr. Each is apart now, and only one in a sandbox
+    that holds ~/TempBrowser is ended; the user's own (no sandbox around it), its working folder there, is named."""
+    disk = open_ramdisk(host)
+    procs = {**PROCS, 400: (1, "bwrap"), 401: (400, "bwrap"), 402: (401, "python3"), 403: (402, "Xephyr"),   # a trial's
+             500: (10, "bash"), 501: (500, "Xephyr")}                                      # the user's, from a terminal
+    holders = {201: "bwrap", 202: "python3", 203: "Xephyr", 501: "Xephyr"}
+    monkeypatch.setattr(B, "_procs", lambda host: dict(procs))
+    monkeypatch.setattr(R, "holders_on_device", lambda host, path: dict(holders))
+    monkeypatch.setattr(B, "running", lambda host, b: [])
+    monkeypatch.setattr(B, "DISPLAY_WAIT", 0.2)
+    assert B.disk_users(host, disk) == [B.DISPLAY_NAME, "Xephyr"]
+    killed = []
+
+    def kill(pid, sig):
+        killed.append(pid)
+        holders.pop(pid, None)
+    assert B.end_display(host, disk, kill=kill)
+    assert set(killed) == {200, 201, 202, 203} and holders == {501: "Xephyr"}
+    assert not B.end_display(host, disk, kill=lambda *a: pytest.fail("the user's own Xephyr was ended"))
+
+
 # ------------------------------------------------------------------ A6: closing during a set-up
 
 def test_closing_is_refused_while_a_browser_is_set_up_here_or_in_another_copy(cat, host, monkeypatch):  # noqa: F811

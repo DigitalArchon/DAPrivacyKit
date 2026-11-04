@@ -1697,25 +1697,27 @@ def _browser_tree(host: Host, procs: dict[int, tuple[int, str]] | None = None) -
     return _with_descendants(procs, tree)
 
 
-def _display_tree(host: Host, procs: dict[int, tuple[int, str]]) -> set[int]:
-    """A display of its own (Xephyr in its sandbox, _start_nested): Xephyr's processes, their parents up through the
-    sandbox (bubblewrap's, and the focus keeper's python3 inside it), and what they started. It holds its socket
-    folder in the browser's private folder on the RAM disk, and ends only 10 seconds after the browser's last window
-    (-terminate) and the focus keeper's 8 seconds. Never a copy of the app (a python3 too, but not bubblewrap's
-    child): end_display ends what this returns."""
+def _display_trees(host: Host, procs: dict[int, tuple[int, str]]) -> list[set[int]]:
+    """Each display of its own (Xephyr in its sandbox, _start_nested), apart: Xephyr's processes, their parents up
+    through the sandbox (bubblewrap's, and the focus keeper's python3 inside it), and what they started. The browser's
+    holds its socket folder in the browser's private folder on the RAM disk, and ends only 10 seconds after the
+    browser's last window (-terminate) and the focus keeper's 8 seconds. Never a copy of the app (a python3 too, but
+    not bubblewrap's child), nor a Xephyr outside a sandbox (the user's own). Apart, since a trial's display, or
+    another the user runs, isn't the browser's: end_display ends only those holding ~/TempBrowser."""
     me = os.getpid() if host.root == Path("/") else None
 
     def sandbox_part(pid: int) -> bool:
         name, parent = procs[pid][1], procs[pid][0]
         return name == "bwrap" or (name == "python3" and procs.get(parent, (0, ""))[1] == "bwrap")
-    roots = {pid for pid, (_, name) in procs.items() if name == "Xephyr"}
-    tree = set(roots)
-    for pid in roots:
-        parent = procs[pid][0]
+    trees = []
+    for pid in sorted(p for p, (_, name) in procs.items() if name == "Xephyr"):
+        tree, parent = {pid}, procs[pid][0]
         while parent in procs and parent not in tree and parent != me and sandbox_part(parent):
             tree.add(parent)
             parent = procs[parent][0]
-    return _with_descendants(procs, tree)
+        if any(procs[p][1] == "bwrap" for p in tree):
+            trees.append(_with_descendants(procs, tree))
+    return trees
 
 
 DISPLAY_WAIT = 3.0                      # seconds a display of its own has to end once told to, before it is killed
@@ -1734,8 +1736,8 @@ def end_display(host: Host, path: Path, kill: Callable[[int, int], None] = os.ki
     held = ramdisk.holders_on_device(host, path)
     if not held:
         return False
-    tree = _display_tree(host, _procs(host))
-    if not tree & set(held):
+    tree = set().union(*(t for t in _display_trees(host, _procs(host)) if t & set(held)))
+    if not tree:
         return False
     for sig in (signal.SIGTERM, signal.SIGKILL):
         for pid in sorted(tree):
@@ -1763,7 +1765,7 @@ def disk_users(host: Host, path: Path) -> list[str]:
     # only where its own processes hold something: one running from ~/TempBrowser holds nothing on ~/RAMDisk, and
     # closing that was refused ("Close Tor Browser first: it is using files in ~/RAMDisk")
     named = [b.name for b in BROWSERS.values() if set(running(host, b)) & set(held)]
-    display = _display_tree(host, procs) - tree if held else set()
+    display = set().union(*(t for t in _display_trees(host, procs) if t & set(held))) - tree if held else set()
     if display & set(held):
         if not named:                                   # the browser has quit, and its display hasn't ended yet
             named.append(DISPLAY_NAME)
