@@ -461,6 +461,10 @@ def test_suspend(cat, tmp_path):
 
 @pytest.mark.parametrize("security, protection, iommu, status", [
     ("user", "1", True, Status.PASS), ("none", "0", False, Status.FAIL), ("user", "0", False, Status.FAIL),
+    # DisplayPort only, and PCIe tunnelling off in the firmware: no PCIe path, so no DMA, with or without an IOMMU
+    # (both were "Thunderbolt devices can read memory directly")
+    ("dponly", "0", True, Status.PASS), ("dponly", "0", False, Status.PASS), ("nopcie", "0", False, Status.PASS),
+    ("usbonly", "0", False, Status.FAIL),                 # a dock's own USB controller is a PCIe device, tunnelled
 ])
 def test_dma(cat, tmp_path, security, protection, iommu, status):
     files = {"/sys/bus/thunderbolt/devices/domain0/security": security + "\n",

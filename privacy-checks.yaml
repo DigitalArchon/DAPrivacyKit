@@ -3593,6 +3593,9 @@ checks:
     detect:
       - 'boltctl domains (security level); /sys/bus/thunderbolt/devices/domain*/security'
       - '/sys/bus/thunderbolt/devices/domain*/iommu_dma_protection; ls /sys/class/iommu'
+      - 'dponly (DisplayPort only) and nopcie (PCIe tunnelling off in the firmware) make no PCIe tunnel: nothing plugged
+        in reaches memory. none and unknown without DMA protection are weak; user, secure and usbonly (a dock''s own
+        USB controller is tunnelled) without it, only with no IOMMU either'
     fix: Explain enabling IOMMU and bolt security levels. Note that memory encryption (SME/TME) is no substitute.
     remedy: >
       Devices plugged into Thunderbolt or USB4 ports could read memory. How to… shows how to turn on

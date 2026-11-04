@@ -1008,10 +1008,12 @@ class Dma(Check):
             sec = (read_text(host, d / "security") or "unknown").strip()
             prot = (read_text(host, d / "iommu_dma_protection") or "0").strip() == "1"
             ev.append(Evidence.val(d.name, f"security level {sec}, DMA protection {'on' if prot else 'off'}"))
-            if not prot and sec in ("none", "unknown", "dponly", "usbonly") and sec != "usbonly":
+            if sec in ("dponly", "nopcie"):
+                continue            # no PCIe tunnel at all (DisplayPort and USB only; PCIe off in the firmware): no DMA
+            if not prot and sec in ("none", "unknown"):
                 weak.append(d.name)
             elif not prot and not iommu:
-                weak.append(d.name)
+                weak.append(d.name)         # user, secure, usbonly (a dock's own USB controller is tunnelled)
         if weak:
             me = memory_encryption_note(scan, for_dma=True)
             return failed("Thunderbolt devices can read memory directly (no DMA protection).", *ev,
