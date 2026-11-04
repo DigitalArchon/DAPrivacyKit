@@ -3909,6 +3909,8 @@ function trialResult(t, call, st = {}) {
           r.hosts.looked_up.length ? h("div", { class: "small muted" }, "Looked up and not connected to: " + r.hosts.looked_up.join(", ") + ".") : null]
       : h("p", { class: "small" }, "It could reach the internet and contacted nothing."
           + (r.hosts.looked_up.length ? ` It looked up: ${r.hosts.looked_up.join(", ")}.` : "")),
+    r.hosts?.stopped ? h("div", { class: "warnbox small" }, "Watching its network stopped partway through: the app "
+      + "couldn't go on summing up its packets. What it contacted after that isn't listed.") : null,
     h("h4", {}, "What it wrote in its home"),
     s.places.length ? [h("p", { class: "small muted" }, `${plural(r.left.files, "file")} (${fmtSize(r.left.bytes)}) are there now, `
         + "besides the decoys. On your computer these would be in your home folder."), placesTable(s)]

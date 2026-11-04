@@ -1166,19 +1166,28 @@ class PipeReader(threading.Thread):
         self.flows, self.done = flows, threading.Event()
 
     def run(self) -> None:
+        # Never silently: what stops the summing up (memory running short, a packet nothing foresaw) ended this thread
+        # without a word, the rest of the trial unobserved (the review of 2026-11-04). The result says so now
+        # (Flows.stopped), and the pipe is still read, so pasta, which waits while it is full, keeps the network going.
         import select
         try:
             while True:
                 ready = select.select([self.fd], [], [], 0.3)[0]
                 if ready:
                     try:
-                        self.flows.feed(os.read(self.fd, 1 << 18))
+                        data = os.read(self.fd, 1 << 18)
                     except BlockingIOError:
-                        pass
+                        continue
+                    if not self.flows.stopped:
+                        try:
+                            self.flows.feed(data)
+                        except Exception:  # noqa: BLE001 - whatever it was, watching ends here, and says so
+                            self.flows.stopped = True
                 elif self.done.is_set():
                     return
         except (OSError, ValueError):
-            return
+            if not self.done.is_set():
+                self.flows.stopped = True
 
     def stop(self) -> None:
         self.done.set()

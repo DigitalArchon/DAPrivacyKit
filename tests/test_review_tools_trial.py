@@ -294,6 +294,63 @@ def test_a_program_cant_have_its_own_server_named_as_it_likes():
     assert len(cdn["addresses"]) == pcap.ADDRESSES_MAX and cdn["more_addresses"] is True
 
 
+def test_what_the_packets_are_summed_up_in_has_a_bound(monkeypatch):
+    """The review of 2026-11-04: under the program's own traffic, Flows kept a name for every connection it summed up
+    (100,000 TLS names left 80,000), and up to 70 KB of every unfinished DNS-over-TCP message, never dropped when the
+    connection closed (3,000 to the resolver held 171 MB)."""
+    monkeypatch.setattr(pcap, "CONNS_MAX", 10)
+    p = []
+    for i in range(200):
+        p += [eth(ip4(ME, "203.0.113.9", 6, _tcp(20000 + i, 443, 0x02, 1000))),
+              eth(ip4(ME, "203.0.113.9", 6, _tcp(20000 + i, 443, 0x18, 1001, client_hello(f"n{i}.example"))))]
+    f = pcap.Flows(FWD)
+    f.feed(_capture(p))
+    assert len(f.used) == 0 and len(f.result()["hosts"]) == 200, "names nobody looked up aren't kept to leave out"
+    unfinished = struct.pack(">H", 60000) + b"q" * 20000         # a message that never completes
+
+    def lookup(port, close=None):
+        return [eth(ip4(ME, FWD, 6, _tcp(port, 53, 0x02, 5000))), eth(ip4(ME, FWD, 6, _tcp(port, 53, 0x18, 5001, unfinished))),
+                *([eth(ip4(ME, FWD, 6, _tcp(port, 53, close, 5001 + len(unfinished))))] if close else [])]
+    f = pcap.Flows(FWD)
+    f.feed(_capture([x for i in range(300) for x in lookup(30000 + i)]))
+    assert len(f.streams) <= pcap.STREAMS_MAX and sum(len(s[1]) for s in f.streams.values()) <= pcap.BUFFERED_MAX
+    # closed (FIN, or RST), a lookup's streams go, and leave room for the next one
+    q, a = _query(9, "late.example"), _answer(9, "late.example", "203.0.113.20")
+    f = pcap.Flows(FWD)
+    f.feed(_capture([x for i in range(150) for x in lookup(31000 + i, 0x11 if i % 2 else 0x14)]
+                    + [eth(ip4(ME, FWD, 6, _tcp(32000, 53, 0x02, 100))), eth(ip4(FWD, ME, 6, _tcp(53, 32000, 0x12, 900))),
+                       eth(ip4(ME, FWD, 6, _tcp(32000, 53, 0x18, 101, struct.pack(">H", len(q)) + q))),
+                       eth(ip4(FWD, ME, 6, _tcp(53, 32000, 0x18, 901, struct.pack(">H", len(a)) + a)))]))
+    assert f.names.get("203.0.113.20") == "late.example" and len(f.streams) == 2
+
+
+def test_the_result_says_when_watching_the_network_stopped(tmp_path):
+    """The review of 2026-11-04: an error while summing up (a MemoryError) ended the reader without a word, the rest of
+    the trial unobserved. The result says so, and the pipe is still read: pasta waits while it is full."""
+    f = pcap.Flows(FWD)
+
+    def fails(data):
+        raise MemoryError
+    f.feed = fails
+    reader = trial.PipeReader(tmp_path / "packets", f)
+    reader.start()
+    try:
+        w = os.open(tmp_path / "packets", os.O_WRONLY | os.O_NONBLOCK)
+        try:
+            os.write(w, b"\0" * 4096)
+            deadline = time.monotonic() + 3
+            while not f.stopped and time.monotonic() < deadline:
+                time.sleep(0.02)
+            os.set_blocking(w, True)
+            for _ in range(64):                                   # 4 MB, many times what a pipe holds
+                os.write(w, b"\0" * 65536)
+        finally:
+            os.close(w)
+    finally:
+        reader.stop()
+    assert f.stopped and pcap.Flows.result(f)["stopped"] is True
+
+
 # ------------------------------------------------------------------ E5: no /proc masks in a trial, and the page says so
 
 def test_a_trial_has_no_proc_masks_and_says_what_it_can_read(tmp_path):

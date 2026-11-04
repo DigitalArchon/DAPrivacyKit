@@ -33,6 +33,11 @@ NAMES_MAX = 5000
 ADDRESSES_MAX = 8                       # a host's addresses kept to show; more are said as more
 PACKET_MAX = 262144 + 64
 STREAM_MAX = 70000                      # DNS over TCP: what is kept of a message not complete yet (one is 65537 at most)
+# DNS over TCP read at once (each way of a connection a stream), and the bytes held for all of them: the program's own
+# traffic must not grow what is kept without a bound (the review of 2026-11-04: 3,000 connections that never finished a
+# message held 171 MB, never dropped). A lookup past these isn't read, and its address is named by itself.
+STREAMS_MAX = 64
+BUFFERED_MAX = 1 << 20
 
 
 def _name(data: bytes, at: int, depth: int = 0) -> tuple[str, int]:
@@ -131,9 +136,10 @@ class Flows:
         self.asked: dict[str, int] = {}                 # names looked up -> how often
         self.conns: dict[tuple, dict] = {}              # (src, sport, dst, dport, proto) -> that connection's sums
         self.folded: dict[tuple, dict] = {}             # connections the table had no more room for, summed by host
-        self.used: set[str] = set()                     # the names those were made under (DNS, SNI, Host)
+        self.used: set[str] = set()                     # the names looked up that those were made under (DNS, SNI, Host)
         self.streams: dict[tuple, list] = {}            # DNS over TCP, each way: [the next sequence number, bytes]
         self.packets = self.broken = self.left_out = 0
+        self.stopped = False                            # the reader stopped watching partway (PipeReader): said
         self.lock = threading.Lock()                    # fed by the reader thread, summed up by the page's requests
 
     def feed(self, data: bytes) -> None:
@@ -233,8 +239,14 @@ class Flows:
             msg = bytes(st[1][2:2 + n])
             del st[1][:2 + n]
             (self._answers if answers else self._questions)(msg)
-        if len(st[1]) > STREAM_MAX:                         # not DNS after all
-            st[1].clear()
+        # not DNS after all, or more held than lookups ever need: that way of the connection isn't read any more
+        if len(st[1]) > STREAM_MAX or sum(len(s[1]) for s in self.streams.values()) > BUFFERED_MAX:
+            del self.streams[key]
+
+    def _stream(self, key: tuple, seq: int) -> None:
+        """A way of a DNS-over-TCP connection to read, from the sequence number `seq` on, while there is room."""
+        if key in self.streams or len(self.streams) < STREAMS_MAX:
+            self.streams[key] = [seq & 0xFFFFFFFF, bytearray()]
 
     # ------------------------------------------------------------------ connections
 
@@ -250,12 +262,12 @@ class Flows:
         for one of them isn't counted)."""
         for key in list(self.conns)[:CONNS_MAX // 2]:
             self._retire(key)
-        if len(self.streams) > CONNS_MAX:
-            self.streams.clear()
 
     def _retire(self, key: tuple) -> None:
         c = self.conns.pop(key)
-        self.used.update(n for n in (c["said"], c["dns"]) if n)
+        # only names looked up: `used` leaves them out of those looked up and never used, and kept every name a
+        # connection gave (100,000 TLS names of the program's own left 80,000 here)
+        self.used.update(n for n in (c["said"], c["dns"]) if n and n in self.asked)
         if not self._add(self.folded, c):
             self.left_out += 1
 
@@ -293,23 +305,29 @@ class Flows:
                 # the same SYN sent again, its first sequence number the same: the same attempt, also after the
                 # RST pasta answers each with while its own connection to the server waits (seen on Mint 22.3)
                 c["closed"] = False
+                if dport == 53 and out not in self.streams:  # its questions' way, dropped with that RST
+                    self._stream(out, seq + 1)
                 return
             if c is not None:                               # these ports used again: the earlier one is summed up
                 self._retire(out)
             if dport == 53:                                 # DNS over TCP: its questions are read
-                self.streams[out] = [(seq + 1) & 0xFFFFFFFF, bytearray()]
+                self._stream(out, seq + 1)
                 if self._resolver(dst):
                     return                                  # a lookup through the sandbox's own resolver
             self._open(out, dst, dport, "tcp", seq)
             return
         if flags & 0x12 == 0x12:                            # SYN-ACK: where the answers' bytes start
             if sport == 53 and back in self.streams and self._resolver(src):      # the sandbox's resolver's only
-                self.streams[out] = [(seq + 1) & 0xFFFFFFFF, bytearray()]
+                self._stream(out, seq + 1)
             return
         if dport == 53:
             self._dns_stream(out, seq, data, answers=False)
         elif sport == 53:
             self._dns_stream(out, seq, data, answers=True)
+        if flags & 0x05 and self.streams:                   # FIN: nothing more that way; RST: nothing either way
+            self.streams.pop(out, None)
+            if flags & 0x04:
+                self.streams.pop(back, None)
         c = self.conns.get(out)
         if c is not None:
             if data:
@@ -344,7 +362,7 @@ class Flows:
     def result(self) -> dict:
         """{"hosts": [{"host", "named_by" (dns, tls, program, address), "addresses" (the servers', ADDRESSES_MAX at
         most), "more_addresses", "ports", "connections", "sent", "received"}], "looked_up": [names asked for and never
-        used], "packets", "left_out"}: hosts by what was sent, most first."""
+        used], "packets", "left_out", "stopped" (watching stopped partway)}: hosts by what was sent, most first."""
         with self.lock:
             return self._result()
 
@@ -361,4 +379,4 @@ class Flows:
             m["ports"] = sorted(m["ports"], key=lambda p: (len(p), p))
         shown = {m["host"] for m in hosts}
         return {"hosts": hosts, "looked_up": sorted(n for n in self.asked if n not in shown and n not in used),
-                "packets": self.packets, "left_out": left_out, "broken": self.broken}
+                "packets": self.packets, "left_out": left_out, "broken": self.broken, "stopped": self.stopped}
