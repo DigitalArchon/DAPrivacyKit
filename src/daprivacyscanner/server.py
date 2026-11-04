@@ -901,8 +901,8 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
 
     @app.post("/api/undo/forget", dependencies=[Depends(auth)])
     async def forget(request: Request):
-        """Body {"everything": bool}. Without it: reverted and failed entries, and applied ones
-        older than 90 days, go (with their file backups). Changes made stay as they are. With
+        """Body {"everything": bool}. Without it: reverted entries, failed ones with nothing left to revert,
+        and applied ones older than 90 days, go (with their file backups). Changes made stay as they are. With
         everything, the saved last scan goes too (the page keeps showing it until a new one)."""
         body = await body_of(request)
         host = make_host()

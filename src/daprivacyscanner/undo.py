@@ -234,15 +234,18 @@ class UndoLog:
                 "backup_dropped": record.get("backup_dropped")}
 
     def forget(self, everything: bool = False, older_than_days: int = 90) -> int:
-        """Drops entries (and their file backups): reverted and failed ones, and applied ones
-        older than `older_than_days`; with `everything`, all of them. Returns how many went.
+        """Drops entries (and their file backups): reverted ones, failed ones with nothing left to
+        revert (a step that couldn't be put back stays, for History says to revert it from there), and
+        applied ones older than `older_than_days`; with `everything`, all of them. Returns how many went.
         Changes made by forgotten entries stay as they are; they just can't be reverted from
         here any more."""
         import shutil
         cutoff = time.time() - older_than_days * 86400
         keep, gone = [], 0
         for e in self.entries():
-            drop = everything or e["state"] in ("reverted", "failed") or e["applied"] < cutoff
+            left = any(UndoLog.can_undo(r) and not r.get("reverted") for r in e["records"])
+            drop = (everything or e["state"] == "reverted" or (e["state"] == "failed" and not left)
+                    or e["applied"] < cutoff)
             if drop:
                 shutil.rmtree(self.backup_dir(e["id"]), ignore_errors=True)
                 gone += 1

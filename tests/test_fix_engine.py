@@ -157,8 +157,11 @@ def test_a_step_that_cannot_be_put_back_stays_revertible_from_history(tmp_path):
                                               "false failed: dconf went away"]
     s = UndoLog.summary(log.get(res.entry_id))
     assert s["state"] == "failed" and s["can_revert"] and not s["steps"][0]["reverted"]
+    # "Forget reverted and old entries" keeps it (History says to revert it from there), and its backups with it
+    assert log.forget() == 0 and log.get(res.entry_id) is not None
     host.runner.handlers["gsettings"] = gs
     assert all(r.ok for r in revert_entry(log.get(res.entry_id), host, log)) and gs.values[SCREEN] == "false"
+    assert log.forget() == 1 and log.entries() == []
 
 
 def test_history_says_where_a_change_came_from(tmp_path):
