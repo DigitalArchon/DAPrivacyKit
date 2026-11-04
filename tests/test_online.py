@@ -527,6 +527,27 @@ def test_online_endpoints(cat, tmp_path):
         assert rep["results"]["net.dnssec_validation"]["status"] == "pass" and rep["online"]
 
 
+def test_a_scan_from_the_terminal_keeps_them_too(cat, tmp_path, monkeypatch):
+    """As a scan in the window does (above): a scheduled scan saved its report without them, so the app opened with
+    them gone, and their guides said to run the test first."""
+    from daprivacyscanner import app as app_mod
+    from daprivacyscanner.host import Host
+
+    host = make_host(tmp_path, files={"/etc/resolv.conf": "nameserver 127.0.0.53\n"})
+    fake = FakeNet(dns={DEFAULTS["dnssec_valid"]: ["93.184.215.14"], DEFAULTS["dnssec_failed"]: ["203.0.113.9"]})
+    with TestClient(create_app("t", cat, make_host=lambda: host, make_net=lambda: fake)) as c:
+        c.post("/api/scan", headers=H)
+        assert run_job(c, {"ids": ["net.dnssec_validation"]})["results"]["net.dnssec_validation"]["status"] == "fail"
+    monkeypatch.setattr(Host, "local", classmethod(lambda cls: host))
+    app_mod.scan_cli(cat, as_json=False, notify=True, admin=False, quiet=True, redact=False)     # the timer's scan
+    with TestClient(create_app("t", cat, make_host=lambda: host, make_net=lambda: fake)) as c:  # the next start
+        rep = c.get("/api/state", headers=H).json()["report"]
+        assert rep["restored"] and rep["results"]["net.dnssec_validation"]["status"] == "fail"
+        assert rep["online"]["ids"] == ["net.dnssec_validation"]
+        r = c.post("/api/fix/net.dnssec_validation/plan", headers=H)
+        assert r.status_code == 200 and r.json()["guide"]["steps"]
+
+
 def test_online_job_shows_progress_and_stops_between_tests(cat, tmp_path):
     import threading
     gate, started = threading.Event(), threading.Event()

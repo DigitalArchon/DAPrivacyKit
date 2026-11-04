@@ -221,6 +221,17 @@ def scan_cli(cat, as_json: bool, notify: bool, admin: bool, quiet: bool, redact:
     paths = PathResolver(host.home, host.environ)
     changes = Baseline(paths).record(report)
     report["changes"] = changes
+    # the online tests' results are kept from the last report, as a scan in the window keeps them: they run only when
+    # the user starts them, and a scheduled scan dropped them (the app then opened without them, their guides saying
+    # to run the test first)
+    old = LastReport(paths).load(set(cat.checks))
+    if old is not None:
+        for cid, r in old["results"].items():
+            if cat[cid].scope.value == "online":
+                report["results"][cid] = r
+                report["modifiers"][cid] = old["modifiers"].get(cid, [])
+        if old.get("online"):
+            report["online"] = old["online"]
     accepted = Accepted(paths).all()
     results = report["results"]
     started = time.time()
