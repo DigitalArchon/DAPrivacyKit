@@ -57,7 +57,7 @@ GROUPS = [
     ("location", "Where it was made", re.compile(r"gps|location|latitude|longitude|altitude|city|country|"
                                                 r"sub-?location|province|state$|geo", re.I)),
     ("people", "Who made or edited it", re.compile(r"author|creator$|artist|owner|by-?line|last-?modified-?by|"
-                                                  r"company|manager|contributor|publisher|rights|copyright|"
+                                                  r"company|manager|contributor|publisher|rights|copyright(?!-?flag)|"
                                                   r"initials|user-?name|^user$|writer|editor|xpauthor", re.I)),
     ("device", "The camera, phone or computer", re.compile(r"^make$|model|serial|lens|camera|host-?computer|"
                                                           r"device|uniquecameramodel|bodyserial|imageuniqueid", re.I)),
@@ -72,6 +72,11 @@ GROUP_TITLES = {g: t for g, t, _ in GROUPS} | {"other": "Other"}
 # exiftool groups that describe the file on disk or exiftool itself, not what the file carries
 EXIFTOOL_SKIP_GROUPS = {"System", "ExifTool", "Composite"}
 WARN_GROUPS = ("location", "people", "device")
+# a format's own names for its parts, which every file of its kind carries (a video track's "VideoHandler", a codec's
+# name; mat2 fills them in as standard data): text, but nobody's title or comment
+FORMAT_TEXT = re.compile(r"(handler|codec)-?description$", re.I)
+SAYS = {"location": "where it was made", "people": "who made it", "device": "the device",
+        "text": "a title, comment or description"}
 EXIFTOOL_SKIP_TAGS = {"SourceFile", "FileType", "FileTypeExtension", "MIMEType", "ExifByteOrder", "ImageWidth",
                       "ImageHeight", "EncodingProcess", "BitsPerSample", "ColorComponents", "YCbCrSubSampling",
                       "CurrentIPTCDigest"}
@@ -104,20 +109,28 @@ class FileMeta:
                 "supported": self.supported, "count": len(self.items),
                 "groups": [{"id": g, "title": GROUP_TITLES[g], "items": groups[g]} for g in order if g in groups]}
 
+    def telling(self) -> list[str]:
+        """The groups worth a look before it is shared, in GROUPS' order: where it was made, who made it, the device
+        (WARN_GROUPS), and a title, comment or description with something in it. What the check after cleaning warns
+        of: the page above the rest, and the Outbox, where nobody looks, by not counting the copy as cleaned."""
+        found = {it.group for it in self.items if it.group in WARN_GROUPS or (
+            it.group == "text" and it.value.strip() and not FORMAT_TEXT.search(it.key.split(":")[-1]))}
+        return [g for g, _, _ in GROUPS if g in found]
 
     def summary(self, rel: str = "", root: Path | None = None, cleanable: bool | None = None) -> dict:
         """What the page lists for each of many files: each group's count and its first few items (the
-        rest on request, `to_dict` of a `show`)."""
+        rest on request, `to_dict` of a `show`); `warn`, a group `telling` names."""
         groups: dict[str, list[Item]] = {}
         for it in self.items:
             groups.setdefault(it.group, []).append(it)
         order = [g for g, _, _ in GROUPS] + ["other"]
         if not self.supported:
             cleanable = False
+        warn = set(self.telling())
         return {"path": str(self.path), "name": self.path.name, "rel": rel or self.path.name,
                 "root": str(root) if root else None, "tool": self.tool, "error": self.error,
                 "supported": self.supported, "cleanable": cleanable, "count": len(self.items),
-                "groups": [{"id": g, "title": GROUP_TITLES[g], "count": len(groups[g]),
+                "groups": [{"id": g, "title": GROUP_TITLES[g], "count": len(groups[g]), "warn": g in warn,
                             "sample": [{"key": it.key, "value": it.value, "member": it.member}
                                        for it in groups[g][:SAMPLES if g in WARN_GROUPS else 2]]}
                            for g in order if g in groups]}
@@ -887,8 +900,10 @@ class OutboxRun:
 def run_outbox(host: Host, folder: Path | None = None, settle: float = 2.0) -> OutboxRun:
     """Each file put directly in the Outbox: copied into a private temporary folder (in memory where
     there is one), cleaned there, the clean copy moved to Cleaned/ and the original to Originals/.
-    A file mat2 can't clean goes to "Not cleaned/". Files still being written (changed in the last
-    `settle` seconds), hidden files and partial downloads are left for the next run."""
+    A file mat2 can't clean goes to "Not cleaned/", and so does one whose cleaned copy still says what
+    the page would warn of (`FileMeta.telling`): nobody looks at Cleaned/ before sharing it. Files still
+    being written (changed in the last `settle` seconds), hidden files and partial downloads are left
+    for the next run."""
     folder = Path(folder) if folder else outbox_dir(host.home)
     run = OutboxRun()
     if not folder.is_dir() or folder.is_symlink():
@@ -911,7 +926,13 @@ def run_outbox(host: Host, folder: Path | None = None, settle: float = 2.0) -> O
             work = Path(tmp) / entry.name
             shutil.copy2(entry, work)
             os.chmod(work, stat.S_IMODE(os.stat(work).st_mode) | stat.S_IRUSR | stat.S_IWUSR)   # as _working_copy's
-            res = clean(host, work, check_after=False)
+            res = clean(host, work)
+            left = res.remaining.telling() if res.ok and res.remaining else []
+            if left:
+                words = [SAYS[g] for g in left]
+                what = words[0] if len(words) == 1 else ", ".join(words[:-1]) + " and " + words[-1]
+                res = CleanResult(work, False, message=f"Its cleaned copy still says {what}: mat2 couldn't remove all "
+                                                       f"of it, so it wasn't put in {CLEANED}.")
             if res.ok and res.output:
                 (folder / CLEANED).mkdir(mode=0o700, exist_ok=True)
                 (folder / ORIGINALS).mkdir(mode=0o700, exist_ok=True)

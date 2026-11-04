@@ -2122,7 +2122,7 @@ async function openMetadata(data, paths = []) {
     const res = job.result;
     if (!res) { fill(out, h("div", { class: "notebox info small" }, "Stopped before anything was cleaned.")); return; }
     const ok = res.results.filter(r => r.ok), failed = res.results.filter(r => !r.ok);
-    const leaky = ok.filter(r => r.remaining?.groups.some(g => META_WARN.has(g.id)));
+    const leaky = ok.filter(r => r.remaining?.groups.some(g => g.warn));     // a title or comment left too
     const rest = ok.filter(r => r.remaining?.count && !leaky.includes(r));
     const open = (folder) => h("button", { class: "small", onclick: async () => {
       try { await api("POST", "/api/tools/metadata/open", { folder }); } catch (e) { toast(e.message, "error"); } } }, "Open the folder");
@@ -2138,7 +2138,8 @@ async function openMetadata(data, paths = []) {
         singles.slice(0, 50).map(r => h("div", { class: "orow" }, h("code", {}, r.name), " → ", h("code", {}, r.output_name),
           open(r.path.slice(0, r.path.lastIndexOf("/")) || "/")))) : null,
       leaky.length ? h("div", { class: "warnbox small" }, `${plural(leaky.length, "cleaned copy still says", "cleaned copies still say")} `
-        + "where it was made, who made it or the device: mat2 couldn't remove all of it. Look before you share them.",
+        + "where it was made, who made it, the device, or a title, comment or description: mat2 couldn't remove all of "
+        + "it. Look before you share them.",
         pagedList(leaky, r => metaRow(r.remaining, { path: r.output }))) : null,
       rest.length ? h("details", {}, h("summary", { class: "small" }, `What is still in ${plural(rest.length, "other copy", "other copies")}`
         + " (mostly what any file of its kind has: its format, size, colours)"),

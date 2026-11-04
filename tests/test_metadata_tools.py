@@ -63,7 +63,8 @@ def test_exiftool_json_leaves_out_what_describes_the_file_on_disk():
 
 
 def fake_mat2(fail_on=(), calls=None):
-    """mat2 that writes FILE.cleaned.EXT for each file after "--" (or says the format isn't supported)."""
+    """mat2 that writes FILE.cleaned.EXT for each file after "--" (or says the format isn't supported), and finds
+    nothing in what it cleaned."""
     def run(argv):
         if calls is not None:
             calls.append(argv)
@@ -71,6 +72,9 @@ def fake_mat2(fail_on=(), calls=None):
             return CommandResult(argv, 0, "[+] Supported formats:\n  - image/jpeg (.jpe, .jpeg, .jpg)\n"
                                           "  - application/pdf (.pdf)\n  - application/x-tar (.tar)\n")
         if argv[1] == "--show":
+            shown = argv[argv.index("--") + 1:]
+            if all(Path(f).read_bytes().startswith(b"clean:") for f in shown):
+                return CommandResult(argv, 0, "".join(f"  No metadata found in {f}.\n" for f in shown))
             return CommandResult(argv, 0, MAT2_SHOW)
         out = []
         for t in argv[argv.index("--") + 1:]:
@@ -270,6 +274,8 @@ def cleans_audio_as_mat2_does(argv):
     """mat2 0.13 to 0.15 clean an MP3, OGG or FLAC (MutagenParser.remove_all) by copying it, mode and all
     (shutil.copy), and writing to the copy: a read-only one can't be opened for writing, and the run ends in a
     traceback."""
+    if argv[1] == "--show":
+        return CommandResult(tuple(argv), 0, f"  No metadata found in {argv[-1]}.\n")
     for f in [Path(x) for x in argv[argv.index("--") + 1:]]:
         out = M.cleaned_name(f)
         shutil.copy(f, out)
@@ -324,6 +330,48 @@ def test_a_file_replaced_by_a_link_after_it_was_listed_isnt_cleaned(tmp_path):
     assert [p for p in host.home.rglob("*") if p.is_file() and not p.is_symlink()
             and p.read_text() == "clean:secret"] == [host.home / "mine.cleaned.jpg"]
     assert not list(host.home.rglob(M.WORK_PREFIX + "*"))
+
+
+def test_what_a_cleaned_copy_still_says_is_warned_of_and_kept_out_of_the_outboxs_cleaned(tmp_path):
+    """A title or comment left in a cleaned copy was listed under "mostly what any file of its kind has", folded away,
+    and the Outbox didn't look at its copies at all. The warning now takes text with something in it too, and the
+    Outbox keeps a copy that still says any of it out of Cleaned. What every file of its kind has doesn't count: an
+    MP3 frame's copyright bit (it made every cleaned MP3 "say who made it"), a track's handler, a codec's description."""
+    plain = json.dumps([{"SourceFile": "/h/a.cleaned.mp3", "MPEG:CopyrightFlag": False, "MPEG:AudioBitrate": "128 kbps"},
+                        {"SourceFile": "/h/v.cleaned.mp4", "Track1:HandlerDescription": "VideoHandler",
+                         "ASF:VideoCodecDescription": "Windows Media Video 9", "XMP-dc:Title": " "}])
+    for f, (items, _) in M.parse_exiftool_files(plain).items():
+        assert M.FileMeta(Path(f), items, "exiftool").telling() == [], f
+    left = M.FileMeta(Path("/h/a.jpg"), M.parse_exiftool(json.dumps([{"SourceFile": "/h/a.jpg", "File:Comment": "call Jane",
+                                                                       "Track1:HandlerDescription": "VideoHandler"}])))
+    assert left.telling() == ["text"] and [g["warn"] for g in left.summary()["groups"]] == [True]
+    assert [g["warn"] for g in M.FileMeta(Path("/h/b.jpg"), M.parse_exiftool(EXIFTOOL_JSON)).summary()["groups"]] == [
+        True, True, True, False, False, True]                       # where, who, the device, software, dates, the comment
+
+    host = make_host(tmp_path, home_files={"Outbox/photo.jpg": "img", "Outbox/trip.jpg": "img", "Outbox/song.mp3": "tags"},
+                     env={"XDG_RUNTIME_DIR": str(tmp_path)})
+    left_in = {"photo.cleaned.jpg": "    comment: call Jane\n", "trip.cleaned.jpg": "    GPSLatitude: 47 N\n    Artist: Al\n"}
+
+    def mat2(argv):
+        files = argv[argv.index("--") + 1:]
+        if argv[1] == "--show":
+            return CommandResult(argv, 0, "".join(f"[+] Metadata for {f}:\n{left_in[Path(f).name]}" for f in files
+                                                  if Path(f).name in left_in))
+        for f in map(Path, files):
+            M.cleaned_name(f).write_text("cleaned")
+        return CommandResult(argv, 0)
+    host.runner.handlers["mat2"] = mat2
+    box = host.home / "Outbox"
+    for f in box.iterdir():
+        os.utime(f, (1, 1))
+    run = M.run_outbox(host)
+    assert run.cleaned == ["song.mp3"] and run.not_cleaned == [
+        ("photo.jpg", "Its cleaned copy still says a title, comment or description: mat2 couldn't remove all of it, so "
+                      "it wasn't put in Cleaned."),
+        ("trip.jpg", "Its cleaned copy still says where it was made and who made it: mat2 couldn't remove all of it, so "
+                     "it wasn't put in Cleaned.")]
+    assert sorted(p.name for p in (box / "Not cleaned").iterdir()) == ["photo.jpg", "trip.jpg"]
+    assert [p.name for p in (box / "Cleaned").iterdir()] == ["song.mp3"]
 
 
 def test_stopping_keeps_what_was_cleaned(tmp_path, monkeypatch):

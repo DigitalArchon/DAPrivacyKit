@@ -327,7 +327,8 @@ Tick the files to clean (all of them are ticked at first, except those mat2 can'
 - the files of a folder go into a new folder beside it, `Holiday (cleaned)`, with the same subfolders. A
   file that can't be cleaned gets no copy there and is listed, so nothing in that folder passes for clean.
 
-The result says what is still in the copies, and **Open the folder** shows them. Hidden files and folders
+The result says what is still in the copies, those that still say where, who, which device or a title or
+comment first, and **Open the folder** shows them. Hidden files and folders
 (names starting with a dot) are left out unless you tick **Include hidden files**; links aren't followed,
 and folders on another disk aren't entered. A folder of up to 5,000 files is read in one go; **Stop** ends
 reading or cleaning (what was cleaned by then stays). For a PDF, cleaning turns every page into a picture
@@ -582,8 +583,9 @@ fix.
   or at every logout if you choose that. For files that should last but stay private, the guide suggests
   an encrypted Cryptomator vault.
 - **~/Outbox**: drop a file in, and a cleaned copy (metadata removed) appears in `~/Outbox/Cleaned`; the
-  original moves to `~/Outbox/Originals`. A file that can't be cleaned goes to `~/Outbox/Not cleaned`.
-  Nothing is deleted.
+  original moves to `~/Outbox/Originals`. A file that can't be cleaned goes to `~/Outbox/Not cleaned`, and
+  so does one whose cleaned copy still says where it was made, who made it, the device or a title or
+  comment. Nothing is deleted.
 - **Right-click entries**: adds *Verify download…* and *Remove metadata…* to the file manager (Nemo,
   Dolphin, Nautilus).
 - **A Box for an app**: keeps an app you need but don't fully trust in a sandbox for good, with a home

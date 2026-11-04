@@ -1510,15 +1510,18 @@ OACS, FNA and SANICAP via the helper's ioctl), read on request and kept for the 
   crashes leaves a copy that looks cleaned (a read-only MP3's with every tag, a binary PPM's empty) and
   names no file, so the files of a failed run it didn't complain of are cleaned again, together while it
   names the one to blame, else one at a time (`_mat2_each`). Each copy is read again
-  afterwards: the page flags copies that still say where, who or which device. Stopping keeps what was
+  afterwards: the page flags copies that still say where, who or which device, or carry a title, comment or
+  description with something in it (`FileMeta.telling`; not what every file of its kind has: an MP3
+  frame's copyright bit, a video track's handler, a codec's name). Stopping keeps what was
   cleaned. For a PDF, mat2's normal mode redraws every page as an image (text can't be selected any
   more); *Lightweight* keeps the text and removes less. Linux allows any bytes in a file name: one that
   isn't UTF-8 reaches Python as lone surrogates, which UTF-8 can't encode, so the server's JSON escapes
   everything beyond ASCII (`server.JSONResponse`, every response): the page shows such a name with a
   replacement character and sends the same escaped path back, which names the file again. The **Outbox** (`app.metadata_outbox`) is a systemd user path unit that runs
   `daprivacyscanner --outbox` when files land in `~/Outbox`: each is cleaned into `~/Outbox/Cleaned` and the
-  original moved to `~/Outbox/Originals`; a file mat2 can't clean goes to `~/Outbox/Not cleaned`. Nothing is
-  deleted.
+  original moved to `~/Outbox/Originals`; a file mat2 can't clean goes to `~/Outbox/Not cleaned`, and so
+  does one whose cleaned copy still says what the page would flag (nobody looks in `Cleaned` before
+  sharing what is there). Nothing is deleted.
 - **File chooser** (`tools/pick.py`): pywebview's dialog in the window (GTK's recent-files recording
   turned off for the app, which outranks the desktop's setting), zenity or kdialog in a browser, else a
   typed path. The server accepts only absolute paths of regular files the user can read (and, for Remove

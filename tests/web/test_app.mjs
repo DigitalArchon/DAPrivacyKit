@@ -187,7 +187,8 @@ Object.assign(routes, {
         results: [{ path: "/home/a/photo.jpg", name: "photo.jpg", rel: "photo.jpg", root: null, ok: true,
           output: "~/photo.cleaned.jpg", output_name: "photo.cleaned.jpg", message: "",
           remaining: { path: "/home/a/photo.cleaned.jpg", name: "photo.cleaned.jpg", rel: "photo.jpg", tool: "mat2", error: "",
-                       supported: true, cleanable: true, count: 0, groups: [] } },
+                       supported: true, cleanable: true, count: 1, groups: [{ id: "text", title: "Titles, comments and descriptions",
+                         count: 1, warn: true, sample: [{ key: "comment", value: "call Jane", member: "" }] }] } },
           { path: "/home/a/Documents/notes.xyz", name: "notes.xyz", rel: "notes.xyz", root: "/home/a/Documents", ok: false,
             output: null, output_name: null, message: "notes.xyz's format (x) is not supported", remaining: null }] } };
     return { job: metaJob };
@@ -815,6 +816,8 @@ $$(".modal button").find(b => b.textContent === "Make clean copies of 1 ticked f
 check(toolBodies.clean.files?.[0] === "/home/a/photo.jpg" && toolBodies.clean.lightweight === false, "the ticked file is cleaned");
 check(text(".modal .meta-slot").includes("photo.cleaned.jpg") && text(".modal .meta-slot").includes("couldn't be cleaned"),
       "the result names the copy, and what couldn't be cleaned");
+check(text(".modal .meta-slot .warnbox").includes("1 cleaned copy still says") && !text(".modal .meta-slot").includes("What is still in"),
+      "a comment left in a cleaned copy is warned of, not folded away with what any file has");
 while ($$(".modal").length) { $$(".modal .buttons button").at(-1).click(); await tick(); }
 
 // a folder too: several files, filtered, ticked, in a list
