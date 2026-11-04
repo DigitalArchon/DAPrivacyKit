@@ -39,6 +39,17 @@ def host(tmp_path):
     return Host(home=home, environ=env, runner=FakeRunner(), root=root, uid=UID)
 
 
+@pytest.fixture(autouse=True)
+def own_locks(tmp_path, monkeypatch):
+    """The locks a start takes (owner.hold: one copy of the app at a time) in a folder of the test's own: the host's
+    XDG_RUNTIME_DIR is the real /run/user/UID, where another run of the suite, or the app, holds the same ones, and a
+    start was refused as being set up or started in another window."""
+    from daprivacyscanner.tools import owner
+    locks = tmp_path / "locks"
+    locks.mkdir()
+    monkeypatch.setattr(owner, "_locks", lambda host: locks)
+
+
 def installed(host, which):
     disk = open_ramdisk(host)
     b = B.BROWSERS[which]
