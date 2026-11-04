@@ -331,6 +331,21 @@ def test_closing_the_ramdisk_names_the_browser(cat, host, monkeypatch):  # noqa:
     assert "~/TempBrowser" in r.json()["error"]
 
 
+def test_closing_the_ram_disk_tools_disk_never_waits_for_a_browser_in_tempbrowser(host, monkeypatch):  # noqa: F811
+    """Closing ~/RAMDisk never touches ~/TempBrowser, nor the reverse: a browser running from ~/TempBrowser was named
+    when ~/RAMDisk was closed ("Close Tor Browser first: it is using files in ~/RAMDisk"), though nothing of it was
+    there."""
+    open_ramdisk(host)
+    rd = open_ramdisk(host, name="RAMDisk")
+    held = {}
+    monkeypatch.setattr(R, "holders_on_device", lambda host, path: dict(held))
+    monkeypatch.setattr(R, "users_of", lambda host, path: [])
+    monkeypatch.setattr(B, "running", lambda host, b: [13] if b.id == "tor" else [])
+    assert B.disk_users(host, rd) == []
+    held.update({13: "firefox.real", 20: "vim"})        # the browser, run without the sandbox, saving a download there
+    assert B.disk_users(host, rd) == ["Tor Browser", "vim"]
+
+
 def test_quitting_closes_the_browsers_ramdisk_unless_the_browser_runs(host, monkeypatch):  # noqa: F811
     from daprivacyscanner.tools import owner
     disk = open_ramdisk(host)

@@ -1752,15 +1752,17 @@ def end_display(host: Host, path: Path, kill: Callable[[int, int], None] = os.ki
 
 
 def disk_users(host: Host, path: Path) -> list[str]:
-    """Programs using the RAM disk at `path`: a running browser named as the browser (its sandbox, tor and
-    content processes with it, and a display of its own), a viewer View offline… started as that viewer, then every
-    other program by its own name."""
+    """Programs using the RAM disk at `path`: a running browser holding something there named as the browser (its
+    sandbox, tor and content processes with it, and a display of its own), a viewer View offline… started as that
+    viewer, then every other program by its own name."""
     from . import viewer
     held = ramdisk.holders_on_device(host, path)
     path_held = ramdisk.users_of(host, path) if not held else []
     procs = _procs(host) if held else {}
     tree = _browser_tree(host, procs) if held else set()
-    named = [b.name for b in BROWSERS.values() if running(host, b)]
+    # only where its own processes hold something: one running from ~/TempBrowser holds nothing on ~/RAMDisk, and
+    # closing that was refused ("Close Tor Browser first: it is using files in ~/RAMDisk")
+    named = [b.name for b in BROWSERS.values() if set(running(host, b)) & set(held)]
     display = _display_tree(host, procs) - tree if held else set()
     if display & set(held):
         if not named:                                   # the browser has quit, and its display hasn't ended yet
