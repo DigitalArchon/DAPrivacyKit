@@ -390,63 +390,111 @@ def unpack_limit(place: dict) -> int:
     return max(0, min(UNPACK_MAX, place["free"] - ROOM_KEPT))
 
 
-def _looks_runnable(path: Path, st: os.stat_result) -> str | None:
-    """What a file in an unpacked tree is, if it is something to start: in words, or None."""
-    try:
-        with open(path, "rb") as f:
-            head = f.read(20)
-    except OSError:
-        return None
+def _looks_runnable(name: str, head: bytes, mode: int) -> str | None:
+    """What a file in an unpacked tree is, if it is something to start (by its name, its first bytes and its mode):
+    in words, or None."""
     if head.startswith(b"\x7fELF"):
         if head[8:10] == b"AI":
             return "an AppImage"
-        return "a Linux program" if st.st_mode & 0o111 and head[16:18] in (b"\x02\x00", b"\x03\x00") else None
+        return "a Linux program" if mode & 0o111 and head[16:18] in (b"\x02\x00", b"\x03\x00") else None
     if head.startswith(b"#!"):
         return "a script"
-    if path.suffix in (".py", ".sh") and b"\0" not in head:
+    if Path(name).suffix in (".py", ".sh") and b"\0" not in head:
         return "a script"
     return None
 
 
+LINKS_MAX = 40                           # links followed in resolving one path of an unpacked tree (the kernel's limit)
+DESKTOP_READ = 20000                     # what is read of a menu entry in an unpacked tree
+
+
+def in_tree(root: str, rel: str) -> str | None:
+    """Where the path `rel` in the unpacked tree `root` leads, every part of it resolved inside the tree as it will be
+    in the sandbox: a link to an absolute path (a package's /usr/bin/foo -> /opt/Foo/foo) means that path in the tree,
+    never the computer's. The real path, relative to the tree, with no link left in it; None when it leaves the tree,
+    isn't there, or goes through too many links. The app reads the tree outside any sandbox: only the last part was
+    resolved before, so a folder linked to the computer's (usr/bin -> /usr/bin) listed the computer's own programs
+    as the package's (the review of 2026-11-04)."""
+    parts, done, links = [p for p in rel.split("/") if p not in ("", ".")], [], 0
+    while parts:
+        part = parts.pop(0)
+        if part == "..":
+            if not done:
+                return None
+            done.pop()
+            continue
+        path = os.path.join(root, *done, part)
+        try:
+            st = os.lstat(path)
+            target = os.readlink(path) if stat.S_ISLNK(st.st_mode) else None
+        except OSError:
+            return None
+        if target is not None:
+            links += 1
+            if links > LINKS_MAX:
+                return None
+            if target.startswith("/"):
+                done = []
+            parts = [p for p in target.split("/") if p not in ("", ".")] + parts
+            continue
+        if parts and not stat.S_ISDIR(st.st_mode):
+            return None
+        done.append(part)
+    return "/".join(done)
+
+
+def _read_in_tree(root: str, rel: str, most: int) -> tuple[bytes, int] | None:
+    """The first `most` bytes of the regular file `rel` in the unpacked tree (resolved by in_tree) and its mode, or
+    None: never a file outside the tree, a device or a pipe. A menu entry linked to /dev/zero was read until memory
+    ran out, one linked to a pipe kept Try an app waiting for good (the review of 2026-11-04)."""
+    real = in_tree(root, rel)
+    if real is None:
+        return None
+    try:
+        fd = os.open(os.path.join(root, real), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    except OSError:
+        return None
+    try:
+        st = os.fstat(fd)
+        return (os.read(fd, most), st.st_mode) if stat.S_ISREG(st.st_mode) else None
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+
+
 def candidates(tree: Path, deb: bool) -> list[dict]:
     """The programs in an unpacked archive or package that the user can pick: {"rel", "what", "label"}. A menu
-    entry's program first (a .deb's /usr/share/applications), then programs near the top, never through a link
-    that leaves the tree."""
+    entry's program first (a .deb's /usr/share/applications), then programs near the top, every path resolved inside
+    the tree (in_tree), never through a link to the computer's files."""
     found: dict[str, dict] = {}
     root = os.path.realpath(tree)
 
-    def resolved(p: Path) -> str | None:
-        """Where `p` leads inside the tree, as it will in the sandbox: a link to an absolute path (a package's
-        /usr/bin/foo -> /opt/Foo/foo) means that path in the tree, never the computer's. None when it leaves it."""
-        path = os.path.normpath(os.path.join(root, os.path.relpath(p, tree)))
-        for _ in range(12):
-            if path != root and not path.startswith(root + "/"):
-                return None
-            if not os.path.islink(path):
-                return path
-            target = os.readlink(path)
-            path = os.path.normpath(root + target if target.startswith("/") else os.path.join(os.path.dirname(path), target))
-        return None
-
-    def add(p: Path, label: str = "") -> None:
-        real = resolved(p)
+    def add(rel: str, label: str = "") -> None:
+        real = in_tree(root, rel)
         if real is None or real in found or len(found) >= CANDIDATES_MAX:
             return
-        try:
-            st = os.lstat(real)
-        except OSError:
-            return
-        if not stat.S_ISREG(st.st_mode):
-            return
-        what = _looks_runnable(Path(real), st)
+        got = _read_in_tree(root, real, 20)
+        what = _looks_runnable(real, *got) if got else None
         if what:
-            found[real] = {"rel": str(p)[len(str(tree)) + 1:], "what": what, "label": label}
+            found[real] = {"rel": rel, "what": what, "label": label}
 
-    for desk in sorted(tree.glob("usr/share/applications/*.desktop")) + sorted(tree.glob("*.desktop")):
+    desks = []
+    for folder in ("usr/share/applications", ""):
+        where = in_tree(root, folder)
+        if where is None:
+            continue
         try:
-            text = desk.read_text(errors="replace")[:20000]
+            names = sorted(e.name for e in os.scandir(os.path.join(root, where))
+                           if e.name.endswith(".desktop") and not e.name.startswith("."))
         except OSError:
             continue
+        desks += [f"{where}/{n}" if where else n for n in names]
+    for desk in desks:
+        got = _read_in_tree(root, desk, DESKTOP_READ)
+        if got is None:
+            continue
+        text = got[0].decode("utf-8", "replace")
         name = re.search(r"^Name=(.+)$", text, re.M)
         ex = re.search(r"^Exec=(.+)$", text, re.M)
         try:
@@ -458,30 +506,32 @@ def candidates(tree: Path, deb: bool) -> list[dict]:
         if not argv:
             continue
         first = argv[0]
-        tries = [tree / first.lstrip("/")] if first.startswith("/") else \
-            [tree / d / first for d in ("usr/bin", "usr/games", "usr/local/bin", "bin", "")]
-        for t in tries:
-            if resolved(t) and os.path.exists(resolved(t)):
-                add(t, name.group(1).strip() if name else "")
+        tries = [str(Path(first.lstrip("/")))] if first.startswith("/") else \
+            [str(Path(d) / first) for d in ("usr/bin", "usr/games", "usr/local/bin", "bin", "")]
+        for rel in tries:
+            if in_tree(root, rel) is not None:
+                add(rel, name.group(1).strip() if name else "")
                 break
     tops = ("usr/bin", "usr/games", "usr/local/bin", "opt") if deb else ("",)
     for top in tops:
-        base = tree / top if top else tree
+        base = in_tree(root, top)                    # a folder linked elsewhere in the tree is listed where it leads
+        if base is None:
+            continue
         depth_max = 3 if top in ("opt", "") else 1
-        stack = [(base, 0)]
+        stack = [(top, base, 0)]                     # (the path as the tree names it, where it really is, depth)
         while stack:
-            folder, depth = stack.pop(0)
+            folder, real, depth = stack.pop(0)
             try:
-                entries = sorted(os.scandir(folder), key=lambda e: e.name)
+                entries = sorted(os.scandir(os.path.join(root, real)), key=lambda e: e.name)
             except OSError:
                 continue
             for e in entries:
-                p = Path(e.path)
+                rel = f"{folder}/{e.name}" if folder else e.name
                 if e.is_dir(follow_symlinks=False):
                     if depth + 1 < depth_max and not e.name.startswith(".") and e.name not in ("lib", "lib64", "share", "locales", "resources", "node_modules"):
-                        stack.append((p, depth + 1))
+                        stack.append((rel, f"{real}/{e.name}" if real else e.name, depth + 1))
                 else:
-                    add(p)
+                    add(rel)
     return list(found.values())
 
 

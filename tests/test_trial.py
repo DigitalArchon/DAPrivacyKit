@@ -5,9 +5,11 @@ stand-in for the program. Real sandboxes were run on real machines (Mint 22.3, C
 from __future__ import annotations
 
 import ipaddress
+import json
 import os
 import struct
 import subprocess
+import sys
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -96,6 +98,46 @@ def test_the_programs_in_an_unpacked_archive(tmp_path):
     (tree / "myapp/README.md").write_text("read me\n")
     (tree / "myapp/node_modules/x/cli.sh").write_text("#!/bin/sh\n")
     assert [c["rel"] for c in trial.candidates(tree, deb=False)] == ["myapp/main.py", "myapp/bin/run.sh"]
+
+
+CANDIDATES_CHILD = """
+import json, resource, sys
+resource.setrlimit(resource.RLIMIT_AS, (1 << 30, 1 << 30))
+from pathlib import Path
+from daprivacyscanner.tools import trial
+print(json.dumps(trial.candidates(Path(sys.argv[1]), deb=True)))
+"""
+
+
+def test_an_unpacked_tree_is_read_without_following_links_out_of_it(tmp_path):
+    """The review of 2026-11-04: the programs in a package are looked for by the app, outside any sandbox, and every
+    menu entry was read through links: one linked to /dev/zero was read until memory ran out, one that was a pipe kept
+    Try an app waiting for good, and a folder linked to the computer's (usr/bin -> /usr/bin) had the computer's own
+    programs listed as the package's. Run in a child with a memory cap and a time limit, so the old way fails here
+    without harm."""
+    computer = tmp_path / "computer"
+    (computer / "bin").mkdir(parents=True)
+    (computer / "bin/sneaky").write_text("#!/bin/sh\n")
+    (computer / "outside.desktop").write_text("[Desktop Entry]\nName=Outside\nExec=prog\n")
+    tree = tmp_path / "app"
+    apps = tree / "usr/share/applications"
+    for d in ("usr/share/applications", "usr/share/inner", "usr/games", "opt/Inner"):
+        (tree / d).mkdir(parents=True)
+    os.symlink(str(computer / "bin"), tree / "usr/bin")                            # the computer's own programs
+    os.symlink(str(computer / "outside.desktop"), apps / "a-outside.desktop")      # a menu entry of the computer's
+    os.symlink("../../../../computer/outside.desktop", apps / "b-up.desktop")
+    os.mkfifo(apps / "c-pipe.desktop")
+    os.symlink("/dev/zero", apps / "d-zero.desktop")
+    (tree / "usr/games/prog").write_text("#!/bin/sh\n")
+    # a link inside the tree is followed inside it, as the sandbox will
+    (tree / "usr/share/inner/inner.desktop").write_text("[Desktop Entry]\nName=Inner\nExec=/opt/Inner/inner\n")
+    os.symlink("../inner/inner.desktop", apps / "e-inner.desktop")
+    (tree / "opt/Inner/inner").write_text("#!/bin/sh\n")
+    r = subprocess.run([sys.executable, "-c", CANDIDATES_CHILD, str(tree)], capture_output=True, text=True, timeout=30)
+    assert r.returncode == 0, r.stderr[-400:]
+    got = [(c["rel"], c["label"]) for c in json.loads(r.stdout)]
+    assert got == [("opt/Inner/inner", "Inner"), ("usr/games/prog", "")], got
+    assert trial.in_tree(str(tree), "usr/bin/sneaky") is None and trial.in_tree(str(tree), "usr/../usr/games/prog") == "usr/games/prog"
 
 
 # ------------------------------------------------------------------ the sandbox's command
