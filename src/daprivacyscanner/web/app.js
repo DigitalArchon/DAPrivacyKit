@@ -827,8 +827,10 @@ document.addEventListener("keydown", (e) => {
 function modal({ title, body, buttons = [], wide = false, cls = "", sticky = false, foot = null, onClose = null }) {
   const root = $("#modal-root");
   const heading = h("h2", { id: `modal-title-${++modalSeq}` }, title);
+  // the body flattened all the way, as fill() does: h() flattens one level, and a list inside the body's list was drawn
+  // as "[object HTMLDivElement]" (Presentation mode's notes, and the commands it ran)
   const box = h("div", { class: `modal${wide ? " wide" : ""}${cls ? " " + cls : ""}`, role: "dialog", "aria-modal": "true",
-                         "aria-labelledby": heading.id, tabindex: "-1" }, heading, h("div", { class: "content" }, body));
+                         "aria-labelledby": heading.id, tabindex: "-1" }, heading, h("div", { class: "content" }, [body].flat(Infinity)));
   const bar = h("div", { class: "buttons" });
   const opener = document.activeElement;
   const close = () => {

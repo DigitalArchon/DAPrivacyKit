@@ -303,9 +303,13 @@ routes["POST /api/tools/retire/guide"] = (body) => { retireCalls.push(`guide:${b
               commands: ["sudo dd if=/dev/zero of=/dev/sdb bs=16M oflag=direct status=progress"] }] } }; };
 let presOn = false;
 const presCalls = [];
-routes["GET /api/tools/presentation"] = () => ({ on: presOn, since: presOn ? 1790000000 : null, desktop: "GNOME", changed: [], undo: [],
-  plan: [{ what: "Notification banners off (Do Not Disturb)", text: "gsettings set org.gnome.desktop.notifications show-banners false" }],
-  notes: ["Programs that show messages inside their own window aren't covered."] });
+// as presentation.status gives it: while on, what it changed, the commands it ran and how each goes back by hand
+routes["GET /api/tools/presentation"] = () => ({ on: presOn, since: presOn ? 1790000000 : null, desktop: "GNOME",
+  changed: presOn ? ["Notification banners off (Do Not Disturb)"] : [],
+  ran: presOn ? ["gsettings set org.gnome.desktop.notifications show-banners false"] : [],
+  undo: presOn ? ["gsettings set org.gnome.desktop.notifications show-banners true"] : [],
+  plan: presOn ? [] : [{ what: "Notification banners off (Do Not Disturb)", text: "gsettings set org.gnome.desktop.notifications show-banners false" }],
+  notes: presOn ? [] : ["Programs that show messages inside their own window aren't covered."], lapsed: [] });
 routes["POST /api/tools/presentation/on"] = () => { presCalls.push("on"); presOn = true; return { on: true, since: 1790000000 }; };
 routes["POST /api/tools/presentation/renew"] = () => { presCalls.push("renew"); return { on: true, since: 1790000000, lapsed: [] }; };
 routes["POST /api/tools/presentation/off"] = () => { presCalls.push("off"); presOn = false;
@@ -1418,9 +1422,18 @@ await window.openTools(); await tick(); await tick();
 $$(".modal #tool-presentation button").find(b => b.textContent === "Turn on…").click(); await tick(); await tick();
 check($$(".modal").at(-1).textContent.includes("Notification banners off (Do Not Disturb)")
       && $$(".modal").at(-1).textContent.includes("isn't in History"), "turning it on first says what changes, and that it isn't a fix");
+check($$(".modal").at(-1).textContent.includes("aren't covered") && !$$(".modal").at(-1).textContent.includes("[object"),
+      "with the desktop's notes, as text: " + $$(".modal").at(-1).querySelector(".content").textContent.slice(-120));
 [...$$(".modal").at(-1).querySelectorAll(".buttons button")].at(-1).click(); await tick(); await tick();
 check(presCalls.at(-1) === "on" && !$("#presentation-chip").classList.contains("hidden"), "once on, the top bar says so");
 check($$(".modal #tool-presentation button").some(b => b.textContent === "Turn off"), "and its card offers to turn it off");
+$$(".modal #tool-presentation button").find(b => b.textContent === "What it changed…").click(); await tick(); await tick();
+{ const m = $$(".modal").at(-1);
+  check(m.querySelector("h2").textContent === "What Presentation mode changed" && !m.textContent.includes("[object")
+        && [...m.querySelectorAll(".cmds code")].map(c => c.textContent).join(" | ")
+          === "gsettings set org.gnome.desktop.notifications show-banners false | gsettings set org.gnome.desktop.notifications show-banners true",
+        "What it changed… shows the commands it ran and those that put each back by hand: " + m.querySelector(".content").textContent);
+  [...m.querySelectorAll(".buttons button")].at(-1).click(); await tick(); }
 while ($$(".modal").length) { $$(".modal .buttons button").at(-1).click(); await tick(); }
 $("#presentation-chip").click(); await tick(); await tick();
 check(presCalls.at(-1) === "off" && $("#presentation-chip").classList.contains("hidden"), "the top bar's button turns it off");
