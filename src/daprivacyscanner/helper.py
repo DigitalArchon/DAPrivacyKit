@@ -4869,6 +4869,10 @@ WATCH_MOUNT_DIR = "/run/daprivacyscanner-watch"
 WATCH_START_WAIT = 20.0
 WATCH_REPLAN = 3.0                             # seconds between reads of the mount table
 WATCH_FSTYPES_TOP = ("btrfs",)                 # reached through a private mount of the top level
+# network shares: looking at one (its mount point's stat, the mark) waits for as long as the computer it is on can't
+# be reached, which held up the watch's start until it gave up (a laptop away from its NAS)
+WATCH_FSTYPES_NET = ("nfs", "nfs4", "cifs", "smb3", "smbfs", "9p", "ceph", "glusterfs", "afs", "fuse.sshfs",
+                     "fuse.rclone", "davfs", "fuse.davfs2")
 W_OPENED, W_WRITTEN, W_CREATED, W_DELETED, W_RAN, W_MOVED, W_DIR = 1, 2, 4, 8, 16, 32, 64
 FAN_CLOEXEC, FAN_NONBLOCK, FAN_UNLIMITED_QUEUE, FAN_UNLIMITED_MARKS = 0x1, 0x2, 0x10, 0x20
 FAN_REPORT_DIR_FID, FAN_REPORT_NAME = 0x400, 0x800
@@ -5123,14 +5127,19 @@ def _watch_plan(uid: int, home: str) -> tuple[list[dict], list[list[str]]]:
     is mounted (`subvolumes`); any other through a mount that shows all of it. Returns (the plan, [[mount point,
     why not]])."""
     table = [m for m in _watch_mountinfo() if not _watch_inside(m["mount"], (WATCH_MOUNT_DIR,))]   # not its own
-    wanted = [home, "/", "/tmp", "/var/tmp", "/dev/shm", f"/run/user/{uid}"]
-    wanted += [m["mount"] for m in table if _watch_inside(m["mount"], _watch_keep(uid, home))]
+    base = [home, "/", "/tmp", "/var/tmp", "/dev/shm", f"/run/user/{uid}"]
+    wanted = base + [m["mount"] for m in table if _watch_inside(m["mount"], _watch_keep(uid, home))]
     plan, skipped, seen = [], [], set()
-    for path in wanted:
+    for i, path in enumerate(wanted):
         held = [m for m in table if path == m["mount"] or path.startswith(m["mount"].rstrip("/") + "/")]
         if not held:
             continue
         m = max(reversed(held), key=lambda x: len(x["mount"]))     # the one visible there
+        if i >= len(base) and m["fstype"] in WATCH_FSTYPES_NET:     # a share mounted in the home or under /mnt
+            if not any(sk[0] == m["mount"] for sk in skipped):
+                skipped.append([m["mount"], "a network share: its files are on another computer, and asking about "
+                                            "it waits for as long as that computer can't be reached"])
+            continue
         key = m["dev"]                                 # one filesystem, wherever else it is mounted (a btrfs's
         if key in seen:                                # subvolumes share it; each tmpfs has its own)
             continue
@@ -5480,17 +5489,18 @@ def _watch_loop(fss: _Filesystems, tally: _Tally, out, pending: bytes) -> None:
             pending += chunk
             while b"\n" in pending:
                 line, pending = pending.split(b"\n", 1)
-                word = line.strip()
+                word, _, n = line.strip().partition(b" ")
+                seq = int(n) if n.isdigit() else None   # given back, so the helper knows which word this answers
                 if word == b"poll":
                     for w in fss.watched:
                         if w.dirs < 0:                  # no word of folders renamed: what is remembered may be old
                             w.paths.clear()
-                    out.write(json.dumps({**tally.counts(), **fss.names(), "seconds": time.monotonic() - started})
-                              + "\n")
+                    out.write(json.dumps({**tally.counts(), **fss.names(), "seconds": time.monotonic() - started,
+                                          "seq": seq}) + "\n")
                     out.flush()
                 elif word == b"end":
-                    out.write(json.dumps({**tally.result(), **fss.names(), "seconds": time.monotonic() - started})
-                              + "\n")
+                    out.write(json.dumps({**tally.result(), **fss.names(), "seconds": time.monotonic() - started,
+                                          "seq": seq}) + "\n")
                     out.flush()
                     return
 
@@ -5549,20 +5559,37 @@ def _watch_forget() -> None:
 
 
 def _watch_ask(w: dict, word: str, timeout: float) -> dict:
+    """Asks the watch (`word`: "poll", "end"; "" for its first line) and returns its answer. Each word goes with a
+    number the answer gives back: one that comes after its question timed out is passed over, never taken for the
+    answer to the next (an "end" got a late poll's counts, and the watch's result was lost)."""
     import select
     proc = w["proc"]
+    seq = None
     if word:
+        seq = w["seq"] = w.get("seq", 0) + 1
         try:
-            proc.stdin.write(word + "\n")
+            proc.stdin.write(f"{word} {seq}\n")
             proc.stdin.flush()
         except (OSError, ValueError):
             raise Refused("the watch has stopped") from None
-    if not select.select([proc.stdout], [], [], timeout)[0]:
-        raise Refused("the watch didn't answer")
-    line = proc.stdout.readline()
-    if not line:
-        raise Refused("the watch has stopped")
-    return json.loads(line)
+    # read from the pipe itself, lines split here: a file object's readline buffers what follows the line, which
+    # select then doesn't see
+    fd, pending, until = proc.stdout.fileno(), w.setdefault("pending", bytearray()), time.monotonic() + timeout
+    while True:
+        while b"\n" not in pending:
+            left = until - time.monotonic()
+            if left <= 0 or not select.select([fd], [], [], left)[0]:
+                raise Refused("the watch didn't answer")
+            chunk = os.read(fd, 1 << 20)
+            if not chunk:
+                raise Refused("the watch has stopped")
+            pending += chunk
+        end = pending.index(b"\n")
+        line = bytes(pending[:end])
+        del pending[:end + 1]
+        reply = json.loads(line)
+        if reply.pop("seq", None) == seq:
+            return reply
 
 
 def watch_begin(args: dict) -> dict:

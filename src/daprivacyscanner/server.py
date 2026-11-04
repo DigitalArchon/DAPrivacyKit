@@ -46,6 +46,7 @@ PLAN_TTL = 15 * 60
 ADMIN_IDLE = 5 * 60              # administrator access ends after this long unused
 OUTBOX_EVERY = 2.0               # seconds between looks into the browsers' TempOutboxes
 KEEPS_EVERY = 2.0                # seconds between looks at a watched app (What does this app keep?)
+KEEPS_MISSES = 3                 # polls in a row the watch may leave unanswered (busy under a heavy load) before it ends
 
 
 class JSONResponse(_JSONResponse):
@@ -1956,7 +1957,7 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
                     job.update(watched=began["watched"], not_watched=began["skipped"])
                     await asyncio.to_thread(appwatch.start, host, entry, token, spawn_app)
                     job["state"], job["started"] = "running", time.time()
-                    seen = False
+                    seen, missed = False, 0
                     while not job["cancel"]:
                         await asyncio.sleep(KEEPS_EVERY)
                         h = admin.get(prompt=False)
@@ -1964,7 +1965,19 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
                             began = None
                             raise appwatch.WatchError("Administrator access ended, so the watch ended with it. "
                                                       "Nothing of what it saw is left.")
-                        job["counts"] = await asyncio.to_thread(h.call, "watch_poll", {})
+                        try:
+                            job["counts"] = await asyncio.to_thread(h.call, "watch_poll", {})
+                            missed = 0
+                        except HelperError as e:
+                            # a watch busy with a burst of events answers late: asked again at the next look (its late
+                            # answer is passed over), and only given up after KEEPS_MISSES in a row
+                            missed += 1
+                            if "didn't answer" not in str(e):
+                                raise
+                            if missed >= KEEPS_MISSES:
+                                raise appwatch.WatchError("The watch stopped answering (it may have been overloaded), so "
+                                                          "it was ended. Nothing of what it saw is kept.") from None
+                            continue
                         if "watched" in job["counts"]:          # a disk mounted or unmounted meanwhile
                             job["watched"] = job["counts"].pop("watched")
                             job["not_watched"] = job["counts"].pop("skipped", [])

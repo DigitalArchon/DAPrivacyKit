@@ -4,6 +4,7 @@ tried on the lab machines; here, its parts."""
 
 from __future__ import annotations
 
+import os
 import struct
 import time
 import zlib
@@ -329,6 +330,34 @@ def test_two_starts_at_once_make_one_watch(cat, menu_host, monkeypatch):
         assert fake.calls.count("watch_begin") == 1 and fake.calls.count("watch_end") == 1
 
 
+def test_a_watch_busy_for_one_look_goes_on_and_one_that_stops_answering_is_said_to(cat, menu_host, monkeypatch):
+    """A watch busy with a burst of events answers a poll late: the whole watch, and what it saw, was lost to it."""
+    from daprivacyscanner import server
+    monkeypatch.setattr(server, "KEEPS_EVERY", 0.05)
+    monkeypatch.setattr(appwatch, "running", lambda h, a: False)
+    late = {"n": 1}
+
+    class Busy(FakeWatch):
+        def call(self, action, args, timeout=None):
+            if action == "watch_poll" and late["n"] > 0:
+                late["n"] -= 1
+                self.calls.append(action)
+                raise HelperError("the watch didn't answer")
+            return super().call(action, args, timeout)
+
+    with TestClient(create_app("t0ken", cat, make_host=lambda: menu_host, start_helper=Busy,
+                               spawn_app=lambda argv, **kw: None)) as c:
+        assert c.post("/api/tools/keeps/start", headers=H, json={"app": "foo.desktop"}).status_code == 200
+        _wait(c, lambda j: j["state"] == "running" and (j.get("counts") or {}).get("events") == 1)
+        c.post("/api/tools/keeps/stop", headers=H)
+        assert _wait(c, lambda j: j["state"] in ("done", "failed"))["state"] == "done"
+        c.post("/api/tools/keeps/dismiss", headers=H)
+        late["n"] = 99                                  # and now it never answers
+        assert c.post("/api/tools/keeps/start", headers=H, json={"app": "foo.desktop"}).status_code == 200
+        job = _wait(c, lambda j: j["state"] == "failed")
+        assert "stopped answering" in job["error"] and "refused" not in job["error"]
+
+
 def test_the_watch_and_the_other_long_root_work_keep_apart(cat, menu_host, monkeypatch):
     """Installing the helper during a watch dropped the access and lost the watch (D13); the TRIM test or Deleted
     file names alongside it held its polling behind minutes-long disk reads (the suspicion, confirmed)."""
@@ -509,6 +538,33 @@ def test_whats_mounted_in_the_home_and_the_runtime_folder_is_watched_or_said_not
     assert "document portal" in why and "aren't counted as the app's" in why
     assert "AppImage" in helper._watch_why(mounts["/tmp/.mount_DAPrivXy"], 1000, OSError(13, "Permission denied"))
     assert helper._watch_why(mounts["/home/u/Data"], 1000, OSError(22, "no")) == "no (EINVAL)"
+
+
+def test_a_network_share_is_said_not_to_be_watched_before_anything_looks_at_it(monkeypatch):
+    """Looking at a share whose computer can't be reached (its mount point's stat, the mark) waits for as long as it
+    can't be: the watch didn't start at all on a laptop away from its NAS."""
+    nas = [{"dev": "0:70", "root": "/", "mount": "/mnt/nas", "fstype": "nfs4", "source": "nas:/export"},
+           {"dev": "0:71", "root": "/", "mount": "/home/u/Shared", "fstype": "cifs", "source": "//nas/shared"}]
+    monkeypatch.setattr(helper, "_watch_mountinfo", lambda: MOUNTS + nas)
+    plan, skipped = helper._watch_plan(1000, "/home/u")
+    assert not {"/mnt/nas", "/home/u/Shared"} & {p["mount"] for p in plan}
+    assert {m for m, why in skipped if "network share" in why} == {"/mnt/nas", "/home/u/Shared"}
+
+
+def test_an_answer_that_comes_after_its_question_timed_out_is_never_taken_for_the_next(monkeypatch):
+    """A poll that timed out left its answer in the pipe, and the next word ("end") read it as its own: the watch's
+    result was a poll's counts."""
+    r, w = os.pipe()
+    os.write(w, b'{"files": 1, "seq": 1}\n{"files": 9, "result": true, "seq": 2}\n')
+
+    class Proc:
+        stdin, stdout = open(os.devnull, "w"), os.fdopen(r, "r")
+
+    watch = {"proc": Proc(), "seq": 1}                   # word 1 (a poll) timed out before
+    assert helper._watch_ask(watch, "end", 5) == {"files": 9, "result": True}
+    os.close(w)
+    Proc.stdin.close()
+    Proc.stdout.close()
 
 
 def test_a_btrfs_looked_through_its_system_mount_maps_paths_back():
