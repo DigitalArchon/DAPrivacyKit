@@ -330,16 +330,18 @@ os.execv(sys.argv[1], sys.argv[1:])
 SPAWN_ENV = {"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"}
 
 
-def sealed(argv: list[str]) -> tuple[list[str], int]:
+def sealed(argv: list[str], at: int = 0, as_fd: int | None = None) -> tuple[list[str], int]:
     """bubblewrap's options (everything before `--`) read from a memory file (--args N), so its init's command line,
     which the sandbox can read as /proc/1/cmdline, is `bwrap --args N -- COMMAND`: bubblewrap closes the descriptor
-    once it has read it (tested with 0.9), and the command names only paths inside the sandbox. Returns the
-    command and the descriptor to pass to it (the caller closes its own copy)."""
-    end = argv.index("--")
+    once it has read it (tested with 0.9), and the command names only paths inside the sandbox. `at`: where bubblewrap
+    is in `argv` (after pasta's options and the fence). `as_fd`: the number bubblewrap gets the descriptor as, 0 under
+    pasta (stdin: pasta may pass its command nothing else), else its own. Returns the command and the descriptor to
+    pass to it (the caller closes its own copy)."""
+    end = argv.index("--", at + 1)
     fd = os.memfd_create("bwrap-args")
-    os.write(fd, b"".join(a.encode() + b"\0" for a in argv[1:end]))
+    os.write(fd, b"".join(a.encode() + b"\0" for a in argv[at + 1:end]))
     os.lseek(fd, 0, os.SEEK_SET)
-    return [argv[0], "--args", str(fd), *argv[end:]], fd
+    return [*argv[:at + 1], "--args", str(fd if as_fd is None else as_fd), *argv[end:]], fd
 
 
 def log_file(name: str) -> int:
@@ -1142,7 +1144,8 @@ def browser_argv(host: Host, lay: Layout, disp: Display, with_sound: bool, landl
     graphics card's device files (gpu()) when the user allowed it, else it draws in software. In the
     foreground, never --detach: bubblewrap, and pasta around it, end with their command, so the command is
     STAY around the start script (`stay`; without python3 the script alone, and a browser that restarts
-    itself is then left without pasta's network)."""
+    itself is then left without pasta's network; bubblewrap's own init is the sandbox's PID 1 then, so the caller
+    seals its options, sealed())."""
     bwrap = _need(host, BWRAP)
     a = [bwrap, *namespaces(True), *system(host, etc=False), *etc_argv(host, etc, "own" if "resolv.conf" in etc else "host"),
          *proc_masks(str(etc["cmdline"].parent), bool(gpu), host), *_gpu_argv(gpu)]

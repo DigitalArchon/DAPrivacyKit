@@ -747,7 +747,9 @@ session), its command line (every folder it binds, in the user's home) and its o
 `sandbox.SPAWN_ENV` (a `PATH` and nothing else); where the command is `STAY`, which reaps, it is the sandbox's
 PID 1 (`--as-pid-1`), and bubblewrap's own processes are outside the sandbox's PID namespace, out of its sight;
 the viewer's bubblewrap, whose command can't be PID 1, reads its options from a memory file (`--args`,
-`sandbox.sealed`; bubblewrap closes it once read), so its command line names only paths inside.
+`sandbox.sealed`; bubblewrap closes it once read), so its command line names only paths inside, and so does
+Mullvad Browser's where the computer has no python3 for `STAY` (under pasta, which may pass its command nothing
+but stdin, stdout and stderr, the options come as stdin and the Wayland pipe as stdout, `--sync-fd 1`).
 
 **A browser that restarts itself.** Firefox restarts as a new process (about:profiles' *Restart normally…*,
 an add-on or a language that asks for it, the Troubleshoot Mode question after crashes): the old process

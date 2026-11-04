@@ -119,6 +119,26 @@ def test_from_inside_pid_1_names_nothing_of_the_user(tmp_path):
     assert not any(str(tmp_path) in f for f in got["fds"])
 
 
+@pytest.mark.skipif(not _bwrap_runs(), reason="bubblewrap can't run here")
+@pytest.mark.parametrize("as_stdin", [False, True])
+def test_without_a_reaper_bubblewraps_own_init_names_nothing_either(tmp_path, as_stdin):
+    """Without the computer's python3 there is no --as-pid-1, and bubblewrap's own init, PID 1, had every option on
+    its command line. Sealed, from a descriptor of its own or from stdin (under pasta), it is `bwrap --args N --
+    COMMAND`, and the real bubblewrap reads them so (run unprivileged on the developer's machine)."""
+    argv = ["bwrap", *S.namespaces(False), "--ro-bind", "/", "/", "--proc", "/proc", "--dev", "/dev",
+            "--ro-bind", str(tmp_path), "/mnt", "--setenv", "PATH", "/usr/bin:/bin", "--",
+            sys.executable, "-I", "-c", PROBE]
+    cmd, fd = S.sealed(argv, as_fd=0 if as_stdin else None)
+    try:
+        r = subprocess.run(cmd, env={**S.SPAWN_ENV}, stdin=fd if as_stdin else subprocess.DEVNULL,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, pass_fds=() if as_stdin else (fd,), timeout=30)
+    finally:
+        os.close(fd)
+    got = eval(r.stdout.decode())                       # noqa: S307 - our own probe's repr
+    assert got["cmdline"].split("\0")[:4] == ["bwrap", "--args", "0" if as_stdin else str(fd), "--"]
+    assert str(tmp_path) not in got["cmdline"] and not any(str(tmp_path) in f for f in got["fds"])
+
+
 GATE = r"""
 import os, signal, subprocess, sys, threading, time
 from daprivacyscanner.tools import torgate

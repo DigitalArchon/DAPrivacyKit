@@ -443,9 +443,20 @@ class Proc:
         return self.rc
 
 
+def unsealed(argv, kw):
+    """The command as bubblewrap reads it: the options a start without the computer's python3 seals into a memory file
+    (sandbox.sealed: a descriptor of its own, or stdin under pasta) put back in place of --args."""
+    if "--args" not in argv:
+        return argv
+    i = argv.index("--args")
+    fd = kw["stdin"] if argv[i + 1] == "0" else int(argv[i + 1])
+    assert argv[i + 1] == "0" or fd in kw["pass_fds"]
+    return argv[:i] + [a.decode() for a in os.pread(fd, 1 << 20, 0).split(b"\0")[:-1]] + argv[i + 2:]
+
+
 def spawner(calls, rc=None, log=b""):
     def spawn(argv, **kw):
-        calls.append((argv, kw))
+        calls.append((unsealed(argv, kw), kw))
         if log:
             os.write(kw["stderr"], log)
         return Proc(rc, log)
@@ -1131,7 +1142,7 @@ def test_on_wayland_the_browser_gets_a_socket_marked_as_a_sandbox_s(host, monkey
     w = made["write"]
     assert how["wayland_context"] is True and made["compositor"] == "/run/compositor-0" and made["app_id"] == "mullvad"
     assert (str(made["path"]), "/run/user/1000/wayland-0") in pairs(argv, "--ro-bind") and made["path"].name == "wayland-0"
-    assert argv[argv.index("--sync-fd") + 1] == str(w) and kw["pass_fds"] == (w,)
+    assert argv[argv.index("--sync-fd") + 1] == str(w) and w in kw["pass_fds"]
     with pytest.raises(OSError):
         os.fstat(w)                                                     # the app's copy is closed
     os.close(made["read"])
@@ -1151,6 +1162,8 @@ def test_under_pasta_the_wayland_pipe_goes_in_as_stdin(host, monkeypatch):
     installed(host, "mullvad")
     wayland(host)
     bwrap_ok(host)
+    (host.root / "usr/bin").mkdir(parents=True)
+    (host.root / "usr/bin/python3").write_text("")
     host.runner.handlers["pasta"] = lambda argv: CommandResult(tuple(argv), 0)
     ip_ok(host)
     monkeypatch.setattr(B, "START_WAIT", 0.05)
@@ -1172,6 +1185,64 @@ def test_under_pasta_the_wayland_pipe_goes_in_as_stdin(host, monkeypatch):
     assert 'exec "$0" "$@" </dev/null >/dev/null 2>&1' in argv                       # the browser's own stdin: nothing
     with pytest.raises(OSError):
         os.fstat(made["write"])
+    os.close(made["read"])
+    B._PROBED.clear()
+
+
+def test_without_python3_bubblewraps_options_are_sealed_too(host, monkeypatch):
+    """Without the computer's python3 there is no reaper to be the sandbox's PID 1, so bubblewrap's own init is, and
+    its command line, which anything in the sandbox can read, named every folder bound in from the home, the user's
+    name with them. Its options come from a memory file then: a descriptor of its own, or stdin under pasta, which
+    may pass its command nothing else, the Wayland pipe going in as stdout (--sync-fd 1)."""
+    import subprocess
+    from daprivacyscanner.tools import wayland as W
+    disk = installed(host, "mullvad")
+    wayland(host)
+    bwrap_ok(host)
+    monkeypatch.setattr(B, "START_WAIT", 0.05)
+    b = B.BROWSERS["mullvad"]
+    seen = []
+
+    def spawn(argv, **kw):
+        stdin = os.readlink(f"/proc/self/fd/{kw['stdin']}") if kw["stdin"] != subprocess.DEVNULL else None
+        seen.append((argv, {**kw, "stdin_is": stdin}, unsealed(argv, kw)))
+        return Proc()
+
+    def memfds():
+        links = []
+        for f in os.listdir("/proc/self/fd"):
+            try:
+                links.append(os.readlink(f"/proc/self/fd/{f}"))
+            except OSError:
+                pass                                                            # listdir's own, closed by now
+        return [ln for ln in links if "bwrap-args" in ln]
+    B.start(host, b, spawn=spawn)                                               # on the computer's network
+    argv, kw, options = seen.pop()
+    i = argv.index("--args")
+    assert argv[i - 1] == "bwrap" and int(argv[i + 1]) in kw["pass_fds"] and not any(str(host.home) in a for a in argv)
+    assert (str(disk / "mullvad-browser"), "/home/user/mullvad-browser") in pairs(options, "--ro-bind")
+    assert memfds() == []                                                       # closed once handed over
+    B._LAUNCHED.clear()
+    host.runner.handlers["pasta"] = lambda argv: CommandResult(tuple(argv), 0)  # under pasta, the socket marked
+    ip_ok(host)
+    monkeypatch.setattr(B, "_socket_at", lambda h, path: "/run/compositor-0")
+    B._PROBED.clear()
+    made = {}
+
+    def sandbox_socket(compositor, path, app_id):
+        made["read"], made["write"] = os.pipe()
+        return made["write"]
+    monkeypatch.setattr(W, "sandbox_socket", sandbox_socket)
+    how = B.start(host, b, spawn=spawn)
+    argv, kw, options = seen.pop()
+    assert how["network"] == "private" and how["wayland_context"] is True
+    assert argv[argv.index("--args") + 1] == "0" and kw["stdin_is"].startswith("/memfd:bwrap-args")
+    assert kw["stdout"] == made["write"] and not kw.get("pass_fds")
+    assert options[options.index("--sync-fd") + 1] == "1" and not any(str(host.home) in a for a in argv)
+    assert argv.index("pasta") < argv.index("--args")                          # bubblewrap's, inside pasta
+    assert memfds() == []
+    with pytest.raises(OSError):
+        os.fstat(made["write"])                                                 # bubblewrap holds it now
     os.close(made["read"])
     B._PROBED.clear()
 
@@ -1200,7 +1271,7 @@ def test_on_x11_a_display_of_its_own_keeps_it_from_other_windows(host, monkeypat
             return None
 
     def spawn(argv, **kw):
-        calls.append((argv, kw))
+        calls.append((unsealed(argv, kw), kw))
         if "Xephyr" in argv:                                            # it opens its socket
             sock = W.socket.socket(W.socket.AF_UNIX)
             W._bind(sock, B.private_dir(host, b) / "x11/X1")

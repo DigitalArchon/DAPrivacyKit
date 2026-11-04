@@ -1498,7 +1498,8 @@ def _start(host: Host, b: Browser, spawn: Callable, sandboxed: bool, with_sound:
                            f"left there, which would then run outside it. To start it without the sandbox, close "
                            f"~/{DISK} (that overwrites it) and set {b.name} up again.")
     folder, session, private = prepare(host, b)
-    through_stdin = False                               # the Wayland sync pipe as stdin (under pasta)
+    stdio: dict = {}                                    # under pasta, what goes in as stdin and stdout
+    args = None                                         # bubblewrap's options, sealed (without python3)
     if sandboxed:
         sb = sandbox_status(host)
         if not sb["available"]:
@@ -1555,10 +1556,13 @@ def _start(host: Host, b: Browser, spawn: Callable, sandboxed: bool, with_sound:
                 pasta = sandbox.program(host, sandbox.PASTA) if sb["pasta"]["available"] and not disp.network else None
                 etc = sandbox.identity_files(private / "etc", sandbox.FORWARD_RESOLV if pasta
                                              else sandbox.resolver(host))
-                # pasta passes its command only stdin, stdout and stderr: the pipe goes in as stdin, held as --sync-fd 0
+                # pasta passes its command only stdin, stdout and stderr: the pipe goes in as stdin, held as --sync-fd 0;
+                # without python3 as stdout, --sync-fd 1, stdin then carrying bubblewrap's options (sealed, below)
+                stay = sb["python"]
                 argv = sandbox.browser_argv(host, lay, disp, with_sound, landlock, etc, pasta, sb["pasta"]["lan_blocked"],
-                                            0 if pasta and sync is not None else sync, devices, stay=sb["python"])
-                through_stdin = bool(pasta) and sync is not None
+                                            (0 if stay else 1) if pasta and sync is not None else sync, devices, stay=stay)
+                if pasta and sync is not None:
+                    stdio = {"stdin" if stay else "stdout": sync}
                 network = "private" if pasta else "shared"
             how = {"sandboxed": True, "display": disp.kind, "landlock": landlock, "network": network,
                    "lan_blocked": network == "tor" or (network == "private" and sb["pasta"]["lan_blocked"]),
@@ -1569,6 +1573,13 @@ def _start(host: Host, b: Browser, spawn: Callable, sandboxed: bool, with_sound:
                                    "would have. Open the panel again to see what changed, then start it from there.")
             marked_before = sandboxed_before(host, b)
             (private / "sandboxed").touch()
+            if not b.tor and not sb["python"]:
+                # no reaper to be the sandbox's PID 1, so bubblewrap's own init is, and its command line, which anything
+                # in the sandbox can read, named the folders bound in from the home, the user's name with them: its
+                # options from a memory file instead, as stdin under pasta
+                argv, args = sandbox.sealed(argv, argv.index(sandbox.program(host, sandbox.BWRAP)), 0 if pasta else None)
+                if pasta:
+                    stdio["stdin"] = args
             # the app's own directory, never the RAM disk; none of the app's environment (sandbox.SPAWN_ENV)
             cmd, cwd, env = argv, "/", dict(sandbox.SPAWN_ENV)
         except BaseException:
@@ -1583,12 +1594,12 @@ def _start(host: Host, b: Browser, spawn: Callable, sandboxed: bool, with_sound:
     log = sandbox.log_file("start-log")                 # the sandbox's own errors: a memory file, not a path
     try:
         try:
-            if through_stdin:
-                proc = spawn(cmd, cwd=cwd, env=env, stdin=sync, stdout=subprocess.DEVNULL, stderr=log,
-                             start_new_session=True)
+            if stdio:
+                proc = spawn(cmd, cwd=cwd, env=env, stdin=stdio.get("stdin", subprocess.DEVNULL),
+                             stdout=stdio.get("stdout", subprocess.DEVNULL), stderr=log, start_new_session=True)
             else:
                 proc = spawn(cmd, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=log,
-                             start_new_session=True, pass_fds=(sync,) if sync is not None else ())
+                             start_new_session=True, pass_fds=tuple(fd for fd in (sync, args) if fd is not None))
         except OSError:
             _abort(host, xephyr, sync)
             sync = None
@@ -1598,6 +1609,8 @@ def _start(host: Host, b: Browser, spawn: Callable, sandboxed: bool, with_sound:
         finally:
             if sync is not None:
                 os.close(sync)                          # bubblewrap holds it now, for as long as the sandbox runs
+            if args is not None:
+                os.close(args)                          # read by bubblewrap, which closes its own copy
         try:
             _watch(b, proc, log)
         except BrowserError:
