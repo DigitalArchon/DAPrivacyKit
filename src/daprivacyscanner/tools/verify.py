@@ -349,8 +349,12 @@ class KeySet:
         return Path(self._dir.name)
 
     def keyrings(self) -> list[Path]:
+        """In the order gpgv looks in them, which uses the first copy of a key it finds: the user's own (a key file
+        they chose, their keyring) before the app's. A listed key revoked since the app was made has its revocation
+        there, and with the app's copy first it was passed over ("verified"). The verdict rests on the fingerprint
+        either way, so no other copy can stand in for a listed key."""
         chosen = [self.dir / f"chosen-{i}.gpg" for i, (_, infos) in enumerate(self.key_files) if infos]
-        return [self.dir / "listed.gpg", *chosen, *self.user_keyrings]
+        return [*chosen, *self.user_keyrings, self.dir / "listed.gpg"]
 
     def minisign_keys(self) -> list[Path]:
         return [p for p, infos in self.key_files if not infos]

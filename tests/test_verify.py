@@ -412,6 +412,30 @@ def test_a_second_signed_part_by_another_key_doesnt_count(tmp_path, signer):
         assert V.verify(h, d / f, key_files=[tmp_path / "signer.asc"]).level == "bad"
 
 
+@needs_gpg
+def test_a_listed_key_revoked_since_is_seen_through_the_users_copy(tmp_path, signer):
+    """The app's copy of a listed key can't know of a revocation made after it was built; the user's copy (a key
+    file they chose, their keyring) can, and gpgv uses the first copy it finds."""
+    import datetime as dt
+    from daprivacyscanner.tools import keys as K
+    home, fpr, sign = signer
+    project = K.Project("test", "Test Project", "its files", "https://example.org", "x", dt.date(2026, 10, 5),
+                        ("app*",), "how", ((fpr, "Test release key"),), K.dearmor((tmp_path / "signer.asc").read_bytes()))
+    d = put(tmp_path, app__iso=b"release")
+    sign(d / "app.iso")
+    h = real_host(tmp_path)
+    assert V.verify(h, d / "app.iso", projects=[project], use_keyring=False).level == "verified"
+    gpg = ["gpg", "--homedir", str(home), "--batch", "--quiet"]
+    rev = (home / "openpgp-revocs.d" / f"{fpr}.rev").read_text().replace(":-----BEGIN", "-----BEGIN")
+    subprocess.run(gpg + ["--import"], input=rev.encode(), check=True, capture_output=True)
+    (tmp_path / "revoked.asc").write_bytes(subprocess.run(gpg + ["--armor", "--export", fpr], check=True,
+                                                          capture_output=True).stdout)
+    v = V.verify(h, d / "app.iso", key_files=[tmp_path / "revoked.asc"], projects=[project], use_keyring=False)
+    assert v.level == "bad" and "revoked" in v.text
+    v = V.verify(real_host(tmp_path, GNUPGHOME=str(home)), d / "app.iso", projects=[project])
+    assert v.level == "bad" and "revoked" in v.text
+
+
 @pytest.mark.skipif(not shutil.which("ssh-keygen"), reason="ssh-keygen isn't installed")
 def test_ssh_signatures(tmp_path):
     key = tmp_path / "id"
