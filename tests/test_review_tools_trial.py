@@ -490,7 +490,40 @@ def test_a_decoy_is_seen_however_it_is_reached(tmp_path):
     assert w.decoys()[0]["opened"] == 1
 
 
-# ------------------------------------------------------------------ E10: a trial's and a Box's own words
+def test_a_folder_swapped_for_a_link_isnt_listed_through_it(tmp_path, monkeypatch):
+    """The review of 2026-11-04: between a new folder's watch being added and its listing, the program could swap the
+    folder for a link (on a trial on the disk, ../../../.. leads to the real home): the listing followed it, the real
+    home's names were recorded as made by the program, and its folders were watched. The folder is opened without
+    following a link, watched and listed through that descriptor. The swap is made here at that very moment."""
+    from daprivacyscanner.tools import homewatch
+    home, outside = tmp_path / "home", tmp_path / "real-home"
+    (outside / "Documents").mkdir(parents=True)
+    (outside / "secret-name.txt").write_text("x")
+    home.mkdir()
+    real_watch = homewatch.HomeWatch._watch
+
+    def swapping(self, path, *a):
+        got = real_watch(self, path, *a)
+        if path.endswith("/new") and os.path.isdir(path) and not os.path.islink(path):
+            os.rename(path, path + ".old")
+            os.symlink(str(outside), path)
+        return got
+    monkeypatch.setattr(homewatch.HomeWatch, "_watch", swapping)
+    w = homewatch.HomeWatch(home)
+    w.start()
+    try:
+        (home / "new").mkdir()
+        deadline = time.monotonic() + 3
+        while not (home / "new").is_symlink() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        time.sleep(0.3)
+        (outside / "Documents/later.txt").write_text("y")                # in a real folder of the user's
+        time.sleep(0.5)
+    finally:
+        w.stop()
+    seen = [r[0] for r in w.records()]
+    assert not any("secret-name" in p or "Documents" in p or "later" in p for p in seen), seen
+    assert not any(p.startswith(str(outside)) for p in w.wds.values()), "no watch on the real home's folders"
 
 def test_no_display_says_what_has_nowhere_to_show(tmp_path):
     """Found live: a trial and a Box with no display said "There is no display to show the browser on"."""

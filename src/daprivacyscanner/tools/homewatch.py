@@ -47,6 +47,7 @@ class HomeWatch:
 
     def __init__(self, root: Path, bait: dict[str, str] | None = None, ignore: tuple[str, ...] = ()):
         self.root, self.bait, self.ignore = str(root), dict(bait or {}), ignore
+        self.real = os.path.realpath(root)          # where it really is: a folder opened must be inside it (_open)
         self.libc = ctypes.CDLL(None, use_errno=True)
         self.fd = -1
         self.wds: dict[int, str] = {}
@@ -92,15 +93,37 @@ class HomeWatch:
     def _rel(self, path: str) -> str:
         return path[len(self.root) + 1:] if path != self.root else ""
 
-    def _watch(self, path: str) -> bool:
+    def _open(self, path: str) -> int | None:
+        """The folder at `path` opened, without following a link, when it really is in the watched folder. The program
+        can swap a folder it made for a link (on a trial on the disk, ../../../.. leads to the real home) after its
+        watch was added and before it was listed: the listing then gave the real home's names as made by the program,
+        and its folders were watched (the review of 2026-11-04). The watch is added through the descriptor, and the
+        folder listed through it, so both are of the folder opened."""
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        except OSError:
+            return None
+        try:
+            real = os.readlink(f"/proc/self/fd/{fd}")
+        except OSError:
+            real = ""
+        if real != self.real and not real.startswith(self.real + "/"):      # a link on the way to it
+            os.close(fd)
+            return None
+        return fd
+
+    def _watch(self, path: str, fd: int) -> bool | None:
+        """Watches the folder open at `fd`, known as `path`, through the descriptor (not IN_DONT_FOLLOW, which would
+        take the descriptor's own link): whether it was watched already (a folder moved here), None when it can't be."""
         if len(self.wds) >= FOLDERS_MAX:
             self.left_out += 1
-            return False
-        wd = self.libc.inotify_add_watch(self.fd, os.fsencode(path), MASK)
+            return None
+        wd = self.libc.inotify_add_watch(self.fd, os.fsencode(f"/proc/self/fd/{fd}"), MASK & ~IN_DONT_FOLLOW)
         if wd < 0:
-            return False                               # gone again, not a folder, or the user's watch limit
+            return None                                # gone again, or the user's watch limit
+        known = wd in self.wds
         self.wds[wd] = path
-        return True
+        return known
 
     def _watch_tree(self, top: str, seen: bool) -> None:
         """Watches `top` and the folders in it. `seen`: it appeared while watching, so what is in it by now is
@@ -111,22 +134,30 @@ class HomeWatch:
             rel = self._rel(folder)
             if rel and any(rel == i or rel.startswith(i + "/") for i in self.ignore):
                 continue
-            if not self._watch(folder):
+            fd = self._open(folder)
+            if fd is None:
                 continue
-            self.mine[folder] = self.mine.get(folder, 0) + 1
             try:
-                with os.scandir(folder) as entries:
+                known = self._watch(folder, fd)
+                if known is None:
+                    continue
+                if known:                              # opened while watched: the opening is told on its own watch
+                    self.mine[folder] = self.mine.get(folder, 0) + 1
+                with os.scandir(fd) as entries:
                     for e in entries:
+                        path = os.path.join(folder, e.name)
                         try:
                             is_dir = e.is_dir(follow_symlinks=False)
                         except OSError:
                             continue
                         if is_dir:
-                            stack.append(e.path)
+                            stack.append(path)
                         if seen:
-                            self._note(e.path, CREATED | (DIR if is_dir else WRITTEN))
+                            self._note(path, CREATED | (DIR if is_dir else WRITTEN))
             except OSError:
                 continue
+            finally:
+                os.close(fd)
 
     def _note(self, path: str, flags: int, opened: bool = False, written: bool = False) -> None:
         rel = self._rel(path)
