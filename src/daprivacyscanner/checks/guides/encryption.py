@@ -82,7 +82,11 @@ def swap_persistent(check, scan, outcome):
 
 @guide("enc.tpm_no_pin")
 def tpm_no_pin(check, scan, outcome):
-    devices = [d.path for d in blockdev.luks_devices(scan.context.devices or [])] or ["<your LUKS partition>"]
+    # the volumes found unlocking from the TPM alone, as the evidence names them ("nvme0n1p3 (systemd-tpm2 token 0)"):
+    # every LUKS container got a TPM key with a PIN and a recovery key, a data disk with only a passphrase too
+    luks = blockdev.luks_devices(scan.context.devices or [])
+    named = {str(e.value).split(" (", 1)[0] for e in outcome.evidence if e.label == "Unlocks from the TPM without a PIN"}
+    devices = [d.path for d in luks if d.name in named] or [d.path for d in luks] or ["<your LUKS partition>"]
     return Guide(check.id, "Add a PIN to TPM unlocking",
                  "With TPM-only unlocking, anyone who has the machine boots straight to the login screen with the "
                  "disk unlocked. A PIN makes the TPM release the key only after it is typed.", [

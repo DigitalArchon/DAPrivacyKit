@@ -147,6 +147,30 @@ def test_tpm_no_pin(cat, tmp_path, value, devices, status):
     assert detect(cat, "enc.tpm_no_pin", scan).status is status
 
 
+def test_tpm_pin_guide_enrols_only_the_volumes_that_unlock_without_one(cat, tmp_path):
+    """Every LUKS container got the commands: a data disk unlocked with a passphrase would have been given a TPM key
+    with a PIN and a recovery key it never had. Only the volumes the evidence names are."""
+    from daprivacyscanner import blockdev
+    from daprivacyscanner.checks import load_all
+    from daprivacyscanner.model import Evidence
+    data = json.loads(sample("lsblk/fedora-40-btrfs-luks.json"))
+    data["blockdevices"].append({"name": "sdb", "type": "disk", "fstype": None, "mountpoints": [None], "rm": False,
+                                 "hotplug": False, "children": [{
+                                     "name": "sdb1", "type": "part", "fstype": "crypto_LUKS", "mountpoints": [None],
+                                     "rm": False, "hotplug": False, "children": [{
+                                         "name": "data", "type": "crypt", "fstype": "ext4", "mountpoints": ["/data"],
+                                         "rm": False, "hotplug": False}]}]})
+    devices = blockdev.parse_lsblk(json.dumps(data))
+    assert [d.name for d in blockdev.luks_devices(devices)] == ["nvme0n1p3", "sdb1"]
+    tpm = ContextValue("tpm_unlock_no_pin", True, [Evidence.val("Unlocks from the TPM without a PIN",
+                                                                "nvme0n1p3 (systemd-tpm2 token 0)")], "")
+    scan = make_scan(make_host(tmp_path), devices=devices, tpm_unlock_no_pin=tpm)
+    check = load_all()["enc.tpm_no_pin"](cat["enc.tpm_no_pin"])
+    cmds = [c for s in check.plan_guide(scan, check.detect(scan)).steps for c in s.commands]
+    assert "sudo systemd-cryptenroll --wipe-slot=tpm2 --tpm2-device=auto --tpm2-with-pin=yes /dev/nvme0n1p3" in cmds
+    assert not any("sdb1" in c for c in cmds)
+
+
 # ------------------------------------------------------------------ backups
 
 def test_timeshift_on_unencrypted_drive(cat, tmp_path):
