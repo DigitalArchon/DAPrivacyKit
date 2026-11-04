@@ -1465,6 +1465,15 @@ class DeleteFiles(Action):
         return False
 
     def apply(self, ctx: FixContext) -> dict:
+        from .checks._util import through_link
+        # never through a link, as the helper's _check_path: resolved, a drive's .Trash-1000/files -> ~/Documents (or a
+        # Flatpak app's cache -> ~/Documents, which it can make in its own ~/.var/app folder) passed the containment
+        # checks below, and the plan deleted what the link points to. The home itself may be a link.
+        if through_link(self.root, ctx.host.home):
+            return {"kind": self.kind, "label": self.label, "root": self.display_root, "deleted": 0,
+                    "skipped": len(self.files),
+                    "text": f"Deleted nothing of {self.label} in {self.display_root}: it is reached through a link, "
+                            "and nothing is deleted through one"}
         root = self.root.resolve()
         deleted = skipped = 0
         dirs = set()

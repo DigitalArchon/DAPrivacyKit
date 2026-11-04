@@ -482,6 +482,9 @@ checks:
     detect:
       - '$XDG_DATA_HOME/Trash/{files,info}'
       - 'For each mount: <mount>/.Trash-$UID and <mount>/.Trash/$UID'
+      - 'Each a real folder of the user''s, reached through no link, with real files/ and info/ folders, and .Trash a
+        folder with the sticky bit, not a link (the freedesktop Trash spec, as GLib checks): whoever can write a
+        drive''s top could make .Trash-1000/files a link to ~/Documents, which emptying the trash would delete'
       - 'GNOME: gsettings get org.gnome.desktop.privacy remove-old-trash-files / old-files-age'
       - 'KDE: ~/.config/ktrashrc, group named after the trash folder: UseTimeLimit, Days'
     fix: >
@@ -3125,6 +3128,8 @@ checks:
     why: Cleaners that only look at native paths miss everything under ~/.var/app.
     detect:
       - '~/.var/app/<id>/{cache,config,data,.local/state}'
+      - 'A cache folder that is a link isn''t counted, nor cleared: the app can write its own folder, and a cache ->
+        ~/Documents it made would be'
     fix: Every other check must enumerate these paths; this check reports totals.
     remedy: >
       Clean… clears the Flatpak apps' caches.

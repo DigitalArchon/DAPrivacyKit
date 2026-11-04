@@ -7,6 +7,7 @@ import json
 import os
 import re
 import sqlite3
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -165,6 +166,27 @@ def children(path: Path) -> list[Path]:
         return sorted(path.iterdir())
     except (FileNotFoundError, NotADirectoryError, PermissionError):
         return []
+
+
+def own_dir(host: Host, path: Path) -> bool:
+    """`path` is a folder, not a link to one, and the user's own (on the real system: a fixture's files are the test
+    runner's): where a clean-up may start. A link there is made by whoever can write the folder it is in (a drive's
+    maker, another account on a shared disk, a Flatpak app in its own ~/.var/app folder), and can point anywhere."""
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return False
+    return stat.S_ISDIR(st.st_mode) and (host.root != Path("/") or st.st_uid == host.uid)
+
+
+def through_link(path: Path, home: Path) -> bool:
+    """Whether `path` is reached through a symbolic link: anywhere from the user's home down to it (the home itself
+    may be one, a home moved to another disk), or anywhere on its way for a path outside the home (a drive's
+    .Trash-1000). Nothing is deleted through a link (DeleteFiles)."""
+    p, h = os.path.normpath(path), os.path.normpath(home)
+    if p == h or p.startswith(h.rstrip("/") + "/"):
+        return os.path.realpath(p) != os.path.normpath(os.path.join(os.path.realpath(h), os.path.relpath(p, h)))
+    return os.path.realpath(p) != p
 
 
 def read_text(host: Host, path: Path) -> str | None:

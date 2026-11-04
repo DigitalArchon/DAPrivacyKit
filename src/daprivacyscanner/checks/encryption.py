@@ -20,8 +20,8 @@ from ..model import Evidence, Note, Outcome, Status
 from ..privileged import HelperError
 from . import Check, Scan, register
 from ._util import (ON_ENCRYPTED_DISK, Tally, absent, children, failed, human_size, isdir, mounts, needs_root,
-                    on_encrypted_disk, passed, read_json, read_text, sqlite_count, storage_mounts, systemctl_state,
-                    tally, unknown, uri_path, warned)
+                    on_encrypted_disk, own_dir, passed, read_json, read_text, sqlite_count, storage_mounts,
+                    systemctl_state, tally, through_link, unknown, uri_path, warned)
 
 
 def _devices(scan: Scan) -> list[blockdev.Device] | None:
@@ -1209,23 +1209,44 @@ class JournalPersistent(Check):
 
 # ------------------------------------------------------------------ trash
 
+def trash_dirs(scan: Scan) -> list[Path]:
+    """The user's trash folders, each once: the home's, and .Trash-UID or .Trash/UID at the top of every other
+    filesystem (the freedesktop Trash spec). Only a real folder of the user's counts, reached through no link, with
+    real files and info folders in it, as GLib checks: whoever can write a drive's top (its maker, another account on
+    a shared disk) could make .Trash-1000/files a link to ~/Documents, which emptying the trash would then delete. The
+    shared .Trash must be a folder with the sticky bit, not a link."""
+    host, uid = scan.host, scan.host.uid
+    dirs = [scan.paths.data_home / "Trash"]
+    for m in storage_mounts(host):
+        mp = Path(m.target)
+        dirs.append(mp / f".Trash-{uid}")
+        try:
+            st = os.lstat(mp / ".Trash")
+        except OSError:
+            continue
+        if stat.S_ISDIR(st.st_mode) and st.st_mode & stat.S_ISVTX:
+            dirs.append(mp / ".Trash" / str(uid))
+    out, seen = [], set()
+    for d in dirs:
+        if (not own_dir(host, d) or through_link(d, host.home) or d.resolve() in seen
+                or any(os.path.lexists(d / sub) and not own_dir(host, d / sub) for sub in ("files", "info"))):
+            continue
+        seen.add(d.resolve())
+        out.append(d)
+    return out
+
+
 @register
 class Trash(Check):
     id = "enc.trash"
 
     def detect(self, scan: Scan) -> Outcome:
-        host, uid = scan.host, scan.host.uid
-        dirs = [scan.paths.data_home / "Trash"]
-        for m in storage_mounts(host):
-            mp = Path(m.target)
-            dirs += [mp / f".Trash-{uid}", mp / ".Trash" / str(uid)]
+        host = scan.host
         ev, total = [], 0
-        seen = set()
-        for d in dirs:
+        for d in trash_dirs(scan):
             files = d / "files"
-            if not isdir(files) or files.resolve() in seen:
+            if not isdir(files):
                 continue
-            seen.add(files.resolve())
             items = len(children(files))
             if items:
                 t = tally(files)

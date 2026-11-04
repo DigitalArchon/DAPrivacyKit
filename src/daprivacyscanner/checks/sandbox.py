@@ -6,7 +6,7 @@ from .. import ini
 from ..host import Host
 from ..model import Evidence, Note, Outcome
 from . import Check, Scan, register
-from ._util import Tally, absent, failed, human_size, passed, read_text, tally, unknown, warned
+from ._util import Tally, absent, failed, human_size, own_dir, passed, read_text, tally, unknown, warned
 
 BROAD_FS = ("host", "host-os", "host-etc", "home")
 
@@ -90,7 +90,12 @@ class FlatpakCaches(Check):
             return absent("No Flatpak app data in ~/.var/app.")
         sizes = []
         for app in apps:
-            t = tally(scan.paths.flatpak_root / app / "cache", limit=20_000)
+            cache = scan.paths.flatpak_root / app / "cache"
+            if not own_dir(scan.host, cache):
+                # the app can write its own folder: a cache -> ~/Documents it made would be counted, and cleared, as
+                # its cache
+                continue
+            t = tally(cache, limit=20_000)
             if t.files:
                 sizes.append((app, t))
         if not sizes:

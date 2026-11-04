@@ -137,6 +137,30 @@ def test_delete_stays_inside_its_root_and_never_follows_symlinks(tmp_path):
     assert "Deleted 2 files of cache in ~/cache (3 skipped)" in res.applied
 
 
+def test_delete_never_goes_through_a_link_on_the_way_to_its_root(tmp_path):
+    """A drive's .Trash-1000/files -> ~/Documents (or a Flatpak app's cache -> ~/Documents) was resolved, and the
+    files listed through it passed the containment checks: the plan deleted the documents. The root is refused when it
+    is a link, or a folder on its way is; the home itself may be one."""
+    from daprivacyscanner.host import Host
+    host, _, log = setup(tmp_path, home_files={"Documents/taxes.pdf": "x", "real/cache/a": "y"})
+    usb = tmp_path / "usb/.Trash-1000"
+    usb.mkdir(parents=True)
+    (usb / "files").symlink_to(host.home / "Documents")
+    (host.home / "via").symlink_to(host.home / "real")
+    via = host.home / "via/cache"
+    plan = FixPlan("x", "t", [DeleteFiles(usb / "files", [usb / "files/taxes.pdf"], "trashed files", "USB", whole=True),
+                              DeleteFiles(via, [via / "a"], "cache", "~/via/cache")])
+    res = apply_plan(plan, host, log, confirmed_irreversible=True)
+    assert (host.home / "Documents/taxes.pdf").exists() and (host.home / "real/cache/a").exists()
+    assert "Deleted nothing of trashed files in USB: it is reached through a link" in res.applied[0]
+    linked = tmp_path / "home-link"                               # a home moved to another disk, reached through a link
+    linked.symlink_to(host.home)
+    host = Host(home=linked, environ={"HOME": str(linked)}, runner=host.runner, root=host.root, uid=1000)
+    res = apply_plan(FixPlan("x", "t", [DeleteFiles(linked / "real/cache", [linked / "real/cache/a"], "cache", "~")]),
+                     host, log, confirmed_irreversible=True)
+    assert res.ok and not (tmp_path / "home/alice/real/cache/a").exists()
+
+
 def test_deleted_paths_are_not_written_to_the_log(tmp_path):
     host, _, log = setup(tmp_path, home_files={"hist/private-diary.txt": "x"})
     apply_plan(FixPlan("x", "t", [DeleteFiles(host.home / "hist", [host.home / "hist/private-diary.txt"], "h", "~/hist")]),

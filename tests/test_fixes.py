@@ -191,6 +191,52 @@ def test_deletion_needs_confirmation(cat, tmp_path):
     assert not res.ok and (host.home / ".local/share/Trash/files/a").exists()
 
 
+def test_trash_on_a_drive_is_never_a_link_its_maker_planted(cat, tmp_path):
+    """A stick with .Trash-1000/files -> ~/Documents and .Trash-1000/info -> ~/.ssh: the check counted the documents
+    as trash, and Clean… deleted them and the SSH key. Its trash folders are only real folders, as GLib's are; the
+    shared .Trash only with the sticky bit."""
+    import os
+    host = make_host(tmp_path, home_files={"Documents/taxes.pdf": "x", "Documents/thesis/ch1.odt": "y",
+                                           ".ssh/id_ed25519": "KEY", "Projects/files/a": "z"})
+    usb, disk = tmp_path / "media/alice/USB", tmp_path / "media/alice/DISK"
+    (usb / ".Trash-1000").mkdir(parents=True)
+    os.symlink(host.home / "Documents", usb / ".Trash-1000/files")
+    os.symlink(host.home / ".ssh", usb / ".Trash-1000/info")
+    disk.mkdir(parents=True)
+    os.symlink(host.home / "Projects", disk / ".Trash-1000")            # the folder itself, with a files/ in it
+    (disk / ".Trash/1000/files").mkdir(parents=True)                   # the shared .Trash, without its sticky bit
+    (disk / ".Trash/1000/files/b").write_text("b")
+    (host.root / "proc").mkdir()
+    (host.root / "proc/mounts").write_text(f"/dev/sdb1 {usb} ext4 rw 0 0\n/dev/sdc1 {disk} btrfs rw 0 0\n")
+    o = detect(cat, "enc.trash", make_scan(host, desktop=("kde",)))
+    assert o.status is Status.PASS and not o.evidence
+    check = load_all()["enc.trash"](cat["enc.trash"])
+    scan = make_scan(host, desktop=("kde",))
+    assert not check.plan_fix(scan, o).actions
+    os.chmod(disk / ".Trash", 0o1777)                                  # as the spec has it: then it is the user's trash
+    o = detect(cat, "enc.trash", make_scan(host, desktop=("kde",)))
+    assert o.status is Status.FAIL and list(ev(o)) == [f"{disk}/.Trash/1000"]
+    plan = check.plan_fix(make_scan(host, desktop=("kde",)), o)
+    res = apply_plan(plan, host, UndoLog(host.home / ".local/state/daprivacyscanner"), confirmed_irreversible=True)
+    assert res.ok and not (disk / ".Trash/1000/files/b").exists()
+    assert sorted(p.name for p in (host.home / "Documents").iterdir()) == ["taxes.pdf", "thesis"]
+    assert (host.home / ".ssh/id_ed25519").exists() and (host.home / "Projects/files/a").exists()
+
+
+def test_a_trash_or_cache_folder_of_another_account_is_left_alone(tmp_path):
+    """On the real system a folder to clear must be the user's own (another account on a shared disk could make a
+    .Trash-1000 for them); a fixture's files are the test runner's, so it is only asked there."""
+    import os
+    from pathlib import Path
+    from daprivacyscanner.checks._util import own_dir
+    from daprivacyscanner.host import Host
+    (tmp_path / "d").mkdir()
+    (tmp_path / "link").symlink_to(tmp_path / "d")
+    me = Host(home=tmp_path, environ={}, runner=None, root=Path("/"), uid=os.getuid())
+    other = Host(home=tmp_path, environ={}, runner=None, root=Path("/"), uid=os.getuid() + 1)
+    assert own_dir(me, tmp_path / "d") and not own_dir(me, tmp_path / "link") and not own_dir(other, tmp_path / "d")
+
+
 
 
 def test_kde_activities_stops_and_restarts_the_daemon(cat, tmp_path):
@@ -675,6 +721,19 @@ def test_flatpak_caches(cat, tmp_path):
     assert not (host.home / ".var/app/org.gnome.Loupe/cache/b").exists()
     assert (host.home / ".var/app/org.gnome.Loupe/data/keep").exists()
     assert (host.home / ".var/app/org.mozilla.firefox/cache/a").exists()             # running: left alone
+
+
+def test_a_flatpak_apps_cache_that_is_a_link_is_never_cleared(cat, tmp_path):
+    """A Flatpak app can write its own ~/.var/app folder: it made its cache a link to ~/Documents, the check reported
+    the documents as its cache, and Clean… deleted them."""
+    host = make_host(tmp_path, home_files={"Documents/taxes.pdf": "x", "Documents/2025/report.odt": "y",
+                                           ".var/app/com.example.Evil/data/x": "z",
+                                           ".var/app/org.gnome.Loupe/cache/b": "x"})
+    (host.home / ".var/app/com.example.Evil/cache").symlink_to(host.home / "Documents")
+    plan, res, log = run_fix(cat, host, "sbx.flatpak_caches")
+    assert res.ok and [a.display_root for a in plan.actions] == ["~/.var/app/org.gnome.Loupe/cache"]
+    assert (host.home / "Documents/taxes.pdf").exists() and (host.home / "Documents/2025/report.odt").exists()
+    assert redetect(cat, host, "sbx.flatpak_caches").status is Status.PASS
 
 
 def test_processes_are_read_once_per_plan(cat, tmp_path, monkeypatch):

@@ -19,8 +19,8 @@ from ..fix import (ClearCommand, ClearInFile, Command, CopyQCommand, CopyQTabSet
                    HashKnownHosts, KConfigSet, NmSet, PlasmaTraySet, RootChange, WriteFile, XfconfSet)
 from ..model import Outcome
 from . import Check, No, Scan
-from ._util import (children, chromium_dirs, chromium_in_use, files_under, holders, isdir, isfile, processes, read_jsonc,
-                    read_text, storage_mounts, thumbnail_entries, uri_path)
+from ._util import (children, chromium_dirs, chromium_in_use, files_under, holders, isdir, isfile, own_dir, processes,
+                    read_jsonc, read_text, thumbnail_entries, uri_path)
 
 
 @dataclass
@@ -71,6 +71,8 @@ def kscreenlocker_reload(scan: Scan) -> list[str] | None:
 
 
 def delete(scan: Scan, root: Path, label: str, pattern: re.Pattern | None = None) -> list[DeleteFiles]:
+    if not own_dir(scan.host, root):            # a link (walked, it lists what it points to) or another account's
+        return []
     files, _ = files_under(root, pattern=pattern)
     return [DeleteFiles(root, files, label, scan.host.display(root))] if files else []
 
@@ -136,14 +138,10 @@ def _xfce(scan: Scan) -> bool:
 
 @fix("enc.trash")
 def trash(check, scan, outcome):
+    from .encryption import trash_dirs
     actions = []
-    roots = [scan.paths.data_home / "Trash"]
-    roots += [Path(m.target) / f".Trash-{scan.host.uid}" for m in storage_mounts(scan.host)]
-    roots += [Path(m.target) / ".Trash" / str(scan.host.uid) for m in storage_mounts(scan.host)]
-    seen = set()
-    for r in roots:
-        if isdir(r / "files") and r.resolve() not in seen:
-            seen.add(r.resolve())
+    for r in trash_dirs(scan):                  # the check's: never a link a drive's maker planted
+        if isdir(r / "files"):
             # each trashed item whole: a folder with what is in it (empty ones too), a link as a link, with its record
             items = children(r / "files")
             if items:
@@ -1038,7 +1036,7 @@ def flatpak_caches(check, scan, outcome):
     a, effects = [], []
     for app in scan.paths.flatpak_apps():
         root = scan.paths.flatpak_root / app / "cache"
-        if not files_under(root, limit=1)[0]:
+        if not own_dir(scan.host, root) or not files_under(root, limit=1)[0]:     # a link the app made: the check's
             continue
         if app in busy or holders(scan, root):
             effects.append(f"Skipped {app}: it is running.")
