@@ -62,9 +62,10 @@ ADVICE = [
 
 def status(host: Host) -> dict:
     """The checklist, and the RAM disks' state (the items that aren't checks): the RAM disk tool's,
-    and the browser's (~/TempBrowser)."""
+    and the browser's (~/TempBrowser), with what closing one here says it does (kept out of swap or not) and runs."""
     from . import ramdisk
     disks = [ramdisk.status(host, n) for n in ramdisk.NAMES]
-    view = [{"name": d.path.name, "path": "~/" + d.path.name, "open": d.open, "files": d.files} for d in disks]
+    view = [{"name": d.path.name, "path": "~/" + d.path.name, "open": d.open, "files": d.files, "noswap": d.noswap,
+             "commands": ramdisk.commands(host, d.path.name)} for d in disks]
     return {"intro": INTRO, "items": [{"id": i, "why": w} for i, w in ITEMS], "advice": ADVICE,
             "ramdisk": view[0], "ramdisks": view}

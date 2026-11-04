@@ -51,6 +51,15 @@ def test_tools_list(cat, host):
     assert d["browser_disk"] is False
 
 
+def test_the_ram_disk_card_has_what_opening_and_closing_run(cat, host):
+    """The Tools panel's RAM disk card shows what opening and closing run as root, from /api/tools: only
+    /api/tools/ramdisk had them, which the page never asks for, so "Opening runs, as root:" never showed."""
+    c = app_for(cat, host)
+    card = c.get("/api/tools", headers=H).json()["ramdisk"]
+    assert card["commands"] == c.get("/api/tools/ramdisk", headers=H).json()["ramdisk"]["commands"] == R.commands(host)
+    assert card["commands"]["open"][-1].startswith("mount -t tmpfs") and card["commands"]["close"][0].startswith("umount ")
+
+
 def test_pick_uses_the_window_dialog_or_says_there_is_none(cat, host):
     assert app_for(cat, host).post("/api/tools/pick", headers=H, json={}).json() == {"unavailable": True, "paths": []}
     seen = []

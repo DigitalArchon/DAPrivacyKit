@@ -950,7 +950,9 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
                            "install": install(SimpleNamespace(host=host), debian="gpgv", fedora="gnupg2",
                                               arch="gnupg", suse="gpg2")},
                 "metadata": metadata.status(host),
-                "ramdisk": {**st.to_dict(host.home), "max_mb": ramdisk.max_mb(host), "default_mb": ramdisk.DEFAULT_MB},
+                # with what opening and closing it run as root, which its card shows before either
+                "ramdisk": {**st.to_dict(host.home), "max_mb": ramdisk.max_mb(host), "default_mb": ramdisk.DEFAULT_MB,
+                            "commands": ramdisk.commands(host)},
                 "admin_active": admin.active(),
                 # for their tiles: a trial there is, an app being watched
                 "trial": app.state.trial.state if app.state.trial is not None else None,

@@ -269,9 +269,14 @@ let trimJob = null;
 const TOOL_COUNT = routes["GET /api/tools"]().tools.length;
 let inuseCalls = 0;
 const travelIds = Object.keys(fixture.state.report.results).filter(id => !id.startsWith("desk.file_manager")).slice(0, 3);
+// as travel.status gives them: each RAM disk with what closing it from here says and runs
+const travelDisks = [{ name: "RAMDisk", path: "~/RAMDisk", open: true, files: 2, noswap: true,
+                       commands: { open: [], open_exec: [], close: ["umount /home/a/RAMDisk"] } },
+                     { name: "TempBrowser", path: "~/TempBrowser", open: false, files: 0, noswap: false,
+                       commands: { open: [], open_exec: [], close: ["umount /home/a/TempBrowser"] } }];
 routes["GET /api/tools/travel"] = () => ({ intro: "A laptop that travels.", advice: ["Power it off."],
   items: [...travelIds.map(id => ({ id, why: `Why ${id} matters.` })), { id: "no.such_check", why: "x" }],
-  ramdisk: { open: true, files: 2 } });
+  ramdisk: travelDisks[0], ramdisks: travelDisks });
 const handoverCalls = [];
 routes["GET /api/tools/handover"] = () => ({ drives: [
   { mount: "/media/a/STICK", device: "/dev/sdb1", fstype: "vfat", label: "STICK", transport: "usb", readonly: false, blocked: "" },
@@ -1491,6 +1496,12 @@ await window.openTravel(); await tick(); await tick();
     && fixture.state.report.results[id].effective_severity > 0).length + 1;
   check(text(".modal .travel .vtitle").startsWith(`${todo} thing`), "the headline counts what is left to do: " + text(".modal .travel .vtitle"));
   check(rows.at(-1).textContent.includes("Close and overwrite…"), "an open RAM disk is on the list, with a button to close it");
+  [...rows.at(-1).querySelectorAll("button")].find(b => b.textContent === "Close and overwrite…").click(); await tick();
+  { const m = $$(".modal").at(-1);
+    check(m.querySelector("h2").textContent === "Close ~/RAMDisk?" && m.textContent.includes("closing runs, as root:")
+          && m.querySelector(".cmds code")?.textContent === "umount /home/a/RAMDisk" && !m.textContent.includes("swapped to disk"),
+          "closing it from here shows what closing runs, and doesn't speak of swap for one kept out of it: " + m.textContent.slice(0, 400));
+    m.querySelector(".buttons button").click(); await tick(); }
   { // a finding the user accepted isn't "to do", nor counted: the row says accepted
     const S = window.eval("S");
     const acc0 = S.state.accepted, r1 = S.report.results[travelIds[0]];
