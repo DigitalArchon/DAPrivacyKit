@@ -413,7 +413,9 @@ def boxes(check, scan, outcome):
          "computer: the kernel's "
          "command line (which often names your disks' ids), an id that stays the same until a restart, the processor "
          "and the disks' partitions; hiding them would stop apps that start a sandbox of their own (GNOME's "
-         "thumbnails, web pages in GNOME apps). And an app in a Box can't use the desktop's password store, so it may "
+         "thumbnails, web pages in GNOME apps). The list of what is mounted where, which any program reads, gives its "
+         "folders' real paths too: ~/Boxes/NAME in your home folder, which names your account. And an app in a Box "
+         "can't use the desktop's password store, so it may "
          "ask you to sign in again or keep its login in its own home."),
         ("Each run in numbers", "While a Box runs it is watched as a trial is, and what is kept is numbers: when, how "
          "long, how many files it wrote, how many hosts it contacted and how many of those were new. No names of files "

@@ -3784,7 +3784,8 @@ function trialChoose(data, call) {
       h("li", {}, h("b", {}, "It can still read what the system tells any program about this computer: "), "the kernel's "
         + "version and settings, its command line (which often names your disks' ids), an id that stays the same until "
         + "the computer restarts, the processor and the disks' partitions. Hiding them would stop programs that start a "
-        + "sandbox of their own, as GNOME's thumbnails and web pages in GNOME apps do.")),
+        + "sandbox of their own, as GNOME's thumbnails and web pages in GNOME apps do. The list of what is mounted where "
+        + "gives its folders' real paths too: on the disk, that is in your home folder, which names your account.")),
     h("h4", {}, "Where the trial lives"), places,
     h("h4", {}, "A file you downloaded"),
     h("p", { class: "small muted" }, "An AppImage, a program, a script, an archive (tar, zip) or a .deb package. An archive "

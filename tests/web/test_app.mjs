@@ -1446,6 +1446,9 @@ while ($$(".modal").length) { $$(".modal .buttons button").at(-1).click(); await
 await window.openTrial(); await tick();
 check(text(".modal .trial").includes("A sandbox isn't a guarantee") && $$(".modal .trial input[name=trial-where]").length === 2
       && text(".modal .trial").includes("which doesn't erase it"), "it starts by saying what a sandbox is and isn't, and where the trial can live");
+check(text(".modal .trial").includes("The list of what is mounted where gives its folders' real paths too")
+      && text(".modal .trial").includes("which names your account"),
+      "it says the mount list gives a trial on the disk the account's name (the review of 2026-11-04)");
 check(text(".modal .trial").includes("swap on a disk (/swapfile)") && !text(".modal .trial").includes("nothing of the trial touches the disk"),
       "in memory isn't said to keep it off the disk when swap reaches one (the 2026-10-17 review)");
 { const prep = $$(".modal .trial button").find(b => b.textContent === "Prepare it");

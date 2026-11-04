@@ -126,6 +126,14 @@ def test_the_guide_says_what_wayland_still_gives_a_boxed_app(cat, host, program)
     assert "record the screen" in text
 
 
+def test_the_guide_says_the_mount_list_names_the_account(cat, host, program):
+    """The review of 2026-11-04: inside the sandbox /proc/self/mountinfo has each folder's real path, so a Box's app
+    can read /home/<account>/Boxes/<name>/home: the account's name, which the sandbox otherwise hides ("user"). Said
+    where the guide lists what the app can read."""
+    text = " ".join(body for s in build(cat, host, "app.boxes").steps for _head, body in (s.parts or []))
+    assert "The list of what is mounted where" in text and "~/Boxes/NAME in your home folder, which names your account" in text
+
+
 def test_the_guide_takes_the_network_and_what_it_gets(cat, host, program):
     from daprivacyscanner.runner import Runner
     g = Runner(cat, host).plan_fix("app.boxes", {"source": "org.x.Meet.desktop", "network": "on", "gpu": False, "sound": True})[1]
