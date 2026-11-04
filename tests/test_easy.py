@@ -168,6 +168,27 @@ def test_apply_easy_fixes_each_as_its_own_fix_in_history(cat, tmp_path):
     assert r.status_code == 400
 
 
+def test_a_check_another_easy_fix_covers_is_checked_again(cat, tmp_path, monkeypatch):
+    """Ubuntu's apport off is the Easy fix of crash dumps and of crash reporting, applied once as the first check's.
+    The other check was never checked again: its row stayed failing with its Easy badge, and "Easy fixes (1)…"
+    stayed while the dialog listed nothing. It is checked again after applying, and after reverting from History."""
+    c, host, gs = easy_client(cat, tmp_path)
+    real = Runner.plan_easy
+
+    def twice(self, check_ids=None):
+        items = real(self, check_ids)
+        items[1][1][0].actions = list(items[0][1][0].actions)        # the same change, offered by both
+        return items
+    monkeypatch.setattr(Runner, "plan_easy", twice)
+    first, second = c.post("/api/easy/plan", headers=H).json()["items"][:2]
+    assert second["plans"] == [] and second["covered_by"] == first["title"]
+    r = c.post("/api/easy/apply", headers=H, json={"plan_ids": [p["id"] for p in first["plans"]]}).json()
+    assert r["ok"] and {first["check_id"], second["check_id"]} <= set(r["rechecked"])
+    [entry] = c.get("/api/undo", headers=H).json()["entries"]
+    back = c.post(f"/api/undo/{entry['id']}/revert", headers=H, json={}).json()
+    assert back["ok"] and {first["check_id"], second["check_id"]} <= set(back["rechecked"])
+
+
 def test_the_scan_counts_the_easy_fixes_the_dialog_lists(cat, tmp_path):
     """One applied of several: the results marked easy, which the page counts, are the ones still offered,
     right after applying and in the scans that follow."""

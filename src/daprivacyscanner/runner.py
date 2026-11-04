@@ -190,8 +190,9 @@ class Runner:
     def merge_shared_easy(items: list, title) -> dict[str, str]:
         """One change that two checks offer (Ubuntu's apport off, for crash dumps and for crash reporting) is applied
         once: twice, it would be two History entries, and reverting one would have the other reported undone. The
-        later check's copy is dropped from `items` (in place), the first plan saying it deals with that check too.
-        Returns {check id: the title of the check whose fix covers it}, for the list to say so. Called after the
+        later check's copy is dropped from `items` (in place), the first plan saying it deals with that check too
+        (and naming it in `also`, so that check is checked again after applying and reverting it). Returns
+        {check id: the title of the check whose fix covers it}, for the list to say so. Called after the
         findings the user accepted are left out (the server's), or on the whole list (--dry-run easy)."""
         first: dict[tuple, tuple] = {}
         covered: dict[str, str] = {}
@@ -201,6 +202,7 @@ class Runner:
                 if p.actions and same in first:
                     by_result, by_plan = first[same]
                     by_plan.side_effects.append(f"This also deals with “{title(result.id)}”.")
+                    by_plan.also.append(result.id)
                     plans.remove(p)
                     covered[result.id] = title(by_result.id)
                 elif p.actions:

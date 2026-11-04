@@ -1557,6 +1557,9 @@ class FixPlan:
     # step and option ({"guide", "step", "step_title", "option", "options"}), an Easy fix ({"easy": True}); {}
     # for an auto fix opened from its row (Runner.plan_fix and plan_easy fill it)
     via: dict = field(default_factory=dict)
+    # other checks this plan deals with too (a change two checks' Easy fixes share, applied once: merge_shared_easy):
+    # checked again with its own after applying it, and after reverting it (the History entry keeps them)
+    also: list[str] = field(default_factory=list)
 
     def __post_init__(self):
         # a file write that changes nothing isn't a step (an option applied before would be offered for ever)
@@ -1657,7 +1660,7 @@ def apply_plan(plan: FixPlan, host: Host, log: "UndoLog", confirmed_irreversible
             # the attempt changed something: History keeps it, as failed, with what each step did and what
             # putting it back did, so the user can see what happened (and revert a step that couldn't be)
             log.add(entry_id, plan.check_id, plan.title, records, state="failed",
-                    extra={"via": dict(plan.via) or {"fix": True}, "error": error,
+                    extra={"via": dict(plan.via) or {"fix": True}, "error": error, "also": list(plan.also) or None,
                            "failed_step": failed_at.describe() if failed_at is not None else ""})
             return ApplyResult(False, entry_id, [], error, rolled)
         return ApplyResult(False, None, [], error, rolled)
@@ -1665,7 +1668,8 @@ def apply_plan(plan: FixPlan, host: Host, log: "UndoLog", confirmed_irreversible
         # nothing needed changing (the helper found it already so): no History entry, which would be one with
         # nothing to revert (live on Mint: CUPS's option applied again)
         return ApplyResult(True, None, [r["text"] for r in records])
-    log.add(entry_id, plan.check_id, plan.title, records, extra={"via": dict(plan.via) or {"fix": True}})
+    log.add(entry_id, plan.check_id, plan.title, records, extra={"via": dict(plan.via) or {"fix": True},
+                                                                 "also": list(plan.also) or None})
     return ApplyResult(True, entry_id, [r["text"] for r in records])
 
 

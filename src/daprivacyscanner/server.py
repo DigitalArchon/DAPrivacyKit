@@ -840,7 +840,8 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
                 res = await asyncio.to_thread(apply_plan, plan, host, log, bool(body.get("confirm_irreversible")))
                 out.append({"check_id": plan.check_id, "title": plan.title, "ok": res.ok, "error": res.error,
                             "entry_id": res.entry_id, "rolled_back": res.rolled_back})
-            checked = list(dict.fromkeys(p.check_id for p in todo))
+            # with the checks a plan also deals with (a change two checks share, applied once as the first one's)
+            checked = list(dict.fromkeys(cid for p in todo for cid in (p.check_id, *p.also)))
             again = await asyncio.to_thread(refresh, host, checked[0], tuple(checked[1:]))
             for r in out:                             # what the check said right after: undone later if it comes back
                 if r.get("entry_id") and r["ok"]:
@@ -891,7 +892,7 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
                     return JSONResponse({"error": problem.replace("changed", "reverted"), "declined": True},
                                         status_code=403)
             results = await asyncio.to_thread(revert_entry, entry, host, log, bool(body.get("force")))
-            again = await asyncio.to_thread(refresh, host, entry["check_id"])
+            again = await asyncio.to_thread(refresh, host, entry["check_id"], tuple(entry.get("also") or ()))
             undone = await asyncio.to_thread(recheck_undone, host)
             await asyncio.to_thread(persist, host)
         return {"ok": all(r.ok for r in results), "conflict": any(r.conflict for r in results),
