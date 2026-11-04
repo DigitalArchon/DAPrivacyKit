@@ -76,7 +76,9 @@ def delete(scan: Scan, root: Path, label: str, pattern: re.Pattern | None = None
 
 
 def running(scan: Scan, *names: str) -> list[str]:
-    procs = processes(scan.host)
+    """Which of these programs of the user's own run: another account's Kate or Vim writes its own lists and history,
+    and blocked this user's clean-up."""
+    procs = processes(scan.host, own=True)
     return [n for n in names if n in procs]
 
 

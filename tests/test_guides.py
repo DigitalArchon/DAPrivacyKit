@@ -545,6 +545,25 @@ def test_editor_residue_skips_running_editors(cat, tmp_path):
     assert not (host.home / "Documents/report.txt~").exists()
 
 
+def test_another_accounts_programs_never_block_this_users_options(cat, tmp_path, monkeypatch):
+    """The process list was every account's: another user logged in with Firefox open blocked this user's Firefox
+    options ("Close Firefox first"), their KolourPaint this user's KDE recent files, their Vim this user's Vim history.
+    A fix acts on the user's own processes; the others keep profiles, lists and histories of their own."""
+    from daprivacyscanner.checks import fixes, guides
+    from test_kde_recent_files import KOLOURPAINTRC
+    theirs = lambda host, own=False: set() if own else {"firefox", "kolourpaint", "vim"}     # noqa: E731
+    monkeypatch.setattr(guides, "processes", theirs)
+    monkeypatch.setattr(fixes, "processes", theirs)
+    host = make_host(tmp_path, installed=("kolourpaint",),
+                     home_files={".config/kolourpaintrc": KOLOURPAINTRC, ".viminfo": "# history\n"})
+    firefox(host.home)
+    for check_id, kw in (("br.disk_cache", {}), ("app.kde_recent_files", {"desktop": ("kde",)}),
+                         ("app.editor_residue", {})):
+        g = build(cat, host, check_id, **kw)
+        assert g.plans and not any(p.blockers for p in g.plans), check_id
+    assert "Vim history and registers" in [a.label for p in g.plans for a in p.actions]
+
+
 def test_a_swap_file_vim_has_open_beside_its_document_is_left_alone(cat, tmp_path):
     """Stray .name.swp files were matched by name alone: the one a running Vim keeps beside the document it edits (how
     it recovers that document after a crash, and warns a second editor opening it) was offered with the rest."""

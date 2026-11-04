@@ -118,7 +118,7 @@ def remove(scan: Scan, **packages: str) -> str | None:
 
 
 def firefox_open(scan: Scan) -> bool:
-    return bool(processes(scan.host) & FIREFOX_PROCESSES)
+    return bool(processes(scan.host, own=True) & FIREFOX_PROCESSES)
 
 
 MOZILLA_PROGRAMS = {"firefox": "Firefox", "firefox-bin": "Firefox", "firefox-esr": "Firefox", "librewolf": "LibreWolf",
@@ -127,8 +127,9 @@ MOZILLA_PROGRAMS = {"firefox": "Firefox", "firefox-bin": "Firefox", "firefox-esr
 
 def mozilla_open(scan: Scan, only=("Firefox", "LibreWolf", "Thunderbird")) -> list[str]:
     """Which of these Firefox-family programs are running, by name; a GeckoMain process whose
-    program isn't known counts as all of them (it rewrites its prefs.js as it exits, whichever it is)."""
-    procs = processes(scan.host)
+    program isn't known counts as all of them (it rewrites its prefs.js as it exits, whichever it is).
+    The user's own only: another account's Firefox has profiles of its own, and blocked this user's."""
+    procs = processes(scan.host, own=True)
     names = [n for n in only if any(label == n and p in procs for p, label in MOZILLA_PROGRAMS.items())]
     if not names and "GeckoMain" in procs:
         names = list(only)
