@@ -130,6 +130,28 @@ def test_http_repos(cat, tmp_path):
     assert detect(cat, "tel.http_repos", make_scan(host)).status is Status.PASS
 
 
+def test_http_repos_reads_the_mirror_lists_pacman_includes_and_leaves_onion_mirrors(cat, tmp_path):
+    """CachyOS's and Chaotic-AUR's sections include mirror lists of their own, which were never read; and apt's
+    tor+http://….onion (Debian's onion mirrors) was taken for plain HTTP, though Tor encrypts it end to end."""
+    conf = ("[options]\nArchitecture = auto\n\n[cachyos-v3]\nInclude = /etc/pacman.d/cachyos-v3-mirrorlist\n\n"
+            "[core]\nInclude = /etc/pacman.d/mirrorlist\n\n#[testing]\n#Include = /etc/pacman.d/testing-mirrorlist\n\n"
+            "[chaotic-aur]\nInclude = /etc/pacman.d/chaotic-*\n")
+    host = make_host(tmp_path, files={
+        "/etc/pacman.conf": conf,
+        "/etc/pacman.d/mirrorlist": "Server = https://geo.mirror.pkgbuild.com/$repo/os/$arch\n",
+        "/etc/pacman.d/cachyos-v3-mirrorlist": "Server = http://mirror.cachyos.example/repo/$arch_v3/$repo\n",
+        "/etc/pacman.d/chaotic-mirrorlist": "#Server = http://old.example/$repo\nServer = http://chaotic.example/x\n",
+        "/etc/pacman.d/testing-mirrorlist": "Server = http://testing.example/$repo/os/$arch\n"})
+    o = detect(cat, "tel.http_repos", make_scan(host))
+    assert o.status is Status.FAIL and set(ev(o)) == {"mirror.cachyos.example", "chaotic.example"}
+    onion = "deb tor+http://2s4yqjx5ul6okpp3f2gaunr2syex5jgbfpfvhxxbbjwnrsvbk5v3qbid.onion/debian trixie main\n"
+    host = make_host(tmp_path / "d", files={"/etc/apt/sources.list": onion})
+    assert detect(cat, "tel.http_repos", make_scan(host)).status is Status.PASS
+    clearnet = "deb tor+http://deb.debian.org/debian trixie main\n"                 # plain past Tor's exit
+    host = make_host(tmp_path / "e", files={"/etc/apt/sources.list": clearnet})
+    assert set(ev(detect(cat, "tel.http_repos", make_scan(host)))) == {"deb.debian.org"}
+
+
 def test_countme(cat, tmp_path):
     host = make_host(tmp_path, files={"/etc/yum.repos.d/fedora.repo": "[fedora]\nenabled=1\ncountme=1\n\n[fedora-debuginfo]\n"
                                                                      "enabled=0\ncountme=1\n"})

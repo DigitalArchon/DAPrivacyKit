@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import fnmatch
+import posixpath
 import re
 
 from .. import ini
@@ -313,7 +315,31 @@ def _repo_files(scan: Scan) -> list[tuple[str, str]]:
             text = None
         if text is not None:
             out.append((f, text))
+    # and the other mirror lists its sections include: CachyOS's cachyos-*-mirrorlist, chaotic-mirrorlist,
+    # EndeavourOS's endeavouros-mirrorlist (a commented-out section's Include is commented out with it)
+    pacman = next((text for f, text in out if f == "/etc/pacman.conf"), "")
+    for f in _pacman_includes(host, pacman):
+        text = read_text(host, host.sys_path(f)) if all(f != p for p, _ in out) else None
+        if text is not None:
+            out.append((f, text))
     return out
+
+
+def _pacman_includes(host, text: str) -> list[str]:
+    """The files pacman.conf's Include lines name in /etc/pacman.d, a glob's matches there in their order, as pacman
+    reads them."""
+    out = []
+    for m in re.finditer(r"^[ \t]*Include[ \t]*=[ \t]*(\S+)", text, re.M):
+        path = posixpath.normpath(m.group(1))
+        if not path.startswith("/etc/pacman.d/"):
+            continue
+        if any(c in path for c in "*?["):
+            folder, pattern = posixpath.split(path)
+            out += [f"{folder}/{f.name}" for f in children(host.sys_path(folder))
+                    if fnmatch.fnmatchcase(f.name, pattern)]
+        else:
+            out.append(path)
+    return list(dict.fromkeys(out))
 
 
 # the lines that name a mirror: apt's one-line deb entries, deb822's URIs: (several addresses on one line; [ \t] only,
@@ -343,11 +369,13 @@ def _parts_in_use(text: str) -> list[str]:
 
 
 def http_hosts(text: str) -> list[str]:
-    """The hosts of every plain-HTTP mirror a repository file names (comments and disabled sources left out)."""
+    """The hosts of every plain-HTTP mirror a repository file names (comments and disabled sources left out). An onion
+    service's is no plain HTTP (apt's tor+http://….onion, Debian's onion mirrors): Tor encrypts it end to end."""
     out = []
     for part in _parts_in_use(text):
         for m in _SOURCE_LINE.finditer(part):
-            out += _HTTP_HOST.findall(" ".join(v for v in m.groupdict().values() if v))
+            out += [h for h in _HTTP_HOST.findall(" ".join(v for v in m.groupdict().values() if v))
+                    if not h.rsplit("@", 1)[-1].split(":")[0].lower().rstrip(".").endswith(".onion")]
     return out
 
 

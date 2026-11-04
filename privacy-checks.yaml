@@ -1823,6 +1823,10 @@ checks:
     why: Packages are signature-verified, but network observers can see what software is installed.
     detect:
       - 'grep -r "http://" /etc/apt/sources.list /etc/apt/sources.list.d/  (including deb822 URIs: fields)'
+      - 'pacman.conf, /etc/pacman.d/mirrorlist and every other file in /etc/pacman.d its Include lines name (CachyOS''s
+        cachyos-*-mirrorlist, chaotic-mirrorlist, EndeavourOS''s endeavouros-mirrorlist; a glob''s matches)'
+      - 'An onion service''s address (tor+http://….onion, Debian''s onion mirrors) is no plain HTTP: Tor encrypts it end
+        to end'
     fix: Switch to HTTPS mirrors.
     remedy: >
       Software downloads go over plain HTTP, so anyone on the network can see what you install (the
