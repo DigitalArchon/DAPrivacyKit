@@ -1046,7 +1046,8 @@ async function openFix(spec) {
         onclick: (close, el) => applyFix(plan, !!confirm?.checked, close, el) },
     ],
   });
-  if (confirm) confirm.addEventListener("change", () => { applyBtn.disabled = !confirm.checked; });
+  // the tick confirms the deletions; it doesn't lift a blocker ("Close Firefox first"), which the server refuses
+  if (confirm) confirm.addEventListener("change", () => { applyBtn.disabled = plan.blockers.length > 0 || !confirm.checked; });
   return m;
 }
 

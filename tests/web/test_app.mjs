@@ -769,6 +769,19 @@ delete routes["POST /api/undo/forget"];
   check(li.textContent.includes("Also runs, as root:") && li.textContent.includes("NetworkManager.service")
         && li.querySelectorAll("pre.changed .add").length === 2, "a plan step shows the commands and lines: " + li.textContent); }
 
+// a fix that deletes files and can't be applied now ("Close Firefox first"): confirming the deletion doesn't enable Apply
+{ routes["POST /api/fix/br.disk_cache/plan"] = () => ({ plan: { id: "pb", check_id: "br.disk_cache", title: "Empty Firefox's cache",
+    blockers: ["Close Firefox first."], side_effects: [], needs_root: false,
+    steps: [{ kind: "delete", text: "Delete ~/.cache/mozilla/firefox/x/cache2", reversible: false, irreversible: true, needs_root: false }] },
+    dry_run: "", result: null });
+  await window.openFix({ id: "br.disk_cache" }); await tick();
+  const m = $$(".modal").at(-1), apply = [...m.querySelectorAll(".buttons button")].at(-1);
+  m.querySelector("label.confirm input").click(); await tick();
+  check(text(".modal .warnbox.bad").includes("Close Firefox first") && m.querySelector("label.confirm input").checked && apply.disabled,
+        "a fix with a blocker can't be applied, its deletions confirmed or not");
+  m.querySelector(".buttons button").click(); await tick();
+  delete routes["POST /api/fix/br.disk_cache/plan"]; }
+
 // reads dialog
 window.openReads(); await tick();
 check($$(".modal .reads .read").length === fixture.state.reads.length, "the reads panel lists every item");
