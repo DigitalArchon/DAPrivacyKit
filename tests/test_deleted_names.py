@@ -367,6 +367,56 @@ def test_the_journal_is_found_through_the_superblocks_copy_of_its_inode():
     assert helper.ext4_extents(bytes(index), {900: bytes(leaf)}.get) == [(0, 32768, 1000), (32768, 100, 40000)]
 
 
+def test_a_crafted_journal_map_is_refused_before_it_costs_the_helper_anything():
+    """The superblock's copy of the journal's map is never read by the kernel, so a disk that mounts can carry any
+    tree there: index entries that all point at one block multiplied the extents (157 million at worst)."""
+    index = bytearray(60)
+    struct.pack_into("<HHHHI", index, 0, 0xF30A, 4, 4, 2, 0)
+    for i in range(4):
+        struct.pack_into("<IIH", index, 12 + 12 * i, i, 900, 0)            # all four at block 900
+    middle = bytearray(BLOCK)
+    struct.pack_into("<HHHHI", middle, 0, 0xF30A, 340, 340, 1, 0)
+    for i in range(340):
+        struct.pack_into("<IIH", middle, 12 + 12 * i, i, 901, 0)          # and every entry of it at block 901
+    leaf = bytearray(BLOCK)
+    struct.pack_into("<HHHHI", leaf, 0, 0xF30A, 340, 340, 0, 0)
+    for i in range(340):
+        struct.pack_into("<IHHI", leaf, 12 + 12 * i, i, 1, 0, 1000 + i)
+    reads = []
+    blocks = {900: bytes(middle), 901: bytes(leaf)}
+    assert helper.ext4_extents(bytes(index), lambda n: reads.append(n) or blocks.get(n)) is None
+    assert len(reads) <= 2
+    # distinct blocks, but more extents than a journal has
+    struct.pack_into("<HHHHI", index, 0, 0xF30A, 4, 4, 1, 0)
+    for i in range(4):
+        struct.pack_into("<IIH", index, 12 + 12 * i, i, 900 + i, 0)
+    leaves = {}
+    for i in range(4):
+        leaf_i = bytearray(BLOCK)
+        struct.pack_into("<HHHHI", leaf_i, 0, 0xF30A, 340, 340, 0, 0)
+        for e in range(340):
+            struct.pack_into("<IHHI", leaf_i, 12 + 12 * e, 340 * i + e, 1, 0, 5000 + 340 * i + e)
+        leaves[900 + i] = bytes(leaf_i)
+    assert len(helper.ext4_extents(bytes(index), leaves.get)) == 1360
+    assert helper.EXT4_EXTENTS_MAX >= 1360
+    old = helper.EXT4_EXTENTS_MAX
+    try:
+        helper.EXT4_EXTENTS_MAX = 1000
+        assert helper.ext4_extents(bytes(index), leaves.get) is None
+    finally:
+        helper.EXT4_EXTENTS_MAX = old
+    # the lookup a journal block's place goes through
+    ext = [(0, 10, 500), (10, 5, 900), (20, 4, 30)]
+    assert [helper._extent_at(ext, n) for n in (0, 9, 10, 14, 15, 19, 20, 23, 24)] == [
+        ext[0], ext[0], ext[1], ext[1], None, None, ext[2], ext[2], None]
+
+
+def test_a_journal_whose_extents_overlap_isnt_read(root, monkeypatch):
+    dev, home = csum_disk(root, monkeypatch, extents=((0, JOURNAL_LEN, JOURNAL_AT), (10, 4, JOURNAL_AT + 100)))
+    b = call("names_begin", mount="/")
+    assert b["journal"]["state"] == "unknown"
+
+
 def listed(root, monkeypatch, places):
     """Lists the names on the fixture disk with each folder's blocks at `places` (inode -> offset),
     which the test can change afterwards (a rebuilt folder's new blocks)."""

@@ -3053,6 +3053,7 @@ BTRFS_SUPER = 65536
 BTRFS_DIR_ITEM, BTRFS_DIR_INDEX = 84, 96
 EXT4_SUPER = 1024
 EXT4_EXTENT_MAGIC = 0xF30A
+EXT4_EXTENTS_MAX = 4096           # a journal is a few extents (one, made by mke2fs); more is a crafted tree (ext4_extents)
 JBD2_MAGIC = 0xC03B3998
 JBD2_MAGIC_BYTES = JBD2_MAGIC.to_bytes(4, "big")
 JBD2_DESCRIPTOR = 1
@@ -3328,16 +3329,20 @@ def parse_ext4_superblock(sb: bytes) -> dict | None:
     return out
 
 
-def ext4_extents(node: bytes, read_block, depth_left: int = 3) -> list[tuple[int, int, int]] | None:
+def ext4_extents(node: bytes, read_block, depth_left: int = 3, _seen: set | None = None) -> list[tuple[int, int, int]] | None:
     """(first logical block, count, first physical block) of an extent tree whose root is `node`
     (an inode's 60-byte block map, or a tree block); `read_block(n)` reads tree blocks further down.
-    None if it isn't an extent tree or can't be read."""
+    None if it isn't an extent tree or can't be read. The journal's root is the superblock's copy of its
+    map, which the kernel never reads, so a disk that mounts can carry any tree there: one whose index
+    entries point at the same block again and again made the root helper list millions of extents (157
+    million at worst), so a tree block reached twice, or more than EXT4_EXTENTS_MAX extents, isn't a tree."""
     import struct
     if len(node) < 12:
         return None
     magic, entries, _, depth = struct.unpack_from("<HHHH", node, 0)
     if magic != EXT4_EXTENT_MAGIC or 12 + 12 * entries > len(node) or depth > 5:
         return None
+    seen = set() if _seen is None else _seen
     out = []
     for i in range(entries):
         p = 12 + 12 * i
@@ -3348,12 +3353,26 @@ def ext4_extents(node: bytes, read_block, depth_left: int = 3) -> list[tuple[int
             if depth_left <= 0:
                 return None
             _, lo, hi = struct.unpack_from("<IIH", node, p)
+            if hi << 32 | lo in seen:
+                return None
+            seen.add(hi << 32 | lo)
             child = read_block(hi << 32 | lo)
-            sub = ext4_extents(child, read_block, depth_left - 1) if child is not None else None
+            sub = ext4_extents(child, read_block, depth_left - 1, seen) if child is not None else None
             if sub is None:
                 return None
             out += sub
+        if len(out) > EXT4_EXTENTS_MAX:
+            return None
     return sorted(out)
+
+
+def _extent_at(extents: list[tuple[int, int, int]], lblk: int) -> tuple[int, int, int] | None:
+    """The extent holding a logical block, from extents sorted by it and not overlapping."""
+    import bisect
+    i = bisect.bisect_right(extents, (lblk, float("inf"), float("inf"))) - 1
+    if i >= 0 and extents[i][0] <= lblk < extents[i][0] + extents[i][1]:
+        return extents[i]
+    return None
 
 
 def parse_jbd2_superblock(block: bytes) -> dict | None:
@@ -3426,7 +3445,7 @@ def _ext4_journal(fd: int, bsize: int) -> tuple[str, list[tuple[int, int, int]],
         bad += b
         return data or None
     extents = ext4_extents(fs["journal_map"], read_block)
-    if not extents:
+    if not extents or any(a[0] + a[1] > b[0] for a, b in zip(extents, extents[1:])):     # overlapping: not a file's
         return "unknown", [], None, bad
     jsb = read_block(extents[0][2]) if extents[0][0] == 0 else None
     jsb = parse_jbd2_superblock(jsb or b"")
@@ -3448,10 +3467,8 @@ def _journal_copies(fd: int, bsize: int, homes: set[int]) -> tuple[str, dict[int
     maxlen = jsb["maxlen"] - (jsb["fast_commit"] if incompat & JBD2_FAST_COMMIT and jsb["fast_commit"] < jsb["maxlen"] - first else 0)
 
     def phys(lblk: int) -> int | None:
-        for start, count, p in extents:
-            if start <= lblk < start + count:
-                return p + lblk - start
-        return None
+        e = _extent_at(extents, lblk)
+        return None if e is None else e[2] + lblk - e[0]
     wanted: dict[int, int] = {}                          # journal block -> the home block it is a copy of
     read = 0
     buf = mmap.mmap(-1, TRIM_READ)
@@ -3676,7 +3693,7 @@ def _names_journal_step(s: dict, fd: int) -> None:
     budget = NAMES_JOURNAL_STEP // bsize
     try:
         while budget > 0 and _journal_left(j):
-            ext = next(((a, c, p) for a, c, p in j["extents"] if a <= j["pos"] < a + c), None)
+            ext = _extent_at(j["extents"], j["pos"])
             if ext is None:                              # a hole in the journal's file
                 j["pos"] = min((a for a, _, _ in j["extents"] if a > j["pos"]), default=j["total"])
                 continue
@@ -3752,11 +3769,12 @@ def _names_journal_weak(s: dict) -> None:
 
 
 def _journal_block(fd: int, j: dict, lblk: int) -> bytes | None:
-    for a, c, p in j["extents"]:
-        if a <= lblk < a + c:
-            data, bad = _aligned_read(fd, (p + lblk - a) * j["bsize"], j["bsize"])
-            return data if len(data) == j["bsize"] and not bad else None
-    return None
+    e = _extent_at(j["extents"], lblk)
+    if e is None:
+        return None
+    a, _, p = e
+    data, bad = _aligned_read(fd, (p + lblk - a) * j["bsize"], j["bsize"])
+    return data if len(data) == j["bsize"] and not bad else None
 
 
 def _ext4_group_table(desc: bytes, size: int) -> int:
