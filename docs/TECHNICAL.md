@@ -283,7 +283,9 @@ again, deepest first, each only while it is empty or holds only what the fix put
 anything added since stays, with everything in it, and the revert says so, naming what is there. After each
 fix the result of its check is stored
 (`set_outcome`); if a later scan finds the problem again, the fix is reported as undone, with which steps
-were changed back.
+were changed back: only when that result was a pass (a check that couldn't be checked then, such as an online
+test after its guide, was never seen resolved), and not once the user has reverted it, even in part, or
+reverted another fix of the same check since.
 
 `apply_plan` rolls a failed attempt back step by step (each rollback's commands collected as a revert's
 are) and, when any step had run, keeps the attempt as a `failed` entry with its `error`, the step it failed

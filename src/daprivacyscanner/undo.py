@@ -54,6 +54,9 @@ class UndoLog:
 
     def update(self, entry: dict) -> None:
         reversible = [r for r in entry["records"] if UndoLog.can_undo(r)]
+        put_back = lambda e: sum(bool(r.get("reverted")) for r in e["records"])  # noqa: E731
+        if put_back(entry) > put_back(self.get(entry["id"]) or {"records": []}):
+            entry["last_reverted"] = time.time()      # a revert put some of it back (all, or part): undone() goes by it
         if reversible and all(r.get("reverted") for r in reversible):
             entry["state"] = "reverted"
             entry["reverted"] = time.time()
@@ -74,11 +77,13 @@ class UndoLog:
         self._save(entries)
 
     def undone(self, results: dict, accepted: dict | None = None, host: Host | None = None) -> list[dict]:
-        """Fixes the user applied whose problem is back: the check was resolved just after the fix,
-        and is a finding again now. Not those reverted from History, and not a finding the user has
-        since accepted. Each names the steps whose settings no longer hold what the fix set (read
-        now, when `host` is given). The latest fix per check. The log notes when each was first
-        found undone, and forgets it once the problem is gone again."""
+        """Fixes the user applied whose problem is back: the check was resolved just after the fix (it
+        passed: one that couldn't be checked then wasn't seen resolved), and is a finding again now. Not
+        those reverted from History, even in part, nor any whose check had one of its fixes reverted since
+        (the user brought the problem back), and not a finding the user has since accepted. Each names the
+        steps whose settings no longer hold what the fix set (read now, when `host` is given). The latest
+        fix per check. The log notes when each was first found undone, and forgets it once the problem is
+        gone again."""
         from .fix import ACTION_KINDS
         from .history import ACTIVE, hidden
         accepted = accepted or {}
@@ -90,9 +95,15 @@ class UndoLog:
         nothing_to_undo = lambda e: bool(e["records"]) and all(  # noqa: E731
             rec["kind"] in IRREVERSIBLE_KINDS for rec in e["records"])
         entries, out, seen, dirty = self.entries(), [], set(), False
+        # when each check last had one of its fixes reverted from History, even in part
+        reverted_at: dict[str, float] = {}
+        for e in entries:
+            t = e.get("last_reverted") or e.get("reverted")
+            if t:
+                reverted_at[e["check_id"]] = max(t, reverted_at.get(e["check_id"], t))
         for e in reversed(entries):
             o = e.get("outcome")
-            if e["state"] not in ("applied", "partly reverted") or not o or e["check_id"] in seen or nothing_to_undo(e):
+            if e["state"] != "applied" or not o or e["check_id"] in seen or nothing_to_undo(e):
                 if e.pop("undone_since", None) is not None:      # reverted, or a later fix of the same check
                     dirty = True
                 continue
@@ -100,8 +111,13 @@ class UndoLog:
             if r is None:                                   # not scanned this time: say nothing either way
                 continue
             seen.add(e["check_id"])
-            was_fixed = o.get("status") not in ACTIVE or not o.get("severity")
-            if not (was_fixed and active(r)) or hidden(accepted, e["check_id"], r):
+            # an outcome of unknown or error resolved nothing (the rescan after an online test's guide can't run it)
+            was_fixed = o.get("status") in ("pass", "not_applicable") or (o.get("status") in ACTIVE
+                                                                         and not o.get("severity"))
+            # a fix of this check reverted since this one's outcome (step 1 of a guide whose step 2 this is): the
+            # problem is back because the user put it back
+            reverted_since = e["check_id"] in reverted_at and reverted_at[e["check_id"]] >= o.get("at", 0)
+            if not (was_fixed and active(r)) or reverted_since or hidden(accepted, e["check_id"], r):
                 if e.pop("undone_since", None) is not None:
                     dirty = True
                 continue

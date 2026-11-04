@@ -82,6 +82,52 @@ def test_a_fix_that_left_the_problem_in_place_is_not_called_undone(tmp_path):
     assert len(log.undone({"net.hostname_broadcast": {"status": "warn", "effective_severity": 4}})) == 1
 
 
+def test_a_fix_its_check_couldnt_check_right_after_is_not_called_undone(tmp_path):
+    """An online test's guide: the rescan after it can't run the test, so the outcome is unknown. Run again, the test
+    still finding the problem had the fix reported undone, though nothing ever saw it resolved."""
+    log = UndoLog(tmp_path / "state")
+    log.add("e1", "net.dns_encryption_in_use", "Encrypt DNS", [])
+    failing = {"net.dns_encryption_in_use": {"status": "fail", "effective_severity": 5}}
+    for status in ("unknown", "error"):
+        log.set_outcome("e1", {"status": status, "effective_severity": 5})
+        assert log.undone(failing) == []
+    log.set_outcome("e1", {"status": "not_applicable", "effective_severity": 0})
+    assert len(log.undone(failing)) == 1
+
+
+def test_a_problem_back_because_the_user_reverted_is_not_a_fix_undone(tmp_path):
+    """A guide stays open once its check passes, so step 1 resolved it and step 2 (a lasting default) was applied
+    too. Reverting step 1 from History had step 2 reported undone, with nothing of it changed back. An entry reverted
+    only in part (one of its settings changed since, and kept) was reported undone too."""
+    from daprivacyscanner.fix import FixPlan, GSettingsSet, WriteFile, apply_plan, revert_entry
+    screen, idle = ("org.gnome.desktop.screensaver", "lock-enabled"), ("org.gnome.desktop.session", "idle-delay")
+    gs = FakeGSettings({screen: "false", idle: "uint32 0"})
+    host = make_host(tmp_path, home_files={".config/x.conf": "A=1\n"})
+    host.runner.handlers["gsettings"] = gs
+    log = UndoLog(host.home / ".local/state/daprivacyscanner")
+    passed, failing = {"status": "pass", "effective_severity": 0}, {"status": "fail", "effective_severity": 4}
+    one = apply_plan(FixPlan("desk.x", "Step 1", [GSettingsSet(*screen, "true")]), host, log)
+    log.set_outcome(one.entry_id, passed)
+    two = apply_plan(FixPlan("desk.x", "Step 2", [WriteFile(host.home / ".config/x.conf", lambda o: "A=2\n", "Set A",
+                                                            "~/.config/x.conf")]), host, log)
+    log.set_outcome(two.entry_id, passed)
+    revert_entry(log.get(one.entry_id), host, log)
+    assert log.undone({"desk.x": failing}, {}, host) == []
+    # applied again since, and then changed back by something else: that is a fix undone
+    again = apply_plan(FixPlan("desk.x", "Step 1", [GSettingsSet(*screen, "true")]), host, log)
+    log.set_outcome(again.entry_id, passed)
+    gs.values[screen] = "false"
+    [u] = log.undone({"desk.x": failing}, {}, host)
+    assert u["entry_id"] == again.entry_id and u["changed_back"]
+    part = apply_plan(FixPlan("auth.x", "t", [GSettingsSet(*screen, "true"), GSettingsSet(*idle, "uint32 300")]), host,
+                      log)
+    log.set_outcome(part.entry_id, passed)
+    gs.values[idle] = "uint32 600"                                    # changed since: reverting keeps it
+    revert_entry(log.get(part.entry_id), host, log)
+    assert log.get(part.entry_id)["state"] == "partly reverted"
+    assert log.undone({"auth.x": failing}, {}, host) == []
+
+
 def test_steps_say_what_was_changed_back(tmp_path):
     host = make_host(tmp_path)
     f = tmp_path / "conf"
