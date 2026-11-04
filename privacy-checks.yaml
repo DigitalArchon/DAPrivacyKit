@@ -3853,7 +3853,8 @@ checks:
       - 'Listening services on all interfaces that the host firewall lets through'
       - 'With a port probe server of your own (online.json port_probe): ask it to connect to each one from outside,
         at this computer''s own global address (not a VPN tunnel''s, as the ipv6_global context counts them; the
-        interface IPv6 traffic leaves by first)'
+        interface IPv6 traffic leaves by first). A TCP service it gives no answer for ({"open": true|false}), and one
+        on UDP, which it doesn''t probe, are likely reachable, as without a probe'
       - 'Otherwise: likely reachable; confirm with daprivacyscanner --probe from a device on another network'
     fix: >
       Stop the service, bind it to a local address, or block it in the host firewall: net.exposed_services' guide,

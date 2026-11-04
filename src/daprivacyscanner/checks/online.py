@@ -941,20 +941,31 @@ class Ipv6Reachable(OnlineCheck):
                  for a in v6[iface]]
         probe = scan.online.get("port_probe")
         if probe and addrs:
-            open_, closed = [], []
+            # a service the probe gave no answer for (down, an HTTP error, an answer without "open": true or false)
+            # wasn't tested, nor was one on UDP, which it doesn't probe: neither is "not reachable"
+            open_, closed, unanswered = [], [], []
+            untested = [s.label() for s in candidates if s.proto != "tcp"]
             for s in candidates:
                 if s.proto != "tcp":
                     continue
                 r = scan.net.http_get(f"{probe}?{urllib.parse.urlencode({'host': addrs[0], 'port': s.port})}")
                 try:
-                    is_open = bool(json.loads(r.text()).get("open")) if r.ok else None
+                    is_open = json.loads(r.text()).get("open") if r.ok else None
                 except (ValueError, AttributeError):
                     is_open = None
-                (open_ if is_open else closed).append(s.label())
+                (open_ if is_open is True else closed if is_open is False else unanswered).append(s.label())
             ev += [Evidence.val("Reachable from outside", ", ".join(open_) or "none"),
                    Evidence.val("Not reachable from outside", ", ".join(closed) or "none")]
+            if unanswered:
+                ev.append(Evidence.val("The probe didn't answer for", ", ".join(unanswered)))
+            if untested:
+                ev.append(Evidence.val("Not probed (UDP)", ", ".join(untested)))
             if open_:
                 return failed(f"Reachable from the internet over IPv6: {', '.join(open_)}.", *ev)
+            if unanswered or untested:
+                return warned("These services are likely reachable from the internet over IPv6, unless your router "
+                              "blocks incoming IPv6, and your port probe didn't test them: "
+                              f"{', '.join(unanswered + untested)}.", *ev)
             return passed("Your port probe couldn't reach any service over IPv6.", *ev)
         ev.append(Evidence.val("Listening on IPv6 and not blocked here", ", ".join(s.label() for s in candidates)))
         return warned("These services are likely reachable from the internet over IPv6, unless your router blocks "

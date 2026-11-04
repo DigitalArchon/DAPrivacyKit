@@ -309,6 +309,24 @@ def test_ipv6_reachable_with_and_without_a_probe(cat, tmp_path):
     assert o.status is Status.FAIL and val(o, "Reachable from outside") == "22/tcp (SSH)"
 
 
+def test_ipv6_reachable_is_no_pass_on_what_the_probe_didnt_test(cat, tmp_path):
+    """A port probe that doesn't answer (down, an HTTP error, an answer without "open") counted every service as not
+    reachable, and passed; with only UDP services listening, which it doesn't probe, it passed having tested nothing."""
+    host = make_host(tmp_path, files={"/proc/net/if_inet6": "2a0212340000000012345678abcdef01 02 40 00 00   eth0\n"})
+    listeners = network.parse_ss(sample("ss/mint-22.txt"))
+    probe_url = "https://probe.example.net/check"
+    settings = {**SETTINGS, "port_probe": probe_url}
+    for fake in (FakeNet(), FakeNet(http={probe_url + "*": HttpResult(503, b"rate limited")}),
+                 FakeNet(http={probe_url + "*": HttpResult(200, b'{"queued": true}')})):
+        o = run(cat, "net.ipv6_reachable", host, fake, settings, listeners=listeners, ipv6_global=True)
+        assert o.status is Status.WARN and "22/tcp" in val(o, "The probe didn't answer for")
+        assert val(o, "Not reachable from outside") == "none"
+    udp = network.parse_ss('udp   UNCONN 0      0      [::]:1716      [::]:*    users:(("kdeconnectd",pid=1,fd=1))\n')
+    fake = FakeNet(http={probe_url + "*": HttpResult(200, b'{"open": true}')})
+    o = run(cat, "net.ipv6_reachable", host, fake, settings, listeners=udp, ipv6_global=True)
+    assert o.status is Status.WARN and val(o, "Not probed (UDP)").startswith("1716/udp")
+
+
 # ------------------------------------------------------------------ UPnP
 
 IGD_XML = """<?xml version="1.0"?><root xmlns="urn:schemas-upnp-org:device-1-0"><device><deviceList><device>
