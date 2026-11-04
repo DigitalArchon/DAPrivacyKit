@@ -79,7 +79,11 @@ async function api(method, path, body, raw = false) {
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   if (raw) {
-    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+    if (!res.ok) {                    // an error is JSON all the same: what it says, not "500 Internal Server Error"
+      let data = {};
+      try { data = await res.json(); } catch { /* empty */ }
+      throw new Error(data.error || data.detail || `${res.status} ${res.statusText}`);
+    }
     return res.text();
   }
   let data = {};

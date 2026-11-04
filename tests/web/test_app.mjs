@@ -681,7 +681,14 @@ check(text(".modal .export").includes("how to undo it by hand"), "and says what 
         "switching to the report redacts it again: " + asked.at(-1));
   sel.value = "everything"; sel.dispatchEvent(new window.Event("change")); await tick();
   check(!redact.checked && asked.at(-1)?.includes("redact=0"), "and back to everything, whole: " + asked.at(-1));
-  window.fetch = fetch0; }
+  window.fetch = fetch0;
+  // an export that fails says why, from the server's answer
+  const export0 = routes["GET /api/export"];
+  routes["GET /api/export"] = () => ({ __status: 500, data: { error: "UnicodeEncodeError: a file name isn't valid text" } });
+  $(".modal .export select:last-of-type").dispatchEvent(new window.Event("change")); await tick();
+  check(text(".modal .export pre") === "UnicodeEncodeError: a file name isn't valid text",
+        "a failed export says why, not only its status: " + text(".modal .export pre"));
+  routes["GET /api/export"] = export0; }
 $$(".modal .buttons button").at(-1).click();
 
 // a guide with inputs: changing one builds the guide again with it
