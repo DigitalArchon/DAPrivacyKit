@@ -135,6 +135,7 @@ def test_the_observed_network_is_pastas_fenced_and_captured(host, tmp_path):
     p = parts(host, tmp_path, resolv="nameserver 169.254.0.1\n", pasta="pasta", pcap=tmp_path / "packets")
     a = trial.ENGINES["bubblewrap"].command(host, t, p)
     assert a[0] == "pasta" and a[a.index("--pcap") + 1] == str(tmp_path / "packets") and "--no-map-gw" in a
+    assert "--no-icmp" in a[:a.index("--")], "no pings sent on from the computer: the capture's sums don't see them"
     fence = a[a.index("--") + 3]
     assert "prohibit to 192.168.0.0/16" in fence and "1080" not in fence, "the local network is refused, no proxy let through"
     assert "--share-net" in a, "inside pasta's namespace it shares that network, not the computer's"

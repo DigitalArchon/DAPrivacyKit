@@ -814,7 +814,11 @@ class Bubblewrap(Engine):
         fence = sandbox.fence(host, proxies=False)
         if fence is None:
             raise sandbox.SandboxError("The local network can't be fenced off (iproute2's ip isn't installed).")
-        return [parts.pasta, *sandbox.pasta_opts(host), "--pcap", str(parts.pcap), "--", *fence, *a]
+        # --no-icmp: pasta sends the namespace's pings on from ping sockets of the computer's (and allows ping sockets
+        # in its namespace), and the packets are summed up as TCP and UDP only (tools/pcap.py): a program could send
+        # data in pings to any host while the list said it contacted nothing, wherever the computer's ping_group_range
+        # takes in the user, as systemd's default does (the review of 2026-11-04). A program on trial needs no ping.
+        return [parts.pasta, *sandbox.pasta_opts(host), "--no-icmp", "--pcap", str(parts.pcap), "--", *fence, *a]
 
 
 class Flatpak(Engine):
