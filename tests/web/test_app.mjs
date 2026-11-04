@@ -1855,6 +1855,31 @@ while ($$(".modal").length) { $$(".modal .buttons button").at(-1).click(); await
   m.querySelectorAll(".buttons button")[1].click(); await tick();          // Cancel
   routes["POST /api/easy/apply"] = apply0; }
 
+// a check whose Easy fix is the same change as another's (the server keeps one plan, saying which covers the other):
+// it has no tick of its own, which applied nothing, and isn't counted; it goes with the other's
+{ const plan0 = routes["POST /api/easy/plan"], apply0 = routes["POST /api/easy/apply"], bodies = [];
+  const item = (check_id, title, plans, covered_by = null) => ({ check_id, title, cost: "", kind: "finding", severity: 2, status: "fail",
+    needs_root: true, blockers: [], irreversible: false, covered_by, plans });
+  routes["POST /api/easy/plan"] = () => ({ admin_active: false, items: [
+    item("enc.coredumps_retained", "Crash dumps kept on the disk", [{ id: "c1", check_id: "enc.coredumps_retained", title: "Turn off apport",
+      blockers: [], side_effects: ["This also deals with “Crash reports”."], needs_root: true, irreversible_files: 0, dry_run: "",
+      steps: [{ kind: "root", text: "Disable apport", reversible: true, irreversible: false, needs_root: true }] }]),
+    item("tel.crash_reports", "Crash reports", [], "Crash dumps kept on the disk")] });
+  routes["POST /api/easy/apply"] = (body) => { bodies.push(body); return { __status: 409, data: { error: "A scan or fix is already running." } }; };
+  await window.openEasy(); await tick(); await tick();
+  const m = $(".modal.easy-modal"), apply = [...m.querySelectorAll(".buttons button")].at(-1);
+  const [first, covered] = [...m.querySelectorAll(".eitem")];
+  check(first.querySelector("input[type=checkbox]")?.checked && !covered.querySelector("input")
+        && covered.textContent.includes("The same change as “Crash dumps kept on the disk”") && apply.textContent === "Apply 1 fix",
+        "the one it goes with has its tick; it has none, and isn't counted: " + apply.textContent);
+  first.querySelector("input").click(); await tick();
+  check(apply.disabled && apply.textContent === "Apply", "unticked, nothing is left to apply");
+  first.querySelector("input").click(); await tick();
+  apply.click(); await tick(); await tick();
+  check(bodies.at(-1)?.plan_ids.join() === "c1", "and Apply sends that one's plan: " + JSON.stringify(bodies.at(-1)));
+  m.querySelectorAll(".buttons button")[1].click(); await tick();          // Cancel
+  routes["POST /api/easy/plan"] = plan0; routes["POST /api/easy/apply"] = apply0; }
+
 // a fix that doesn't cover this machine: "no fix here" in place of the tier, and why in the details
 { const S = window.eval("S");
   const saved = JSON.stringify(S.report.results["tel.location"]);

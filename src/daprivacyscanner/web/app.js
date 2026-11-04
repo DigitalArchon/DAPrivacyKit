@@ -1147,10 +1147,13 @@ async function openEasy() {
     applyBtn.className = deletes.length ? "danger" : "primary";
   };
   const item = (it) => {
-    const box = h("input", { type: "checkbox", checked: picked.has(it.check_id), disabled: it.blockers.length > 0,
-      onchange: () => { box.checked ? picked.add(it.check_id) : picked.delete(it.check_id); update(); } });
+    // a check whose fix is the same change as another's (covered_by) has no plan left of its own, so no tick either:
+    // it goes with that one's. A tick of its own applied nothing (alone, Apply sent no plan; with others, it was counted)
+    const own = it.plans.length > 0;
+    const box = own ? h("input", { type: "checkbox", checked: picked.has(it.check_id), disabled: it.blockers.length > 0,
+      onchange: () => { box.checked ? picked.add(it.check_id) : picked.delete(it.check_id); update(); } }) : null;
     return h("li", { class: `eitem${it.blockers.length ? " blocked" : ""}` },
-      h("label", { class: "check" }, box, h("b", {}, it.title)),
+      h(own ? "label" : "div", { class: "check" }, box, h("b", {}, it.title)),
       h("ul", { class: "small does" }, it.plans.map(p => h("li", {}, p.title))),
       it.covered_by ? h("p", { class: "small muted" }, `The same change as “${it.covered_by}”: applying that one deals with this too.`) : null,
       it.cost ? h("div", { class: "small cost" }, h("span", { class: "muted" }, "What it costs you: "), it.cost) : null,
@@ -1187,7 +1190,7 @@ async function openEasy() {
   const load = async () => {
     data = await api("POST", "/api/easy/plan");
     picked.clear();
-    for (const it of data.items) if (!it.blockers.length) picked.add(it.check_id);
+    for (const it of data.items) if (!it.blockers.length && it.plans.length) picked.add(it.check_id);
     render();
   };
   confirm.addEventListener("change", () => update());
