@@ -1536,7 +1536,10 @@ function historyEntry(en, rerender) {
     try {
       if (en.needs_root && !S.adminActive) setStatus("Waiting for administrator authorization…", "busy");
       const r = await api("POST", `/api/undo/${en.id}/revert`, { force });
-      if (en.needs_root) { S.adminActive = true; renderTop(); setStatus("Reverted.", "done"); }
+      if (en.needs_root) { S.adminActive = true; renderTop(); }
+      // what reverting did: a step changed since it was applied is left as it is, unless reverted anyway
+      setStatus(r.ok ? `Reverted: ${en.title}.` : r.conflict ? `Not reverted: ${en.title} has been changed since it was applied.`
+        : `Not everything could be reverted: ${en.title}.`, r.ok ? "done" : r.conflict ? "warned" : "failed");
       takeRecheck(r);
       msg.className = `small ${r.ok ? "okmsg" : "errmsg"}`;
       msg.replaceChildren(r.messages.join(" "));
@@ -1547,7 +1550,7 @@ function historyEntry(en, rerender) {
       const keep = msg;
       rerender(fresh.entries);
       document.querySelector(`[data-entry="${en.id}"] .msgslot`)?.replaceWith(keep);
-    } catch (e) { toast(e.message, "error"); }
+    } catch (e) { toast(e.message, "error"); setStatus(e.message, "failed"); }      // not "Waiting for …" for good
   };
   return h("div", { class: "entry", "data-entry": en.id },
     h("div", { class: "ehead" }, h("b", {}, en.title), h("span", { class: "muted small" },

@@ -776,6 +776,32 @@ while ($$(".modal").length) { $$(".modal .buttons button").at(-1).click(); await
 routes["GET /api/undo"] = () => ({ entries: [] });
 delete routes["POST /api/undo/forget"];
 
+// reverting from History: a declined password prompt leaves no "Waiting for administrator authorization…" behind, and a
+// revert that met a change made since doesn't say "Reverted."
+{ const entry = { id: "e5", check_id: "kern.sysrq", title: "Restrict SysRq", applied: 1790000000, state: "applied", undone_since: null,
+    can_revert: true, needs_root: true, via_text: "", error: "", failed_step: "",
+    steps: [{ text: "kernel.sysrq 1 → 176", reversible: true, reverted: false, as_root: true, commands: [], files: [], lines: [],
+              undo: "", revert_ran: [] }] };
+  const answers = [{ __status: 403, data: { error: "Administrator access was declined, so nothing was reverted.", declined: true } },
+                   { ok: false, conflict: true, messages: ["kernel.sysrq has changed since"], entry, undone: [] }];
+  routes["GET /api/undo"] = () => ({ entries: [entry] });
+  routes["POST /api/undo/e5/revert"] = () => answers.shift();
+  const S = window.eval("S"), admin0 = S.adminActive;
+  S.adminActive = false;
+  await window.openHistory(); await tick();
+  const revertBtn = () => $$(".modal .history .entry button").find(b => b.textContent.startsWith("Revert"));
+  revertBtn().click(); await tick(); await tick();
+  check(text("#status-text") === "Administrator access was declined, so nothing was reverted." && $("#status").className === "failed",
+        "a declined prompt while reverting says so in the status bar: " + text("#status-text"));
+  revertBtn().click(); await tick(); await tick();
+  check(text("#status-text") === "Not reverted: Restrict SysRq has been changed since it was applied." && $("#status").className === "warned"
+        && text(".modal .history .entry").includes("has changed since"),
+        "a revert that met a change made since doesn't say Reverted: " + text("#status-text"));
+  $$(".modal .buttons button").at(-1).click(); await tick();
+  S.adminActive = admin0;
+  delete routes["POST /api/undo/e5/revert"];
+  routes["GET /api/undo"] = () => ({ entries: [] }); }
+
 // a plan's step names what a root change runs after it, and the lines it writes
 { const li = window.stepLine({ text: "Write /etc/x.conf", reversible: true, irreversible: false, needs_root: true,
     commands: ["systemctl try-reload-or-restart NetworkManager.service"], lines: ["+ [connectivity]", "+ enabled=false"] });
