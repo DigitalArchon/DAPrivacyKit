@@ -226,6 +226,19 @@ def test_wipe_overwrites_in_place_and_never_follows_links(tmp_path):
     assert list(disk.iterdir()) == [] and outside.exists()
 
 
+def test_every_file_is_overwritten_however_many(tmp_path, monkeypatch):
+    """A cap on the overwrite (MAX_FILES, 100,000) left every file past it deleted without being overwritten, and
+    nothing said so: the page counted 150,000 files and the toast said 100,000 overwritten. There is none now."""
+    monkeypatch.setattr(R, "MAX_FILES", 3, raising=False)
+    disk = tmp_path / "ram"
+    (disk / "sub").mkdir(parents=True)
+    names = [disk / f"f{i}" for i in range(3)] + [disk / "sub" / f"g{i}" for i in range(3)]
+    for p in names:
+        p.write_bytes(b"secret" * 100)
+    w = R.wipe(disk, delete=False)
+    assert w.files == 6 and not w.failed and [p.read_bytes() for p in names] == [bytes(600)] * 6
+
+
 def bwrap_runs() -> bool:
     import shutil
     import subprocess

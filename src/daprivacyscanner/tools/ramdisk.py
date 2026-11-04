@@ -28,7 +28,6 @@ NAMES = (NAME, BROWSER)                 # the helper knows these two, and no oth
 DEFAULT_MB = 1024
 CHUNK = 1024 * 1024
 ZEROS = bytes(CHUNK)
-MAX_FILES = 100_000
 
 
 def folder(host: Host, name: str = NAME) -> Path:
@@ -406,9 +405,7 @@ def wipe(path: Path, device: int | None = None, delete: bool = True) -> Wipe:
                     os.chmod(d, stat.S_IMODE(st.st_mode) | 0o700, dir_fd=dfd)
             except OSError:
                 dirs.remove(d)
-        for f in files:
-            if w.files >= MAX_FILES:
-                break
+        for f in files:                                   # every one: a cap left the rest deleted, not overwritten
             try:
                 st = os.stat(f, dir_fd=dfd, follow_symlinks=False)
             except OSError:
