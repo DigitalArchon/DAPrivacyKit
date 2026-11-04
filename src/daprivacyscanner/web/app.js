@@ -4427,16 +4427,20 @@ async function openNames(mount = null) {
   const usable = data.targets.filter(t => !t.blocked);
   chosen = (usable.find(t => t.mount === mount) || usable[0])?.mount;
 
+  // whether it started: refused (an app being watched, the TRIM test running), it can be asked for again
   const start = async (trimFirst = false) => {
-    try { await api("POST", "/api/tools/names/start", { mount: chosen, trim_first: trimFirst }); poll(); }
-    catch (e) { toast(e.message, "error"); }
+    try { await api("POST", "/api/tools/names/start", { mount: chosen, trim_first: trimFirst }); }
+    catch (e) { toast(e.message, "error"); return false; }
+    poll();
+    return true;
   };
+  // a listing that ended without its list says why, above the start, so it can be started again
   const poll = async () => {
     if (closed) return;
     let r;
-    try { r = await api("GET", "/api/tools/names/job"); } catch (e) { fill(body, h("div", { class: "warnbox bad" }, e.message)); return; }
+    try { r = await api("GET", "/api/tools/names/job"); } catch (e) { fill(body, h("div", { class: "warnbox bad" }, e.message), startView()); return; }
     const job = r.job;
-    if (!job) { fill(body, h("div", { class: "warnbox" }, "Nothing to show: it was stopped.")); return; }
+    if (!job) { fill(body, h("div", { class: "warnbox" }, "Nothing to show: it was stopped."), startView()); return; }
     S.adminActive = true; renderTop();
     if (job.state === "asking" || job.state === "running") {
       const frac = job.total ? Math.min(job.done / job.total, 1) : 0;
@@ -4473,7 +4477,10 @@ async function openNames(mount = null) {
           + "its folder as the file is deleted, so the journal is where the names are.") : null);
     });
     const go = h("button", { class: "primary", disabled: !chosen || data.busy }, "Find them");
-    go.addEventListener("click", () => { go.disabled = true; go.textContent = data.admin_active ? "Starting…" : "Waiting for authorization…"; start(); });
+    go.addEventListener("click", async () => {
+      go.disabled = true; go.textContent = data.admin_active ? "Starting…" : "Waiting for authorization…";
+      if (!await start()) { go.disabled = false; go.textContent = "Find them"; }
+    });
     return [
       h("p", {}, "When you delete a file, its name often stays on the disk: on ext4 in the journal (and, under older kernels, "
         + "in the folder's own records), on btrfs in old copies of the records. This lists the names of deleted files that can still be read, and clears them where it safely can."),

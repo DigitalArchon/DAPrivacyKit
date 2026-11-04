@@ -2009,6 +2009,28 @@ while ($$(".modal").length) { $$(".modal .buttons button").at(-1).click(); await
   routes["GET /api/tools/names/job"] = namesJob; routes["GET /api/tools/names/clean"] = namesClean;
   trimJob = null; keepsJob = null; trialNow = null; browserJob = null; }
 
+// Deleted file names: a start the server refuses (an app being watched) leaves Find them to try again, and a listing
+// that ended without its list says why above the start
+{ const start0 = routes["POST /api/tools/names/start"], job0 = routes["GET /api/tools/names/job"];
+  routes["POST /api/tools/names/start"] = () => ({ __status: 409, data: { error: "An app is being watched (What does this app keep?): "
+    + "end the watch first." } });
+  await window.openNames(); await tick();
+  const find = () => [...$$(".modal").at(-1).querySelectorAll("button")].find(b => b.textContent === "Find them");
+  find().click(); await tick(); await tick();
+  check(find() && !find().disabled && $$("#toasts .toast").at(-1)?.textContent.startsWith("An app is being watched"),
+        "a start the server refuses leaves Find them, to try again");
+  routes["POST /api/tools/names/start"] = start0;
+  routes["GET /api/tools/names/job"] = () => ({ __status: 500, data: { error: "The helper stopped." } });
+  find().click(); await tick(); await tick(); await tick();
+  check(text(".modal .names .warnbox.bad") === "The helper stopped." && find() && !find().disabled,
+        "a listing that couldn't be followed says why, with the start under it");
+  routes["GET /api/tools/names/job"] = () => ({ job: null });
+  find().click(); await tick(); await tick(); await tick();
+  check(text(".modal .names").includes("Nothing to show: it was stopped.") && find() && !find().disabled,
+        "and so does one that was stopped");
+  routes["GET /api/tools/names/job"] = job0;
+  $$(".modal").at(-1).querySelector(".buttons button").click(); await tick(); }
+
 // Escape in a search box with text in it clears the box (WebKit would only in its default action, once the dialog had
 // been closed); the next Escape closes the dialog
 { await window.openKeeps(); await tick();
