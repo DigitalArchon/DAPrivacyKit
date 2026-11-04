@@ -116,6 +116,58 @@ def test_declined_the_files_are_overwritten_and_the_disk_stays_mounted(host, mon
     assert "TempBrowser" not in owner._HELD and not list(owner._locks(host).glob("*.lock"))
 
 
+def outbox_at_work(host, monkeypatch, held: dict):
+    """The TempOutbox's watcher, cleaning a file in ~/TempBrowser with mat2 for half a second, under way: the event is
+    set once mat2 holds it."""
+    import threading
+    started = threading.Event()
+
+    def run_outbox(host, folder, name):
+        held[4242] = "mat2"
+        started.set()
+        time.sleep(0.5)
+        del held[4242]
+    monkeypatch.setattr(R, "holders_on_device", lambda host, path: dict(held))
+    monkeypatch.setattr(B.transfer, "run_outbox", run_outbox)
+    monkeypatch.setattr(B, "installed", lambda host, b: b.id == "tor")
+    t = threading.Thread(target=B.run_outboxes, args=(host,))
+    t.start()
+    assert started.wait(5)
+    return t
+
+
+def test_the_tempoutboxs_own_mat2_isnt_a_program_using_tempbrowser(cat, host, monkeypatch):  # noqa: F811
+    """The TempOutbox's mat2, cleaning a file in ~/TempBrowser as closing looked for programs using it, was named among
+    them: Quit left the disk open and its files not overwritten ("mat2 still uses it"), and Close was refused ("Close
+    mat2 first"). The TempOutbox is stopped after its file first, then they are looked for."""
+    from fastapi.testclient import TestClient
+    disk = open_ramdisk(host)
+    quiet(monkeypatch)
+    assert owner.claim(host, "TempBrowser", disk)
+    (disk / "page.html").write_text("visited")
+    held: dict = {}
+    t = outbox_at_work(host, monkeypatch, held)
+    h = Helper()
+    msg = B.close_disk(host, lambda: h)
+    t.join()
+    assert "1 file overwritten" in msg and h.calls == [("ramdisk_close", {"name": "TempBrowser"})]
+    assert not (disk / "page.html").exists()
+    (disk / "page.html").write_text("visited again")                   # opened again, and the page's Close
+    assert owner.claim(host, "TempBrowser", disk)
+
+    class Admin(Helper):
+        def alive(self):
+            return True
+
+        def close(self):
+            pass
+    c = TestClient(create_app("t0ken", cat, make_host=lambda: host, start_helper=Admin))
+    t = outbox_at_work(host, monkeypatch, held)
+    r = c.post("/api/tools/ramdisk/close", headers=H, json={"disk": "browser"})
+    t.join()
+    assert r.status_code == 200 and r.json()["wiped"]["files"] == 1 and not (disk / "page.html").exists()
+
+
 # ------------------------------------------------------------------ A3: systemd's line in the journal at every close
 
 from test_ramdisk import ME, call, root, xattrs_work  # noqa: E402,F401 - the helper's fixture tree

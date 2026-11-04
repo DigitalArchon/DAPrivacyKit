@@ -1098,8 +1098,9 @@ upload… does), and the original into `Originals`; one that can't be cleaned (m
 room) or can't be read goes into `Not cleaned` and is never passed on. Folders put there are left as they are;
 without mat2 nothing is touched. No desktop notification is sent (a notification history can keep the names on the
 disk): the last 20 events are kept in memory for the panel, which follows the status every 2 seconds while a
-TempOutbox is on, and forgotten when `~/TempBrowser` is wiped, which stops a run after the file under way
-(`transfer.STOP`) and waits for that one (`OUTBOX_LOCK`).
+TempOutbox is on, and forgotten when `~/TempBrowser` is wiped. Closing it stops a run after the file under way
+(`transfer.STOP`) and waits for that one (`OUTBOX_LOCK`) before it looks for programs using the disk, and holds
+both until the files are overwritten (`browser.outboxes_stopped`): the TempOutbox's own mat2 was taken for one.
 
 **Downloads.** The browser owns its Downloads folder and could fill it with anything, including a link to
 `~/.ssh/id_ed25519` that points nowhere inside the sandbox but at the real key outside. So

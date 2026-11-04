@@ -27,6 +27,7 @@ Browser and tor's sockets and status, and the mark that it has run in the sandbo
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import platform
@@ -1821,19 +1822,38 @@ def run_outboxes(host: Host) -> None:
                 transfer.run_outbox(host, b.folder, b.name)
 
 
-def wipe_disk(path: Path) -> "ramdisk.Wipe":
-    """~/TempBrowser's files overwritten and deleted, once the TempOutboxes aren't being emptied. Whoever owned it
-    owns nothing from here on (its mark goes first, so it isn't counted among the user's files)."""
-    owner.unmark(path)
+@contextlib.contextmanager
+def outboxes_stopped():
+    """For closing ~/TempBrowser, from before the programs using it are looked for until its files are overwritten:
+    the TempOutboxes stop after the file under way (STOP), and none starts again (their lock). Their own mat2,
+    cleaning a file in it, was named among those programs ("Close mat2 first"): Close was refused, and Quit left
+    the disk open, its files not overwritten."""
     transfer.STOP.set()                     # a download being judged stops reading, and the TempOutbox after its file
     try:
         with transfer.OUTBOX_LOCK:
-            w = ramdisk.wipe(path)
+            yield
     finally:
         transfer.STOP.clear()
+
+
+def wipe_disk(path: Path) -> "ramdisk.Wipe":
+    """~/TempBrowser's files overwritten and deleted, inside outboxes_stopped() (the TempOutboxes aren't being
+    emptied). Whoever owned it owns nothing from here on (its mark goes first, so it isn't counted among the user's
+    files)."""
+    owner.unmark(path)
+    w = ramdisk.wipe(path)
     transfer.forget_recent()
     forget_problem()                                    # the browsers whose start failed are gone with it
     return w
+
+
+def users_or_wipe(host: Host, path: Path) -> tuple[list[str], "ramdisk.Wipe | None"]:
+    """"Close and overwrite…" on ~/TempBrowser, the TempOutboxes stopped meanwhile: a display of its own the browser
+    left ended (end_display), then (the programs still using it, None), or ([], its files overwritten and deleted)."""
+    with outboxes_stopped():
+        end_display(host, path)                         # the browser has quit, and its own display not yet
+        users = disk_users(host, path)
+        return (users, None) if users else ([], wipe_disk(path))
 
 
 def hold_all(host: Host, quitting: bool = False) -> tuple[list[int], str]:
@@ -1876,27 +1896,28 @@ def close_disk(host: Host, helper: Callable[[], object]) -> str:
             return (f"~/{DISK} stays open: {', '.join(inside)} {'is' if len(inside) == 1 else 'are'} mounted inside it. "
                     f"Unmount {'it' if len(inside) == 1 else 'them'}, then close ~/{DISK} in the app's Tools panel, or "
                     "restart the computer.")
-        end_display(host, rd.path)                      # the browser has quit, and its own display not yet
-        users = disk_users(host, rd.path)
-        if users:
-            return (f"~/{DISK} stays open: {', '.join(users)} still uses it. Close it in the app's "
-                    "Tools panel later, or restart the computer.")
-        # overwritten while administrator access is asked for, not after the password (the owner's decision of
-        # 2026-10-17, for a logout above all: the files go however long the prompt stays up, or if it is declined)
-        wiped: dict = {}
+        with outboxes_stopped():                        # their mat2 isn't a program using it
+            end_display(host, rd.path)                  # the browser has quit, and its own display not yet
+            users = disk_users(host, rd.path)
+            if users:
+                return (f"~/{DISK} stays open: {', '.join(users)} still uses it. Close it in the app's "
+                        "Tools panel later, or restart the computer.")
+            # overwritten while administrator access is asked for, not after the password (the owner's decision of
+            # 2026-10-17, for a logout above all: the files go however long the prompt stays up, or if it is declined)
+            wiped: dict = {}
 
-        def overwrite() -> None:
+            def overwrite() -> None:
+                try:
+                    wiped["w"] = wipe_disk(rd.path)
+                except BaseException as e:  # noqa: BLE001 - raised again below, in the caller's thread
+                    wiped["error"] = e
+            t = threading.Thread(target=overwrite, name="tempbrowser-wipe")
+            t.start()
             try:
-                wiped["w"] = wipe_disk(rd.path)
-            except BaseException as e:  # noqa: BLE001 - raised again below, in the caller's thread
-                wiped["error"] = e
-        t = threading.Thread(target=overwrite, name="tempbrowser-wipe")
-        t.start()
-        try:
-            h = helper()
-        finally:
-            t.join()                                    # never unmounted under the overwrite
-            owner.release(host, DISK)                   # its mark went with the wipe: the lock's file goes too
+                h = helper()
+            finally:
+                t.join()                                # never unmounted under the overwrite
+                owner.release(host, DISK)               # its mark went with the wipe: the lock's file goes too
         if "error" in wiped:
             raise wiped["error"]
         w = wiped["w"]

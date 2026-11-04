@@ -1218,14 +1218,15 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
                                          f"inside ~/{name}. {'Its' if one else 'Their'} files aren't the RAM disk's to "
                                          f"overwrite, and ~/{name} can't be unmounted around {'it' if one else 'them'}.",
                                          "mounted": inside}, status_code=409)
-                if name == ramdisk.BROWSER:             # the browser has quit, and its own display not yet
-                    await asyncio.to_thread(B.end_display, host, st.path)
-                users = await asyncio.to_thread(B.disk_users, host, st.path)
+                if name == ramdisk.BROWSER:             # its TempOutboxes stopped meanwhile: their mat2 isn't a user
+                    users, w = await asyncio.to_thread(B.users_or_wipe, host, st.path)
+                else:
+                    users = await asyncio.to_thread(B.disk_users, host, st.path)
+                    w = None if users else await asyncio.to_thread(ramdisk.wipe, st.path)
                 if users:
                     return JSONResponse({"error": f"Close {', '.join(users)} first: "
                                          f"{'it is' if len(users) == 1 else 'they are'} using files in ~/{name}.",
                                          "users": users}, status_code=409)
-                w = await asyncio.to_thread(B.wipe_disk if name == ramdisk.BROWSER else ramdisk.wipe, st.path)
                 wiped = {"files": w.files, "bytes": w.bytes, "failed": w.failed[:20]}
                 problem = await with_root(host)
                 if problem:

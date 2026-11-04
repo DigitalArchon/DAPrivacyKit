@@ -367,7 +367,7 @@ def test_closing_the_disk_stops_the_tempoutbox_after_the_file_under_way(host, ou
 def test_the_page_shows_partial_copies_apart():
     import inspect as _inspect
     from daprivacyscanner.tools import browser as B
-    assert "transfer.STOP.set()" in _inspect.getsource(B.wipe_disk)
+    assert "transfer.STOP.set()" in _inspect.getsource(B.outboxes_stopped)
     js = (Path(__file__).resolve().parents[1] / "src/daprivacyscanner/web/app.js").read_text()
     assert "o.partial ?" in js and "b.outbox.partial" in js
 
