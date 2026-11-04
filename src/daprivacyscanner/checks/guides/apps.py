@@ -358,8 +358,9 @@ def metadata_outbox(check, scan, outcome):
     blockers = [] if outbox.is_dir() or not outbox.exists() else ["~/Outbox exists but isn't a folder: rename it first."]
     if not I.command_exists(command):
         blockers.append("This copy of the app can't be found where it runs from now, so the Outbox couldn't start it.")
-    steps = [Step("Install mat2", "The Outbox uses mat2 to clean the files.",
-                  commands=[c for c in [install(scan, debian="mat2", fedora="mat2", arch="mat2", suse="mat2")] if c],
+    steps = [Step("Install mat2", "The Outbox uses mat2 to clean the files" + (": it is installed." if mat2 else "."),
+                  commands=[] if mat2 else
+                  [c for c in [install(scan, debian="mat2", fedora="mat2", arch="mat2", suse="mat2")] if c],
                   done=mat2),
              Step("Set up ~/Outbox", "A folder in your home: put a copy of a photo or document in it, and within a few "
                   "seconds a copy without its hidden details appears in ~/Outbox/Cleaned.",

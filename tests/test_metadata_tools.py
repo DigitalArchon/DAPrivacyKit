@@ -499,6 +499,19 @@ def test_outbox_set_up_and_reverted(cat, tmp_path, program):
     assert not (unit_dir / "daprivacyscanner-outbox.path").exists() and sc.units["daprivacyscanner-outbox.path"] == "disabled"
 
 
+def test_outbox_install_command_only_while_mat2_is_missing(cat, tmp_path, program):
+    """"Install mat2 (done)" still showed sudo apt install mat2."""
+    mint = {"/etc/os-release": 'ID=linuxmint\nID_LIKE="ubuntu debian"\n'}
+    host = make_host(tmp_path, files=mint, installed=("mat2",))
+    host.runner.handlers["systemctl"] = FakeUserSystemctl({"daprivacyscanner-outbox.path": "disabled"})
+    step = build(cat, host, "app.metadata_outbox").steps[0]
+    assert step.done and not step.commands and step.text.endswith("it is installed.")
+    host = make_host(tmp_path / "without", files=mint)
+    host.runner.handlers["systemctl"] = FakeUserSystemctl({"daprivacyscanner-outbox.path": "disabled"})
+    step = build(cat, host, "app.metadata_outbox").steps[0]
+    assert not step.done and step.commands == ["sudo apt install mat2"]
+
+
 def test_outbox_written_by_another_copy_is_noticed(cat, tmp_path, program):
     host = make_host(tmp_path, installed=("mat2",))
     host.runner.handlers["systemctl"] = FakeUserSystemctl({"daprivacyscanner-outbox.path": "enabled"})
