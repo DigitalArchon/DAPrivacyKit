@@ -1937,7 +1937,9 @@ class CopyTree(Action):
     not exist yet; links in it are copied as links. Reverting removes the copy, which is the fix's own: nothing
     of the user's is in it (a Box's data is in its home, another folder). `replace`: the folder there now (a Box's
     earlier copy of the program) is moved into History's backups first and put back on revert, so a newer copy of
-    a program can be kept in its Box (found in the 2026-10-17 review: it was silently not copied)."""
+    a program can be kept in its Box (found in the 2026-10-17 review: it was silently not copied). Reverting removes
+    only the copy it made (its folder's device and inode): reverting the Box while a newer copy's entry stands removed
+    that copy, and reverting that entry then made the Box's folders again to put the old one back."""
     kind = "copytree"
 
     def __init__(self, source: Path, dest: Path, display: str, what: str, replace: bool = False):
@@ -1974,7 +1976,9 @@ class CopyTree(Action):
             raise
         os.chmod(self.dest, 0o700)
         did(shell(["cp", "-a", str(self.source), str(self.dest)]))
+        st = os.lstat(self.dest)                # which folder is this copy: a later one can take its place
         return {"kind": self.kind, "path": str(self.dest), "display": self.display, "backup": str(backup) if backup else None,
+                "dev": st.st_dev, "ino": st.st_ino,
                 "text": f"Copied {self.what} to {self.display}" + (", the copy there before kept in History's backups"
                                                                    if backup else "")}
 
@@ -1990,13 +1994,27 @@ class CopyTree(Action):
         if p.is_symlink():
             return RevertResult(False, f"{record['display']} is a link now: left as it is")
         there = p.exists()
+        if there and record.get("ino") is not None and not force:
+            st = os.lstat(p)
+            if (st.st_dev, st.st_ino) != (record.get("dev"), record["ino"]):
+                # a later copy took its place (a newer program kept in the Box), and its entry would put this one back
+                return RevertResult(False, f"{record['display']} is a later copy, not this one: revert the later change "
+                                           "first", True)
         if there:
             shutil.rmtree(p, ignore_errors=True)
             if p.exists():
                 return RevertResult(False, f"{record['display']} couldn't be removed completely")
             did(shell(["rm", "-r", str(p)]))
         if backup is not None and backup.is_dir() and not backup.is_symlink():
-            shutil.move(str(backup), str(p))
+            # back where it was, never making the folders on the way again (the Box was removed since)
+            if not p.parent.is_dir() or p.parent.is_symlink():
+                return RevertResult(False, f"{record['display']} can't be put back: the folder it was in is gone")
+            try:
+                os.rename(backup, p)
+            except OSError as e:
+                if e.errno != errno.EXDEV:
+                    raise
+                shutil.move(str(backup), str(p))      # the backups on another filesystem: copied into its folder
             did(shell(["mv", str(backup), str(p)]))
             return RevertResult(True, f"{record['display']} put back as it was before")
         return RevertResult(True, f"{record['display']} removed" if there else f"{record['display']} was already gone")

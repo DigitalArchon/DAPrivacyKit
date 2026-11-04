@@ -168,6 +168,46 @@ def test_copying_a_tree_refuses_a_place_that_is_taken(tmp_path, host):
     assert CopyTree.revert(rec, ctx).message.endswith("already gone")
 
 
+def _two_copies(tmp_path, host):
+    """A Box set up with its program, then a newer program of the same name kept in it: two History entries."""
+    from daprivacyscanner.fix import FixPlan, MakeDir, apply_plan
+    from daprivacyscanner.undo import UndoLog
+    log = UndoLog(host.home / ".local/state/daprivacyscanner")
+    for v in ("v1", "v2"):
+        (tmp_path / v / "bin").mkdir(parents=True)
+        (tmp_path / v / "bin/prog").write_text(v)
+    f = host.home / "Boxes/prog"
+    one = apply_plan(FixPlan("app.boxes", "Box", [MakeDir(f.parent, "~/Boxes", 0o700), MakeDir(f, "~/Boxes/prog", 0o700),
+                                                  CopyTree(tmp_path / "v1", f / "app", "~/Boxes/prog/app", "prog")]), host, log)
+    two = apply_plan(FixPlan("app.boxes", "Box", [CopyTree(tmp_path / "v2", f / "app", "~/Boxes/prog/app", "prog, newer",
+                                                           replace=True)]), host, log)
+    assert one.ok and two.ok and (f / "app/bin/prog").read_text() == "v2"
+    return log, f, one.entry_id, two.entry_id
+
+
+def test_reverting_a_box_leaves_a_newer_copy_to_its_own_entry(tmp_path, host):
+    """The Box's entry reverted while a later entry's newer copy of its program stood: that copy was removed, and
+    reverting the later entry then made ~/Boxes/<name>/app again to put the old program in it."""
+    from daprivacyscanner.fix import revert_entry
+    log, f, one, two = _two_copies(tmp_path, host)
+    copy = revert_entry(log.get(one), host, log)[0]                    # the last step is put back first
+    assert copy.conflict and not copy.ok and "revert the later change first" in copy.message
+    assert (f / "app/bin/prog").read_text() == "v2"
+    assert all(r.ok for r in revert_entry(log.get(two), host, log)) and (f / "app/bin/prog").read_text() == "v1"
+    assert all(r.ok for r in revert_entry(log.get(one), host, log)) and not (f / "app").exists()
+
+
+def test_a_copy_put_back_never_makes_its_folders_again(tmp_path, host):
+    """The Box's folder removed by hand: reverting the newer copy's entry made it again (0755, with the old program in
+    it) to put the earlier copy back."""
+    import shutil
+    from daprivacyscanner.fix import revert_entry
+    log, f, one, two = _two_copies(tmp_path, host)
+    shutil.rmtree(f.parent)
+    [r] = revert_entry(log.get(two), host, log)
+    assert not r.ok and "the folder it was in is gone" in r.message and not f.parent.exists()
+
+
 # ------------------------------------------------------------------ how it runs
 
 def set_up(host, box):
