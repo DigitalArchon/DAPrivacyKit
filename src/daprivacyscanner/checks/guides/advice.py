@@ -596,8 +596,10 @@ def landlock(check, scan, outcome):
         steps = [Step("Upgrade to a release with Linux 6.12 or later", "This release's kernels, even its newest "
                       "hardware enablement one, are older than 6.12. Ubuntu 24.04 (with its HWE kernel) and later, "
                       "and Linux Mint 22 and later, have one: upgrade with the distribution's upgrade tool.",
-                      commands=["sudo do-release-upgrade" if i != "linuxmint" else
-                                "mintupgrade     # Linux Mint's upgrade tool, from Update Manager's Edit menu"]),
+                      # Mint's upgrade tool isn't installed by default, nor in Update Manager's menus: as
+                      # kern.release_unsupported's guide gives it
+                      commands=["sudo do-release-upgrade"] if i != "linuxmint" else
+                      ["sudo apt update && sudo apt full-upgrade", "sudo apt install mintupgrade", "sudo mintupgrade"]),
                  check_step]
     elif i == "debian" and version.startswith("12"):
         steps = [Step("Install the kernel from bookworm-backports", "Debian 12's own kernel is 6.1; the "

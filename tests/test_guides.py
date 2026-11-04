@@ -1381,6 +1381,9 @@ def test_firefox_pref_refuses_a_profile_a_fork_holds_open(tmp_path):
      "backports", "sudo apt install -t bookworm-backports linux-image-amd64"),
     ('ID=ubuntu\nVERSION_ID="22.04"\n', "6.8.0-45-generic", "landlock,yama,apparmor",
      "Upgrade", "sudo do-release-upgrade"),
+    # Mint's upgrade tool is installed first: it isn't by default, nor in Update Manager's menus
+    ('ID=linuxmint\nID_LIKE="ubuntu debian"\nVERSION_ID="21.3"\n', "6.5.0-45-generic", "landlock,yama,apparmor",
+     "Upgrade", "sudo apt install mintupgrade"),
     ('ID=fedora\n', "6.11.4-301.fc41.x86_64", "landlock,yama,selinux", "Update", "sudo dnf upgrade --refresh"),
 ])
 def test_landlock_guide_for_an_old_kernel(cat, tmp_path, os_release, release, lsm, says, command):
