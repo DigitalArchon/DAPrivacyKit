@@ -448,6 +448,10 @@ def verify_cli(path: str, keys: list[str], checksum: str) -> int:
     try:
         target = checked(os.path.abspath(path) if not path.startswith("~") else path, host.home)
         key_files = [checked(os.path.abspath(k), host.home) for k in keys]
+        unread = V.KeySet(host, (), key_files, use_keyring=False).problems      # a --key there that isn't a key
+        if unread:
+            print("\n".join(unread), file=sys.stderr)
+            return 2
         v = V.verify(host, target, key_files, checksum, given=True)
     except (PathRefused, DataError, OSError) as e:
         print(e, file=sys.stderr)

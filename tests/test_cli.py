@@ -201,3 +201,20 @@ def test_no_window_message_uses_the_desktops_dialog_and_falls_back(monkeypatch, 
     status["zenity"] = status["kdialog"] = 127              # neither could show it: stderr is all there is
     assert app.refuse_without_window("x") == 2 and ran == ["zenity", "kdialog"]
     assert "doesn't open in your web browser by itself" in capsys.readouterr().err
+
+
+def test_verify_exits_2_when_a_key_given_isnt_one(tmp_path, monkeypatch, capsys):
+    """--verify exits 2 when the file or a key can't be read (the README and --help say so): a --key file that
+    exists but isn't a key only added a note to the verdict, and the exit status was 1, as for an unverified file."""
+    from pathlib import Path
+    from daprivacyscanner import app
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    monkeypatch.delenv("GNUPGHOME", raising=False)
+    (tmp_path / "app.tar").write_bytes(b"data")
+    (tmp_path / "notes.txt").write_text("not a key\n")
+    assert app.verify_cli(str(tmp_path / "app.tar"), [str(tmp_path / "notes.txt")], "") == 2
+    assert "notes.txt isn't a public key the app can read" in capsys.readouterr().err
+    key = Path(__file__).resolve().parents[1] / "docs/release-key.asc"
+    assert app.verify_cli(str(tmp_path / "app.tar"), [str(key)], "") == 1     # a key, but nothing signs the file
+    assert app.verify_cli(str(tmp_path / "app.tar"), [], "") == 1
