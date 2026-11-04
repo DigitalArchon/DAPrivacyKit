@@ -1183,17 +1183,18 @@ class SudoNopasswd(Check):
                     (broad if _broad(cmd) else narrow).append((shown, cmd))
             elif "password is required" not in (r.stderr + r.stdout):
                 ev.append(Evidence.val("sudo -n -l", (r.stderr or r.stdout).strip()[:150]))
+        unreadable = False
         try:
             doas = host.read_sys("/etc/doas.conf")
         except Unreadable:
-            doas = None
+            doas, unreadable = None, True          # there, root-only (0400 is usual): set up, its rules unknown
             ev.append(Evidence.path("Needs administrator access", "/etc/doas.conf"))
         if doas:
             for line, cmd, target in doas_passwordless(doas, *_my_ids(host)):
                 # a command for another account than root isn't root, whatever it is
                 (broad if target == "root" and (cmd is None or _broad(cmd)) else narrow).append(
                     ("doas: " + line, cmd or f"any command as {target}"))
-        if not host.runner.which("sudo") and doas is None:
+        if not host.runner.which("sudo") and doas is None and not unreadable:
             return absent("Neither sudo nor doas is set up.")
         ev += [Evidence.val("Passwordless rule", shown[:150]) for shown, _ in broad[:5]]
         notes = []
@@ -1205,7 +1206,13 @@ class SudoNopasswd(Check):
                               ". Distributions ship rules like these for their own tools; they are only a risk if "
                               "the program can be made to run other commands."))
         if broad:
-            return failed("Commands can be run as root without a password.", *ev, notes=notes)
+            return failed("Commands can be run as root without a password.", *ev, notes=notes, partial=unreadable)
+        if unreadable:
+            o = needs_root("Reading /etc/doas.conf", *ev) if scan.privileged is None else unknown(
+                "Couldn't read /etc/doas.conf, so whether doas runs commands as root without a password isn't known.",
+                *ev)
+            o.notes = notes
+            return o
         return passed("Running arbitrary commands as root asks for a password.", *ev, notes=notes)
 
 

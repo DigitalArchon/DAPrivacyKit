@@ -938,7 +938,9 @@ checks:
         Defaults !authenticate (also Defaults:user), or Defaults>runas or Defaults!command !authenticate for that runas
         or command. Read by shape, not the headings, which are translated; long rules wrap onto further lines'
       - '/etc/doas.conf: permit nopass rules for this user (by name or uid) or a group of theirs (:group, by name or
-        gid; `id`, else /etc/group); another account''s rule is theirs. A rule as another account than root is narrow'
+        gid; `id`, else /etc/group); another account''s rule is theirs. A rule as another account than root is narrow.
+        One only root can read (0400 is usual) is set up, its rules unknown: needs administrator access, never absent
+        or a pass'
       - 'A rule is as good as root when it allows ALL, or a program that can run others (GTFOBins) with any arguments; with
         fixed arguments only when the program can escape to a shell anyway (editors, pagers, journalctl, git, systemctl
         verbs that page or edit) or runs a file this user can write'

@@ -11,7 +11,7 @@ from daprivacyscanner.model import Status
 from daprivacyscanner.network import Listener
 from daprivacyscanner.privileged import FakePrivileged
 
-from conftest import SAMPLES, detect, ev, make_host, make_scan
+from conftest import SAMPLES, detect, ev, make_host, make_scan, skip_if_root
 
 
 @pytest.mark.parametrize("value, status", [(True, Status.FAIL), (False, Status.PASS), (None, Status.UNKNOWN)])
@@ -358,6 +358,22 @@ def test_doas_nopass(cat, tmp_path):
                                       "/etc/passwd": "alice:x:1000:1000::/home/alice:/bin/bash\n",
                                       "/etc/group": "wheel:x:10:alice\n"})
     assert detect(cat, "auth.sudo_nopasswd", make_scan(host)).status is Status.FAIL
+
+
+@skip_if_root
+def test_a_doas_conf_only_root_can_read_is_unknown(cat, tmp_path):
+    """doas.conf is usually 0400 root: without sudo the check said "Neither sudo nor doas is set up", and with sudo
+    asking for its password it passed, though doas.conf may hold permit nopass."""
+    asks = {("sudo", "-n", "-l"): CommandResult((), 1, "", "sudo: a password is required\n")}
+    for commands in ({}, asks):
+        host = make_host(tmp_path / str(len(commands)), files={"/etc/doas.conf": "permit nopass alice\n"},
+                         commands=commands)
+        os.chmod(host.sys_path("/etc/doas.conf"), 0)
+        try:
+            o = detect(cat, "auth.sudo_nopasswd", make_scan(host))
+        finally:
+            os.chmod(host.sys_path("/etc/doas.conf"), 0o600)
+        assert o.status is Status.UNKNOWN and o.needs_admin
 
 
 # ------------------------------------------------------------------ Firefox primary password
