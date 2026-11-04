@@ -250,6 +250,18 @@ def test_a_box_that_cant_start_says_why(host):
     assert "a link" in B.problem(host, B.read(host, "chat-app"))
 
 
+def test_a_flatpak_box_isnt_started_while_its_app_is_open(host):
+    """The review of 2026-11-04: a Box's copy of a Flatpak app owns the app's name on the bus, so with the app open as
+    usual it handed its start to that copy (the real home, its network) and ended: the launcher opened the app outside
+    the Box without a word. Its dialog now says to close the app first."""
+    set_up(host, a_box(slug="meet", name="Meet", kind="flatpak", argv=["--branch=stable", "org.x.Meet"], flatpak="org.x.Meet"))
+    host.runner.handlers["flatpak"] = lambda argv: CommandResult(argv, 0, "4242 org.x.Meet\n" if "ps" in argv else "")
+    spawned = []
+    with pytest.raises(trial.TrialError, match="Meet is open already.*Close Meet first"):
+        B.run_to_end(host, B.read(host, "meet"), lambda argv, **kw: spawned.append(argv), wait=0.01)
+    assert not spawned and not B.running(host, "meet") and B.runs(host, "meet")["runs"] == []
+
+
 def test_runs_are_kept_in_numbers_and_hosts_as_hashes(host):
     box = a_box(network="observed")
     f = set_up(host, box)

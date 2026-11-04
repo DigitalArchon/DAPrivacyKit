@@ -53,7 +53,7 @@ from typing import Callable
 from ..host import Host
 from ..hostenv import host_env
 from . import activity, bait, homewatch, menu, pcap, ramdisk, sandbox, wayland
-from .viewer import _program
+from .viewer import _program, flatpak_open
 
 FOLDER = "daprivacyscanner-trial"
 APP_IN = "/app"
@@ -1129,6 +1129,19 @@ def start(host: Host, t: Trial, options: dict, spawn: Callable = subprocess.Pope
         raise TrialError("A trial never shares this computer's network: choose no network, or the observed one.")
     if network == "observed" and eng.id == "flatpak":
         raise TrialError("A Flatpak app's network can't be observed from here: choose none, or its usual network.")
+    if eng.id == "flatpak":
+        # an app that runs one copy at a time (a GApplication, a KDBusService) finds its name taken by the copy already
+        # open, hands this start to it and ends at once (Text Editor 51 did with View offline…, tested on Mint 22.3):
+        # that copy has the real home and its network, and the trial would say the app ended by itself
+        open_now = flatpak_open(host, t.flatpak or "")
+        if open_now is None:
+            raise TrialError(f"Whether {t.name} is open already couldn't be told (flatpak ps didn't answer), so it isn't "
+                             f"started: if it were, the copy that is open would be handed this start, outside the "
+                             "sandbox.")
+        if open_now:
+            raise TrialError(f"{t.name} is open already: started now, it would hand this start to the copy that is open, "
+                             f"which has your real files and its network, and end at once. Close {t.name} first, then "
+                             "start it again.")
     t.options = {"network": network, "gpu": bool(options.get("gpu")), "sound": bool(options.get("sound")),
                  "nested": bool(options.get("nested")), "decoys": options.get("decoys") is not False}
     what = "the app" if t.private_at is not None else "the program"         # a Box's, a trial's

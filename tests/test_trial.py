@@ -433,6 +433,26 @@ def test_an_installed_app_and_a_flatpak_through_the_api(cat, host):
         assert c.get("/api/tools/trial", headers=H).json()["trial"] is None
 
 
+def test_a_flatpak_isnt_started_while_it_is_open_already(host, tmp_path):
+    """The review of 2026-11-04: a Flatpak trial owns its app's name on the bus (--own-name), so with the app open as
+    usual, the trial's copy handed its start to that one, outside the sandbox, and ended at once. Refused, as View
+    offline… refuses it, and so when flatpak ps can't answer."""
+    t = a_trial(tmp_path, kind="flatpak", argv=["org.x.App"], flatpak="org.x.App")
+    spawned = []
+    spawn = lambda argv, **kw: spawned.append(argv) or SimpleNamespace(pid=1 << 22, stdout=None)     # noqa: E731
+    host.runner.handlers["flatpak"] = lambda argv: CommandResult(argv, 0, "4242 org.x.App\n" if "ps" in argv else "")
+    with pytest.raises(trial.TrialError, match="tool is open already.*Close tool first"):
+        trial.start(host, t, {"network": "on"}, spawn)
+    host.runner.handlers["flatpak"] = lambda argv: CommandResult(argv, 1 if "ps" in argv else 0, "")
+    with pytest.raises(trial.TrialError, match="couldn't be told"):
+        trial.start(host, t, {"network": "on"}, spawn)
+    assert not spawned and t.state == "ready" and not list(t.home.iterdir()), "nothing planted, nothing started"
+    host.runner.handlers["flatpak"] = lambda argv: CommandResult(argv, 0, "4243 org.x.Other\n" if "ps" in argv else "")
+    trial.start(host, t, {"network": "on"}, spawn)
+    assert len(spawned) == 1 and t.state == "running", "another app open is no reason"
+    trial.stop(host, t)
+
+
 def test_the_overlays_lower_folder_is_escaped_for_mount(tmp_path):
     """overlayfs reads ":" "," and "\\" in lowerdir as separators unless escaped: a trial under a folder with one of
     them in its path would have failed to start. Run as the sandbox runs it, with a stand-in for mount."""
