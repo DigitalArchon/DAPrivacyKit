@@ -130,20 +130,20 @@ def ad_features(check, scan, outcome):
                                        "Turn off ad topics, site-suggested ads, ad measurement and search suggestions",
                                        skip=lambda d: d.browser.startswith("Brave") or d.label not in flagged)
     steps = [Step("Firefox", options=opts, done=not opts),
-             Step("Chromium-based browsers", "Settings → Privacy and security → Ads privacy: turn off Ad topics, "
-                  "Site-suggested ads and Ad measurement; Settings → You and Google → Sync and Google services → "
-                  "\"Make searches and browsing better\" and \"Autocomplete searches and URLs\" off. Or, for every user:",
-                  options=chromium, done=not flagged)]
+             chromium_step(scan, "Settings → Privacy and security → Ads privacy: turn off Ad topics, "
+                           "Site-suggested ads and Ad measurement; Settings → You and Google → Sync and Google services "
+                           "→ \"Make searches and browsing better\" and \"Autocomplete searches and URLs\" off.",
+                           chromium, not flagged)]
     if enhanced:
         in_dirs = {d.label for d, _, active, _ in states if ENHANCED_SAFE_BROWSING in active}
+        # no policy for a Flatpak or Snap browser, nor one set already: then no "Or, for every user:" with nothing after
+        standard = chromium_policy_options(check, scan, {"SafeBrowsingProtectionLevel": 1}, "Use standard protection",
+                                           skip=lambda d: d.label not in in_dirs)
         steps.append(Step("Enhanced Safe Browsing",
                           "It sends the address of each page you open to Google, to be checked as you browse. Standard "
                           "protection still warns about dangerous sites, from a list the browser downloads: Settings → "
-                          "Privacy and security → Security → Standard protection. On now in: " + "; ".join(enhanced) + ". "
-                          "Or, for every user:",
-                          options=chromium_policy_options(check, scan, {"SafeBrowsingProtectionLevel": 1},
-                                                          "Use standard protection",
-                                                          skip=lambda d: d.label not in in_dirs)))
+                          "Privacy and security → Security → Standard protection. On now in: " + "; ".join(enhanced) + "."
+                          + (" Or, for every user:" if standard else ""), options=standard))
     return Guide(check.id, "Turn off features that report what you browse", "", steps)
 
 
@@ -343,13 +343,12 @@ def site_permissions(check, scan, outcome):
                           "Firefox's permission lists. Firefox has to be closed while it is changed.", options=ff))
     if chromium:
         names = ", ".join(sorted({d.browser for d in chromium}))
+        geo = chromium_policy_options(check, scan, {"DefaultGeolocationSetting": 2}, "Block location requests",
+                                      skip=lambda d: d.label not in located)
         steps.append(Step(f"{names}: stop sites from asking",
                           "On each settings page above, choose \"Don't allow sites to use your camera\" (and the same "
-                          "for the microphone and location). Location can also be blocked by a policy, for every "
-                          "account on this computer:",
-                          options=chromium_policy_options(check, scan, {"DefaultGeolocationSetting": 2},
-                                                          "Block location requests",
-                                                          skip=lambda d: d.label not in located),
-                          done=not asking))
+                          "for the microphone and location)." + (" Location can also be blocked by a policy, for every "
+                                                                 "account on this computer:" if geo else ""),
+                          options=geo, done=not asking))
     return Guide(check.id, "Review the sites that can use your camera, microphone or location",
                  "A site you allowed once can use them again whenever it is open, without asking.", steps)

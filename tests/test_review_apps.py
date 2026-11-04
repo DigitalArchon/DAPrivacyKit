@@ -115,6 +115,23 @@ def test_enhanced_safe_browsing_has_a_step(cat, tmp_path):
     assert detect(cat, "br.ad_features", make_scan(host)).status is Status.PASS     # read back: not offered again
 
 
+def test_or_for_every_user_is_said_only_when_a_policy_follows(cat, tmp_path):
+    """Steps ended with "Or, for every user:" and nothing after it: br.ad_features' Chromium step where only Firefox is
+    installed, and its Enhanced Safe Browsing step and br.site_permissions' with a Flatpak Chrome, which reads no
+    policies from /etc."""
+    host = make_host(tmp_path, files={"/etc/os-release": "ID=fedora\n"})
+    firefox(host.home, prefs=pref("browser.search.suggest.enabled", True))
+    step = _step(build(cat, host, "br.ad_features"), "Chromium-based browsers")
+    assert step.text == "None is installed." and step.done
+    host = make_host(tmp_path / "flatpak")
+    chrome(host.home, root=".var/app/com.google.Chrome/config/google-chrome", prefs={
+        "safebrowsing": {"enhanced": True},
+        "profile": {"content_settings": {"exceptions": {"geolocation": {"https://a.example:443,*": {"setting": 1}}}}}})
+    for check_id, title in (("br.ad_features", "Enhanced Safe Browsing"), ("br.site_permissions", "Google Chrome: stop")):
+        step = _step(build(cat, host, check_id), title)
+        assert not step.options and step.text.endswith("."), (check_id, step.text)
+
+
 def test_a_browser_never_used_isnt_said_to_block(cat, tmp_path):
     """Every fresh install: "Your browser blocks ads and trackers." with no profile to look in (live, three machines)."""
     from test_browsers import entry, machine
