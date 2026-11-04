@@ -1210,6 +1210,14 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
         try:
             async with scan_lock:
                 wiped = None
+                inside = await asyncio.to_thread(ramdisk.mounts_inside, host, st.path)
+                if inside:                              # a vault, a share, a drive: never overwritten or deleted
+                    one = len(inside) == 1
+                    return JSONResponse({"error": f"Unmount {', '.join(inside)} first: "
+                                         f"{'another filesystem is' if one else 'other filesystems are'} mounted there, "
+                                         f"inside ~/{name}. {'Its' if one else 'Their'} files aren't the RAM disk's to "
+                                         f"overwrite, and ~/{name} can't be unmounted around {'it' if one else 'them'}.",
+                                         "mounted": inside}, status_code=409)
                 if name == ramdisk.BROWSER:             # the browser has quit, and its own display not yet
                     await asyncio.to_thread(B.end_display, host, st.path)
                 users = await asyncio.to_thread(B.disk_users, host, st.path)

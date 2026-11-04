@@ -346,8 +346,10 @@ A folder in memory, `~/RAMDisk`, for work that shouldn't touch the disk.
 3. When you are done, click **Close and overwrite…**. The app overwrites every file in it, then removes it.
    Restarting the computer also ends it.
 
-If a program still has a file open there, closing is refused and names the program ("Close X first").
-Copies that other programs made (thumbnails, recent-file lists) are outside it; the tool says so.
+If a program still has a file open there, closing is refused and names the program ("Close X first"). If
+something is mounted inside it (a vault, a network share, a drive), closing waits until you unmount it: its files
+are never overwritten or deleted. Copies that other programs made (thumbnails, recent-file lists) are outside it;
+the tool says so.
 
 The system's log doesn't note the RAM disk being opened or closed (the app keeps systemd from logging it), but it
 does keep a line each time you give the app administrator access. After a restart that ended an open RAM disk, its

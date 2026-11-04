@@ -133,6 +133,20 @@ def test_the_wipe_count_leaves_out_the_owners_mark(host, monkeypatch):  # noqa: 
     assert not (disk / owner.TOKEN).exists()
 
 
+def test_quitting_leaves_tempbrowser_open_while_something_is_mounted_inside_it(host, monkeypatch):  # noqa: F811
+    disk = open_ramdisk(host)
+    quiet(monkeypatch)
+    assert owner.claim(host, "TempBrowser", disk)
+    (disk / "page.html").write_text("visited")
+    (disk / "share").mkdir()
+    (disk / "share/precious.txt").write_text("the user's, on another filesystem")
+    with open(host.root / "proc/self/mounts", "a") as f:
+        f.write("me@nas: /home/alice/TempBrowser/share fuse.sshfs rw,nosuid,nodev 0 0\n")
+    h = Helper()
+    assert "~/TempBrowser/share is mounted inside it" in B.close_disk(host, lambda: h) and not h.calls
+    assert (disk / "page.html").exists() and (disk / "share/precious.txt").exists()
+
+
 def test_only_the_owner_empties_the_tempoutbox(host, other, monkeypatch):  # noqa: F811
     disk = open_ramdisk(host)
     ran = []

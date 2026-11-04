@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import os
 import re
-import shutil
 import stat
 import time
 from dataclasses import dataclass, field
@@ -117,12 +116,26 @@ def commands(host: Host, name: str = NAME, size_mb: int = DEFAULT_MB) -> dict[st
             "close": [shell(["umount", path]), *(helper.dropin_commands(path, False) if quiet else [])]}
 
 
-def _here(host: Host, path: Path) -> list[list[str]]:
+def _seen(host: Host, path: Path) -> str:
     real = os.path.realpath(path)
     root = os.path.realpath(host.root)
     if root != "/" and real.startswith(root + "/"):          # a fixture tree: the path as the system sees it
         real = real[len(root):]
+    return real
+
+
+def _here(host: Host, path: Path) -> list[list[str]]:
+    real = _seen(host, path)
     return [f for f in _mounts(host) if f[1] in (real, str(path))]
+
+
+def mounts_inside(host: Host, path: Path) -> list[str]:
+    """What else is mounted inside the RAM disk at `path` (a vault, a network share, a drive, a folder bound there),
+    as ~/NAME/…, from the mount table. Closing waits until it is unmounted: its files aren't the RAM disk's to
+    overwrite and delete, and the RAM disk can't be unmounted around it."""
+    real = _seen(host, path)
+    inside = sorted({m for f in _mounts(host) if (m := f[1].replace("\\040", " ")).startswith(real + "/")})
+    return [f"~/{Path(path).name}/{m[len(real) + 1:]}" for m in inside]
 
 
 def mounted(host: Host, name: str = NAME) -> bool:
@@ -147,7 +160,7 @@ def status(host: Host, name: str = NAME) -> Status:
             st.total, st.used = v.f_blocks * v.f_frsize, (v.f_blocks - v.f_bfree) * v.f_frsize
         except OSError:
             pass
-        st.files = sum(len(fs) for _, _, fs in os.walk(path))
+        st.files = _count(path)
     else:
         try:
             st.leftover = path.is_dir() and not path.is_symlink() and not any(path.iterdir()) and left_by_app(path)
@@ -155,6 +168,27 @@ def status(host: Host, name: str = NAME) -> Status:
             st.leftover = False
     st.notes = memory_notes(host, st)
     return st
+
+
+def _count(path: Path) -> int:
+    """The files in the RAM disk, as closing it overwrites and deletes them: on its own device, never in another
+    filesystem mounted inside it (the close dialog counted a vault's files there among them)."""
+    try:
+        dev = os.stat(path, follow_symlinks=False).st_dev
+    except OSError:
+        return 0
+    n = 0
+    for top, dirs, files in os.walk(path):
+        dirs[:] = [d for d in dirs if _device(os.path.join(top, d)) == dev]
+        n += len(files)
+    return n
+
+
+def _device(path: str) -> int | None:
+    try:
+        return os.lstat(path).st_dev
+    except OSError:
+        return None
 
 
 def left_by_app(path: Path) -> bool:
@@ -356,8 +390,9 @@ def _overwrite(fd: int, size: int) -> int:
 
 def wipe(path: Path, device: int | None = None, delete: bool = True) -> Wipe:
     """Overwrite the contents of every regular file under `path` with zeros, then delete everything
-    in it. Only on the folder's own device (the RAM disk), never through a link; folders and files
-    the user made unreadable or read-only are made writable first (they are the user's)."""
+    in it. Only on the folder's own device (the RAM disk), never through a link, never in another filesystem
+    mounted inside it; folders and files the user made unreadable or read-only are made writable first (they
+    are the user's)."""
     root = Path(path)
     dev = os.stat(root, follow_symlinks=False).st_dev if device is None else device
     w = Wipe()
@@ -395,12 +430,18 @@ def wipe(path: Path, device: int | None = None, delete: bool = True) -> Wipe:
                 w.failed.append(os.path.join(os.path.relpath(top, root), f))
             finally:
                 os.close(fd)
-    for child in list(root.iterdir()) if delete else []:
-        try:
-            if child.is_dir() and not child.is_symlink():
-                shutil.rmtree(child)
-            else:
-                child.unlink()
-        except OSError:
-            pass
+    # deepest first, and on its own device only: shutil.rmtree went into a filesystem mounted inside it (a vault, a
+    # share, a drive) and deleted the user's files there
+    for _, dirs, files, dfd in os.fwalk(root, topdown=False, follow_symlinks=False) if delete else ():
+        for name in files + dirs:
+            try:
+                st = os.stat(name, dir_fd=dfd, follow_symlinks=False)
+                if st.st_dev != dev:
+                    continue                              # another filesystem mounted inside, and what is in it
+                if stat.S_ISDIR(st.st_mode):
+                    os.rmdir(name, dir_fd=dfd)
+                else:
+                    os.unlink(name, dir_fd=dfd)
+            except OSError:
+                pass
     return w

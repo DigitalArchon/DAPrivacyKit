@@ -226,6 +226,73 @@ def test_wipe_overwrites_in_place_and_never_follows_links(tmp_path):
     assert list(disk.iterdir()) == [] and outside.exists()
 
 
+def bwrap_runs() -> bool:
+    import shutil
+    import subprocess
+    if not shutil.which("bwrap"):
+        return False
+    return subprocess.run(["bwrap", "--dev-bind", "/", "/", "--", "true"], capture_output=True).returncode == 0
+
+
+# run in a sandbox with a tmpfs at <home>/RAMDisk and another one inside it, at vault: what the panel counts and the
+# close deletes, from the sandbox's own mount table
+INSIDE = r"""
+import json, sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from daprivacyscanner.host import FakeRunner, Host
+from daprivacyscanner.tools import ramdisk as R
+home = Path(sys.argv[2])
+disk = home / "RAMDisk"
+(disk / "Downloads").mkdir()
+(disk / "Downloads/page.html").write_text("visited")
+(disk / "secret.txt").write_text("secret")
+(disk / "vault/sub").mkdir()
+(disk / "vault/sub/precious.txt").write_text("the user's, on another filesystem")
+(disk / "vault/notes.txt").write_text("the user's too")
+st = R.status(Host(home=home, environ={"HOME": str(home)}, runner=FakeRunner()))
+w = R.wipe(disk)
+notes = disk / "vault/notes.txt"
+print(json.dumps({"open": st.open, "files": st.files, "overwritten": w.files,
+                  "notes": notes.read_text() if notes.exists() else None,
+                  "left": sorted(str(p.relative_to(disk)) for p in disk.rglob("*"))}))
+"""
+
+
+@pytest.mark.skipif(not bwrap_runs(), reason="bubblewrap can't run here")
+def test_a_filesystem_mounted_inside_is_neither_counted_nor_deleted(tmp_path):
+    """A vault (gocryptfs, Cryptomator), a share (sshfs) or a drive mounted inside the RAM disk: the overwrite left it
+    alone, but shutil.rmtree went into it and deleted the user's files there, and the close dialog counted them among
+    the RAM disk's. Two tmpfs mounts that bubblewrap makes, unprivileged, stand in for the RAM disk and the vault."""
+    import subprocess
+    import sys
+    from pathlib import Path
+    disk = tmp_path / "RAMDisk"
+    disk.mkdir()
+    src = str(Path(__file__).resolve().parents[1] / "src")
+    r = subprocess.run(["bwrap", "--dev-bind", "/", "/", "--tmpfs", str(disk), "--tmpfs", str(disk / "vault"), "--",
+                        sys.executable, "-I", "-c", INSIDE, src, str(tmp_path)], capture_output=True, text=True,
+                       timeout=60)
+    got = json.loads(r.stdout)
+    assert got["open"] and got["files"] == 2 and got["overwritten"] == 2         # the RAM disk's own, not the vault's
+    assert got["left"] == ["vault", "vault/notes.txt", "vault/sub", "vault/sub/precious.txt"]
+    assert got["notes"] == "the user's too"
+
+
+def test_what_is_mounted_inside_it_is_named(tmp_path):
+    host = make_host(tmp_path)
+    folder = host.home / "RAMDisk"
+    folder.mkdir()
+    (tmp_path / "root/proc").mkdir(parents=True)
+    (tmp_path / "root/proc/mounts").write_text(f"tmpfs {folder} tmpfs rw,size=1048576k,mode=700 0 0\n"
+                                               f"gocryptfs {folder}/My\\040Vault fuse.gocryptfs rw,nosuid,nodev 0 0\n"
+                                               f"/dev/sdb1 {folder}/usb/stick vfat rw 0 0\n"
+                                               f"/dev/sdc1 {folder}Other ext4 rw 0 0\n")       # beside it, not inside
+    assert R.mounts_inside(host, folder) == ["~/RAMDisk/My Vault", "~/RAMDisk/usb/stick"]
+    (tmp_path / "root/proc/mounts").write_text(f"tmpfs {folder} tmpfs rw,size=1048576k,mode=700 0 0\n")
+    assert R.mounts_inside(host, folder) == []
+
+
 def test_status_reads_the_mount_and_says_what_it_cant_protect(tmp_path):
     from daprivacyscanner.host import CommandResult
     host = make_host(tmp_path, files={"/proc/mounts": "", "/proc/swaps": "Filename Type Size Used Priority\n/swapfile file 4194300 0 -2\n",

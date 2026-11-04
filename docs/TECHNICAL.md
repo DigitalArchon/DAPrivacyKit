@@ -1262,11 +1262,14 @@ Also said on the page, since the sandbox can't cover them (found in the review o
 
 **Closing** (as the user, then the helper):
 
-1. Refused while a process of the user's holds anything in it ("Close X first").
+1. Refused while a process of the user's holds anything in it ("Close X first"), and while another filesystem
+   is mounted inside it, a vault, a share or a drive ("Unmount X first": its files aren't the RAM disk's, and
+   the RAM disk can't be unmounted around it).
 2. `ramdisk.wipe` walks the tree with `os.fwalk(follow_symlinks=False)`, only on the tmpfs's own device
    (links and other filesystems mounted inside are skipped). Each regular file is opened `O_WRONLY |
    O_NOFOLLOW`, re-checked with `fstat`, and every data region (`SEEK_DATA` / `SEEK_HOLE`) is overwritten
-   with zeros in place, then `fsync`ed. Then everything is deleted.
+   with zeros in place, then `fsync`ed. Then everything on that device is deleted, deepest first, never
+   anything in another filesystem mounted inside.
 3. The helper unmounts it (never lazily: a lazy unmount would leave files reachable through whatever holds
    them; `EBUSY` is refused) and puts the folder back: removed if the helper made it, its old permissions
    restored otherwise (from the state in /run, or after a reboot from the folder's own attribute).

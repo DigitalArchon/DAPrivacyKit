@@ -1848,6 +1848,11 @@ def close_disk(host: Host, helper: Callable[[], object]) -> str:
     if why:                                             # another copy sets a browser up in it: that copy takes it over
         return f"~/{DISK} stays open: {why}"
     try:
+        inside = ramdisk.mounts_inside(host, rd.path)   # a vault, a share, a drive: never overwritten or deleted
+        if inside:
+            return (f"~/{DISK} stays open: {', '.join(inside)} {'is' if len(inside) == 1 else 'are'} mounted inside it. "
+                    f"Unmount {'it' if len(inside) == 1 else 'them'}, then close ~/{DISK} in the app's Tools panel, or "
+                    "restart the computer.")
         end_display(host, rd.path)                      # the browser has quit, and its own display not yet
         users = disk_users(host, rd.path)
         if users:

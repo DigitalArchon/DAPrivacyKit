@@ -220,6 +220,25 @@ def test_ramdisk_open_and_close_overwrites_first(cat, host, mounting, monkeypatc
     assert not disk.exists()
 
 
+def test_ramdisk_close_waits_while_something_is_mounted_inside(cat, host, mounting):
+    """A vault, a network share or a drive mounted inside ~/RAMDisk: its files were deleted with the RAM disk's, then
+    unmounting failed. Nothing is touched until it is unmounted."""
+    c = app_for(cat, host, start_helper=lambda: mounting)
+    assert c.post("/api/tools/ramdisk/open", headers=H, json={"size_mb": 256, "noexec": True}).status_code == 200
+    disk = host.home / "RAMDisk"
+    disk.chmod(0o700)
+    (disk / "secret.txt").write_text("secret")
+    (disk / "vault").mkdir()
+    (disk / "vault/precious.txt").write_text("the user's")
+    with open(host.root / "proc/self/mounts", "a") as f:
+        f.write("gocryptfs /home/alice/RAMDisk/vault fuse.gocryptfs rw,nosuid,nodev 0 0\n")
+    r = c.post("/api/tools/ramdisk/close", headers=H)
+    assert r.status_code == 409 and r.json()["error"].startswith("Unmount ~/RAMDisk/vault first")
+    assert r.json()["mounted"] == ["~/RAMDisk/vault"]
+    assert (disk / "secret.txt").read_text() == "secret" and (disk / "vault/precious.txt").exists()
+    assert [a for a, _ in mounting.calls] == ["ramdisk_open"]
+
+
 def test_ramdisk_open_declined(cat, host):
     from daprivacyscanner.privileged import HelperDeclined
 
