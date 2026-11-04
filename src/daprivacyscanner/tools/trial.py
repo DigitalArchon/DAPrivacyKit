@@ -722,14 +722,31 @@ HELPERS = ("dbus-daemon", "dbus-launch", "dbus-broker", "dbus-broker-lau", "at-s
 # into its unpriv_bwrap domain clears it, so with bubblewrap ended (Stop, or the app killed: TETHER) the sandbox ran
 # on, the program with it (tested on Ubuntu 26.04 on 2026-10-17; bubblewrap's own init, which isn't exec'd, keeps it,
 # and so did Mint 22.3). As PID 1, its subreaper setting (prctl 36) is moot but harmless.
+# Ending a trial asks STAY (SIGTERM, by its number on the computer: stop()), and it passes that on to everything in the
+# sandbox (kill -1 from a PID namespace's PID 1 reaches that namespace's processes only), which then end as they would,
+# reaped as ever: SIGTERM sent to the command's group reached bubblewrap (or pasta) first, which ended at once, and
+# --die-with-parent then killed the sandbox, so the program never had the grace to end cleanly (a trap on TERM inside
+# never ran: the review of 2026-11-04). The kernel passes a signal from outside to a namespace's PID 1 only when it has
+# a handler for it. Where it isn't PID 1 (a test), only the program is asked.
 STAY = """\
-import ctypes, os, sys, time
+import ctypes, os, signal, sys, time
 HELPERS = %r
 libc = ctypes.CDLL(None, use_errno=True)
 libc.prctl(36, 1, 0, 0, 0)
 libc.prctl(1, 9, 0, 0, 0)
+first = 0
+def ask(signum, frame):
+    try:
+        if os.getpid() == 1:
+            os.kill(-1, signum)
+        elif first > 0:
+            os.kill(first, signum)
+    except OSError:
+        pass
+signal.signal(signal.SIGTERM, ask)
 first = os.fork()
 if not first:
+    signal.signal(signal.SIGTERM, signal.SIG_DFL)
     try:
         os.execvp(sys.argv[1], sys.argv[1:])
     except OSError as e:
@@ -1366,14 +1383,58 @@ def poll(host: Host, t: Trial) -> None:
         t.lock.release()
 
 
+def _stay_of(pid: int) -> int | None:
+    """The sandbox's first process, STAY, by its number on the computer: among the descendants of `pid` (the trial's
+    command), the one that is PID 1 of a PID namespace of its own and runs STAY. None where there is none (no python3
+    on the computer, a Flatpak's sandbox, or not started yet)."""
+    kids: dict[int, list[int]] = {}
+    try:
+        names = os.listdir("/proc")
+    except OSError:
+        return None
+    for name in names:
+        if name.isdigit():
+            try:
+                with open(f"/proc/{name}/stat") as f:
+                    kids.setdefault(int(f.read().rsplit(")", 1)[1].split()[1]), []).append(int(name))
+            except (OSError, IndexError, ValueError):
+                continue
+    todo, seen = list(kids.get(pid, [])), set()
+    while todo:
+        p = todo.pop(0)
+        if p in seen:
+            continue
+        seen.add(p)
+        try:
+            with open(f"/proc/{p}/status") as f:
+                ns = next((ln.split()[1:] for ln in f if ln.startswith("NSpid:")), [])
+            with open(f"/proc/{p}/cmdline", "rb") as f:
+                argv = f.read().split(b"\0")
+        except OSError:
+            continue
+        if len(ns) > 1 and ns[-1] == "1" and STAY.encode() in argv:
+            return p
+        todo += kids.get(p, [])
+    return None
+
+
 def stop(host: Host, t: Trial) -> None:
-    """Ends the trial's program (it is the trial's own: started here, in its sandbox) and sums it up."""
+    """Ends the trial's program (it is the trial's own: started here, in its sandbox) and sums it up: asked to end
+    (SIGTERM to STAY, which passes it on in the sandbox; to the command's group where there is no STAY), killed when it
+    hasn't after a few seconds."""
     with t.lock:
         if t.state != "running":
             return
         t.stopped = True
         if hasattr(t.proc, "poll"):
-            _signal(t.proc, signal.SIGTERM)
+            stay = _stay_of(t.proc.pid)
+            if stay is not None:
+                try:
+                    os.kill(stay, signal.SIGTERM)
+                except OSError:
+                    stay = None
+            if stay is None:
+                _signal(t.proc, signal.SIGTERM)
             deadline = time.monotonic() + 4
             while t.proc.poll() is None and time.monotonic() < deadline:
                 time.sleep(0.1)

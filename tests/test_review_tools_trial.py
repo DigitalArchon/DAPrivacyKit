@@ -98,6 +98,41 @@ time.sleep(60)
                 pass
 
 
+@pytest.mark.skipif(not os.path.exists("/usr/bin/bwrap") or not os.path.exists("/usr/bin/python3"), reason="bubblewrap")
+def test_ending_a_trial_lets_its_program_end_cleanly(tmp_path):
+    """The review of 2026-11-04: "End the trial" (and a Box's launcher told to end) sent SIGTERM to the command's group,
+    which reached bubblewrap first: it ended at once, and --die-with-parent killed the sandbox, so the program never had
+    the grace to end (a trap on TERM inside never ran). The sandbox's first process (STAY) is asked now and passes it
+    on to everything in the sandbox; the group is killed only when that hasn't ended it. Here with a real bubblewrap
+    and a program that cleans up when asked to end."""
+    import shlex
+    from daprivacyscanner.host import FakeRunner, Host
+    done = tmp_path / "ended"
+    prog = ["/bin/sh", "-c", f"trap 'echo cleanly > {shlex.quote(str(done))}; exit 0' TERM; while :; do sleep 0.1; done"]
+    cmd = [sys.executable, "-I", "-c", trial.TETHER, str(os.getpid()), "/usr/bin/bwrap", "--die-with-parent", "--unshare-pid",
+           "--new-session", "--as-pid-1", "--dev-bind", "/", "/", "--", "/usr/bin/python3", "-I", "-c", trial.STAY, *prog]
+    folder = tmp_path / "t"
+    for sub in ("home", "app", "private"):
+        (folder / sub).mkdir(parents=True)
+    t = trial.Trial("0a1b2c3d4e5f", folder, "memory", "program", "tool", "a Linux program", argv=prog, state="running")
+    t.proc = subprocess.Popen(cmd, start_new_session=True, stdin=subprocess.DEVNULL)
+    try:
+        deadline = time.monotonic() + 10
+        while (t.proc.poll() is None and time.monotonic() < deadline
+               and not any(_runs(c, prog[:2]) for c in _descendants(t.proc.pid))):
+            time.sleep(0.05)
+        if t.proc.poll() is not None or time.monotonic() >= deadline:
+            pytest.skip("bubblewrap can't make a sandbox here")
+        time.sleep(0.3)
+        trial.stop(Host(home=tmp_path, environ={}, runner=FakeRunner(), root=tmp_path / "root", uid=os.getuid()), t)
+        assert done.exists() and done.read_text() == "cleanly\n", "the program ended as it does when asked"
+        assert t.exit == 0 and t.result["ended"] == "was ended here"
+    finally:
+        if t.proc.poll() is None:
+            os.killpg(t.proc.pid, signal.SIGKILL)
+            t.proc.wait()
+
+
 def test_the_commands_exit_status_is_passed_on_and_stop_reaches_the_command():
     run = lambda *argv: subprocess.run([sys.executable, "-I", "-c", trial.TETHER, str(os.getpid()), *argv],   # noqa: E731
                                        timeout=20).returncode
