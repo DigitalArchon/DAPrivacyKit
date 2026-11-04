@@ -198,6 +198,13 @@ def _props(obj: dict) -> dict:
     return ((obj.get("info") or {}).get("props")) or {}
 
 
+def _s(v) -> str:
+    """A property as text. pw-dump writes a value that reads as a number, or true or false, as a JSON number or
+    boolean, and a program names its own stream: one named "1" made the whole view fail, everyone else using the
+    camera or the microphone hidden with it (the review of 2026-11-04)."""
+    return v if isinstance(v, str) else "" if v is None else json.dumps(v)
+
+
 def _pid(v) -> int | None:
     try:
         return int(v)
@@ -232,17 +239,17 @@ def parse_pw_dump(text: str) -> list[Stream]:
     out = []
     for nid, node in nodes.items():
         p = _props(node)
-        cls = p.get("media.class") or ""
+        cls = _s(p.get("media.class"))
         if not cls.startswith("Stream/Input/"):
             continue
         client = _props(clients.get(p.get("client.id"), {}))
-        get = lambda k: p.get(k) or client.get(k)  # noqa: E731
-        binary = get("application.process.binary") or ""
-        app = get("application.name") or binary or p.get("node.name") or f"stream {nid}"
+        get = lambda k: _s(p.get(k)) or _s(client.get(k))  # noqa: E731
+        binary = get("application.process.binary")
+        app = get("application.name") or binary or _s(p.get("node.name")) or f"stream {nid}"
         sources = [nodes[s] for s in feeds.get(nid, []) if s in nodes]
         what, source = _what(cls, sources, nodes, clients)
         out.append(Stream(app=_tidy_app(app), binary=binary, pid=_pid(get("application.process.id")), what=what,
-                          source=source, state=(node.get("info") or {}).get("state") or ""))
+                          source=source, state=_s((node.get("info") or {}).get("state"))))
     return out
 
 
@@ -251,23 +258,23 @@ def _what(cls: str, sources: list[dict], nodes: dict, clients: dict) -> tuple[st
     if not sources:
         return ("video" if video else "audio"), ""
     s = _props(sources[0])
-    scls = s.get("media.class") or ""
-    name = s.get("node.description") or s.get("node.nick") or s.get("media.name") or s.get("node.name") or ""
+    scls = _s(s.get("media.class"))
+    name = _s(s.get("node.description")) or _s(s.get("node.nick")) or _s(s.get("media.name")) or _s(s.get("node.name"))
     if scls.startswith("Audio/Source"):
         return "microphone", name
     if scls.startswith("Audio/Sink") or scls.startswith("Audio/Duplex"):
         return "playback", name
     if scls.startswith("Video/Source"):
-        if s.get("device.api") in ("v4l2", "libcamera") or s.get("api.v4l2.path") or s.get("api.libcamera.path"):
+        if _s(s.get("device.api")) in ("v4l2", "libcamera") or s.get("api.v4l2.path") or s.get("api.libcamera.path"):
             return "camera", name
         return "video", name
     if scls.startswith("Stream/Output/Video"):
         producer = _props(clients.get(s.get("client.id"), {}))
-        binary = s.get("application.process.binary") or producer.get("application.process.binary") or ""
-        node_name = (s.get("node.name") or "").lower()
+        binary = _s(s.get("application.process.binary")) or _s(producer.get("application.process.binary"))
+        node_name = _s(s.get("node.name")).lower()
         if binary in SCREEN_PRODUCERS or "screen" in node_name or "screencast" in node_name:
             return "screen", ""
-        return "video", s.get("application.name") or producer.get("application.name") or name
+        return "video", _s(s.get("application.name")) or _s(producer.get("application.name")) or name
     return ("video" if video else "audio"), name
 
 
@@ -288,10 +295,10 @@ def parse_pactl_outputs(text: str) -> list[Stream]:
             continue
         p = so.get("properties") or {}
         source = str(so.get("source", ""))
-        what = "playback" if p.get("target.object", "").endswith(".monitor") or source.endswith(".monitor") \
+        what = "playback" if _s(p.get("target.object")).endswith(".monitor") or source.endswith(".monitor") \
             else "microphone"
-        out.append(Stream(app=_tidy_app(p.get("application.name") or p.get("application.process.binary") or "?"),
-                          binary=p.get("application.process.binary") or "",
+        out.append(Stream(app=_tidy_app(_s(p.get("application.name")) or _s(p.get("application.process.binary")) or "?"),
+                          binary=_s(p.get("application.process.binary")),
                           pid=_pid(p.get("application.process.id")), what=what, source="",
                           state="corked" if so.get("corked") else "running", via="pulseaudio"))
     return out

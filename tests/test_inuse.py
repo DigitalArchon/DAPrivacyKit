@@ -75,6 +75,22 @@ def test_pw_dump_that_isnt_json_gives_nothing():
     assert inuse.parse_pw_dump("not json") == [] and inuse.parse_pw_dump('{"a": 1}') == []
 
 
+def test_a_stream_named_with_a_number_is_listed_with_the_others():
+    """The review of 2026-11-04: pw-dump writes a property that reads as a number (or true, false) as a JSON number
+    (boolean), and a program names its own stream: one named "1" made parsing fail, and the whole view with it, every
+    other program using the camera or the microphone hidden too."""
+    graph = [client(30, 1, "spy"), client(31, "Firefox", "firefox"), client(32, True, ["odd"]),
+             node(40, "Audio/Source", **{"node.description": 7, "node.name": 8}),
+             node(41, "Stream/Output/Video", client=32, **{"node.name": 9, "application.name": False}),
+             node(50, "Stream/Input/Audio", client=30), node(51, "Stream/Input/Audio", client=31),
+             node(52, "Stream/Input/Video", client=32, state=1), link(40, 50), link(40, 51), link(41, 52)]
+    got = {s.app: (s.what, s.source, s.state) for s in inuse.parse_pw_dump(json.dumps(graph))}
+    assert got == {"1": ("microphone", "7", "running"), "Firefox": ("microphone", "7", "running"),
+                   "true": ("video", "false", "1")}
+    a, = inuse.parse_pactl_outputs(json.dumps([{"source": 2, "properties": {"application.name": 1, "target.object": 3}}]))
+    assert (a.app, a.what) == ("1", "microphone")
+
+
 def test_pactl_source_outputs():
     text = json.dumps([
         {"index": 7, "source": 1, "corked": False, "properties": {"application.name": "Firefox",
