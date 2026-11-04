@@ -2009,6 +2009,7 @@ while ($$(".modal").length) { $$(".modal .buttons button").at(-1).click(); await
   window.toast("Saved.", "ok", 50); window.toast("It failed.", "error", 50);
   check($("#toasts .toast.ok")?.getAttribute("role") === "status" && $("#toasts .toast.error")?.getAttribute("role") === "alert",
         "toasts are read out: an error at once");
+  check($("#status").getAttribute("role") === "status", "and so is the status bar, a scan's outcome among what it says");
   await new Promise(r => setTimeout(r, 80)); }
 
 // Escape closes a panel as its Close button does: what it follows is let go, the server is told to forget a listing of
