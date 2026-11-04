@@ -154,9 +154,10 @@ READS: list[dict] = [
      "own processes hold a file open under a folder a fix would clear."},
     {"what": "Programs the scan asks", "why": "Some things only the program that owns them can tell.",
      "how": "sudo -n -l (whether sudo works without a password; like any use of sudo, it leaves a line in the "
-     "system's authentication log each time), docker ps (which starts the Docker service when it is set up to start "
-     "on demand), tracker3 or localsearch status (which may start the indexer's own service for a moment), nmcli, "
-     "resolvectl, bluetoothctl, grdctl, flatpak, ssh-add -l (how many keys your SSH agent holds) and crontab -l. "
+     "system's authentication log each time), docker ps (only while the Docker service is already running: "
+     "otherwise it would start it), tracker3 or localsearch status (which may start the indexer's own service for a "
+     "moment), nmcli, resolvectl, bluetoothctl, grdctl, flatpak, ssh-add -l (how many keys your SSH agent holds) and "
+     "crontab -l. "
      "None of them changes a setting."},
 ]
 
@@ -168,8 +169,8 @@ NEVER = [
     "app runs and "
     "aren't kept in the saved report.",
     "Scans change no setting and no file. A few of the programs a scan asks leave a trace of their own, listed "
-    "under “Programs the scan asks”: sudo -n -l writes a line to the authentication log, and docker ps or the "
-    "indexer's status command can start that service for a moment. Fixes show exactly what they will do first, and "
+    "under “Programs the scan asks”: sudo -n -l writes a line to the authentication log, and the indexer's status "
+    "command can start the indexer's service for a moment. Fixes show exactly what they will do first, and "
     "settings changes can be reverted from History.",
     "The tools (Verify a download, Remove metadata, the RAM disk) run only when you start them, on the files you choose; "
     "they send nothing anywhere and keep nothing afterwards. The one that downloads (Tor or Mullvad Browser in memory) "

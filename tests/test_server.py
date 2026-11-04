@@ -41,6 +41,23 @@ def test_state_then_scan(cat, tmp_path):
     assert c.get("/api/state", headers=h).json()["report"]["started"] == report["started"]
 
 
+def test_what_a_scan_reads_says_what_docker_ps_does(cat, tmp_path):
+    """net.docker_bypass runs docker ps only while Docker's service runs (through docker.socket it would start it), and
+    the panel still said a scan's docker ps starts the service where it starts on demand."""
+    from daprivacyscanner import about
+    from daprivacyscanner.host import CommandResult
+
+    from conftest import detect, make_scan
+
+    host = make_host(tmp_path, commands={("docker", "--version"): "Docker version 29.7.2, build 1\n",
+                                         ("systemctl", "is-active", "docker.service"): CommandResult((), 3, "inactive\n")})
+    detect(cat, "net.docker_bypass", make_scan(host))
+    assert not [c for c in host.runner.calls if c[:2] == ("docker", "ps")]
+    said = " ".join([r["how"] for r in about.READS] + about.NEVER)
+    assert "docker ps (only while the Docker service is already running" in said
+    assert "starts the Docker service" not in said and "docker ps or" not in said
+
+
 def test_quit_only_when_offered(cat, tmp_path):
     quit_called = []
     c = client(cat, tmp_path, on_quit=lambda: quit_called.append(1))
