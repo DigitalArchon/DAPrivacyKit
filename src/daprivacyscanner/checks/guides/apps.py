@@ -81,7 +81,7 @@ def editor_residue(check, scan, outcome):
             continue
         acts.append(DeleteFiles(p if isdir(p) else p.parent, files, label, host.display(p if isdir(p) else p.parent),
                                 prune=False))
-    stray, stack = [], [(host.home, 0)]
+    stray, held, stack = [], set(), [(host.home, 0)]
     while stack:
         d, depth = stack.pop()
         for p in children(d):
@@ -91,19 +91,30 @@ def editor_residue(check, scan, outcome):
                 if depth < 3 and p.name not in SKIP_DIRS:
                     stack.append((p, depth + 1))
             elif RESIDUE.match(p.name):
-                stray.append(p)
+                # a swap file Vim has open (beside the document it edits) is how it recovers that document after a
+                # crash, and how a second editor opening it is warned: left alone while a program holds it
+                users = holders(scan, p)
+                if users:
+                    held |= users
+                else:
+                    stray.append(p)
     steps = [Step("Delete editor swap, undo and history files",
                   "Swap files of documents open now are in use: close the editor first. " + " ".join(skipped),
                   options=[option(check, "Delete them", acts, side_effects=skipped)] if acts else [],
                   done=not acts and not skipped)]
-    if stray:
-        n = len(stray)
-        steps.append(Step("Backup files next to your documents",
-                          f"{n} file{'s' if n != 1 else ''} named like name~, #name# or .name.swp, in your folders: "
-                          f"{'each is' if n != 1 else 'it is'} listed with where it is, so you can look first. Some may "
-                          "be backups you want; they are deleted for good.",
+    if stray or held:
+        n, progs = len(stray), " and ".join(sorted(held))
+        text = (f"{n} file{'s' if n != 1 else ''} named like name~, #name# or .name.swp, in your folders: "
+                f"{'each is' if n != 1 else 'it is'} listed with where it is, so you can look first. Some may be "
+                "backups you want; they are deleted for good. " if stray else "")
+        if held:
+            text += ((f"Those open in {progs} now are left out" if stray else
+                      f"Files named like .name.swp beside your documents are open in {progs} now, and left out")
+                     + f": an editor's swap file is how it recovers the document after a crash. Close {progs} first.")
+        steps.append(Step("Backup files next to your documents", text.strip(),
                           options=[option(check, f"Delete {n} backup file{'s' if n != 1 else ''}",
-                                          [DeleteFiles(host.home, stray, "editor backup files", "~", prune=False)])]))
+                                          [DeleteFiles(host.home, stray, "editor backup files", "~", prune=False)])]
+                          if stray else []))
     from ..apps import VSCODE_PROCESSES, editor_histories
     from ..fixes import set_jsonc_key
     for h in editor_histories(scan):

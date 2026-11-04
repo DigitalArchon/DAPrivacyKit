@@ -545,6 +545,23 @@ def test_editor_residue_skips_running_editors(cat, tmp_path):
     assert not (host.home / "Documents/report.txt~").exists()
 
 
+def test_a_swap_file_vim_has_open_beside_its_document_is_left_alone(cat, tmp_path):
+    """Stray .name.swp files were matched by name alone: the one a running Vim keeps beside the document it edits (how
+    it recovers that document after a crash, and warns a second editor opening it) was offered with the rest."""
+    host = make_host(tmp_path, files={"/proc/4242/comm": "vim\n"},
+                     home_files={"notes/todo.txt": "x", "notes/.todo.txt.swp": "b0VIM 9.1", "notes/old.txt~": "b"})
+    (host.root / "proc/4242/fd").mkdir(parents=True)
+    os.symlink(str(host.home / "notes/.todo.txt.swp"), host.root / "proc/4242/fd/3")
+    g = build(cat, host, "app.editor_residue")
+    step = next(s for s in g.steps if s.title == "Backup files next to your documents")
+    assert "Those open in vim now are left out" in step.text and step.text.endswith("Close vim first.")
+    apply(host, options(g)["Delete 1 backup file"])
+    assert (host.home / "notes/.todo.txt.swp").exists() and not (host.home / "notes/old.txt~").exists()
+    # the open one alone: nothing offered, and the step says why
+    step = next(s for s in build(cat, host, "app.editor_residue").steps if s.title == "Backup files next to your documents")
+    assert not step.options and not step.done and "are open in vim now, and left out" in step.text
+
+
 def test_remote_desktop_off_warns_and_is_blocked_from_inside_the_session(cat, tmp_path, system, monkeypatch):
     system.units["xrdp.service"] = ["enabled", "active"]
     host = rooted(make_host(tmp_path, files={"/proc/9/comm": "xrdp\n"}), system, monkeypatch)
