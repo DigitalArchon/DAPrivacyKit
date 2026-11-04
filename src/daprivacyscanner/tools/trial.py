@@ -1214,7 +1214,8 @@ def status(host: Host) -> dict:
             p["hibernation"] = ramdisk.hibernation_possible(host)
     return {"available": sb["available"], "why": sb["why"], "apparmor": sb["apparmor"], "python": sb["python"],
             "pasta": sb["pasta"], "display": sb["display"], "wayland_context": sb["wayland_context"],
-            "wayland_risky": sb["wayland_risky"], "xephyr": sb["xephyr"], "sound": sb["sound"], "gpu": sb["gpu"],
+            "wayland_risky": sb["wayland_risky"], "wlroots": sb["wlroots"], "xephyr": sb["xephyr"],
+            "sound": sb["sound"], "gpu": sb["gpu"],
             "flatpak": flat is None, "places": where,
             "engines": [{"id": e.id, "name": e.name} for e in ENGINES.values()]}
 
@@ -1281,7 +1282,7 @@ def start(host: Host, t: Trial, options: dict, spawn: Callable = subprocess.Pope
                          f"Start {what} from the computer's own desktop.")
     if disp.kind == "none":
         raise TrialError(disp.note or f"There is no display to show {what} on.")
-    sync, context, pasta_path = None, None, None
+    sync, context, pasta_path, unmarked = None, None, None, False
     if t.options["decoys"] and not t.decoys:
         t.decoys = bait.plant(t.home)
     ignore = FLATPAK_OWN if eng.id == "flatpak" else ()
@@ -1300,7 +1301,9 @@ def start(host: Host, t: Trial, options: dict, spawn: Callable = subprocess.Pope
                     sync = wayland.sandbox_socket(compositor, t.private / "wayland-0", "org.daprivacyscanner.trial")
                     context = sync is not None
                 except (OSError, wayland.WaylandError):
-                    context = False
+                    # the desktop has the protocol, but marking failed: the program is on its own connection, and the
+                    # page says so (it said only when the connection was marked: the review of 2026-11-04)
+                    context, unmarked = False, True
                 if sync is not None:
                     disp.binds[0] = (str(t.private / "wayland-0"), disp.binds[0][1])
             if network == "observed":
@@ -1324,7 +1327,8 @@ def start(host: Host, t: Trial, options: dict, spawn: Callable = subprocess.Pope
             real = host.home / ".local/share/flatpak"
             env = {**env, "HOME": str(t.home), **({"FLATPAK_USER_DIR": str(real)} if real.is_dir() else {})}
         t.how = {"engine": eng.id, "engine_name": eng.name, "network": network, "lan_blocked": network == "observed",
-                 "display": disp.kind, "wayland_context": context, "nested": t.xephyr is not None,
+                 "display": disp.kind, "wayland_context": context, "wayland_failed": unmarked,
+                 "nested": t.xephyr is not None,
                  "gpu": bool(devices) or (eng.id == "flatpak" and t.options["gpu"]), "sound": t.options["sound"],
                  "decoys": sum(1 for k in t.decoys if not t.decoys[k].startswith("the folder ")),
                  "whole": shown(cmd)}

@@ -550,6 +550,40 @@ def test_no_display_says_what_has_nowhere_to_show(tmp_path):
         trial.start(host, t, {}, lambda *a, **k: None)
 
 
+def test_a_trial_says_what_wayland_gives_it_and_when_its_connection_couldnt_be_marked(tmp_path, monkeypatch):
+    """The review of 2026-11-04: on Wayland the trial said only that its window was on a connection the desktop marks
+    as a sandbox's. The page now has what the browser panel has (what the desktop still offers a marked connection,
+    wlroots desktops), and the start says when marking the connection failed and the program got the desktop's own."""
+    from types import SimpleNamespace
+    from test_trial import a_trial
+    from daprivacyscanner.host import CommandResult, FakeRunner, Host
+    from daprivacyscanner.tools import sandbox
+    root = tmp_path / "root"
+    (root / "run/user/1000").mkdir(parents=True)
+    ok = lambda argv: CommandResult(argv, 0, "")                                         # noqa: E731
+    host = Host(home=root / "home/a", environ={"XDG_RUNTIME_DIR": "/run/user/1000", "WAYLAND_DISPLAY": "wayland-0",
+                                               "XDG_CURRENT_DESKTOP": "sway"},
+                runner=FakeRunner(handlers={"bwrap": ok, "pasta": ok, "ip": ok}), root=root, uid=1000)
+    assert trial.status(host)["wlroots"] is True
+    monkeypatch.setattr(sandbox, "display", lambda *a, **k: sandbox.Display(
+        "wayland", [("/run/user/1000/wayland-0", "/run/user/1000/wayland-0")], {"WAYLAND_DISPLAY": "wayland-0"}))
+
+    def fails(*a, **k):
+        raise trial.wayland.WaylandError("the compositor refused it")
+    monkeypatch.setattr(trial.wayland, "sandbox_socket", fails)
+    t = a_trial(tmp_path, argv=["/app/tool"])
+    how = trial.start(host, t, {}, lambda argv, **kw: SimpleNamespace(pid=1 << 22, stdout=None))
+    try:
+        assert how["display"] == "wayland" and how["wayland_context"] is False and how["wayland_failed"] is True
+    finally:
+        trial.stop(host, t)
+    monkeypatch.setattr(trial.wayland, "sandbox_socket", lambda *a, **k: None)          # a desktop without the protocol
+    t = a_trial(tmp_path / "b", argv=["/app/tool"])
+    how = trial.start(host, t, {}, lambda argv, **kw: SimpleNamespace(pid=1 << 22, stdout=None))
+    trial.stop(host, t)
+    assert how["wayland_context"] is False and how["wayland_failed"] is False
+
+
 # ------------------------------------------------------------------ E6: a Box whose program fails at start says so
 
 def _box_host(tmp_path):

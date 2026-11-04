@@ -406,7 +406,11 @@ def boxes(check, scan, outcome):
          "saves there, you can take out. Nothing else is shared."),
         ("What it doesn't do", "A sandbox isn't a guarantee: it keeps an app from your files, not an app built to break "
          "out through a flaw in the kernel. On an X11 session an app with a window can still read other windows and "
-         "what you type into them. It can read what the system tells any program about this computer: the kernel's "
+         "what you type into them. On Wayland it gets only its own windows where the desktop marks its connection as a "
+         "sandbox's, and even then KDE Plasma 6.7 still lets it read the clipboard in the background (don't copy "
+         "passwords while it runs); on desktops built on wlroots that can't mark it (Hyprland, older Sway), any app can "
+         "record the screen and read the clipboard. It can read what the system tells any program about this "
+         "computer: the kernel's "
          "command line (which often names your disks' ids), an id that stays the same until a restart, the processor "
          "and the disks' partitions; hiding them would stop apps that start a sandbox of their own (GNOME's "
          "thumbnails, web pages in GNOME apps). And an app in a Box can't use the desktop's password store, so it may "

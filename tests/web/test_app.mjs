@@ -1494,6 +1494,31 @@ $$(".modal .trial button").find(b => b.textContent === "End the trial").click();
 $$(".modal .trial button").find(b => b.textContent === "Discard the trial").click(); await tick(); await tick();
 check(trialCalls.at(-1) === "discard" && $$(".modal .trial input[name=trial-where]").length === 2, "discarded, the start is back");
 while ($$(".modal").length) { $$(".modal .buttons button").at(-1).click(); await tick(); }
+// on Wayland a trial says what the desktop still gives its marked connection, as the browser panel does, and when
+// marking it failed (the review of 2026-11-04: it said only that the connection was marked)
+Object.assign(trialStatus, { display: "wayland", wayland_context: true, wayland_risky: [{ global: "ext_data_control_manager_v1",
+  what: "read and change the clipboard in the background" }] });
+trialNow = { ...trialBase(), state: "ready" };
+await window.openTrial(); await tick();
+check(text(".modal .trial .notebox.risk").includes("This desktop still offers the program in its sandbox more than its own windows")
+      && text(".modal .trial").includes("read and change the clipboard in the background")
+      && text(".modal .trial").includes("Don't copy passwords") && !text(".modal .trial").includes("This is an X11 session"),
+      "a trial on a desktop that still offers its marked connection the clipboard (KDE) says so");
+while ($$(".modal").length) { $$(".modal .buttons button").at(-1).click(); await tick(); }
+Object.assign(trialStatus, { wayland_context: false, wayland_risky: [], wlroots: true });
+await window.openTrial(); await tick();
+check(text(".modal .trial").includes("This desktop lets any program capture the screen")
+      && text(".modal .trial").includes("a program in a sandbox included"), "on wlroots without the protocol, that any program can");
+while ($$(".modal").length) { $$(".modal .buttons button").at(-1).click(); await tick(); }
+trialNow = { ...trialBase(), state: "running", started: 1790000000, command: "/app/tool/main.py",
+  how: { engine: "bubblewrap", engine_name: "bubblewrap", network: "off", display: "wayland", wayland_context: false,
+         wayland_failed: true, nested: false, gpu: true, sound: false, decoys: 34, whole: "bwrap … /app/tool/main.py" },
+  live: { files: 0, written: 0, decoys: 0, overflow: 0, hosts: null, decoys_seen: [] } };
+await window.openTrial(); await tick();
+check(text(".modal .trial .notebox.risk").includes("marking this one failed"), "a connection that couldn't be marked is said");
+while ($$(".modal").length) { $$(".modal .buttons button").at(-1).click(); await tick(); }
+Object.assign(trialStatus, { display: "x11", wayland_context: null, wayland_risky: null, wlroots: false });
+trialNow = null;
 
 // Boxes: each with what it gets and its runs in numbers; started as from the menu
 { const boxCalls = [];

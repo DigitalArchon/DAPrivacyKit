@@ -117,6 +117,15 @@ def test_a_box_for_an_installed_app_is_set_up_and_reverted(cat, host, program):
     assert detect(cat, "app.boxes", make_scan(host)).status is Status.WARN
 
 
+def test_the_guide_says_what_wayland_still_gives_a_boxed_app(cat, host, program):
+    """The review of 2026-11-04: the Box's guide said only what X11 gives an app with a window. On KDE Plasma 6.7 the
+    connection marked as a sandbox's still gets the clipboard, and desktops built on wlroots without the protocol give
+    any app the screen and the clipboard, as the browser panel says."""
+    text = " ".join(body for s in build(cat, host, "app.boxes").steps for _head, body in (s.parts or []))
+    assert "KDE Plasma 6.7 still lets it read the clipboard" in text and "built on wlroots" in text
+    assert "record the screen" in text
+
+
 def test_the_guide_takes_the_network_and_what_it_gets(cat, host, program):
     from daprivacyscanner.runner import Runner
     g = Runner(cat, host).plan_fix("app.boxes", {"source": "org.x.Meet.desktop", "network": "on", "gpu": False, "sound": True})[1]

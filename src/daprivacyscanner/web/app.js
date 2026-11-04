@@ -2958,38 +2958,58 @@ function browserSandbox(data, opts) {
           + (sb.xephyr?.install ? ":" : " (your distribution's Xephyr package)."),
           sb.xephyr?.install ? commandBlock([sb.xephyr.install]) : null]) : null,
       h("div", { class: "orow" }, guide("sbx.x11_session", "How to use Wayland…"))));
-  } else if (sb.display === "wayland" && sb.available && sb.wayland_context && sb.wayland_risky?.length) {
+  } else if (sb.display === "wayland" && sb.available) {
+    out.push(waylandNote(sb, WAYLAND_WHO.browser));
+  }
+  return out;
+}
+
+// What a Wayland desktop still gives a sandboxed program beyond its own windows, asked of the desktop itself
+// (browser.sandbox_status: wayland_context, wayland_risky, wlroots): the browser panel's, a trial's (the review of
+// 2026-11-04: a trial said only that its connection was marked, while KDE Plasma 6.7 still gives a marked connection
+// the clipboard, and wlroots desktops without the protocol give every program the screen). `who`: the words for it.
+const WAYLAND_WHO = {
+  browser: { sandboxed: "the sandboxed browser", it: "the browser", its: "the browser's", included: "the browser included",
+    misuse: "A browser taken over by a website could do the same.",
+    keeps: "The sandbox keeps the browser off X11, but not from those." },
+  program: { sandboxed: "the program in its sandbox", it: "the program", its: "the program's",
+    included: "a program in a sandbox included", misuse: "The program could do the same, and the trial wouldn't see it.",
+    keeps: "Its sandbox keeps it off X11, but not from those." } };
+
+function waylandNote(sb, who) {
+  if (sb.wayland_context && sb.wayland_risky?.length) {
     const what = [...new Set(sb.wayland_risky.map(r => r.what))];
-    out.push(h("div", { class: "notebox risk small" }, h("b", {}, "This desktop still offers the sandboxed browser more "
-      + "than its own windows. "), "It marks the browser's connection as a sandbox's, but still offers that connection "
+    return h("div", { class: "notebox risk small" }, h("b", {}, `This desktop still offers ${who.sandboxed} more `
+      + "than its own windows. "), `It marks ${who.its} connection as a sandbox's, but still offers that connection `
       + "what would let it (whether each works for it is up to the desktop; reading the clipboard does on KDE Plasma 6.7, "
       + "tested):",
       h("ul", {}, what.map(w => h("li", {}, w))),
-      "A browser taken over by a website could do the same. Don't copy passwords or other secrets while it runs (or clear "
+      `${who.misuse} Don't copy passwords or other secrets while it runs (or clear `
       + "the clipboard first), and treat a password prompt that appears over other windows with suspicion.",
-      h("div", { class: "muted" }, `Asked of the desktop itself: ${sb.wayland_risky.map(r => r.global).join(", ")}.`)));
-  } else if (sb.display === "wayland" && sb.available && sb.wayland_risky === null) {
-    out.push(h("div", { class: "notebox risk small" }, h("b", {}, "What this desktop offers a sandboxed program couldn't be "
+      h("div", { class: "muted" }, `Asked of the desktop itself: ${sb.wayland_risky.map(r => r.global).join(", ")}.`));
+  }
+  if (sb.wayland_risky === null) {
+    return h("div", { class: "notebox risk small" }, h("b", {}, "What this desktop offers a sandboxed program couldn't be "
       + "asked. "), "The compositor didn't answer the app's question (it may be busy, or not a Wayland compositor at all), so "
-      + "whether the browser's connection is marked as a sandbox's, and what that keeps from it, isn't known: don't take "
-      + "it as kept from the screen and the clipboard. Open this panel again in a minute to ask again."));
-  } else if (sb.display === "wayland" && sb.available && sb.wayland_context) {
-    out.push(h("div", { class: "small muted" }, "This is a Wayland session, and this desktop marks the browser's "
+      + `whether ${who.its} connection is marked as a sandbox's, and what that keeps from it, isn't known: don't take `
+      + "it as kept from the screen and the clipboard. Open this panel again in a minute to ask again.");
+  }
+  if (sb.wayland_context) {
+    return h("div", { class: "small muted" }, `This is a Wayland session, and this desktop marks ${who.its} `
       + "connection as a sandbox's: it gets only its own windows, and can't record the screen, read the clipboard in the "
       + "background or type into other programs (asked of the desktop itself)"
-      + (sb.wlroots ? ", although other programs on this desktop can." : ".")));
-  } else if (sb.display === "wayland" && sb.available && sb.wlroots) {
-    out.push(h("div", { class: "notebox risk small" }, h("b", {}, "This desktop lets any program capture the screen. "),
-      "On Sway, Hyprland and other desktops built on wlroots, every Wayland program, the browser included, can record "
-      + "the whole screen and read the clipboard without asking. The sandbox keeps the browser off X11, but not from "
-      + "those. Desktops that can mark a sandbox's connection (the security-context protocol, in recent Sway and KDE "
-      + "Plasma releases) keep the browser from them: this one can't. On GNOME a program gets only its own windows."));
-  } else if (sb.display === "wayland" && sb.available) {
-    out.push(h("div", { class: "small muted" }, "This is a Wayland session: the browser gets only its own windows. On "
-      + "GNOME and KDE Plasma, other programs can't see what it shows or what you type into it, and it can't see theirs "
-      + "(some desktops built on wlroots, such as Sway and Hyprland, let any program record the screen)."));
+      + (sb.wlroots ? ", although other programs on this desktop can." : "."));
   }
-  return out;
+  if (sb.wlroots) {
+    return h("div", { class: "notebox risk small" }, h("b", {}, "This desktop lets any program capture the screen. "),
+      `On Sway, Hyprland and other desktops built on wlroots, every Wayland program, ${who.included}, can record `
+      + `the whole screen and read the clipboard without asking. ${who.keeps} Desktops that can mark a sandbox's `
+      + "connection (the security-context protocol, in recent Sway and KDE Plasma releases) keep "
+      + `${who.it} from them: this one can't. On GNOME a program gets only its own windows.`);
+  }
+  return h("div", { class: "small muted" }, `This is a Wayland session: ${who.it} gets only its own windows. On `
+    + "GNOME and KDE Plasma, other programs can't see what it shows or what you type into it, and it can't see theirs "
+    + "(some desktops built on wlroots, such as Sway and Hyprland, let any program record the screen).");
 }
 
 // Before you start: what can put the session on the disk however the browser is run. Swap that reaches
@@ -3821,8 +3841,7 @@ function trialReady(data, t, call) {
     st.display === "x11" ? h("div", { class: "notebox risk small" }, h("b", {}, "This is an X11 session. "),
         "Any program with a window can read what other windows show and what you type into them, and type into them. "
         + "Close anything sensitive first" + (flat || !st.xephyr?.available ? "." : ", or give it a display of its own."))
-      : st.wayland_context === true && !flat ? h("div", { class: "small muted" }, "Its window is on a connection the desktop "
-        + "marks as a sandbox's.") : null,
+      : st.display === "wayland" && !flat ? waylandNote(st, WAYLAND_WHO.program) : null,
     h("div", { class: "orow" }, start, discard, keepAsBox(t))];
 }
 
@@ -3832,6 +3851,13 @@ function keepAsBox(t) {
   if (!spec || ["installed", "flatpak"].includes(t.kind)) return null;
   return h("button", { class: "small", title: "Keep this program in a sandbox for good, with a home folder of its own: "
     + "a guide, undone from History", onclick: () => openGuide(spec) }, "Keep it in a Box…");
+}
+
+// the desktop marks a sandbox's connection, but marking this trial's failed (trial.start: how.wayland_failed)
+function trialUnmarked(how) {
+  return how?.wayland_failed ? h("div", { class: "notebox risk small" }, h("b", {}, "Its window isn't on a marked "
+    + "connection. "), "This desktop marks a sandbox's connection, but marking this one failed: the program is on the "
+    + "desktop's own connection, and can do there what any program on this desktop can.") : null;
 }
 
 function trialHow(how) {
@@ -3871,7 +3897,7 @@ function trialRunning(t, call) {
   return [
     h("p", {}, h("b", {}, `${t.name} is running in its sandbox`), t.started ? ` (${fmtMinutes(Math.max(0, t.now - t.started))}).` : ".",
       " Use it as you would; close it, or end the trial here, to see what it did."),
-    h("div", { class: "small muted" }, trialHow(t.how)),
+    h("div", { class: "small muted" }, trialHow(t.how)), trialUnmarked(t.how),
     h("div", { class: "tally" },
       h("span", {}, h("b", {}, `${live.written ?? 0}`), " files written"),
       h("span", {}, h("b", {}, `${live.decoys ?? 0}`), " decoys looked at"),
@@ -3888,7 +3914,7 @@ function trialResult(t, call, st = {}) {
   return [
     h("p", {}, h("b", {}, t.name), ` ran for ${fmtMinutes(r.seconds)} and `, r.ended || (t.stopped ? "was ended here" : r.failed
       ? `ended with an error (exit status ${t.exit})` : "ended by itself"), "."),
-    h("div", { class: "small muted" }, trialHow(t.how)),
+    h("div", { class: "small muted" }, trialHow(t.how)), trialUnmarked(t.how),
     r.output.length ? h("details", { class: "small", open: r.failed }, h("summary", {}, "What it printed last"),
       h("pre", { class: "output" }, r.output.join("\n"))) : null,
     h("h4", {}, "Decoy files"),
