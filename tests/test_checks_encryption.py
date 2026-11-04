@@ -109,6 +109,15 @@ def test_swap_with_a_random_key_each_boot_is_not_persistent(cat, tmp_path):
                                       "/sys/block/dm-0/dm/name": "cryptswap\n",
                                       "/etc/crypttab": "cryptswap /dev/sda2 /dev/urandom swap,cipher=aes-xts-plain64\n"})
     assert detect(cat, "enc.swap_persistent", make_scan(host, devices=devices)).status is Status.PASS
+    if os.geteuid() == 0:
+        return                                          # root reads it whatever its mode
+    # where crypttab can't be read, the key's being new at every boot couldn't be told: never "the same key"
+    os.chmod(host.sys_path("/etc/crypttab"), 0)
+    try:
+        o = detect(cat, "enc.swap_persistent", make_scan(host, devices=devices))
+    finally:
+        os.chmod(host.sys_path("/etc/crypttab"), 0o644)
+    assert o.partial and "same key" not in ev(o)["/dev/dm-0"] and "couldn't be told" in ev(o)["/dev/dm-0"]
 
 
 # ------------------------------------------------------------------ LUKS headers

@@ -315,6 +315,10 @@ class SwapPersistent(Check):
                 return True, "couldn't find its device"
             if dev.type == "crypt" and dev.name in random_key:
                 return False, "encrypted with a new random key each boot"
+            if dev.type == "crypt" and crypttab is None:
+                # the random key a swap volume of its own may have is in crypttab: never said either way unread
+                return True, "encrypted; whether with a new key at every boot couldn't be told (/etc/crypttab can't " \
+                             "be read)"
             if dev.encrypted:
                 return True, "encrypted, with the same key every boot"
             return True, "not encrypted"
