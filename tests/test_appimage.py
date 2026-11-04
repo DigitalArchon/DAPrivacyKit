@@ -155,6 +155,47 @@ def test_install_helper_from_the_command_line(monkeypatch, capsys):
     assert app.install_helper_cli(True) == 1 and "Not removed" in capsys.readouterr().err
 
 
+def _repo(tmp_path, files: dict[str, str]) -> tuple[Path, dict]:
+    """A scratch git repository with `files` committed, and an environment for the packaging scripts that keeps them
+    in tmp_path: git's own defaults (no signing, no hooks), and podman a fake that writes down how it was called."""
+    import subprocess
+    repo, bin_dir = tmp_path / "repo", tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "podman").write_text(f'#!/bin/sh\necho "$@" >> {tmp_path / "podman.calls"}\n')
+    (bin_dir / "podman").chmod(0o755)
+    env = {"PATH": f"{bin_dir}:{os.environ['PATH']}", "HOME": str(tmp_path), "TMPDIR": str(tmp_path),
+           "XDG_CACHE_HOME": str(tmp_path / "cache"), "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1",
+           "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.org", "GIT_COMMITTER_NAME": "t",
+           "GIT_COMMITTER_EMAIL": "t@example.org"}
+    for rel, text in files.items():
+        (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+        (repo / rel).write_text(text)
+        if rel.endswith(".sh"):
+            (repo / rel).chmod(0o755)
+    for argv in (["init", "-q"], ["add", "-A"], ["commit", "-q", "-m", "release"], ["tag", "v1.0"]):
+        subprocess.run(["git", *argv], cwd=repo, env=env, check=True)
+    return repo, env
+
+
+def test_the_appimage_is_named_after_the_version_it_builds(tmp_path):
+    """build and check build HEAD (git archive), and took the version from the working tree: with a version bump not
+    yet committed, the AppImage's name, desktop entry and AppStream release said the new version, the package inside
+    HEAD's, and verify-release.sh couldn't build it again. dev builds the working tree, and takes its version."""
+    import subprocess
+    repo, env = _repo(tmp_path, {
+        "pyproject.toml": '[project]\nversion = "1.0"\n',
+        "packaging/build-appimage.sh": (ROOT / "packaging/build-appimage.sh").read_text(),
+        "packaging/appimage/pins.sh": (ROOT / "packaging/appimage/pins.sh").read_text(),
+        "packaging/appimage/Containerfile": "FROM scratch\n"})
+    (repo / "pyproject.toml").write_text('[project]\nversion = "2.0"\n')               # bumped, not committed
+    for mode, version in (("build", "1.0"), ("dev", "2.0")):
+        r = subprocess.run(["bash", "packaging/build-appimage.sh", mode], cwd=repo, env=env, capture_output=True,
+                           text=True)
+        assert r.returncode == 0, r.stderr
+        run = (tmp_path / "podman.calls").read_text().splitlines()[-1]
+        assert run.startswith("run ") and f"VERSION={version} " in run, (mode, run)
+
+
 def test_the_wheel_carries_the_catalogue():
     import tomllib
     data = tomllib.loads((ROOT / "pyproject.toml").read_text())

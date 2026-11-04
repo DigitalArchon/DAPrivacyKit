@@ -34,7 +34,10 @@ else
     git archive --format=tar HEAD > "$WORK/src.tar"
 fi
 EPOCH="$(git log -1 --format=%ct HEAD)"
-VERSION="$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+# the version of what is built, from its own pyproject.toml: read from the working tree, an uncommitted version bump
+# named the AppImage, its desktop entry and its AppStream release after a version the package inside wasn't
+VERSION="$(tar -xOf "$WORK/src.tar" pyproject.toml \
+    | python3 -c 'import sys, tomllib; print(tomllib.load(sys.stdin.buffer)["project"]["version"])')"
 CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/daprivacyscanner-appimage"
 mkdir -p "$CACHE" dist
 
