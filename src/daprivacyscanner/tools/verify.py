@@ -43,6 +43,7 @@ _BSD = re.compile(r"^(MD5|SHA1|SHA224|SHA256|SHA384|SHA512|BLAKE2b(?:-512)?)\s*\
 _GNU = re.compile(r"^\\?([0-9A-Fa-f]{32,128})\s+\*?(.+?)\s*$")
 _BARE = re.compile(r"^([0-9A-Fa-f]{32,128})\s*$")
 CLEARSIGNED = "-----BEGIN PGP SIGNED MESSAGE-----"
+SIGNATURE_BEGIN, SIGNATURE_END = "-----BEGIN PGP SIGNATURE-----", "-----END PGP SIGNATURE-----"
 
 LEVELS = ("verified", "signed", "intact", "bad", "unchecked")
 
@@ -56,24 +57,71 @@ class Entry:
     name: str | None          # the file it is for; None for a bare checksum (a <file>.sha256 holding only that)
 
 
-def signed_text(text: str) -> str | None:
-    """The text a clearsigned message signs (RFC 9580, 7.1): after the armour headers, up to the
-    signature, with dash-escaping undone. None if it isn't clearsigned. Only this is trusted:
-    anything before or after the block is ignored."""
-    start = text.find(CLEARSIGNED)
-    if start < 0:
+class Unclear(ValueError):
+    """What a clearsigned file signs can't be told for sure: it is taken as changed since it was signed."""
+
+
+@dataclass(frozen=True)
+class Clearsigned:
+    """A clearsigned message's place in a file, and what it signs."""
+    before: bytes                        # what comes before its first armour line
+    message: bytes                       # "-----BEGIN PGP SIGNED MESSAGE-----" through "-----END PGP SIGNATURE-----"
+    after: bytes
+    text: str                            # what it signs: after the armour headers, up to the signature
+
+
+def clearsigned(data: bytes) -> Clearsigned | None:
+    """The clearsigned message in `data` (RFC 9580, 7.1), or None if there is none. Read as GnuPG reads it:
+    lines end at "\\n" alone, an armour line is its marker at a line's start (white space may follow), the
+    headers end at the first blank line, dash-escaping is undone and trailing white space dropped (as gpgv
+    writes the text out). Raises Unclear when the marker is anywhere else, or there more than once: gpgv
+    checks the one real message and passes over the rest, so a marker hidden at the end of a line, or a
+    second message (signed by anyone, or by no one), would have the text after it taken for signed (a file
+    of someone else's was "Verified: made by Fedora" with one line added above Fedora's real list)."""
+    marker = CLEARSIGNED.encode()
+    count = data.count(marker)
+    if not count:
         return None
-    lines = text[start:].splitlines()[1:]
+    if count > 1:
+        raise Unclear("it holds more than one signed part, or text made to look like one")
+    lines, pos = [], 0
+    for raw in data.split(b"\n"):
+        lines.append((pos, raw))
+        pos += len(raw) + 1
+
+    def armour(raw: bytes, word: str) -> bool:
+        return raw.rstrip(b" \t\r") == word.encode()
+
+    start = next(i for i, (_, raw) in enumerate(lines) if marker in raw)
+    if not armour(lines[start][1], CLEARSIGNED):
+        raise Unclear("text in it is made to look like the start of a signed part")
     try:
-        body = lines.index("") + 1                     # "Hash: SHA256" and other headers end at an empty line
-    except ValueError:
+        body = next(i for i in range(start + 1, len(lines)) if not lines[i][1].rstrip(b" \t\r")) + 1
+        sig = next(i for i in range(body, len(lines)) if armour(lines[i][1], SIGNATURE_BEGIN))
+        end = next(i for i in range(sig + 1, len(lines)) if armour(lines[i][1], SIGNATURE_END))
+    except StopIteration:
         return None
-    out = []
-    for ln in lines[body:]:
-        if ln.startswith("-----BEGIN PGP SIGNATURE-----"):
-            return "\n".join(out)
-        out.append(ln[2:] if ln.startswith("- ") else ln)
-    return None
+    a, b = lines[start][0], min(lines[end][0] + len(lines[end][1]) + 1, len(data))
+    text = "\n".join((raw[2:] if raw.startswith(b"- ") else raw).decode("utf-8", "replace").rstrip(" \t\r")
+                     for _, raw in lines[body:sig])
+    return Clearsigned(data[:a], data[a:b], data[b:], text)
+
+
+def signed_text(text: str) -> str | None:
+    """The text a clearsigned message signs (clearsigned()), or None if it isn't one. Only this is
+    trusted: anything before or after the message is ignored. Raises Unclear (see clearsigned)."""
+    c = clearsigned(text.encode("utf-8", "surrogateescape"))
+    return None if c is None else c.text
+
+
+def _same_text(a: str, b: str) -> bool:
+    """Whether two readings of a signed text agree, line by line, but for trailing white space and blank lines."""
+    def lines(t: str) -> list[str]:
+        out = [ln.rstrip(" \t\r") for ln in t.split("\n")]
+        while out and not out[-1]:
+            out.pop()
+        return out
+    return lines(a) == lines(b)
 
 
 def parse_sums(text: str, list_name: str = "") -> list[Entry]:
@@ -319,19 +367,35 @@ class KeySet:
         return None, "", "keyring"
 
 
-def check_openpgp(host: Host, keyset: KeySet, sig: Path, data: Path | None) -> Signature:
-    """A detached signature over `data`, or a clearsigned file (`data` None)."""
+def check_openpgp(host: Host, keyset: KeySet, sig: Path, data: Path | None, signed: str | None = None) -> Signature:
+    """A detached signature over `data`, or a clearsigned file (`data` None). For a clearsigned one, `signed` is
+    the text the app read as signed (clearsigned()): gpgv writes out the text it checked, and the signature
+    counts only when the two agree."""
     over = data or sig
     if host.runner.which("gpgv"):
         argv = ["gpgv", "--homedir", str(keyset.dir / "home"), "--status-fd", "1"]
         for kr in keyring_args(keyset):
             argv += ["--keyring", str(kr)]
+        out = None
+        if data is None and signed is not None:
+            fd, name = tempfile.mkstemp(dir=keyset.dir, suffix=".txt")
+            os.close(fd)
+            out = Path(name)
+            argv += ["--output", str(out)]
         argv += [str(sig)] + ([str(data)] if data else [])
-        r = host.run(*argv, timeout=600)
+        try:
+            r = host.run(*argv, timeout=600)
+            checked = out.read_bytes().decode("utf-8", "replace") if out is not None else None
+        finally:
+            if out is not None:
+                out.unlink(missing_ok=True)
         found = parse_gpg_status(r.stdout)
         if not found:
             return Signature(sig, over, "openpgp", "error", detail=(r.stderr or r.stdout).strip()[:300]
                              or "gpgv found no signature in it")
+        if out is not None and not _same_text(checked or "", signed):
+            return Signature(sig, over, "openpgp", "bad", detail="what its signature covers isn't what the app read "
+                             "as signed in it")
         # every signature in the file must be good; report the first that isn't, else the first by a listed key
         results = [_from_status(keyset, sig, over, s) for s in found]
         bad = next((s for s in results if s.status in ("bad", "revoked")), None)
@@ -347,6 +411,20 @@ def check_openpgp(host: Host, keyset: KeySet, sig: Path, data: Path | None) -> S
     return Signature(sig, over, "openpgp", "no_tool", issuer=issuers[0] if issuers else "",
                      detail="Checking OpenPGP signatures needs gpgv" + (" (or sqv)" if data is not None else "")
                      + ", which isn't installed.", install=install_command(host, "gpgv"))
+
+
+def check_clearsigned(host: Host, keyset: KeySet, path: Path, c: Clearsigned) -> Signature:
+    """A clearsigned file's signature: gpgv is given its one message alone (whatever is around it can't be
+    taken for part of it), and the text it checked must be the text the app read (check_openpgp)."""
+    fd, name = tempfile.mkstemp(dir=keyset.dir, suffix=".asc")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(c.message)
+        s = check_openpgp(host, keyset, Path(name), None, signed=c.text)
+    finally:
+        os.unlink(name)
+    s.path = s.over = path
+    return s
 
 
 def keyring_args(keyset: KeySet) -> list[Path]:
@@ -488,6 +566,8 @@ class SumsList:
     clearsigned: bool = False
     signature: Signature | None = None   # over the list (detached, or clearsigned)
     matched: list[tuple[Entry, bool]] = field(default_factory=list)   # (entry, matches the file)
+    message: Clearsigned | None = None   # a clearsigned list's message, which alone is given to gpgv
+    unclear: str = ""                    # why what it signs can't be told (Unclear): taken as changed since signed
 
 
 def _small_file(p: Path) -> bool:
@@ -523,6 +603,24 @@ def _clearsigned(path: Path) -> bool:
             return CLEARSIGNED.encode() in f.read(4096)
     except OSError:
         return False
+
+
+def _chosen_clearsigned(host: Host, keyset: KeySet, path: Path) -> Signature:
+    """A clearsigned file chosen itself (a signed checksum list): it is the file they published only when it is
+    its message alone, with nothing but white space around it. gpgv passes over text before and after the
+    message, so a script or a list with lines of someone else's around a real signed part was "the file they
+    published, unchanged"."""
+    try:
+        c = clearsigned(path.read_bytes()[:MAX_COMPANION])
+    except Unclear as e:
+        return Signature(path, path, "openpgp", "bad", detail=str(e))
+    except OSError as e:
+        return Signature(path, path, "openpgp", "error", detail=str(e))
+    if c is None:
+        return Signature(path, path, "openpgp", "error", detail="it starts a signed part that doesn't end as one does")
+    if c.before.strip() or c.after.strip():
+        return Signature(path, path, "openpgp", "bad", detail="text was added to it outside its signed part")
+    return check_clearsigned(host, keyset, path, c)
 
 
 def target_of(path: Path) -> Path:
@@ -610,13 +708,17 @@ def verify(host: Host, path: Path, key_files: list[Path] = (), expected: str = "
     lists: list[SumsList] = []
     for lp in list_paths:
         try:
-            text = lp.read_text(errors="replace")
+            data = lp.read_bytes()[:MAX_COMPANION]
         except OSError:
             continue
-        body = signed_text(text)
-        entries = for_file(parse_sums(body if body is not None else text, lp.name), path.name, lp.name)
+        try:
+            c, unclear = clearsigned(data), ""
+        except Unclear as e:
+            c, unclear = None, str(e)
+        entries = for_file(parse_sums(c.text if c is not None else data.decode("utf-8", "replace"), lp.name),
+                           path.name, lp.name)
         if entries:
-            lists.append(SumsList(lp, entries, clearsigned=body is not None))
+            lists.append(SumsList(lp, entries, clearsigned=c is not None, message=c, unclear=unclear))
 
     want = {"sha256"} | {e.algo for l in lists for e in l.entries}
     paste = pasted(expected) if expected else None
@@ -634,7 +736,7 @@ def verify(host: Host, path: Path, key_files: list[Path] = (), expected: str = "
             package_notes.append(f"The package's own signature couldn't be read ({e}).")
         for e in inner:
             with P.streamed(e):
-                s = check_openpgp(host, ks, e.sig, e.data)
+                s = check_openpgp(host, ks, e.sig, e.data, signed=e.signed)
             s.path, s.over, s.inside = path, path, e.label
             if e.problem and s.status in ("good", "no_key", "error"):
                 s.status, s.detail = "bad", e.problem
@@ -644,11 +746,13 @@ def verify(host: Host, path: Path, key_files: list[Path] = (), expected: str = "
                 package_notes.append(e.note)
             signatures.append(s)
         if size <= MAX_COMPANION and _clearsigned(path) and not P.kind(path):   # a signed list chosen itself
-            signatures.append(check_openpgp(host, ks, path, None))
+            signatures.append(_chosen_clearsigned(host, ks, path))
         for l in lists:
             l.matched = judge(l.entries, hashes)
-            if l.clearsigned:
-                l.signature = check_openpgp(host, ks, l.path, None)
+            if l.unclear:
+                l.signature = Signature(l.path, l.path, "openpgp", "bad", detail=l.unclear)
+            elif l.clearsigned:
+                l.signature = check_clearsigned(host, ks, l.path, l.message)
             else:
                 sig = next((l.path.with_name(l.path.name + s) for s in SIG_SUFFIXES
                             if _small_file(l.path.with_name(l.path.name + s))), None)
@@ -686,9 +790,16 @@ def decide(path: Path, size: int, hashes: dict, signatures: list[Signature], lis
         if bad_sig and bad_sig.inside:
             v.text = (f"The signature inside it doesn't match it ({bad_sig.detail or 'a bad signature'}): the package "
                       "has been changed or damaged since it was signed.")
+        elif bad_sig and bad_sig.over == path and bad_sig.path == path:     # clearsigned, chosen itself
+            why = bad_sig.detail or "its signature doesn't match it"
+            v.text = f"It has been changed since it was signed ({why}): it isn't the file as it was published."
         elif bad_sig and bad_sig.over == path:
             v.text = (f"Its signature ({bad_sig.path.name}) doesn't match it: the file has been changed or damaged "
                       "since it was signed, or the signature is for another file.")
+        elif bad_sig and bad_sig.path == bad_sig.over:                       # a clearsigned list
+            why = bad_sig.detail or "its signature doesn't match it"
+            v.text = (f"The checksum list {bad_sig.over.name} has been changed since it was signed ({why}), so nothing "
+                      "in it can be trusted.")
         elif bad_sig:
             v.text = (f"The checksum list {bad_sig.over.name} has been changed since it was signed "
                       f"({bad_sig.path.name} doesn't match it), so nothing in it can be trusted.")

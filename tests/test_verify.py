@@ -132,9 +132,31 @@ def test_only_the_signed_part_of_a_clearsigned_list_counts():
     names = {e.name for e in V.parse_sums(body)}
     assert "evil.iso" not in names and "evil2.iso" not in names
     assert "Fedora-Workstation-Live-44-1.7.x86_64.iso" in names
-    assert V.signed_text("-----BEGIN PGP SIGNED MESSAGE-----\nHash: SHA256\n\n- -dashed\nx\n"
-                         "-----BEGIN PGP SIGNATURE-----\n") == "-dashed\nx"
+    assert V.signed_text("-----BEGIN PGP SIGNED MESSAGE-----\nHash: SHA256\n\n- -dashed\nx  \n"
+                         "-----BEGIN PGP SIGNATURE-----\n\nAAAA\n-----END PGP SIGNATURE-----\n") == "-dashed\nx"
     assert V.signed_text("not signed") is None
+    # a message that doesn't end as one does isn't one
+    assert V.signed_text("-----BEGIN PGP SIGNED MESSAGE-----\nHash: SHA256\n\nx\n-----BEGIN PGP SIGNATURE-----\n") is None
+
+
+MESSAGE = ("-----BEGIN PGP SIGNED MESSAGE-----\nHash: SHA256\n\nsigned line\n-----BEGIN PGP SIGNATURE-----\n\nAAAA\n"
+           "-----END PGP SIGNATURE-----\n")
+
+
+@pytest.mark.parametrize("text", [
+    "# -----BEGIN PGP SIGNED MESSAGE-----\n\nunsigned line\n" + MESSAGE,             # the marker at a line's end
+    "x\r-----BEGIN PGP SIGNED MESSAGE-----\n\nunsigned line\n" + MESSAGE,          # after a lone CR, no line break
+    "x\x0c-----BEGIN PGP SIGNED MESSAGE-----\n\nunsigned line\n" + MESSAGE,        # nor a form feed
+    MESSAGE.replace("signed line", "theirs") + MESSAGE,                             # a second message, anyone's
+    "-----BEGIN PGP SIGNED MESSAGE----- and more\n\nunsigned line\n" + MESSAGE[35:],
+])
+def test_what_a_clearsigned_file_signs_is_read_as_gnupg_reads_it_or_not_at_all(text):
+    """gpgv checks the one real message and passes over everything else, so anything that only looks like the
+    start of one (and a second message) would have had the text after it taken for signed."""
+    with pytest.raises(V.Unclear):
+        V.signed_text(text)
+    c = V.clearsigned(("before\n" + MESSAGE + "after\n").encode())
+    assert (c.before, c.after, c.text) == (b"before\n", b"after\n", "signed line") and c.message == MESSAGE.encode()
 
 
 @pytest.mark.parametrize("text, digest_len, algos", [
@@ -345,6 +367,49 @@ def test_text_added_around_a_clearsigned_list_doesnt_count(tmp_path, signer):
     h = real_host(tmp_path)
     assert V.verify(h, d / "good.iso", key_files=[tmp_path / "signer.asc"]).level == "signed"
     assert V.verify(h, d / "evil.iso", key_files=[tmp_path / "signer.asc"]).level == "unchecked"
+
+
+@needs_gpg
+def test_a_line_of_someone_elses_above_fedoras_real_list_doesnt_verify_their_file(tmp_path):
+    """A marker hidden at the end of a line above Fedora's real, signed CHECKSUM: gpgv found Fedora's good
+    signature on the real message, and the line after the marker was read as signed: a file of someone else's
+    was "Verified: made by Fedora" (with the bundled key; the user's keyring isn't needed)."""
+    import hashlib
+    evil = b"#!/bin/sh\necho this is not Fedora\n"
+    name = "Fedora-Workstation-Live-44-1.8.x86_64.iso"
+    line = f"SHA256 ({name}) = {hashlib.sha256(evil).hexdigest()}\n"
+    real = (SAMPLES / "Fedora-Workstation-44-1.7-x86_64-CHECKSUM").read_text()
+    d = put(tmp_path)
+    (d / name).write_bytes(evil)
+    (d / "Fedora-Workstation-44-1.8-x86_64-CHECKSUM").write_text("# -----BEGIN PGP SIGNED MESSAGE-----\n\n" + line + real)
+    v = V.verify(real_host(tmp_path), d / name, use_keyring=False)
+    assert v.level == "bad" and "has been changed since it was signed" in v.text
+    # the list chosen itself, with the line added above it: not "the file they published, unchanged"
+    (d / "CHECKSUM").write_text(line + real)
+    v = V.verify(real_host(tmp_path), d / "CHECKSUM", use_keyring=False)
+    assert v.level == "bad" and "outside its signed part" in v.text
+    # the real list chosen itself is still verified
+    (d / "CHECKSUM").write_text(real)
+    assert V.verify(real_host(tmp_path), d / "CHECKSUM", use_keyring=False).level == "verified"
+
+
+@needs_gpg
+def test_a_second_signed_part_by_another_key_doesnt_count(tmp_path, signer):
+    """A message of the attacker's own (signed by a key nobody has) above the real one: gpgv says the first can't be
+    checked and the second is good, and the first one's lines were the ones read."""
+    import hashlib
+    home, fpr, sign = signer
+    d = put(tmp_path, CHECKSUM="SHA256 (good.iso) = " + hashlib.sha256(b"good").hexdigest() + "\n",
+            evil__iso=b"evil", good__iso=b"good")
+    sign(d / "CHECKSUM", clear=True)
+    real = (d / "CHECKSUM.asc").read_text()
+    (d / "CHECKSUM.asc").unlink()
+    theirs = real.replace("SHA256 (good.iso) = " + hashlib.sha256(b"good").hexdigest(),
+                          "SHA256 (evil.iso) = " + hashlib.sha256(b"evil").hexdigest())
+    (d / "CHECKSUM").write_text(theirs + real)
+    h = real_host(tmp_path)
+    for f in ("evil.iso", "good.iso"):
+        assert V.verify(h, d / f, key_files=[tmp_path / "signer.asc"]).level == "bad"
 
 
 @pytest.mark.skipif(not shutil.which("ssh-keygen"), reason="ssh-keygen isn't installed")

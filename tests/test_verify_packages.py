@@ -87,6 +87,12 @@ def test_only_the_signed_block_of_the_list_counts(tmp_path, signer):
     forged.write_bytes(ar(fake + [("_gpgorigin", f"Files: \n{lines}\n".encode() + signed)]))
     v = V.verify(real_host(tmp_path), forged, projects=[project(tmp_path, fpr)])
     assert v.level == "bad" and "doesn't match its signed list" in v.text
+    # with the marker hidden at the end of a line above the forged list, those lines read as signed, and the
+    # package with the attacker's parts (its postinst included) was "Verified" by the real signature
+    forged.write_bytes(ar(fake + [("_gpgorigin", f"# -----BEGIN PGP SIGNED MESSAGE-----\n\nFiles: \n{lines}\n".encode()
+                                   + signed)]))
+    v = V.verify(real_host(tmp_path), forged, projects=[project(tmp_path, fpr)])
+    assert v.level == "bad" and "signed part" in v.text
 
 
 @needs_gpg

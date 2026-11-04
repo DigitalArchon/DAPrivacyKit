@@ -53,6 +53,7 @@ class Embedded:
     uncovered: str = ""                   # it doesn't cover the contents: not a verification
     ranges: list[tuple[int, int]] = field(default_factory=list)      # (offset, size) of the package, in order
     source: Path | None = None
+    signed: str | None = None             # clearsigned: the text read as signed, which gpgv's must match
 
 
 def kind(path: Path) -> str | None:
@@ -128,14 +129,26 @@ def deb(path: Path, work: Path) -> list[Embedded]:
         sig = work / f"deb-{name}"
         sig.write_bytes(body)
         if b"-----BEGIN PGP SIGNED MESSAGE-----" in body:               # dpkg-sig
-            from .verify import signed_text            # only what is inside the signed block counts
+            # only what is inside its one signed message counts, and gpgv is given that message alone: with lines
+            # added around it, or a marker hidden in one, an attacker's "Files:" lines (the parts dpkg-deb then reads,
+            # postinst included) counted as signed
+            from .verify import Unclear, clearsigned
+            try:
+                c, unclear = clearsigned(body), ""
+            except Unclear as e:
+                c, unclear = None, str(e)
+            if c is not None:
+                sig.write_bytes(c.message)
             listed = {}
-            for line in (signed_text(body.decode("utf-8", "replace")) or "").splitlines():
+            for line in (c.text if c is not None else "").splitlines():
                 m = _FILES.match(line)
                 if m:
                     listed[m.group(4)] = (m.group(1), m.group(2), int(m.group(3)))
-            problem = ""
+            problem = f"its signed list: {unclear}" if unclear else \
+                "its signed list isn't a whole signed message" if c is None else ""
             for pname, poff, psize in parts:
+                if problem:
+                    break
                 want = listed.pop(pname, None)
                 if want is None:
                     problem = f"{pname} in the package isn't in its signed list"
@@ -148,7 +161,7 @@ def deb(path: Path, work: Path) -> list[Embedded]:
             out.append(Embedded(name, sig, None, problem,
                                 "The package's signed list gives MD5 and SHA-1 checksums of its parts (dpkg-sig): "
                                 "weak algorithms, but nobody can make a different part to match one already "
-                                "signed."))
+                                "signed.", signed=c.text if c is not None else None))
         else:                                                              # debsigs: over the parts joined
             order = [p for prefix in ("debian-binary", "control.tar", "data.tar")
                      for p in parts if p[0] == prefix or p[0].startswith(prefix + ".")]
