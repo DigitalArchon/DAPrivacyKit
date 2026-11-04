@@ -1495,10 +1495,14 @@ OACS, FNA and SANICAP via the helper's ioctl), read on request and kept for the 
   and cleaning are a background job (`/api/tools/metadata/read`, `/clean`, `/job`, `/stop`), one at a time;
   the page gets each file's summary (each group's count and first items) and asks for one file's
   everything when it is opened (`/show`). A file chosen on its own gets its copy beside it
-  (`FILE.cleaned.EXT`, never over one); the ticked files of a folder go into a new folder beside it,
-  `NAME (cleaned)` (or `(cleaned 2)`…, never one already there), with the same subfolders, cleaned from
-  copies in a hidden working folder inside it (contents and mode only: no extended attributes, where
-  browsers keep a download's address), so mat2 never writes into the user's folder; a file mat2 can't
+  (`FILE.cleaned.EXT`, never over one), cleaned from a copy in a hidden folder there; the ticked files of
+  a folder go into a new folder beside it, `NAME (cleaned)` (or `(cleaned 2)`…, never one already there),
+  with the same subfolders, cleaned from copies in a hidden working folder inside it (contents and mode
+  only: no extended attributes, where browsers keep a download's address). Each copy is read from a
+  descriptor of the file the listing saw (its device and inode; a folder's opened without following a
+  link: the browser can swap one in for a listed download, and mat2 followed it, its cleaned copy of
+  whatever the link pointed to landing where the browser sees it), so mat2 cleans nothing else and never
+  writes into the user's folder; a file mat2 can't
   clean gets no copy and is listed, and a folder with nothing cleaned is removed. A copy counts only when
   the run that made it exited 0: mat2 cleans each file of a run in a process of its own, and one that
   crashes leaves a copy that looks cleaned (a read-only MP3's with every tag, a binary PPM's empty) and

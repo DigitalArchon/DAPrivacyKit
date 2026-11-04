@@ -24,7 +24,9 @@ on its own is cleaned beside itself, as above; the files of a chosen folder go i
 it, "NAME (cleaned)", with the same subfolders and only the cleaned copies (a file mat2 can't clean
 is left out and listed, so nothing in it passes for clean). They are cleaned from copies in a hidden
 working folder inside that new folder (no extended attributes copied: browsers keep a download's
-address in one), so mat2 never writes into the user's folder.
+address in one), so mat2 never writes into the user's folder; a file chosen on its own from a copy in
+a hidden folder beside it. Each copy is read from the file the listing saw, a folder's never through
+a link (`_working_copy`).
 
 The Outbox: `run_outbox` cleans every file put in ~/Outbox into ~/Outbox/Cleaned and moves the
 original to ~/Outbox/Originals (nothing is deleted); a file mat2 can't clean goes to
@@ -33,6 +35,7 @@ original to ~/Outbox/Originals (nothing is deleted); a file mat2 can't clean goe
 from __future__ import annotations
 
 import contextlib
+import errno
 import json
 import os
 import re
@@ -335,11 +338,20 @@ class Stopped(Exception):
     run: "CleanRun | None" = None
 
 
+class Replaced(Exception):
+    """A file to clean isn't the one that was listed any more."""
+
+    def __str__(self) -> str:
+        return ("It isn't the file that was listed any more (something replaced it, with a link perhaps), so it "
+                "wasn't cleaned.")
+
+
 @dataclass
 class Chosen:
     """A file to read or clean: chosen on its own (root None) or found in the folder `root`."""
     path: Path
     root: Path | None = None
+    ident: tuple[int, int] | None = None     # its device and inode when it was listed
 
     @property
     def rel(self) -> str:
@@ -386,7 +398,7 @@ def collect(paths: list[Path], hidden: bool = False, limit: int = MAX_FILES) -> 
             sel.truncated = True
             return False
         seen.add((st.st_dev, st.st_ino))
-        sel.files.append(Chosen(p, root))
+        sel.files.append(Chosen(p, root, (st.st_dev, st.st_ino)))
         return True
 
     def walk(d: Path, root: Path, depth: int) -> bool:
@@ -640,6 +652,34 @@ def _mat2_each(host: Host, lightweight: bool, files: list[Path]) -> dict[Path, t
     return verdicts
 
 
+def _working_copy(c: Chosen, folder: Path, follow: bool = False) -> Path:
+    """A copy of `c`'s file in `folder`, one of the app's own, for mat2: it is never given the file itself. Read from a
+    descriptor of the file the listing saw (its device and inode, `Chosen.ident`), a folder's file opened without
+    following a link (`follow` for one chosen on its own: a link the user chose is theirs): a program can replace a
+    listed file, or a folder on the way, with a link before its batch comes (the browser, in its Downloads, at any
+    time), and mat2 followed it, so the cleaned copy of whatever it pointed to went into the cleaned folder, which the
+    browser sees. Contents and permissions only: no extended attributes (browsers keep a download's address in one).
+    Replaced when it isn't that regular file any more."""
+    try:
+        fd = os.open(c.path, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC | (0 if follow else os.O_NOFOLLOW))
+    except OSError as e:
+        if e.errno == errno.ELOOP:
+            raise Replaced() from None
+        raise
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or (c.ident is not None and (st.st_dev, st.st_ino) != c.ident):
+            raise Replaced()
+        copy = folder / c.path.name
+        out = os.open(copy, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+        with open(fd, "rb", closefd=False) as src, open(out, "wb") as dst:
+            shutil.copyfileobj(src, dst, 1 << 20)
+            os.fchmod(out, stat.S_IMODE(st.st_mode) & 0o777)
+    finally:
+        os.close(fd)
+    return copy
+
+
 def clean_many(host: Host, files: list[Chosen], lightweight: bool = False, progress=None, stop=None,
                check_after: bool = True) -> CleanRun:
     """Cleaned copies of `files`: beside each file chosen on its own (as `clean`), and for the files of
@@ -676,10 +716,32 @@ def clean_many(host: Host, files: list[Chosen], lightweight: bool = False, progr
                 run.results.append(Cleaned(c, False, message=cant_write(host, c.path.parent)))
             else:
                 todo.append(c)
-        verdicts = _mat2_each(host, lightweight, [c.path for c in todo]) if todo else {}
-        for c in todo:
-            ok, said = verdicts[c.path]
-            run.results.append(Cleaned(c, True, cleaned_name(c.path), said) if ok else Cleaned(c, False, message=said))
+        # each cleaned from a copy in a hidden folder of the app's beside it (_working_copy), its cleaned copy then
+        # moved beside it
+        works, copies = [], []
+        try:
+            for c in todo:
+                try:
+                    works.append(Path(tempfile.mkdtemp(prefix=WORK_PREFIX, dir=c.path.parent)))
+                    copies.append((c, _working_copy(c, works[-1], follow=True), ""))
+                except Replaced as e:
+                    copies.append((c, None, str(e)))
+                except OSError as e:
+                    copies.append((c, None, f"It couldn't be read: {e.strerror or e}."))
+            made = [p for _, p, _ in copies if p is not None]
+            verdicts = _mat2_each(host, lightweight, made) if made else {}
+            for c, copy, err in copies:
+                out = cleaned_name(c.path)
+                ok, said = verdicts[copy] if copy is not None else (False, err)
+                if ok and (out.exists() or out.is_symlink()):            # made meanwhile: never overwritten
+                    ok, said = False, (f"{out.name} is already there: rename or delete it first, so it isn't "
+                                       "overwritten.")
+                if ok:
+                    os.rename(cleaned_name(copy), out)
+                run.results.append(Cleaned(c, True, out, said) if ok else Cleaned(c, False, message=said))
+        finally:
+            for w in works:
+                shutil.rmtree(w, ignore_errors=True)
         tick(batch)
 
     roots: dict[Path, list[Chosen]] = {}
@@ -743,11 +805,10 @@ def _clean_folder(host: Host, root: Path, files: list[Chosen], lightweight: bool
             for n, c in enumerate(batch):
                 slot = work / str(i + n)
                 os.mkdir(slot, 0o700)
-                copy = slot / c.path.name
                 try:
-                    shutil.copyfile(c.path, copy, follow_symlinks=False)      # contents only: no extended attributes
-                    shutil.copymode(c.path, copy)
-                    copies.append((c, copy, ""))
+                    copies.append((c, _working_copy(c, slot), ""))
+                except Replaced as e:
+                    copies.append((c, None, str(e)))
                 except OSError as e:
                     copies.append((c, None, f"It couldn't be read: {e.strerror or e}."))
             todo = [p for _, p, _ in copies if p is not None]

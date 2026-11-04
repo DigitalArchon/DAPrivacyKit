@@ -265,6 +265,34 @@ def test_a_file_mat2_fails_on_gets_no_copy_however_it_fails(tmp_path):
     assert (box / "Not cleaned/voice.mp3").read_text() == "tags" and not (box / "Cleaned").exists()
 
 
+def test_a_file_replaced_by_a_link_after_it_was_listed_isnt_cleaned(tmp_path):
+    """The listing leaves links out, but a program can swap a listed file for one before its batch is copied (the
+    browser, in its Downloads, at any time): the copy became a link, mat2 followed it, and the cleaned copy of what it
+    pointed to went into "Downloads (cleaned)", which the browser sees. A file chosen on its own was cleaned through
+    its path likewise. Each is copied from the file the listing saw; a link the user chose is still theirs."""
+    host = make_host(tmp_path, home_files={"Downloads/a.jpg": "a", "Downloads/b.jpg": "b", "lone.jpg": "l",
+                                           "Inbox/secret.jpg": "mine", "Documents/secret.jpg": "secret"})
+    host.runner.handlers["mat2"] = fake_mat2()
+    dl, secret = host.home / "Downloads", host.home / "Documents/secret.jpg"
+    os.symlink(secret, host.home / "mine.jpg")
+    sel = M.collect([dl, host.home / "lone.jpg", host.home / "Inbox/secret.jpg", host.home / "mine.jpg"])
+    for victim in (dl / "b.jpg", host.home / "lone.jpg"):
+        victim.unlink()
+        os.symlink(secret, victim)
+    os.rename(host.home / "Inbox", host.home / "Inbox.old")                    # a folder on the way, too
+    os.symlink(host.home / "Documents", host.home / "Inbox")
+    run = M.clean_many(host, sel.files, check_after=False)
+    got = {r.chosen.rel: (r.ok, r.message) for r in run.results}
+    assert got["a.jpg"] == (True, "") and got["mine.jpg"] == (True, "")
+    assert all(not got[n][0] and "isn't the file that was listed" in got[n][1] for n in ("b.jpg", "lone.jpg", "secret.jpg"))
+    assert [p.name for p in (host.home / "Downloads (cleaned)").iterdir()] == ["a.jpg"]
+    assert not (host.home / "lone.cleaned.jpg").exists() and not (host.home / "Documents/secret.cleaned.jpg").exists()
+    assert (host.home / "mine.cleaned.jpg").read_text() == "clean:secret"           # beside the link the user chose
+    assert [p for p in host.home.rglob("*") if p.is_file() and not p.is_symlink()
+            and p.read_text() == "clean:secret"] == [host.home / "mine.cleaned.jpg"]
+    assert not list(host.home.rglob(M.WORK_PREFIX + "*"))
+
+
 def test_stopping_keeps_what_was_cleaned(tmp_path, monkeypatch):
     monkeypatch.setattr(M, "BATCH", 1)
     host = make_host(tmp_path, home_files={"F/a.jpg": "a", "F/b.jpg": "b"})
