@@ -671,6 +671,17 @@ $$(".modal .buttons button").at(-1).click();
 await window.openExport("everything"); await tick();
 check(calls.includes("GET /api/export") && text(".modal .export pre").includes("Changes made"), "Export everything fetches /api/export");
 check(text(".modal .export").includes("how to undo it by hand"), "and says what it is for");
+{ // switched to the report, for sharing, it is redacted again: each kind has its own default
+  const fetch0 = window.fetch, asked = [];
+  window.fetch = (path, opts) => { asked.push(path); return fetch0(path, opts); };
+  const redact = $(".modal .export label.check input"), sel = $(".modal .export select");
+  check(!redact.checked, "(everything is exported whole by default)");
+  sel.value = "report"; sel.dispatchEvent(new window.Event("change")); await tick();
+  check(redact.checked && asked.at(-1)?.startsWith("/api/report?") && asked.at(-1).includes("redact=1"),
+        "switching to the report redacts it again: " + asked.at(-1));
+  sel.value = "everything"; sel.dispatchEvent(new window.Event("change")); await tick();
+  check(!redact.checked && asked.at(-1)?.includes("redact=0"), "and back to everything, whole: " + asked.at(-1));
+  window.fetch = fetch0; }
 $$(".modal .buttons button").at(-1).click();
 
 // a guide with inputs: changing one builds the guide again with it

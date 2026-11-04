@@ -1611,7 +1611,8 @@ async function openExport(what = "report") {
   };
   redact.addEventListener("change", load);
   fmt.addEventListener("change", load);
-  sel.addEventListener("change", load);
+  // each kind with its own default: the report is for sharing, redacted; everything is for the user's backups, whole
+  sel.addEventListener("change", () => { redact.checked = sel.value !== "everything"; load(); });
   await load();
   const body = h("div", { class: "export" },
     h("div", { class: "orow" }, sel, h("span", { class: "spacer" }), fmt),
