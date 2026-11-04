@@ -803,7 +803,15 @@ document.addEventListener("keydown", (e) => {
   const top = modalTop();
   if (!top) return;
   if (keyIs(e, "Escape", 27)) {
-    // a field's own use of Escape comes first (WebKit clears a search field with it)
+    // in a search box with text in it, Escape clears the box, and the next one closes the dialog: WebKit clears a
+    // search box in its default action alone, which comes after this listener, once the dialog had been closed
+    const at = document.activeElement;
+    if (at?.matches("input[type=search]") && at.value && top.box.contains(at)) {
+      e.preventDefault();
+      at.value = "";
+      at.dispatchEvent(new Event("input", { bubbles: true }));
+      return;
+    }
     if (!top.sticky && !e.defaultPrevented) { e.preventDefault(); top.close(); }
     return;
   }

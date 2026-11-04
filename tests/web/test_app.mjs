@@ -1879,5 +1879,19 @@ while ($$(".modal").length) { $$(".modal .buttons button").at(-1).click(); await
   routes["GET /api/tools/names/job"] = namesJob; routes["GET /api/tools/names/clean"] = namesClean;
   trimJob = null; keepsJob = null; trialNow = null; browserJob = null; }
 
+// Escape in a search box with text in it clears the box (WebKit would only in its default action, once the dialog had
+// been closed); the next Escape closes the dialog
+{ await window.openKeeps(); await tick();
+  const find = $(".modal .activity input[type=search]");
+  const esc = () => find.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape", code: "Escape", keyCode: 27,
+                                                                             bubbles: true, cancelable: true }));
+  find.focus(); find.value = "bar"; find.dispatchEvent(new window.Event("input"));
+  check($$(".modal .applist label").length === 1, "(the list is narrowed down)");
+  esc(); await tick();
+  check($$(".modal").length === 1 && find.value === "" && $$(".modal .applist label").length === 2,
+        "Escape in a search box with text in it clears the box, and the dialog stays");
+  esc(); await tick();
+  check(!$$(".modal").length, "the next Escape closes the dialog"); }
+
 if (failures) { console.error(`${failures} front-end checks failed`); process.exit(1); }
 console.log("front-end: all checks passed");
