@@ -18,6 +18,7 @@ from daprivacyscanner.privileged import FakePrivileged
 
 from conftest import detect, ev, make_host, make_scan
 from fakes import FakeNmcli, FakeSystem
+from test_checks_network import DOCKER_PS
 from test_checks_telemetry_browser import firefox, pref
 from test_guides import apply, build, options, revert, rooted
 
@@ -592,10 +593,10 @@ def test_podman_docker_shim_rootless_passes(cat, tmp_path):
     host = make_host(tmp_path, commands={
         ("docker", "--version"): "podman version 5.4.0\n",
         ("docker", "info", "--format", "{{.Host.Security.Rootless}}"): "true\n",
-        ("docker", "ps", "--format", "{{.Names}}\t{{.Ports}}"): "web\t0.0.0.0:8080->80/tcp\n"})
+        DOCKER_PS: "web\t0.0.0.0:8080->80/tcp\n"})
     o = detect(cat, "net.docker_bypass", make_scan(host))
     assert o.status is Status.PASS and "Podman" in o.summary
-    assert ("docker", "ps", "--format", "{{.Names}}\t{{.Ports}}") not in host.runner.calls
+    assert DOCKER_PS not in host.runner.calls
 
 
 def test_docker_service_not_running_is_no_container_and_isnt_started(cat, tmp_path):
@@ -603,11 +604,11 @@ def test_docker_service_not_running_is_no_container_and_isnt_started(cat, tmp_pa
     host = make_host(tmp_path, commands={
         ("docker", "--version"): "Docker version 29.7.2, build 1\n",
         ("systemctl", "is-active", "docker.service"): CommandResult((), 3, "inactive\n"),
-        ("docker", "ps", "--format", "{{.Names}}\t{{.Ports}}"):
+        DOCKER_PS:
             CommandResult((), 1, "", "permission denied while trying to connect to the docker API\n")})
     o = detect(cat, "net.docker_bypass", make_scan(host))
     assert o.status is Status.PASS and "isn't running" in o.summary
-    assert ("docker", "ps", "--format", "{{.Names}}\t{{.Ports}}") not in host.runner.calls
+    assert DOCKER_PS not in host.runner.calls
     (host.root / "proc/42").mkdir(parents=True)
     (host.root / "proc/42/comm").write_text("containerd-shim\n")          # live-restore: containers run on
     assert detect(cat, "net.docker_bypass", make_scan(host)).status is Status.UNKNOWN
@@ -617,7 +618,7 @@ def test_docker_finding_says_docker_user_rules_arent_read(cat, tmp_path):
     host = make_host(tmp_path, commands={
         ("docker", "--version"): "Docker version 29.7.2, build 1\n",
         ("systemctl", "is-active", "docker.service"): "active\n",
-        ("docker", "ps", "--format", "{{.Names}}\t{{.Ports}}"): "web\t0.0.0.0:8080->80/tcp\n"})
+        DOCKER_PS: "web\t0.0.0.0:8080->80/tcp\n"})
     o = detect(cat, "net.docker_bypass", make_scan(host))
     assert o.status is Status.FAIL and "Rules in DOCKER-USER aren't read" in [n.title for n in o.notes]
     step = build(cat, host, "net.docker_bypass").steps[1]

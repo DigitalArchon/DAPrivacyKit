@@ -12,8 +12,8 @@ from ..host import Unreadable
 from ..model import Evidence, Note, Outcome
 from ..paths import Base
 from . import Check, Scan, register
-from ._util import (Tally, absent, children, failed, human_size, installed, isdir, isfile, mode_of, mozilla_profiles,
-                    needs_root, passed, read_json, read_text, sqlite_count, tally, unknown, warned)
+from ._util import (Tally, absent, children, cups_not_asked, failed, human_size, installed, isdir, isfile, mode_of,
+                    mozilla_profiles, needs_root, passed, read_json, read_text, sqlite_count, tally, unknown, warned)
 from .auth import SKIP_DIRS
 
 
@@ -378,11 +378,13 @@ class CupsSpool(Check):
             return m.group(1) if m else default
         files = directive("PreserveJobFiles", "86400")
         history = directive("PreserveJobHistory", "Yes")
-        r = host.run("lpstat", "-W", "completed", "-o")
-        jobs = len([ln for ln in r.stdout.splitlines() if ln.strip()]) if r.ok else 0
+        why_not = cups_not_asked(host)
+        r = host.run("lpstat", "-W", "completed", "-o") if why_not is None else None
+        jobs = len([ln for ln in r.stdout.splitlines() if ln.strip()]) if r is not None and r.ok else 0
         ev = [Evidence.val("PreserveJobFiles", files + (" (default: one day)" if files == "86400" else "")),
               Evidence.val("PreserveJobHistory", history + (" (default)" if history == "Yes" else "")),
-              Evidence.count("Completed jobs CUPS remembers", jobs)]
+              Evidence.count("Completed jobs CUPS remembers", jobs) if why_not is None else
+              Evidence.val("Completed jobs CUPS remembers", f"not asked: {why_not}")]
         # the documents and the list of jobs (with their titles) are kept apart, each for as long as its limit says
         kept_files, kept_history = cups_seconds(files), cups_seconds(history)
         list_for = ("indefinitely" if kept_history is None else f"for {_duration(kept_history)}")

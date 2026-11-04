@@ -460,6 +460,29 @@ def installed(host: Host, *programs: str) -> bool:
     return any(host.runner.which(p) for p in programs)
 
 
+def cups_not_asked(host: Host) -> str | None:
+    """Why a scan doesn't ask CUPS (cupsctl, lpstat), or None when it may: only while cups.service runs, and only this
+    computer's. Through cups.socket a command starts the service when it isn't running (a scan changes nothing), and
+    CUPS_SERVER or a ServerName in ~/.cups/client.conf or /etc/cups/client.conf, in that order, has it ask another
+    computer (a scan reaches no network). Without systemd, which has no socket to start it, by cupsd running."""
+    state = systemctl_state(host, "is-active", "cups")
+    if state != "active" and not (state == "" and "cupsd" in processes(host)):
+        return "CUPS isn't running (asking would start it)"
+    server = host.environ.get("CUPS_SERVER", "").strip()
+    for path in () if server else (host.home / ".cups/client.conf", host.sys_path("/etc/cups/client.conf")):
+        try:
+            named = re.findall(r"^\s*ServerName\s+(\S+)", host.read_file(path) or "", re.M | re.I)
+        except Unreadable:
+            return f"{host.display(path)} can't be read, so which computer CUPS would ask isn't known"
+        if named:
+            server = named[-1]                        # the last one in a file wins, as CUPS reads it
+            break
+    name = server.split("/")[0]                       # host[:port][/version=1.1]; a path is a local socket
+    name = name[1:name.find("]")] if name.startswith("[") else name.split(":")[0] if name.count(":") == 1 else name
+    local = not server or server.startswith("/") or name.lower() in ("localhost", "::1") or name.startswith("127.")
+    return None if local else f"CUPS here asks another computer ({server[:60]})"
+
+
 SYSTEM_PROGRAM_DIRS = ("/usr/sbin", "/sbin", "/usr/bin")
 
 

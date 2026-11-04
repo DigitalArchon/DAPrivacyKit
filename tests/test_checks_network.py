@@ -57,13 +57,16 @@ def test_nothing_exposed(cat, tmp_path):
     assert o.status is Status.PASS
 
 
+DOCKER_PS = ("docker", "-H", "unix:///run/docker.sock", "ps", "--format", "{{.Names}}\t{{.Ports}}")
+
+
 @pytest.mark.parametrize("out, status", [
     ("web\t0.0.0.0:8080->80/tcp, :::8080->80/tcp\ndb\t127.0.0.1:5432->5432/tcp\n", Status.FAIL),
     ("db\t127.0.0.1:5432->5432/tcp\nworker\t\n", Status.PASS),
     (CommandResult((), 1, "", "permission denied while trying to connect to the Docker daemon socket"), Status.UNKNOWN),
 ])
 def test_docker(cat, tmp_path, out, status):
-    host = make_host(tmp_path, commands={("docker", "ps", "--format", "{{.Names}}\t{{.Ports}}"): out})
+    host = make_host(tmp_path, commands={DOCKER_PS: out})
     o = detect(cat, "net.docker_bypass", make_scan(host))
     assert o.status is status
     if status is Status.FAIL:
@@ -72,6 +75,39 @@ def test_docker(cat, tmp_path, out, status):
 
 def test_no_docker(cat, tmp_path):
     assert detect(cat, "net.docker_bypass", make_scan(make_host(tmp_path))).status is Status.NOT_APPLICABLE
+
+
+def test_docker_and_cups_are_asked_on_this_computer_only(cat, tmp_path):
+    """docker ps followed the CLI's context (DOCKER_HOST, DOCKER_CONTEXT: SSH or TCP to another machine, whose
+    containers were reported as this one's); cupsctl and lpstat started a stopped cupsd through cups.socket, and with
+    CUPS_SERVER or a ServerName in client.conf asked another computer, in a scan."""
+    host = make_host(tmp_path, env={"DOCKER_HOST": "ssh://admin@build.example.net"}, commands={DOCKER_PS: "web\t\n"})
+    detect(cat, "net.docker_bypass", make_scan(host))
+    assert DOCKER_PS in host.runner.calls and host.runner.envs[host.runner.calls.index(DOCKER_PS)]["DOCKER_HOST"] == ""
+    # rootless Docker, with the system's docker.service stopped: its own socket, never the system's, through which
+    # docker.socket would start the service
+    for state, sock in (("inactive", "/run/user/1000/docker.sock"), ("active", "/run/docker.sock")):
+        host = make_host(tmp_path / state, files={"/proc/42/comm": "dockerd\n", "/run/user/1000/docker.sock": ""},
+                         commands={DOCKER_PS: "", ("systemctl", "is-active", "docker.service"):
+                                   CommandResult((), 0 if state == "active" else 3, state + "\n")})
+        detect(cat, "net.docker_bypass", make_scan(host))
+        assert host.runner.calls[-1][:3] == ("docker", "-H", f"unix://{sock}")
+
+    def asked(**kw):
+        h = make_host(tmp_path / str(len(list(tmp_path.iterdir()))), installed=["cupsctl", "lpstat"], **kw)
+        for cid in ("net.exposed_services", "app.cups_spool"):
+            detect(cat, cid, make_scan(h, listeners=[], exposed_services=exposed(False)))
+        return {c[0] for c in h.runner.calls} & {"cupsctl", "lpstat"}
+    on = {"systemctl is-active cups": "active\n"}
+    conf = {"/etc/cups/cupsd.conf": "PreserveJobFiles No\n"}
+    assert asked(commands=on, files=conf) == {"cupsctl", "lpstat"}
+    assert asked(commands={"systemctl is-active cups": CommandResult((), 3, "inactive\n")}, files=conf) == set()
+    assert asked(commands=on, files={**conf, "/etc/cups/client.conf": "ServerName print.example.net\n"}) == set()
+    assert asked(commands=on, files=conf, env={"CUPS_SERVER": "print.example.net:631"}) == set()
+    assert asked(commands=on, files={**conf, "/etc/cups/client.conf": "ServerName /run/cups/cups.sock\n"}) == \
+        {"cupsctl", "lpstat"}
+    # without systemd, which has no socket to start it, by cupsd running
+    assert asked(files={**conf, "/proc/7/comm": "cupsd\n"}) == {"cupsctl", "lpstat"} and asked(files=conf) == set()
 
 
 @pytest.mark.parametrize("files, commands, status", [

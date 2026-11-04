@@ -1264,7 +1264,9 @@ checks:
       - 'ss -tulpnH; flag local addresses 0.0.0.0, [::], *'
       - 'Allowlist expected listeners (DHCP client on 68, mDNS on 5353 handled by net.hostname_broadcast)'
       - 'sshd: sshd -T | grep -Ei "passwordauthentication|permitrootlogin"'
-      - 'CUPS: cupsctl | grep _share_printers=1'
+      - 'CUPS: cupsctl | grep _share_printers=1, only while cups.service runs (through cups.socket it would start it)
+        and CUPS is this computer''s (no CUPS_SERVER, nor a ServerName in ~/.cups/client.conf or
+        /etc/cups/client.conf, naming another)'
       - 'Active firewall: ufw status verbose (root), or firewall-cmd --list-all for the active zones; a port
         the firewall blocks is listening but not reachable (firewall_blocks_exposed when all of them are).
         nftables/iptables rulesets are not interpreted: unknown.'
@@ -1288,6 +1290,9 @@ checks:
     why: Docker inserts its own iptables/nftables rules ahead of ufw (and often firewalld zones).
     detect:
       - 'docker ps --format "{{.Names}} {{.Ports}}"; flag 0.0.0.0: or :::'
+      - 'docker -H unix:///run/docker.sock (rootless Docker''s $XDG_RUNTIME_DIR/docker.sock while docker.service is
+        stopped: through docker.socket the system''s would start it), with DOCKER_HOST and DOCKER_CONTEXT empty: the
+        CLI''s context can be another machine over SSH or TCP'
       - 'docker --version naming Podman: podman-docker''s shim. Rootless Podman (docker info
         {{.Host.Security.Rootless}}), and rootless Docker (its SecurityOptions name rootless), publish ports as
         ordinary sockets the host firewall filters: a pass'
@@ -2816,7 +2821,8 @@ checks:
     detect:
       - '/etc/cups/cupsd.conf PreserveJobFiles, PreserveJobHistory (Fedora keeps it root-only: needs administrator access)'
       - 'ls /var/spool/cups (d* = document data)'
-      - 'lpstat -W completed -o'
+      - 'lpstat -W completed -o, only as for cupsctl in net.exposed_services (cups.service running, CUPS this
+        computer''s)'
       - 'Judged apart: documents kept at all is a problem; with none kept, the job list kept for good is a problem, for
         longer than a day a risk, for a day or less a pass (the guide''s second option; live on Mint it still failed,
         saying "keeps printed documents")'

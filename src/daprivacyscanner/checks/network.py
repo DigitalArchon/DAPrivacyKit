@@ -14,8 +14,8 @@ from ..model import Evidence, Note, Outcome
 from ..network import carrying_vpn_links, vpn_links
 from ..privileged import HelperError
 from . import Check, Scan, register
-from ._util import (absent, children, failed, installed, isdir, mentions_name, passed, processes, read_text,
-                    removed_while_running, system_program, systemctl_state, unknown, user_names, warned)
+from ._util import (absent, children, cups_not_asked, failed, installed, isdir, mentions_name, passed, processes,
+                    read_text, removed_while_running, system_program, systemctl_state, unknown, user_names, warned)
 
 
 # ------------------------------------------------------------------ NetworkManager
@@ -304,8 +304,8 @@ class ExposedServices(Check):
                     notes.append(Note("risk", "SSH accepts passwords",
                                       "Anyone who can reach port 22 can try to guess passwords. Use SSH keys and set "
                                       "PasswordAuthentication no in /etc/ssh/sshd_config.d/."))
-        r = scan.host.run("cupsctl")
-        if r.ok and "_share_printers=1" in r.stdout:
+        r = scan.host.run("cupsctl") if cups_not_asked(scan.host) is None else None
+        if r is not None and r.ok and "_share_printers=1" in r.stdout:
             ev.append(Evidence.val("CUPS printer sharing", "on"))
         if not c.value:
             return passed("No services listen on all interfaces.", *ev, notes=notes, findings=findings)
@@ -342,7 +342,7 @@ class DockerBypass(Check):
                           "starts the first time something uses Docker (docker.socket starts it), with the containers "
                           "set to restart: scan again after using Docker.",
                           Evidence.val("docker.service", systemctl_state(host, "is-active", "docker.service")))
-        r = host.run("docker", "ps", "--format", "{{.Names}}\t{{.Ports}}")
+        r = host.run(*self._daemon(host), "ps", "--format", "{{.Names}}\t{{.Ports}}", env=self.LOCAL)
         if r.missing:
             return absent("Docker isn't installed.")
         if not r.ok:
@@ -373,12 +373,14 @@ class DockerBypass(Check):
                        "keeps listing these ports. Once your rules cover them, accept this finding (with a note naming "
                        "the rules).")
 
+    SERVICE_UP = ("", "active", "activating", "reloading", "deactivating")      # "": no systemctl, taken as running
+
     @staticmethod
     def _docker_running(host: Host) -> bool:
         """Whether Docker's daemon runs, or containers it left running do (live-restore keeps them when it stops:
         their containerd shims run on). Unknown is taken as running."""
         state = systemctl_state(host, "is-active", "docker.service")
-        if state in ("", "active", "activating", "reloading", "deactivating"):
+        if state in DockerBypass.SERVICE_UP:
             return True
         return any(p.startswith(("dockerd", "containerd-shim", "com.docker")) for p in processes(host))
 
@@ -405,10 +407,26 @@ class DockerBypass(Check):
                            "read yet: check where they publish ports with sudo podman ps.", *ev)
         return unknown("docker here is Podman, which couldn't say how it runs containers (podman info failed).", *ev)
 
+    # what the docker CLI would otherwise follow to another daemon, set empty (-H overrides them too)
+    LOCAL = {"DOCKER_HOST": "", "DOCKER_CONTEXT": ""}
+
+    @staticmethod
+    def _daemon(host: Host) -> list[str]:
+        """`docker`, kept to this computer's own daemon: its CLI follows DOCKER_HOST, DOCKER_CONTEXT and the context
+        ~/.docker/config.json chooses, which can be another machine over SSH or TCP (a scan reaches no network, and that
+        machine's containers aren't this one's). The system's socket, unless docker.service is stopped and rootless
+        Docker's socket is in the runtime folder: asked then, docker.socket would start the system's service."""
+        runtime = host.environ.get("XDG_RUNTIME_DIR", "")
+        rootless = (runtime if runtime.startswith("/") else f"/run/user/{host.uid}") + "/docker.sock"
+        stopped = systemctl_state(host, "is-active", "docker.service") not in DockerBypass.SERVICE_UP
+        sock = rootless if stopped and os.path.exists(host.sys_path(rootless)) else "/run/docker.sock"
+        return ["docker", "-H", f"unix://{sock}"]
+
     @staticmethod
     def _rootless_docker(host: Host) -> bool:
         """Whether the Docker daemon `docker` talks to is rootless Docker (its security options name rootless)."""
-        r = host.run("docker", "info", "--format", "{{json .SecurityOptions}}")
+        r = host.run(*DockerBypass._daemon(host), "info", "--format", "{{json .SecurityOptions}}",
+                     env=DockerBypass.LOCAL)
         return r.ok and "rootless" in r.stdout
 
 
