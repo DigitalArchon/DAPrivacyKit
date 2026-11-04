@@ -111,6 +111,20 @@ def test_scheduling_off_removes_the_folders_it_made_and_keeps_others(tmp_path, m
     assert "was left, with what is in it" in capsys.readouterr().out
 
 
+def test_scheduling_off_without_a_timer_says_only_that_they_are_off(tmp_path, monkeypatch, capsys):
+    """systemctl's "Failed to disable unit: Unit file daprivacyscanner-scan.timer does not exist." came before "Scheduled
+    scans are off.": without the timer there is nothing to disable, and systemctl isn't asked to."""
+    import subprocess
+    from daprivacyscanner import app
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
+    ran = []
+    monkeypatch.setattr(subprocess, "run", lambda argv, **kw: ran.append(argv[2]) or subprocess.CompletedProcess(argv, 0))
+    assert app.schedule("off") == 0
+    assert "disable" not in ran and capsys.readouterr().out == "Scheduled scans are off.\n"
+    assert app.schedule("daily") == 0 and app.schedule("off") == 0 and "disable" in ran     # one to turn off
+
+
 def test_dry_run_builds_an_online_tests_guide_from_the_saved_report(tmp_path, capsys):
     """--dry-run on an online finding: its guide comes from the saved last report (the test isn't run);
     before it has run, the output says so."""

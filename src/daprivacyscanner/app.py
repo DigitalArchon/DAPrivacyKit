@@ -315,7 +315,9 @@ def schedule(mode: str) -> int:
         earlier = []
     if mode == "off":
         made = earlier
-        subprocess.run(["systemctl", "--user", "disable", "--now", f"{TIMER_UNIT}.timer"], check=False, env=host_env())
+        if timer.exists():                         # else systemctl's "Unit file ... does not exist" came first
+            subprocess.run(["systemctl", "--user", "disable", "--now", f"{TIMER_UNIT}.timer"], check=False,
+                           env=host_env())
         for p in (service, timer):
             p.unlink(missing_ok=True)
         subprocess.run(["systemctl", "--user", "daemon-reload"], check=False, env=host_env())
