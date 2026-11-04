@@ -203,6 +203,68 @@ def test_a_folder_with_nothing_cleanable_leaves_no_empty_folder(tmp_path):
     assert run.outputs == {host.home / "Notes": None} and not (host.home / "Notes (cleaned)").exists()
 
 
+def runs_as_mat2_does(calls):
+    """mat2 as 0.13 to 0.15 run (their main: every file of the run cleaned in a process of its own, then the results):
+    a file whose cleaner raises (a read-only MP3, whose copy it can't open for writing) leaves that copy, every tag in
+    it, and ends the run with a traceback that names no file, exit status 1; one whose cleaner gives up (a binary PPM
+    read as text) leaves what it had written, 255; one it doesn't know is complained of, 255."""
+    def run(argv):
+        files = [Path(f) for f in argv[argv.index("--") + 1:]]
+        calls.append(sorted(f.name for f in files))
+        said, status = [], 0
+        for f in files:
+            if f.suffix == ".xyz":
+                said.append(f"[-] {f}'s format (chemical/x-xyz) is not supported\n")
+                status = status or 255
+            elif f.suffix == ".mp3":
+                M.cleaned_name(f).write_bytes(f.read_bytes())
+                status = 1
+            elif f.suffix == ".ppm":
+                M.cleaned_name(f).write_bytes(b"")
+                status = status or 255
+            else:
+                M.cleaned_name(f).write_bytes(b"clean:" + f.read_bytes())
+        crash = 'Traceback (most recent call last):\n  File "/usr/bin/mat2", line 226, in main\nValueError\n'
+        return CommandResult(tuple(argv), status, "".join(said), crash if status == 1 else "")
+    return run
+
+
+def test_a_file_mat2_fails_on_gets_no_copy_however_it_fails(tmp_path):
+    """Only whether FILE.cleaned.EXT appeared counted: a crash, or a cleaner that gives up, leaves one that looks
+    cleaned (mat2 0.13 on a read-only MP3: the copy with every tag; on a binary PPM: an empty one), and the page said
+    "clean copies made", the Outbox put the untouched copy in Cleaned. Nothing a failed run made is kept: what mat2
+    complained of failed, the rest are cleaned again, together, then one at a time."""
+    host = make_host(tmp_path, home_files={"Album/a.jpg": "a", "Album/b.mp3": "tags", "Album/c.xyz": "c",
+                                           "Album/d.ppm": "d", "song.mp3": "tags", "e.jpg": "e"},
+                     env={"XDG_RUNTIME_DIR": str(tmp_path)})
+    calls = []
+    host.runner.handlers["mat2"] = runs_as_mat2_does(calls)
+    sel = M.collect([host.home / "Album", host.home / "song.mp3", host.home / "e.jpg"])
+    run = M.clean_many(host, sel.files, check_after=False)
+    crashed = "mat2 stopped with an error: ValueError"
+    assert {r.chosen.rel: (r.ok, r.message) for r in run.results} == {
+        "song.mp3": (False, crashed), "e.jpg": (True, ""), "a.jpg": (True, ""), "b.mp3": (False, crashed),
+        "c.xyz": (False, "mat2 can't clean this kind of file (chemical/x-xyz)."),
+        "d.ppm": (False, "mat2 didn't make a cleaned copy.")}
+    out = host.home / "Album (cleaned)"
+    assert [p.name for p in out.iterdir()] == ["a.jpg"] and (out / "a.jpg").read_text() == "clean:a"
+    assert sorted(p.name for p in host.home.iterdir()) == ["Album", "Album (cleaned)", "e.cleaned.jpg", "e.jpg",
+                                                           "song.mp3"]
+    assert calls == [["e.jpg", "song.mp3"], ["song.mp3"], ["e.jpg"], ["a.jpg", "b.mp3", "c.xyz", "d.ppm"],
+                     ["a.jpg", "b.mp3", "d.ppm"], ["a.jpg"], ["b.mp3"], ["d.ppm"]]
+    assert run.to_dict(host)["cleaned"] == 2
+    # a file on its own, and the Outbox's
+    r = M.clean(host, host.home / "song.mp3")
+    assert not r.ok and r.message == crashed and not (host.home / "song.cleaned.mp3").exists()
+    box = host.home / "Outbox"
+    box.mkdir()
+    (box / "voice.mp3").write_text("tags")
+    os.utime(box / "voice.mp3", (1, 1))
+    o = M.run_outbox(host)
+    assert o.cleaned == [] and o.not_cleaned == [("voice.mp3", crashed)]
+    assert (box / "Not cleaned/voice.mp3").read_text() == "tags" and not (box / "Cleaned").exists()
+
+
 def test_stopping_keeps_what_was_cleaned(tmp_path, monkeypatch):
     monkeypatch.setattr(M, "BATCH", 1)
     host = make_host(tmp_path, home_files={"F/a.jpg": "a", "F/b.jpg": "b"})

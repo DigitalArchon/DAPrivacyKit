@@ -1499,7 +1499,11 @@ OACS, FNA and SANICAP via the helper's ioctl), read on request and kept for the 
   `NAME (cleaned)` (or `(cleaned 2)`…, never one already there), with the same subfolders, cleaned from
   copies in a hidden working folder inside it (contents and mode only: no extended attributes, where
   browsers keep a download's address), so mat2 never writes into the user's folder; a file mat2 can't
-  clean gets no copy and is listed, and a folder with nothing cleaned is removed. Each copy is read again
+  clean gets no copy and is listed, and a folder with nothing cleaned is removed. A copy counts only when
+  the run that made it exited 0: mat2 cleans each file of a run in a process of its own, and one that
+  crashes leaves a copy that looks cleaned (a read-only MP3's with every tag, a binary PPM's empty) and
+  names no file, so the files of a failed run it didn't complain of are cleaned again, together while it
+  names the one to blame, else one at a time (`_mat2_each`). Each copy is read again
   afterwards: the page flags copies that still say where, who or which device. Stopping keeps what was
   cleaned. For a PDF, mat2's normal mode redraws every page as an image (text can't be selected any
   more); *Lightweight* keeps the text and removes less. Linux allows any bytes in a file name: one that

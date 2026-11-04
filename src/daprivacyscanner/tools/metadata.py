@@ -9,7 +9,8 @@ undone), mat2 can. Both are the host's programs; neither is bundled.
 mat2 (0.15, read from its source): `--show` prints "[+] Metadata for FILE:" then "    key: value"
 lines (a nested file of an archive or document gets "[++] Metadata for MEMBER:" and two more spaces),
 or "  No metadata found in FILE."; problems are "[-] ..." lines. Cleaning writes FILE.cleaned.EXT
-beside the original (FILE.cleaned.tar.gz for a .tar.gz). For a PDF, the normal mode redraws every
+beside the original (FILE.cleaned.tar.gz for a .tar.gz); a copy there counts only when the run that made
+it ended well (`_mat2_each`: a crash leaves one behind). For a PDF, the normal mode redraws every
 page as an image (text can no longer be selected or searched); --lightweight redraws the pages
 keeping their text, and removes less.
 
@@ -310,16 +311,10 @@ def clean(host: Host, path: Path, lightweight: bool = False, check_after: bool =
                                                 "isn't overwritten.")
     if not os.access(path.parent, os.W_OK | os.X_OK):
         return CleanResult(path, False, message=cant_write(host, path.parent))
-    with _tmp_beside(path.parent, host.environ.get("XDG_RUNTIME_DIR")) as env:
-        r = host.run("mat2", *(["--lightweight"] if lightweight else []), "--", str(path), timeout=TIMEOUT, env=env)
-    problems = _sentences(r.stdout + r.stderr, str(path))
-    if not out.is_file():
-        said = (r.stderr or r.stdout).strip()
-        if "Traceback (most recent call last)" in said:             # mat2 itself failed: its last line says how
-            said = "mat2 stopped with an error: " + said.splitlines()[-1].strip()
-        return CleanResult(path, False, message=problems[0] if problems else
-                           said[:300] or "mat2 didn't make a cleaned copy.")
-    res = CleanResult(path, True, out, " ".join(problems))
+    ok, said = _mat2_each(host, lightweight, [path])[path]
+    if not ok:
+        return CleanResult(path, False, message=said)
+    res = CleanResult(path, True, out, said)
     if check_after:
         res.remaining = show(host, out)
     return res
@@ -606,6 +601,45 @@ def _mat2(host: Host, lightweight: bool, files: list[Path]):
                         timeout=TIMEOUT + 30 * len(files), env=env)
 
 
+def _failure(r) -> str:
+    """Why a run of mat2 on one file failed, when it didn't complain of it ("[-] …")."""
+    said = (r.stderr or r.stdout).strip()
+    if "Traceback (most recent call last)" in said:                 # mat2 itself failed: its last line says how
+        said = "mat2 stopped with an error: " + said.splitlines()[-1].strip()
+    return said[:300]
+
+
+def _mat2_each(host: Host, lightweight: bool, files: list[Path]) -> dict[Path, tuple[bool, str]]:
+    """mat2 on `files`, in as few runs as can be trusted: {file: (whether its cleaned copy, `cleaned_name`, is there
+    and can be trusted, what mat2 said of it)}. mat2's exit status is the run's (0 only when it cleaned every file,
+    each in a process of its own), and a run that failed names the file only when mat2 complained of it ("[-] …"): a
+    crash (a traceback) or a cleaner that gives up silently names none, and leaves a copy that looks cleaned. mat2 0.13
+    to 0.15 crash on a read-only MP3, OGG or FLAC, whose copy they can't open for writing, leaving it with every tag,
+    and on a binary PPM, leaving an empty one. So nothing a failed run made is kept: the files it complained of failed,
+    and the others are cleaned again, together while mat2 names a file to blame, else one at a time."""
+    verdicts: dict[Path, tuple[bool, str]] = {}
+    runs = [list(files)]
+    while runs:
+        batch = runs.pop(0)
+        r = _mat2(host, lightweight, batch)
+        text, again = r.stdout + r.stderr, []
+        for f in batch:
+            out, said = cleaned_name(f), _problems(text, str(f))
+            if r.ok and out.is_file() and not out.is_symlink():
+                verdicts[f] = (True, said)
+                continue
+            with contextlib.suppress(OSError):
+                os.unlink(out)                                      # what a failed run left there isn't clean
+            if r.ok or said or len(batch) == 1:
+                verdicts[f] = (False, said or (_failure(r) if len(batch) == 1 else "")
+                               or "mat2 didn't make a cleaned copy.")
+            else:
+                again.append(f)
+        if again:
+            runs += [again] if len(again) < len(batch) else [[f] for f in again]
+    return verdicts
+
+
 def clean_many(host: Host, files: list[Chosen], lightweight: bool = False, progress=None, stop=None,
                check_after: bool = True) -> CleanRun:
     """Cleaned copies of `files`: beside each file chosen on its own (as `clean`), and for the files of
@@ -642,14 +676,10 @@ def clean_many(host: Host, files: list[Chosen], lightweight: bool = False, progr
                 run.results.append(Cleaned(c, False, message=cant_write(host, c.path.parent)))
             else:
                 todo.append(c)
-        r = _mat2(host, lightweight, [c.path for c in todo]) if todo else None
+        verdicts = _mat2_each(host, lightweight, [c.path for c in todo]) if todo else {}
         for c in todo:
-            out = cleaned_name(c.path)
-            if out.is_file():
-                run.results.append(Cleaned(c, True, out, _problems(r.stdout + r.stderr, str(c.path))))
-            else:
-                run.results.append(Cleaned(c, False, message=_problems(r.stdout + r.stderr, str(c.path))
-                                           or "mat2 didn't make a cleaned copy."))
+            ok, said = verdicts[c.path]
+            run.results.append(Cleaned(c, True, cleaned_name(c.path), said) if ok else Cleaned(c, False, message=said))
         tick(batch)
 
     roots: dict[Path, list[Chosen]] = {}
@@ -721,15 +751,15 @@ def _clean_folder(host: Host, root: Path, files: list[Chosen], lightweight: bool
                 except OSError as e:
                     copies.append((c, None, f"It couldn't be read: {e.strerror or e}."))
             todo = [p for _, p, _ in copies if p is not None]
-            r = _mat2(host, lightweight, todo) if todo else None
+            verdicts = _mat2_each(host, lightweight, todo) if todo else {}
             for c, copy, err in copies:
                 if copy is None:
                     run.results.append(Cleaned(c, False, message=err))
                     continue
                 cleaned = cleaned_name(copy)
-                said = _problems(r.stdout + r.stderr, str(copy))
-                if not cleaned.is_file() or cleaned.is_symlink():
-                    run.results.append(Cleaned(c, False, message=said or "mat2 didn't make a cleaned copy."))
+                ok, said = verdicts[copy]
+                if not ok:
+                    run.results.append(Cleaned(c, False, message=said))
                     continue
                 dest = out_root / c.rel
                 dest.parent.mkdir(parents=True, exist_ok=True)
