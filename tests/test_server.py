@@ -76,6 +76,7 @@ def test_a_later_scan_uses_access_already_granted(cat, tmp_path):
 
 
 def test_administrator_access_ends_when_idle(cat, tmp_path):
+    import time
     from daprivacyscanner.privileged import FakePrivileged
     from daprivacyscanner.server import AdminSession
 
@@ -83,7 +84,38 @@ def test_administrator_access_ends_when_idle(cat, tmp_path):
     helper.close = lambda: closed.append(1)
     session = AdminSession(lambda: helper, idle=0)
     assert session.get(prompt=True) is helper
-    assert not session.active() and closed == [1]
+    assert not session.active()
+    for _ in range(200):                    # closed in a thread of its own, which nothing waits for
+        if closed:
+            break
+        time.sleep(0.01)
+    assert closed == [1]
+
+
+def test_ending_administrator_access_never_holds_up_the_event_loop(cat, tmp_path):
+    """close() waits up to 5 s for a helper still answering a request (the traffic test's 5-second watches), and
+    active() is called on the event loop by the page's polling: the idle end closed the helper there, and a Drop
+    closed it with the lock held, which active() waited for. Either way active() now answers at once."""
+    import threading
+    import time
+    from daprivacyscanner.privileged import FakePrivileged
+    from daprivacyscanner.server import AdminSession
+
+    for how in ("idle", "drop"):
+        closing, release, helper = threading.Event(), threading.Event(), FakePrivileged()
+        helper.close = lambda: closing.set() or release.wait(5)          # a helper busy with a request
+        session = AdminSession(lambda: helper, idle=0 if how == "idle" else 300)
+        assert session.get(prompt=True) is helper
+        dropping = threading.Thread(target=session.drop)
+        if how == "drop":
+            dropping.start()
+            assert closing.wait(5)
+        t0 = time.monotonic()
+        assert session.active() is False and time.monotonic() - t0 < 1, how
+        assert closing.wait(5)
+        release.set()
+        if how == "drop":
+            dropping.join(5)
 
 
 def test_the_prompt_holds_nothing_else_up_and_one_prompt_serves_every_request(cat, tmp_path):

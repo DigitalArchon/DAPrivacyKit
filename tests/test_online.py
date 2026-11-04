@@ -630,6 +630,65 @@ def test_a_proxy_in_the_environment_is_named_since_the_tests_bypass_it(cat, tmp_
         assert c.get("/api/online", headers=H).json()["proxy_vars"] == []
 
 
+def test_the_online_tests_hold_administrator_access_while_they_use_it(cat, tmp_path, monkeypatch):
+    """The traffic watch's requests go to the helper the job was given, never through get(): without a hold, the idle
+    end (5 minutes, as long as the longest watch) or a scan that found nothing to fix as root closed the helper in the
+    middle of the watch, whose next request then failed, and the whole watch was lost. Installing the helper, which
+    drops the access, is refused meanwhile."""
+    import threading
+    import time
+    from daprivacyscanner import server
+    from daprivacyscanner.privileged import HelperError
+
+    class Helper(FakePrivileged):
+        """As the real one: once closed, its next request fails."""
+
+        def __init__(self):
+            super().__init__()
+            self.closed, self.watched, self.watching, self.go = False, 0, threading.Event(), threading.Event()
+
+        def observe_traffic(self, seconds):
+            if self.closed:
+                raise HelperError("the helper has exited")
+            self.watching.set()
+            self.go.wait(5)                     # the first 5 seconds last until the test lets them go
+            self.watched += 1
+            return {"queries": [], "connections": [], "monitor": True}
+
+        def close(self):
+            self.closed = True
+
+        def alive(self):
+            return not self.closed
+
+    monkeypatch.setattr(server, "needs_root_to_fix", lambda cat, r: False)      # a scan would drop the access
+    helper, installs = Helper(), []
+    app = create_app("t", cat, make_host=lambda: make_host(tmp_path), make_net=lambda: FakeNet(),
+                     start_helper=lambda: helper, install_helper=lambda u: installs.append(u) or {})
+    app.state.admin.idle = 0.05                                                  # far shorter than the watch
+    with TestClient(app) as c:
+        c.post("/api/scan", headers=H)
+        c.post("/api/online/run", headers=H, json={"ids": ["tel.observed_traffic"], "observe_seconds": 25,
+                                                    "admin": True})
+        assert helper.watching.wait(5)
+        time.sleep(0.1)
+        assert c.get("/api/online/status", headers=H).json()["admin_active"]
+        assert c.post("/api/scan", headers=H).json()["admin"]["dropped"] is False
+        r = c.post("/api/helper/install", headers=H, json={})
+        assert r.status_code == 409 and "online tests" in r.json()["error"] and installs == []
+        helper.go.set()
+        for _ in range(500):
+            job = c.get("/api/online/status", headers=H).json()["job"]
+            if job["state"] in ("done", "stopped", "failed"):
+                break
+            time.sleep(0.01)
+        result = job["results"]["tel.observed_traffic"]
+        assert job["state"] == "done" and result["status"] != "unknown" and not result["partial"]
+        assert helper.watched == 5 and not helper.closed
+        time.sleep(0.1)
+        assert not c.get("/api/online/status", headers=H).json()["admin_active"]   # idle again once they are done
+
+
 def test_declining_administrator_access_still_runs_the_online_tests(cat, tmp_path):
     from daprivacyscanner.privileged import HelperDeclined
 

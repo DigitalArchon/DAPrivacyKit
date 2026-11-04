@@ -96,7 +96,9 @@ class AdminSession:
     def _expire(self) -> None:
         if self.helper is not None and (not self.helper.alive() or (
                 not self.holds and time.monotonic() - self.last_used > self.idle)):
-            self.helper.close()
+            # closed in a thread of its own: close() waits up to 5 s for a helper still answering a request, and this
+            # runs on the event loop (active(), from the page's polling), which was held up for as long
+            threading.Thread(target=self.helper.close, name="helper-close", daemon=True).start()
             self.helper = None
 
     def get(self, prompt: bool) -> Privileged | None:
@@ -138,9 +140,9 @@ class AdminSession:
 
     def drop(self) -> None:
         with self.lock:
-            if self.helper is not None:
-                self.helper.close()
-                self.helper = None
+            helper, self.helper = self.helper, None
+        if helper is not None:
+            helper.close()          # with the lock released: active(), on the event loop, waited for it otherwise
 
     def held(self) -> bool:
         with self.lock:
@@ -408,6 +410,9 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
             return JSONResponse({"error": "A tool (the TRIM test, Deleted file names, or What does this app keep?) is "
                                           "using administrator access: installing the helper would stop it."},
                                 status_code=409)
+        if online_admin():
+            return JSONResponse({"error": "The online tests are using administrator access: installing the helper "
+                                          "would stop them. Try again once they have finished."}, status_code=409)
         async with scan_lock:
             await asyncio.to_thread(admin.drop)
             try:
@@ -554,6 +559,12 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
         return {**{k: v for k, v in job.items() if k not in ("cancel", "abort")}, "stopping": job["cancel"],
                 "now": time.time()}
 
+    def online_admin() -> bool:
+        """Online tests running with administrator access, or still taking it up."""
+        job = app.state.online_job
+        return job is not None and (job["state"] in ("starting", "asking")
+                                    or job["state"] == "running" and job["privileged"])
+
     def mark_online(job: dict) -> None:
         if app.state.report is not None and job["results"]:
             app.state.report["online"] = {"ran": job["finished"], "ids": sorted(job["results"]),
@@ -597,7 +608,11 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
                 loop.call_soon_threadsafe(merge_online, job, cid, d, states, notes)
 
             runner = Runner(catalogue, host, net=make_net(), online=settings)
-            await asyncio.to_thread(runner.scan_online, job["ids"], progress, lambda: job["cancel"], on_result)
+            # administrator access is held while the tests use it: the traffic watch's requests go to the helper given
+            # here, never through get(), so the idle end, a scan finding nothing to fix as root or a watch of an app
+            # ending closed it in the middle of the watch, and the watch was lost
+            with admin.hold() if host.privileged is not None else contextlib.nullcontext():
+                await asyncio.to_thread(runner.scan_online, job["ids"], progress, lambda: job["cancel"], on_result)
             await asyncio.sleep(0)                         # let the last merge run first
             if not job["abort"]:
                 job["state"] = "stopped" if job["cancel"] and job["done"] < job["total"] else "done"
