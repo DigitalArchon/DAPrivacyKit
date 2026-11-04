@@ -992,6 +992,16 @@ function planBody(plan, confirm) {
   ];
 }
 
+// A refused apply changed nothing, and the server kept its plan to be applied again: the password prompt cancelled
+// (403, declined) or a scan or fix already running (409). Any other failure discards the plan; only one that got as far
+// as changing something comes back with its History entry, what was changed having been put back.
+const applyAgain = (e) => e.declined || e.status === 409;
+function applyFailed(e) {
+  if (e.declined) return e.message;                       // "Administrator access was declined, so nothing was changed."
+  return e.data?.entry || e.data?.rolled_back?.length ? `The fix failed and was rolled back: ${e.message}`
+    : `Nothing was changed: ${e.message}`;
+}
+
 // One option of a check's guide (by its key), confirmed with its dry run and applied like any fix (History reverts it):
 // for a panel that offers the one change it needs, such as the browser's keeping file search out of ~/TempBrowser.
 async function openGuideOption(id, key, after) {
@@ -1015,7 +1025,8 @@ async function openGuideOption(id, key, after) {
           doneDialog([r.entry]);
           await after?.();
         } catch (e) {
-          el.textContent = "Failed"; toast(`It failed and was rolled back: ${e.message}`, "error", 10000);
+          el.textContent = applyAgain(e) ? "Apply" : "Failed"; el.disabled = !applyAgain(e);
+          toast(applyFailed(e), "error", 10000);
           if (e.data?.entry) doneDialog([e.data.entry], e.message);
         }
       } }] });
@@ -1068,6 +1079,7 @@ async function applyPlan(plan, confirmed) {
 }
 
 async function applyFix(plan, confirmed, close, btn) {
+  const label = btn.textContent;
   btn.disabled = true;
   btn.textContent = "Applying…";
   try {
@@ -1077,8 +1089,9 @@ async function applyFix(plan, confirmed, close, btn) {
     renderChecks();
     doneDialog([r.entry]);
   } catch (e) {
-    btn.textContent = "Failed";
-    toast(e.declined ? e.message : `The fix failed and was rolled back: ${e.message}`, "error", 10000);
+    btn.textContent = applyAgain(e) ? label : "Failed";
+    btn.disabled = !applyAgain(e);
+    toast(applyFailed(e), "error", 10000);
     setStatus(e.message, "failed");
     if (e.data?.entry) doneDialog([e.data.entry], e.message);
   }
@@ -1187,7 +1200,8 @@ async function openEasy() {
       if (e.data?.results) { done(e.data, close); return; }
       toast(e.message, "error", 10000);
       setStatus(e.message, "failed");
-      btn.textContent = "Failed";
+      if (applyAgain(e)) update();                   // a scan or fix was running: nothing applied, the plans kept
+      else btn.textContent = "Failed";
     }
   };
   const done = (r, close) => {
@@ -1347,7 +1361,7 @@ function guideStep(step, n, refresh, params = {}, rebuild = refresh) {
         await refreshAfterApply(refresh, msg);
       } catch (e) {
         msg.className = "small errmsg";
-        msg.textContent = e.declined ? e.message : `Failed, and rolled back: ${e.message}`;
+        msg.textContent = applyFailed(e);
         apply.textContent = "Apply this step";
         apply.disabled = false;
         setStatus(e.message, "failed");

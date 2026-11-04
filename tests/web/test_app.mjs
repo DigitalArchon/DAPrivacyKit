@@ -404,8 +404,10 @@ window.fetch = async (path, opts = {}) => {
   if (opts.credentials !== "omit") throw new Error("cookies would be sent on " + key);
   const handler = routes[key];
   if (!handler) return { ok: false, status: 404, statusText: "no route " + key, json: async () => ({}) };
-  const data = handler(opts.body ? JSON.parse(opts.body) : undefined);
-  return { ok: true, status: 200, json: async () => data, text: async () => (typeof data === "string" ? data : JSON.stringify(data)) };
+  let data = handler(opts.body ? JSON.parse(opts.body) : undefined), status = 200;
+  if (data?.__status) ({ __status: status, data } = data);          // a refusal: { __status: 403, data: { error, ... } }
+  return { ok: status < 400, status, statusText: status < 400 ? "OK" : "Refused", json: async () => data,
+           text: async () => (typeof data === "string" ? data : JSON.stringify(data)) };
 };
 window.scrollTo = () => {};
 window.HTMLElement.prototype.scrollIntoView = function () {};
@@ -697,6 +699,17 @@ $$(".modal .buttons button").at(-1).click();
   delete routes["POST /api/fix/apply"];
   while ($$(".modal").length) { $$(".modal .buttons button").at(-1).click(); await tick(); } }
 
+// a step refused before it started (a scan or fix already running) says that nothing was changed, not that it was
+// rolled back, and can be applied again
+{ routes["POST /api/fix/apply"] = () => ({ __status: 409, data: { error: "A scan or fix is already running." } });
+  await window.openGuide({ id: "desk.ephemeral_folder", tier: "feature" }); await tick();
+  $(".modal .gactions button").click(); await tick(); await tick();
+  check(text(".modal .gactions div") === "Nothing was changed: A scan or fix is already running."
+        && text(".modal .gactions button") === "Apply this step" && !$(".modal .gactions button").disabled,
+        "a guide's step refused before it started says nothing was changed: " + text(".modal .gactions div"));
+  delete routes["POST /api/fix/apply"];
+  while ($$(".modal").length) { $$(".modal .buttons button").at(-1).click(); await tick(); } }
+
 // History offers to remove an installed helper, after confirming
 window.eval("S").state.helper_installed = true;
 await window.openHistory(); await tick();
@@ -781,6 +794,42 @@ delete routes["POST /api/undo/forget"];
         "a fix with a blocker can't be applied, its deletions confirmed or not");
   m.querySelector(".buttons button").click(); await tick();
   delete routes["POST /api/fix/br.disk_cache/plan"]; }
+
+// a refused apply changed nothing, and the server kept the plan: Apply is offered again (the password prompt cancelled, a
+// scan or fix already running). A failure that changed nothing says so; only one that did says what was rolled back.
+{ const plan = { id: "pr", check_id: "kern.sysrq", title: "Restrict SysRq", blockers: [], side_effects: [], needs_root: true,
+    steps: [{ kind: "root", text: "kernel.sysrq 1 → 176", reversible: true, irreversible: false, needs_root: true }] };
+  const entry = { id: "u9", check_id: "kern.sysrq", title: "Restrict SysRq", applied: 1790000000, state: "failed", can_revert: false,
+    needs_root: true, via_text: "", error: "sysctl failed", failed_step: "kernel.sysrq → 176",
+    steps: [{ text: "kernel.sysrq 1 → 176", reversible: true, reverted: true, as_root: true, commands: [], files: [], lines: [],
+              undo: "", revert_ran: ["sysctl kernel.sysrq=1"] }] };
+  const answers = [{ __status: 403, data: { error: "Administrator access was declined, so nothing was changed.", declined: true } },
+                   { __status: 409, data: { error: "A scan or fix is already running." } },
+                   { __status: 400, data: { error: "That plan has expired; open the fix again." } },
+                   { __status: 400, data: { error: "sysctl failed", rolled_back: ["kernel.sysrq back to 1"], entry } }];
+  routes["POST /api/fix/kern.sysrq/plan"] = () => ({ plan, dry_run: "", result: null });
+  routes["POST /api/fix/apply"] = () => answers.shift();
+  const said = () => $$("#toasts .toast").at(-1)?.textContent || "";
+  const tryIt = async () => { await window.openFix({ id: "kern.sysrq" }); await tick();
+    const apply = [...$$(".modal").at(-1).querySelectorAll(".buttons button")].at(-1);
+    apply.click(); await tick(); await tick(); return apply; };
+  let apply = await tryIt();
+  check(apply.textContent === "Apply" && !apply.disabled && said() === "Administrator access was declined, so nothing was changed.",
+        "a declined password prompt leaves Apply to try again: " + apply.textContent + " / " + said());
+  apply.click(); await tick(); await tick();
+  check(apply.textContent === "Apply" && !apply.disabled && said() === "Nothing was changed: A scan or fix is already running.",
+        "so does a scan or fix already running, which changed nothing: " + said());
+  apply.click(); await tick(); await tick();
+  check(apply.textContent === "Failed" && apply.disabled && said() === "Nothing was changed: That plan has expired; open the fix again.",
+        "a plan the server let go can't be applied again, and nothing was changed: " + said());
+  $$(".modal").at(-1).querySelector(".buttons button").click(); await tick();          // Cancel
+  apply = await tryIt();
+  check(said() === "The fix failed and was rolled back: sysctl failed" && $$(".modal").at(-1).querySelector("h2").textContent === "Failed: Restrict SysRq",
+        "one that had changed something says it was rolled back, and shows what was put back: " + said());
+  [...$$(".modal").at(-1).querySelectorAll(".buttons button")].at(-1).click(); await tick();    // the failure's Close
+  $$(".modal").at(-1).querySelector(".buttons button").click(); await tick();                  // the fix's Cancel
+  check(!$$(".modal").length, "(closed)");
+  delete routes["POST /api/fix/kern.sysrq/plan"]; delete routes["POST /api/fix/apply"]; }
 
 // reads dialog
 window.openReads(); await tick();
@@ -1085,6 +1134,13 @@ routes["POST /api/fix/apply"] = (body) => { toolBodies.applied = body; toolBodie
         revert_ran: [] }] } }; };
 $$(".modal .browser-tool button").find(b => b.textContent === "Turn Baloo off and delete its index…").click(); await tick(); await tick();
 check($$(".modal").at(-1).textContent.includes("Indexing-Enabled --notify false"), "turning Baloo off shows its dry run first");
+{ const real = routes["POST /api/fix/apply"], btn = $$(".modal").at(-1).querySelectorAll(".buttons button")[1];
+  routes["POST /api/fix/apply"] = () => ({ __status: 409, data: { error: "A scan or fix is already running." } });
+  btn.click(); await tick(); await tick();
+  check(btn.isConnected && btn.textContent === "Apply" && !btn.disabled
+        && $$("#toasts .toast").at(-1)?.textContent === "Nothing was changed: A scan or fix is already running.",
+        "refused while a scan or fix runs, the option can be applied again: " + btn.textContent);
+  routes["POST /api/fix/apply"] = real; }
 $$(".modal").at(-1).querySelectorAll(".buttons button")[1].click(); await tick(); await tick(); await tick();
 check(toolBodies.applied?.plan_id === "off" && !text(".modal .browser-tool").includes("file search is on here"),
       "then applies just that option, and the panel's box goes: " + JSON.stringify(toolBodies.applied));
@@ -1733,6 +1789,19 @@ while ($$(".modal").length) { $$(".modal .buttons button").at(-1).click(); await
   Object.assign(S.report.results, JSON.parse(saved));
   delete spec("enc.fde_missing").meanwhile;
   window.renderChecks(); }
+
+// Easy fixes refused because a scan or fix is already running: nothing was applied, the plans are kept, and they are
+// offered again
+{ const apply0 = routes["POST /api/easy/apply"];
+  routes["POST /api/easy/apply"] = () => ({ __status: 409, data: { error: "A scan or fix is already running." } });
+  await window.openEasy(); await tick(); await tick();
+  const m = $(".modal.easy-modal"), apply = [...m.querySelectorAll(".buttons button")].at(-1);
+  m.querySelector(".easy-confirm input").click(); await tick();
+  apply.click(); await tick(); await tick();
+  check(m.isConnected && apply.textContent === "Apply 2 fixes" && !apply.disabled,
+        "Easy fixes refused while a scan or fix runs are offered again: " + apply.textContent);
+  m.querySelectorAll(".buttons button")[1].click(); await tick();          // Cancel
+  routes["POST /api/easy/apply"] = apply0; }
 
 // a fix that doesn't cover this machine: "no fix here" in place of the tier, and why in the details
 { const S = window.eval("S");
