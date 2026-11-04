@@ -274,6 +274,92 @@ def test_undo_log_is_private(tmp_path):
     assert summary["can_revert"] and summary["steps"][0]["reversible"]
 
 
+def test_writers_of_the_undo_log_never_lose_each_others_entries(tmp_path):
+    """A scheduled scan's undone() read the log, ran gsettings to see what had been changed back, and saved what it
+    had read: a fix the window applied meanwhile vanished from History. What it found is saved into the log as it
+    is by then, and a writer holding the state folder's lock (another copy of the app saving) is waited for."""
+    import threading
+    idle = ("org.gnome.desktop.session", "idle-delay")
+    host, gs, log = setup(tmp_path, {SCREEN: "false", idle: "uint32 0"})
+    res = apply_plan(FixPlan("auth.screen_lock", "Lock", [GSettingsSet(*SCREEN, "true")]), host, log)
+    log.set_outcome(res.entry_id, {"status": "pass", "effective_severity": 0})
+    gs.values[SCREEN] = "false"                                       # changed back: the scan marks it undone
+    window, added = UndoLog(log.dir), []
+
+    def reading_back(argv):                                           # the window applies a fix as the scan reads
+        if argv[1] == "get" and not added:
+            added.append(None)
+            added[0] = apply_plan(FixPlan("desk.x", "Other", [GSettingsSet(*idle, "uint32 300")]), host, window).entry_id
+        return gs(argv)
+    host.runner.handlers["gsettings"] = reading_back
+    [u] = log.undone({"auth.screen_lock": {"status": "fail", "effective_severity": 6}}, {}, host)
+    assert added[0] and [e["id"] for e in UndoLog(log.dir).entries()] == [res.entry_id, added[0]]
+    assert UndoLog(log.dir).get(res.entry_id)["undone_since"] == u["undone_since"]
+    from daprivacyscanner.history import locked
+    with locked(log.dir):
+        t = threading.Thread(target=log.set_outcome, args=(added[0], {"status": "pass"}))
+        t.start()
+        t.join(0.3)
+        assert t.is_alive() and "outcome" not in log.get(added[0])
+    t.join(5)
+    assert log.get(added[0])["outcome"]["status"] == "pass"
+
+
+def test_history_is_kept_on_a_filesystem_without_locks(tmp_path, monkeypatch):
+    """Some FUSE filesystems refuse flock: History is written unlocked there, as before, rather than not at all."""
+    import errno
+    import fcntl
+
+    def no_locks(fd, op):
+        raise OSError(errno.ENOLCK, "No locks available")
+    monkeypatch.setattr(fcntl, "flock", no_locks)
+    host, gs, log = setup(tmp_path)
+    res = apply_plan(FixPlan("x", "t", [GSettingsSet(*SCREEN, "true")]), host, log)
+    assert res.ok and log.get(res.entry_id) is not None
+
+
+def test_the_undo_log_is_written_through_a_temporary_file_of_its_own(tmp_path):
+    """Every writer wrote undo.tmp and renamed it into place: two saving at once wrote into the same file, and the
+    log could be left holding parts of both, which read as no History at all."""
+    host, gs, log = setup(tmp_path)
+    log.dir.mkdir(parents=True)
+    other = log.dir / "undo.tmp"
+    other.write_text('{"version": 1, "entr')                          # another writer's, half written
+    apply_plan(FixPlan("x", "t", [GSettingsSet(*SCREEN, "true")]), host, log)
+    assert other.read_text() == '{"version": 1, "entr' and len(log.entries()) == 1
+    assert [p.name for p in log.dir.iterdir() if p.name.endswith(".tmp")] == ["undo.tmp"]
+    # the files beside it the same: the last report (the window's, a scheduled scan's), accepted findings
+    from daprivacyscanner.history import Accepted, LastReport
+    from daprivacyscanner.paths import PathResolver
+    paths = PathResolver(host.home, host.environ)
+    for name in ("last-report.tmp", "accepted.tmp"):
+        (log.dir / name).write_text("{")
+    LastReport(paths).save({"results": {}, "context": {"values": {}}})
+    Accepted(paths).set("auth.screen_lock", True)
+    assert LastReport(paths).load() and "auth.screen_lock" in Accepted(paths).all()
+    assert all((log.dir / name).read_text() == "{" for name in ("last-report.tmp", "accepted.tmp"))
+
+
+def test_an_undo_log_that_cant_be_read_is_kept_aside_and_said(cat, tmp_path):
+    """undo.json cut short: History showed nothing, and the next fix saved itself over it, alone, so every change
+    recorded in it was lost without a word. It is kept aside, never written over, and History says so."""
+    from fastapi.testclient import TestClient
+    from daprivacyscanner.server import create_app
+    host, gs, log = setup(tmp_path)
+    log.dir.mkdir(parents=True)
+    log.file.write_text('{"version": 1, "entries": [{"id": "e1", "check_id": "x"')
+    assert log.entries() == [] and "can't be read" in log.damaged()
+    res = apply_plan(FixPlan("x", "t", [GSettingsSet(*SCREEN, "true")]), host, log)
+    [kept] = log.dir.glob("undo.json.unreadable-*")
+    assert kept.read_text() == '{"version": 1, "entries": [{"id": "e1", "check_id": "x"'
+    assert [e["id"] for e in log.entries()] == [res.entry_id]
+    c = TestClient(create_app("t0ken", cat, make_host=lambda: host))
+    shown = c.get("/api/undo", headers={"X-Token": "t0ken"}).json()
+    assert len(shown["entries"]) == 1 and "kept aside" in shown["damaged"] and kept.name in shown["damaged"]
+    gone = c.post("/api/undo/forget", headers={"X-Token": "t0ken"}, json={"everything": True}).json()
+    assert gone["damaged"] == "" and not kept.exists()
+
+
 def test_nm_records_hold_no_network_names(tmp_path):
     from fakes import FakeNmcli
     from daprivacyscanner.fix import NmSet

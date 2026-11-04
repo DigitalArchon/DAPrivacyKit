@@ -261,7 +261,12 @@ never written to the log.
 
 ### The undo log
 
-`undo.py` keeps `$XDG_STATE_HOME/daprivacyscanner/undo.json` (directory 0700, written atomically). Revert
+`undo.py` keeps `$XDG_STATE_HOME/daprivacyscanner/undo.json` (directory 0700, written atomically through a
+temporary file of each write's own). Every change to it, as to the other files there, is a read-modify-write under
+the folder's lock (`history.locked`, an flock on `.lock`): the window, scheduled scans and other copies of the
+app write it too, and one saving what it had read before another's change lost that change. A log that can't be
+read is kept aside (`undo.json.unreadable-<time>`), never written over, and History says so until "Forget
+everything" deletes it. Revert
 refuses to overwrite a value changed since the fix, unless forced; a value already back where it was before
 (put back by hand) is no conflict. A root change that fails part way is journalled by the helper before its error
 goes back, and kept as the failed step's record, so it can be put back. systemctl's exit status never decides a
@@ -1815,7 +1820,7 @@ drive they came from (its model, serial and size, `retire.identity`): another dr
 
 | Where | What | Notes |
 |---|---|---|
-| `$XDG_STATE_HOME/daprivacyscanner/` (0700) | `last-report.json`, `last-scan.json` (baseline), `accepted.json`, `undo.json` and file backups | Never holds deleted paths or Wi-Fi network names; the last report is saved without the entries of what starts at login (the baseline keeps hashes of them) and without the addresses and lookup names the online tests saw or the Wi-Fi networks a check names |
+| `$XDG_STATE_HOME/daprivacyscanner/` (0700) | `last-report.json`, `last-scan.json` (baseline), `accepted.json`, `undo.json` and file backups (an `undo.json` that couldn't be read, kept aside), and `.lock`, the folder's lock file | Never holds deleted paths or Wi-Fi network names; the last report is saved without the entries of what starts at login (the baseline keeps hashes of them) and without the addresses and lookup names the online tests saw or the Wi-Fi networks a check names |
 | `$XDG_CONFIG_HOME/daprivacyscanner/` | `ui.json` (welcome dismissed), `online.json` (endpoints) | |
 | `/var/lib/daprivacyscanner/changes` | The helper's journal of root changes | Root-owned |
 | `/run/daprivacyscanner/` | RAM disk state, swap state | Gone at reboot |

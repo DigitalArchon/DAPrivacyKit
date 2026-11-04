@@ -1,5 +1,6 @@
 """The undo log: every applied fix, with what each step changed, so it can be reverted from
-the UI. Kept in $XDG_STATE_HOME/daprivacyscanner (0700), written atomically."""
+the UI. Kept in $XDG_STATE_HOME/daprivacyscanner (0700), written atomically, each change made under
+the state folder's lock (the window, scheduled scans and other copies of the app write it too)."""
 
 from __future__ import annotations
 
@@ -9,8 +10,11 @@ import time
 from pathlib import Path
 
 from .fix import ACTION_KINDS, IRREVERSIBLE_KINDS, ROOT_KINDS
+from .history import locked, write_json
 from .host import Host
 from .paths import PathResolver
+
+UNREADABLE = "undo.json.unreadable-"      # a log that couldn't be read, kept aside under this name and the time
 
 
 class UndoLog:
@@ -26,22 +30,64 @@ class UndoLog:
         return self.dir / "backups" / entry_id
 
     def entries(self) -> list[dict]:
+        """The entries as saved; none from a log that can't be read (`damaged` says so)."""
         try:
-            data = json.loads(self.file.read_text())
+            return self._parse(self.file.read_text())
         except (FileNotFoundError, ValueError):
             return []
-        return data.get("entries", []) if isinstance(data, dict) else []
+
+    @staticmethod
+    def _parse(text: str) -> list[dict]:
+        data = json.loads(text)
+        if not isinstance(data, dict) or not isinstance(data.get("entries", []), list):
+            raise ValueError("not an undo log")
+        return data.get("entries", [])
 
     def get(self, entry_id: str) -> dict | None:
         return next((e for e in self.entries() if e["id"] == entry_id), None)
 
+    def _load(self) -> list[dict]:
+        """The entries, for a change made under the lock. A log that can't be read is kept aside, renamed and never
+        written over (it may be the only record of changes still in place), and the log starts again: before, the next
+        fix saved itself over it, alone, and History was empty without a word."""
+        try:
+            return self._parse(self.file.read_text())
+        except FileNotFoundError:
+            return []
+        except ValueError:
+            stamp, n = time.strftime("%Y%m%d-%H%M%S"), 0
+            aside = self.dir / f"{UNREADABLE}{stamp}"
+            while os.path.lexists(aside):
+                n += 1
+                aside = self.dir / f"{UNREADABLE}{stamp}-{n}"
+            os.rename(self.file, aside)
+            return []
+
     def _save(self, entries: list[dict]) -> None:
-        self.dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-        os.chmod(self.dir, 0o700)
-        tmp = self.file.with_suffix(".tmp")
-        with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as f:
-            json.dump({"version": 1, "entries": entries}, f, indent=1)
-        os.replace(tmp, self.file)
+        write_json(self.file, {"version": 1, "entries": entries})
+
+    def damaged(self, host: Host | None = None) -> str:
+        """What History says when its log couldn't be read: the log itself, or the copies kept aside; "" otherwise."""
+        shown = host.display if host is not None else str
+        try:
+            self._parse(self.file.read_text())
+            unreadable = False
+        except FileNotFoundError:
+            unreadable = False
+        except ValueError:
+            unreadable = True
+        kept = sorted(self.dir.glob(f"{UNREADABLE}*")) if self.dir.is_dir() else []
+        said = []
+        if unreadable:
+            said.append(f"History's file, {shown(self.file)}, can't be read, so the fixes in it aren't listed here. It "
+                        "is kept as it is: the next fix starts a new one beside it.")
+        if kept:
+            said.append(f"History's file couldn't be read, so it was kept aside ({', '.join(shown(k) for k in kept)}): "
+                        "only what was applied since is listed here.")
+        if said:
+            said.append("The changes in it stay as they are; they can't be reverted from here. Forget everything "
+                        "deletes it.")
+        return " ".join(said)
 
     def add(self, entry_id: str, check_id: str, title: str, records: list[dict], state: str = "applied",
             extra: dict | None = None) -> dict:
@@ -49,32 +95,36 @@ class UndoLog:
         the step it failed at (`failed_step`)."""
         entry = {"id": entry_id, "check_id": check_id, "title": title, "applied": time.time(), "state": state,
                  "records": records, **{k: v for k, v in (extra or {}).items() if v not in (None, "", {})}}
-        self._save(self.entries() + [entry])
+        with locked(self.dir):
+            self._save(self._load() + [entry])
         return entry
 
     def update(self, entry: dict) -> None:
         reversible = [r for r in entry["records"] if UndoLog.can_undo(r)]
         put_back = lambda e: sum(bool(r.get("reverted")) for r in e["records"])  # noqa: E731
-        if put_back(entry) > put_back(self.get(entry["id"]) or {"records": []}):
-            entry["last_reverted"] = time.time()      # a revert put some of it back (all, or part): undone() goes by it
-        if reversible and all(r.get("reverted") for r in reversible):
-            entry["state"] = "reverted"
-            entry["reverted"] = time.time()
-        elif any(r.get("reverted") for r in reversible):
-            entry["state"] = "partly reverted"
-        self._save([entry if e["id"] == entry["id"] else e for e in self.entries()])
+        with locked(self.dir):
+            entries = self._load()
+            if put_back(entry) > put_back(next((e for e in entries if e["id"] == entry["id"]), {"records": []})):
+                entry["last_reverted"] = time.time()   # a revert put some of it back (all, or part): undone() goes by it
+            if reversible and all(r.get("reverted") for r in reversible):
+                entry["state"] = "reverted"
+                entry["reverted"] = time.time()
+            elif any(r.get("reverted") for r in reversible):
+                entry["state"] = "partly reverted"
+            self._save([entry if e["id"] == entry["id"] else e for e in entries])
 
     def set_outcome(self, entry_id: str, result: dict | None) -> None:
         """The check's result just after the fix was applied (the rescan): a later scan that finds
         the problem back, when this one had it resolved, means the fix was undone."""
         if not result:
             return
-        entries = self.entries()
-        for e in entries:
-            if e["id"] == entry_id:
-                e["outcome"] = {"status": result.get("status"), "severity": result.get("effective_severity", 0),
-                                "at": time.time()}
-        self._save(entries)
+        with locked(self.dir):
+            entries = self._load()
+            for e in entries:
+                if e["id"] == entry_id:
+                    e["outcome"] = {"status": result.get("status"), "severity": result.get("effective_severity", 0),
+                                    "at": time.time()}
+            self._save(entries)
 
     def undone(self, results: dict, accepted: dict | None = None, host: Host | None = None) -> list[dict]:
         """Fixes the user applied whose problem is back: the check was resolved just after the fix (it
@@ -94,7 +144,9 @@ class UndoLog:
         # and what they removed comes back with use (thumbnails of pictures deleted since)
         nothing_to_undo = lambda e: bool(e["records"]) and all(  # noqa: E731
             rec["kind"] in IRREVERSIBLE_KINDS for rec in e["records"])
-        entries, out, seen, dirty = self.entries(), [], set(), False
+        # read without the lock, since reading what was changed back runs programs (gsettings): only the marks found
+        # are saved, into the log as it is by then (another copy of the app may have added a fix meanwhile)
+        entries, out, seen, marks = self.entries(), [], set(), {}
         # when each check last had one of its fixes reverted from History, even in part
         reverted_at: dict[str, float] = {}
         for e in entries:
@@ -104,8 +156,8 @@ class UndoLog:
         for e in reversed(entries):
             o = e.get("outcome")
             if e["state"] != "applied" or not o or e["check_id"] in seen or nothing_to_undo(e):
-                if e.pop("undone_since", None) is not None:      # reverted, or a later fix of the same check
-                    dirty = True
+                if "undone_since" in e:                         # reverted, or a later fix of the same check
+                    marks[e["id"]] = None
                 continue
             r = results.get(e["check_id"])
             if r is None:                                   # not scanned this time: say nothing either way
@@ -118,12 +170,11 @@ class UndoLog:
             # problem is back because the user put it back
             reverted_since = e["check_id"] in reverted_at and reverted_at[e["check_id"]] >= o.get("at", 0)
             if not (was_fixed and active(r)) or reverted_since or hidden(accepted, e["check_id"], r):
-                if e.pop("undone_since", None) is not None:
-                    dirty = True
+                if "undone_since" in e:
+                    marks[e["id"]] = None
                 continue
             if "undone_since" not in e:
-                e["undone_since"] = time.time()
-                dirty = True
+                e["undone_since"] = marks[e["id"]] = time.time()
             steps = []
             if host is not None:
                 for rec in e["records"]:
@@ -139,8 +190,15 @@ class UndoLog:
             out.append({"entry_id": e["id"], "check_id": e["check_id"], "title": e["title"], "applied": e["applied"],
                         "undone_since": e["undone_since"], "severity": r.get("effective_severity", 0),
                         "changed_back": steps})
-        if dirty:
-            self._save(entries)
+        if marks:
+            with locked(self.dir):
+                entries = self._load()
+                for e in entries:
+                    if e["id"] in marks and marks[e["id"]] is None:
+                        e.pop("undone_since", None)
+                    elif e["id"] in marks:
+                        e.setdefault("undone_since", marks[e["id"]])
+                self._save(entries)
         return sorted(out, key=lambda u: -u["severity"])
 
     def expire_backups(self, now: float | None = None) -> int:
@@ -155,18 +213,23 @@ class UndoLog:
         return self._drop(lambda e, r: e["id"] == entry_id)
 
     def _drop(self, which) -> int:
-        entries, gone = self.entries(), 0
-        for e in entries:
-            for r in e["records"]:
-                if r.get("backup") and r.get("backup_expires") and which(e, r):
-                    try:
-                        Path(r["backup"]).unlink()
-                    except FileNotFoundError:
-                        pass
-                    r["backup"], r["backup_dropped"] = None, time.time()
-                    gone += 1
-        if gone:
-            self._save(entries)
+        due = lambda e, r: r.get("backup") and r.get("backup_expires") and which(e, r)  # noqa: E731
+        if not any(due(e, r) for e in self.entries() for r in e["records"]):
+            return 0                                # nothing due: no lock taken, nothing written (every page load asks)
+        gone = 0
+        with locked(self.dir):
+            entries = self._load()
+            for e in entries:
+                for r in e["records"]:
+                    if due(e, r):
+                        try:
+                            Path(r["backup"]).unlink()
+                        except FileNotFoundError:
+                            pass
+                        r["backup"], r["backup_dropped"] = None, time.time()
+                        gone += 1
+            if gone:
+                self._save(entries)
         return gone
 
     @staticmethod
@@ -243,19 +306,22 @@ class UndoLog:
         import shutil
         cutoff = time.time() - older_than_days * 86400
         keep, gone = [], 0
-        for e in self.entries():
-            left = any(UndoLog.can_undo(r) and not r.get("reverted") for r in e["records"])
-            drop = (everything or e["state"] == "reverted" or (e["state"] == "failed" and not left)
-                    or e["applied"] < cutoff)
-            if drop:
-                shutil.rmtree(self.backup_dir(e["id"]), ignore_errors=True)
-                gone += 1
-            else:
-                keep.append(e)
-        if everything:
-            # all of the backups, also those no entry names (a step that failed after taking its copy, before that
-            # was cleared up: a plain copy of known_hosts among them)
-            shutil.rmtree(self.dir / "backups", ignore_errors=True)
-        if gone:
-            self._save(keep)
+        with locked(self.dir):
+            for e in self._load():
+                left = any(UndoLog.can_undo(r) and not r.get("reverted") for r in e["records"])
+                drop = (everything or e["state"] == "reverted" or (e["state"] == "failed" and not left)
+                        or e["applied"] < cutoff)
+                if drop:
+                    shutil.rmtree(self.backup_dir(e["id"]), ignore_errors=True)
+                    gone += 1
+                else:
+                    keep.append(e)
+            if everything:
+                # all of the backups, also those no entry names (a step that failed after taking its copy, before that
+                # was cleared up: a plain copy of known_hosts among them), and a log kept aside as unreadable
+                shutil.rmtree(self.dir / "backups", ignore_errors=True)
+                for f in self.dir.glob(f"{UNREADABLE}*"):
+                    f.unlink(missing_ok=True)
+            if gone:
+                self._save(keep)
         return gone

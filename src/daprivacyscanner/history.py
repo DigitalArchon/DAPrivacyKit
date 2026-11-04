@@ -15,12 +15,16 @@
   lookup names the online tests saw. Each stripped result carries a note saying so, and the report
   lists what was left out in `not_kept`. History can forget it.
 
-All are JSON files written atomically."""
+All are JSON files written atomically, each read-modify-write under the state folder's lock (`locked`)."""
 
 from __future__ import annotations
 
+import contextlib
+import errno
+import fcntl
 import json
 import os
+import tempfile
 import time
 from pathlib import Path
 
@@ -42,13 +46,39 @@ def _load(path: Path) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def _save(path: Path, data: dict) -> None:
+@contextlib.contextmanager
+def locked(directory: Path):
+    """One read-modify-write of a file in the state folder at a time: the window, a scheduled scan, the Outbox and
+    a second window are separate processes, and one that saved what it had read before another's change lost that
+    change (a History entry). An flock on a lock file of the folder's own, held until the file is saved; not
+    re-entrant, so nothing slow, and no other lock, is taken inside it."""
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    fd = os.open(directory / ".lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        except OSError as e:
+            if e.errno not in (errno.ENOLCK, errno.EOPNOTSUPP):
+                raise                               # a filesystem without locks (some FUSE ones): as before, unlocked
+        yield
+    finally:
+        os.close(fd)
+
+
+def write_json(path: Path, data: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(path.parent, 0o700)
-    tmp = path.with_suffix(".tmp")
-    with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as f:
-        json.dump(data, f, indent=1)
-    os.replace(tmp, path)
+    # a temporary file of this write's own (0600): one name for every writer let two writing at once mix theirs, and
+    # the file renamed into place could be cut short or hold both
+    fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    try:
+        with open(fd, "w") as f:
+            json.dump(data, f, indent=1)
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(tmp)
+        raise
 
 
 # ------------------------------------------------------------------ baseline
@@ -133,9 +163,10 @@ class Baseline:
     def record(self, report: dict) -> dict | None:
         """Compares the report with the last one and stores it as the new baseline. Returns the
         differences (None on the first scan)."""
-        previous = self.load()
-        changes = diff(previous, report)
-        _save(self.file, snapshot(report, (previous or {}).get("salt"), previous))
+        with locked(self.file.parent):
+            previous = self.load()
+            changes = diff(previous, report)
+            write_json(self.file, snapshot(report, (previous or {}).get("salt"), previous))
         return changes
 
 
@@ -189,7 +220,7 @@ class LastReport:
         self.file = state_dir(paths) / "last-report.json"
 
     def save(self, report: dict) -> None:
-        _save(self.file, strip_for_saving(report))
+        write_json(self.file, strip_for_saving(report))
 
     def load(self, known: set[str] | None = None) -> dict | None:
         data = _load(self.file)
@@ -229,13 +260,14 @@ class Accepted:
     def set(self, check_id: str, accept: bool, note: str = "", severity: int | None = None,
             reason: str = "") -> dict[str, dict]:
         """Accepts (or un-accepts) a finding at its severity now, and what decided that severity."""
-        data = self.all()
-        if accept:
-            data[check_id] = {"note": note.strip()[:300], "when": time.time(), "severity": severity,
-                              "severity_reason": reason}
-        else:
-            data.pop(check_id, None)
-        _save(self.file, data)
+        with locked(self.file.parent):
+            data = self.all()
+            if accept:
+                data[check_id] = {"note": note.strip()[:300], "when": time.time(), "severity": severity,
+                                  "severity_reason": reason}
+            else:
+                data.pop(check_id, None)
+            write_json(self.file, data)
         return data
 
 

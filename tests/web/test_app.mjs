@@ -744,6 +744,18 @@ check(details[0].querySelectorAll(".cmd button").length >= 1, "the commands can 
 $$(".modal .buttons button").at(-1).click(); await tick();
 routes["GET /api/undo"] = () => ({ entries: [] });
 
+// History's file couldn't be read: History says so, rather than looking empty, until Forget everything deletes it
+routes["GET /api/undo"] = () => ({ entries: [], damaged: "History's file couldn't be read, so it was kept aside (x)." });
+routes["POST /api/undo/forget"] = () => ({ forgotten: 0, entries: [], undone: [], damaged: "" });
+await window.openHistory(); await tick();
+check(text(".modal .damaged").includes("couldn't be read, so it was kept aside"), "History says its file couldn't be read");
+$$(".modal .buttons button").find(b => b.textContent === "Forget everything").click(); await tick();
+$$(".modal").at(-1).querySelectorAll(".buttons button")[1].click(); await tick(); await tick();
+check(!$(".modal .damaged"), "and stops saying so once Forget everything has deleted it");
+while ($$(".modal").length) { $$(".modal .buttons button").at(-1).click(); await tick(); }
+routes["GET /api/undo"] = () => ({ entries: [] });
+delete routes["POST /api/undo/forget"];
+
 // a plan's step names what a root change runs after it, and the lines it writes
 { const li = window.stepLine({ text: "Write /etc/x.conf", reversible: true, irreversible: false, needs_root: true,
     commands: ["systemctl try-reload-or-restart NetworkManager.service"], lines: ["+ [connectivity]", "+ enabled=false"] });

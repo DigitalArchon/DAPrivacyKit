@@ -1478,17 +1478,20 @@ async function openHistory() {
     for (const en of entries) list.append(historyEntry(en, render));
   };
   render(data.entries);
+  // History's file couldn't be read: said, rather than shown as an empty History
+  const damaged = data.damaged ? h("p", { class: "small errmsg damaged" }, data.damaged) : null;
   const forget = async (everything) => {
     try {
       const r = await api("POST", "/api/undo/forget", { everything });
       toast(r.forgotten ? `Forgot ${plural(r.forgotten, "entry", "entries")} and their backups.` : "Nothing to forget.", "ok");
       if (S.report && r.undone) { S.report.undone = r.undone; renderChecks(); }
+      if (damaged && !r.damaged) damaged.remove();
       render(r.entries);
     } catch (e) { toast(e.message, "error"); }
   };
   modal({ title: "History", wide: true, body: [h("p", { class: "muted small" },
     "Every fix applied, newest first. Settings can be put back; deleted files can't. Each entry keeps a copy of "
-    + "what it changed (in ~/.local/state/daprivacyscanner) until it is forgotten."), helperRow(), list],
+    + "what it changed (in ~/.local/state/daprivacyscanner) until it is forgotten."), damaged, helperRow(), list],
     buttons: [
       { label: "Export everything…", onclick: () => openExport("everything") },
       { label: "Forget reverted and old entries", onclick: (close) => forget(false) },

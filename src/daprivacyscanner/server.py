@@ -862,7 +862,8 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
         log = undo_log(host)
         await asyncio.to_thread(log.expire_backups)
         entries = await asyncio.to_thread(lambda: [UndoLog.summary(e, host) for e in reversed(log.entries())])
-        return {"entries": entries}
+        # a log that couldn't be read is said, never shown as an empty History
+        return {"entries": entries, "damaged": await asyncio.to_thread(log.damaged, host)}
 
     @app.post("/api/undo/{entry_id}/drop-backup", dependencies=[Depends(auth)])
     async def drop_backup(entry_id: str):
@@ -912,7 +913,8 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
         if everything:
             await asyncio.to_thread(forget_scans, paths_of(host))
         undone = await asyncio.to_thread(recheck_undone, host)
-        return {"forgotten": gone, "entries": [UndoLog.summary(e) for e in reversed(log.entries())], "undone": undone}
+        return {"forgotten": gone, "entries": [UndoLog.summary(e) for e in reversed(log.entries())], "undone": undone,
+                "damaged": log.damaged(host)}
 
     # ------------------------------------------------------------ tools (docs/TECHNICAL.md, Tools)
     # Started by the user on files they chose; nothing is kept and nothing leaves the machine.
