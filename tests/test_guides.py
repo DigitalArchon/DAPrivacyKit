@@ -922,6 +922,32 @@ def test_umask_in_login_files(cat, tmp_path):
     assert root.actions[0].args == {"name": "user-umask", "settings": {"UMask": "0027"}}
 
 
+def test_umask_guide_never_offers_to_loosen_what_it_set(cat, tmp_path, system, monkeypatch):
+    """Reopened after 077 was applied (the check fails until the user manager starts again), the guide offered 027 for
+    both steps: the choice always started at 027, and a step was done only when it held exactly the value chosen."""
+    host = rooted(make_host(tmp_path, files={"/proc/self/status": "Name:\tx\nUmask:\t0022\n",
+                                             "/etc/passwd": "alice:x:1000:1000::/home/alice:/bin/bash\n"},
+                            env={"USER": "alice"}), system, monkeypatch)
+    monkeypatch.setattr(helper, "CALLER", (1000, 1000, str(host.home)))      # the user manager's drop-in is theirs
+    check = load_all()["auth.umask"](cat["auth.umask"])
+
+    def guide(**params):
+        scan = make_scan(host)
+        scan.params = params
+        return check.plan_guide(scan, check.detect(scan))
+    for plan in options(guide(umask="077")).values():
+        apply(host, plan)
+    g = guide()
+    assert check.detect(make_scan(host)).status is Status.FAIL
+    assert g.steps[0].inputs[0].value == "077" and all(s.done and not s.options for s in g.steps)
+    assert all(s.done and not s.options for s in guide(umask="027").steps)      # 077 keeps out all 027 does
+    # 027 set, 077 asked for: stricter, so still offered
+    (host.home / ".profile").write_text((host.home / ".profile").read_text().replace("umask 077", "umask 027"))
+    g = guide()
+    assert g.steps[0].inputs[0].value == "077" and not g.steps[0].done and g.steps[1].done
+    assert [o.label for o in g.steps[0].options] == ["Set umask 077 in your login files"]
+
+
 # ------------------------------------------------------------------ LUKS key derivation
 
 def _luks_host(tmp_path, dump, grub=None):

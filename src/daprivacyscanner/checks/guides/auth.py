@@ -535,6 +535,14 @@ def login_history(check, scan, outcome):
 UMASK_MARK = "# DA Privacy Kit: new files readable by you only (revert the fix in the app to remove)"
 UMASK_CHOICES = (("027", "027: you can read and write; your own group can read"),
                  ("077", "077: you only"))
+# the umask the app's block in a login file sets, and the one in its drop-in for the user manager
+_UMASK_BLOCK = re.compile(re.escape(UMASK_MARK) + r"\numask 0?([0-7]{3})\n")
+_UMASK_UNIT = re.compile(r"^\s*UMask\s*=\s*0?([0-7]{3})\s*$", re.M)
+
+
+def _as_strict(have: str | None, want: str) -> bool:
+    """Whether the umask the app set (None: none) keeps from others all that `want` does: 077 does all 027 does."""
+    return have is not None and int(have, 8) & int(want, 8) == int(want, 8)
 
 
 def _with_umask(line: str):
@@ -558,11 +566,6 @@ def _login_shell(scan) -> str:
 @guide("auth.umask")
 def umask(check, scan, outcome):
     host, h = scan.host, scan.host.home
-    value = Input.read(scan.params, "umask", "choice", "027", choices=tuple(c for c, _ in UMASK_CHOICES))
-    pick = Input("umask", "New files are readable by", "choice", value, "027", choices=list(UMASK_CHOICES),
-                 help="Other accounts can't read your new files either way. 027 keeps files readable by your own "
-                      "group, which on most systems has only you in it; 077 is stricter and can trouble programs "
-                      "that share files through a group.")
     files = [h / ".profile"]                      # sh, and the X11 session script (lightdm, SDDM and GDM's Xsession)
     bash_login = next((h / f for f in (".bash_profile", ".bash_login") if isfile(h / f)), None)
     if bash_login:                                # bash reads it instead of ~/.profile
@@ -572,11 +575,27 @@ def umask(check, scan, outcome):
         files.append(h / ".zprofile")
     elif shell == "fish":
         files.append(scan.paths.config_home / "fish" / "config.fish")
+    unit = f"/etc/systemd/system/user@{host.uid}.service.d/60-daprivacyscanner-umask.conf"
+    # what the app set before: the choice starts at the strictest of it, and a file is done when it keeps out at least
+    # as much as the choice. Reopened after 077 was applied (the check fails until the user manager starts again), the
+    # guide started at 027 and offered it for both steps, which loosened the umask
+    have = {}
+    for f in files:
+        m = _UMASK_BLOCK.search(read_text(host, f) or "")
+        have[f] = m.group(1) if m else None
+    m = _UMASK_UNIT.search(read_text(host, host.sys_path(unit)) or "")
+    in_unit = m.group(1) if m else None
+    default = max((v for v in (*have.values(), in_unit) if v in dict(UMASK_CHOICES)), key=lambda v: int(v, 8),
+                  default="027")
+    value = Input.read(scan.params, "umask", "choice", default, choices=tuple(c for c, _ in UMASK_CHOICES))
+    pick = Input("umask", "New files are readable by", "choice", value, default, choices=list(UMASK_CHOICES),
+                 help="Other accounts can't read your new files either way. 027 keeps files readable by your own "
+                      "group, which on most systems has only you in it; 077 is stricter and can trouble programs "
+                      "that share files through a group.")
     line = f"umask {value}"
     shells = [WriteFile(f, _with_umask(line), f"Set {line} at login", host.display(f)) for f in files
-              if f"{UMASK_MARK}\n{line}\n" not in (read_text(host, f) or "")]
-    unit = f"/etc/systemd/system/user@{host.uid}.service.d/60-daprivacyscanner-umask.conf"
-    manager_done = f"UMask=0{value}" in (read_text(host, host.sys_path(unit)) or "")
+              if not _as_strict(have[f], value)]
+    manager_done = _as_strict(in_unit, value)
     caveat = ("Commands you run with sudo get this umask too: a file you create with sudo (say, a config file copied "
               "into /etc) may then be unreadable by the service that needs it; check with ls -l and fix with chmod.")
     manager = f"user@{host.uid}.service"
