@@ -390,7 +390,7 @@ def _swap_steps(check: Check, scan: Scan) -> list[Step]:
                   side_effects=effects)]
     random_key = [s for s in swaps if s.kind == "partition" and s.device is not None]
     if random_key:
-        cmds, texts = [], []
+        cmds, texts, n = [], [], 0
         debian = family(scan) == "debian" and scan.host.runner.which("update-initramfs")
         for s in random_key:
             d = s.device
@@ -419,11 +419,14 @@ def _swap_steps(check: Check, scan: Scan) -> list[Step]:
                                 "names it by its /dev/mapper path, which stays the same."))
             else:
                 continue
-            line = f"cryptswap {source} /dev/urandom swap,cipher=aes-xts-plain64,size=512,sector-size=4096"
+            # a name of its own for each: two swap partitions were both made "cryptswap" in crypttab and fstab
+            n += 1
+            name = "cryptswap" if n == 1 else f"cryptswap{n}"
+            line = f"{name} {source} /dev/urandom swap,cipher=aes-xts-plain64,size=512,sector-size=4096"
             cmds += [f"sudo swapoff {shlex.quote(s.shown)}",
                      f"sudoedit /etc/crypttab     # replace {d.name}'s line with: {line}" if d.type == "crypt" else
                      f"echo '{line}' | sudo tee -a /etc/crypttab",
-                     "sudoedit /etc/fstab     # replace the swap line with: /dev/mapper/cryptswap none swap defaults 0 0"]
+                     f"sudoedit /etc/fstab     # replace the swap line with: /dev/mapper/{name} none swap defaults 0 0"]
         if cmds:
             effects = [SWAP_SIZE_NOTE]
             if debian:

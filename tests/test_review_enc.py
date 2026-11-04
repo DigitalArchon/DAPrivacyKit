@@ -492,6 +492,24 @@ def test_random_key_swap_on_lvm_inside_luks_names_the_volume(cat, tmp_path):
     assert g.steps[-1].text.startswith("Both options rule out")
 
 
+def test_random_key_swap_names_each_partitions_mapping_apart(cat, tmp_path):
+    """Two swap partitions were both made "cryptswap": two crypttab lines and two fstab lines of the same name."""
+    import json
+    from daprivacyscanner import blockdev
+    disks = {"blockdevices": [{"name": d, "type": "disk", "fstype": None, "mountpoints": [None], "children": [
+        {"name": f"{d}1", "type": "part", "fstype": "ext4", "mountpoints": ["/" if d == "sda" else "/data"]},
+        {"name": f"{d}2", "type": "part", "fstype": "swap", "mountpoints": ["[SWAP]"]}]} for d in ("sda", "sdb")]}
+    host = make_host(tmp_path, files={"/proc/swaps": "Filename Type Size Used Priority\n/dev/sda2 partition 2002940 0 -2\n"
+                                                     "/dev/sdb2 partition 2002940 0 -3\n", "/etc/os-release": "ID=fedora\n"},
+                     commands={"lsblk -no PARTUUID /dev/sda2": "1111-a\n", "lsblk -no PARTUUID /dev/sdb2": "2222-b\n"})
+    g = _guide(cat, "enc.swap_persistent", host, blockdev.parse_lsblk(json.dumps(disks)), hibernation=False)
+    cmds = next(s for s in g.steps if s.title.startswith("Or: encrypt the swap")).commands
+    assert [c.split("'")[1].split()[:2] for c in cmds if "tee -a /etc/crypttab" in c] == [
+        ["cryptswap", "PARTUUID=1111-a"], ["cryptswap2", "PARTUUID=2222-b"]]
+    assert [c.rsplit(": ", 1)[1] for c in cmds if c.startswith("sudoedit /etc/fstab")] == [
+        "/dev/mapper/cryptswap none swap defaults 0 0", "/dev/mapper/cryptswap2 none swap defaults 0 0"]
+
+
 def test_zram_already_on_isnt_set_up_again(cat, tmp_path):
     """Omarchy: /dev/zram0 in use beside /swap/swapfile. The guide printed zram-generator's install and a config that
     would overwrite its configuration; and the swap file stayed on the disk with old memory pages."""
