@@ -795,9 +795,9 @@ def _removal_commands(scan, f) -> list[str]:
         elif how == "Snap" and did:
             cmds.append(f"sudo snap remove {did.split('_')[0]}")
         elif how == "AppImage":
-            cmds.append(f"rm {shlex.quote(scan.host.display(path))}")
+            cmds.append(f"rm {_home_quote(scan.host.display(path))}")
         elif how in ("this account", "a launcher on the desktop", "a panel launcher"):
-            cmds.append(f"rm {shlex.quote(scan.host.display(path))}")
+            cmds.append(f"rm {_home_quote(scan.host.display(path))}")
     for repo in VENDOR_REPOS.get(f.browser.id if f.browser else "", ()):
         if isfile(scan.host.sys_path(repo)):
             cmds.append(f"sudo rm {repo}")
@@ -812,7 +812,7 @@ def surveillance_browsers(check, scan, outcome):
                   f"Close {f.name} first. Its profile (history, passwords, cookies) stays in your home folder after the "
                   "program is gone; delete it too once you've copied anything you want to keep."
                   + (" Removing the package also takes away the software repository its maker added." if f.browser.id in
-                     VENDOR_REPOS else ""),
+                     VENDOR_REPOS and "package" in f.installs else ""),
                   commands=_removal_commands(scan, f)) for f in bad]
     if not steps:
         steps.append(Step("Nothing to remove", "None of them is installed now.", done=True))
@@ -1310,7 +1310,7 @@ def tls_interception(check, scan, outcome):
     cmds = []
     if remove:
         targets = roots[:3] or [remove[1]]
-        cmds = [remove[0].format(f=f) for f in targets]
+        cmds = [remove[0].format(f=shlex.quote(f)) for f in targets]       # "Zscaler Root CA.crt": three files as root
     program = Step("If it is a program on this computer",
                    "Turn off its HTTPS (SSL, TLS) scanning in its settings, or uninstall it; then remove its root "
                    "certificate from the system's store" + (" (replace NAME with the file the command above shows)"

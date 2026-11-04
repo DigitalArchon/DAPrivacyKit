@@ -279,16 +279,18 @@ def _other_remote(scan, other: list[str]) -> Step:
 
 @guide("auth.ssh_key_no_passphrase")
 def ssh_keys(check, scan, outcome):
+    from ...fix import shell_path
     shown = {e.label: e.value for e in outcome.evidence if isinstance(e.value, str) and "no passphrase" in e.value}
     usable = [k for k, v in shown.items() if "can't load it" not in v]
     dropped = [k for k, v in shown.items() if "can't load it" in v]
+    key = lambda name: shell_path(f"~/.ssh/{name}")      # noqa: E731 - "id_rsa (copy)", "old key"
     cmds = []
     for k in usable:
         mode = mode_of(scan.host.home / ".ssh" / k)
         if mode is not None and mode & 0o077:
             # ssh-keygen refuses a key its group or others can read ("bad permissions"), -p included
-            cmds.append(f"chmod 600 ~/.ssh/{k}     # ssh-keygen won't open it while others can read it (mode {mode:o})")
-        cmds.append(f"ssh-keygen -p -f ~/.ssh/{k}")
+            cmds.append(f"chmod 600 {key(k)}     # ssh-keygen won't open it while others can read it (mode {mode:o})")
+        cmds.append(f"ssh-keygen -p -f {key(k)}")
     steps = []
     if usable:
         steps.append(Step("Set a passphrase on each key", "ssh-keygen asks for the new passphrase twice. The key "
@@ -302,8 +304,8 @@ def ssh_keys(check, scan, outcome):
                           "key and its .pub file.",
                           commands=["ssh-keygen -t ed25519     # a new key: if it asks to overwrite one you use, "
                                     "say no and give another file name"]
-                          + [f"rm ~/.ssh/{k} ~/.ssh/{k}.pub     # once the new key "
-                                                                f"works everywhere" for k in dropped]))
+                          + [f"rm {key(k)} {key(k + '.pub')}     # once the new key works everywhere"
+                             for k in dropped]))
     steps.append(Step("Type it once per session",
                       "An agent remembers the unlocked key: GNOME Keyring and KDE's ssh-agent do it at login, or "
                       "run ssh-add. KeePassXC can hold keys too.", commands=["ssh-add"]))

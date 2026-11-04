@@ -147,6 +147,16 @@ def test_removal_guide_names_the_package_and_the_repository(cat, tmp_path):
     assert cmds["Remove Microsoft Edge"] == ["flatpak uninstall --user com.microsoft.Edge"]
 
 
+def test_removing_a_launcher_of_the_users_own_keeps_the_tilde_outside_the_quotes(cat, tmp_path):
+    """`rm '~/.local/share/applications/google-chrome.desktop'` never matches (the shell doesn't expand a quoted ~), and
+    the step said removing the package takes away Google's repository when there was no package, only a launcher."""
+    host = machine(tmp_path, home_files={".local/share/applications/google-chrome.desktop":
+                                         entry("Google Chrome", "/opt/google/chrome/google-chrome %U")})
+    [step] = guide(cat, host, "br.surveillance_browsers").steps
+    assert step.commands == ["rm ~/.local/share/applications/google-chrome.desktop"]
+    assert "software repository" not in step.text
+
+
 # ------------------------------------------------------------------ the default browser
 
 @pytest.mark.parametrize("desktop, name, status, closed", [

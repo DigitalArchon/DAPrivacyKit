@@ -1472,6 +1472,13 @@ def test_tls_interception_guide_names_the_issuer_and_the_root_to_remove(cat, tmp
     g = _advice(cat, make_host(tmp_path / "b", files={"/etc/os-release": "ID=fedora\n"}), "net.tls_interception", out)
     assert g.steps[1].commands == ["sudo rm /etc/pki/ca-trust/source/anchors/NAME.crt && sudo update-ca-trust"]
     assert "replace NAME" in g.steps[1].text
+    # a file name with spaces is one argument: unquoted, root removed ./Root and ./CA.crt as well
+    host = make_host(tmp_path / "c", files={"/etc/os-release": "ID=ubuntu\nID_LIKE=debian\n",
+                                            "/usr/local/share/ca-certificates/Zscaler Root CA.crt":
+                                                "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n"})
+    g = _advice(cat, host, "net.tls_interception", out)
+    assert g.steps[1].commands == ["sudo rm '/usr/local/share/ca-certificates/Zscaler Root CA.crt' && "
+                                   "sudo update-ca-certificates --fresh"]
 
 
 def test_upnp_guide_names_the_program_behind_each_forward(cat, tmp_path):

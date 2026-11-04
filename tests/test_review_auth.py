@@ -290,6 +290,21 @@ def test_passphrase_command_for_a_key_others_can_read_starts_with_chmod(cat, tmp
         "ssh-keygen -p -f ~/.ssh/id_ed25519", "ssh-keygen -p -f ~/.ssh/id_rsa"]
 
 
+def test_ssh_key_commands_quote_the_key_names(cat, tmp_path):
+    """"chmod 600 ~/.ssh/id_rsa (copy)" is a shell syntax error, and "rm ~/.ssh/old key ~/.ssh/old key.pub" removes
+    ~/.ssh/old and ./key: each name is one argument now, the ~ left outside the quotes."""
+    from test_checks_auth import openssh_key
+    gone = CommandResult((), 255, "", 'Load key "x": invalid format\n')
+    host = _keys_host(tmp_path, {"id_rsa (copy)": openssh_key(), "old key": "-----BEGIN DSA PRIVATE KEY-----\nMIIB\n"
+                                 "-----END DSA PRIVATE KEY-----\n"},
+                      {"id_rsa (copy)": CommandResult((), 0, "ssh-rsa AAAA\n"), "old key": gone},
+                      modes={"id_rsa (copy)": 0o644})
+    cmds = [c for s in build(cat, host, "auth.ssh_key_no_passphrase").steps for c in s.commands]
+    assert "chmod 600 ~/'.ssh/id_rsa (copy)'     # ssh-keygen won't open it while others can read it (mode 644)" in cmds
+    assert "ssh-keygen -p -f ~/'.ssh/id_rsa (copy)'" in cmds
+    assert "rm ~/'.ssh/old key' ~/'.ssh/old key.pub'     # once the new key works everywhere" in cmds
+
+
 # ------------------------------------------------------------------ the SSH agent
 
 def _agent_host(tmp_path, config):
