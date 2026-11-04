@@ -2136,6 +2136,53 @@ while ($$(".modal").length) { $$(".modal .buttons button").at(-1).click(); await
   S.report.results["desk.file_manager_actions"] = f0;
   delete routes["POST /api/fix/desk.file_manager_actions/plan"]; }
 
+// a panel following something that runs keeps asking when a request fails, and shows what came after (the 2026-11-04
+// review: one failed request froze it, an hour-long TRIM test included); after a few failures in a row it says so, once.
+// The five panels are open together, one on another, so they are waited for once.
+{ const fails = {}, real = {};
+  let boxRunning = true;
+  routes["GET /api/tools/boxes"] = () => ({ boxes: [{ slug: "chat-app", name: "Chat App", kind: "installed", network: "off", gpu: false,
+    sound: false, folder: "~/Boxes/chat-app", exchange: "~/Boxes/chat-app/Exchange", problem: null, launcher: true, running: boxRunning,
+    runs: [] }] });
+  for (const key of ["GET /api/tools/trial/status", "GET /api/tools/keeps", "GET /api/tools/trim", "GET /api/tools/browser",
+                     "GET /api/tools/boxes"]) {
+    real[key] = routes[key];
+    routes[key] = (b) => fails[key]-- > 0 ? { __status: 500, data: { error: "The app was busy." } } : real[key](b);
+  }
+  routes["POST /api/tools/trial/start"]({ network: "off", nested: false, gpu: false, sound: false });
+  routes["POST /api/tools/keeps/start"]({ app: "foo.desktop" });
+  routes["POST /api/tools/trim/start"]({ mount: "/" });
+  browserJob = { state: "running", name: "Tor Browser", phase: "Downloading the archive", done: 1, total: 10, stopping: false };
+  await window.openTrial(); await window.openKeeps(); await window.openTrim(); await window.openBrowserTool(); await window.openBoxes();
+  await tick();
+  const keeps = () => text(".modal .activity:not(.trial):not(.boxes)");
+  check($$(".modal").length === 5 && text(".modal .trial").includes("is running in its sandbox") && keeps().includes("Watching Foo")
+        && !!$(".modal .trim .trim-progress") && text(".modal .browser-tool").includes("Downloading the archive")
+        && $$(".modal .box-card button.primary")[0]?.textContent === "Running", "(each follows what runs)");
+  for (const t of $$("#toasts .toast")) t.remove();
+  Object.assign(fails, { "GET /api/tools/trial/status": 1, "GET /api/tools/keeps": 1, "GET /api/tools/trim": 1, "GET /api/tools/boxes": 1,
+                         "GET /api/tools/browser": 3 });
+  trialNow = { ...trialNow, state: "ended", stopped: true, exit: -15, live: null, result: trialResultData };
+  keepsJob = { state: "done", app: "Foo", result: keepsResult, stopping: false };
+  trimJob = { state: "done", mount: "/", stopping: false, now: 1, result: { verdict: "pass", headline: "TRIM works on this drive.",
+    lines: [], explanation: [], environment: [], offsets: [], text: "TRIM test: TRIM works", commands: [], names_mount: "/" } };
+  browserJob = { state: "done", name: "Tor Browser", version: "15.0.24", verdict: { title: "Verified", signer: "Tor Browser Developers",
+                 fingerprint: "EF6E286DDA85EA2A4BA7DE684E2C6E8793298290" } };
+  boxRunning = false;
+  await new Promise(r => setTimeout(r, 6800));      // a failed request, then the next: the Boxes' are 3 s apart
+  check(text(".modal .trial").includes("was ended here"), "Try an app asks again after a failed request, and shows the result");
+  check(keeps().includes("Foo was watched for"), "so does What does this app keep?");
+  check(text(".modal .trim .verdict").includes("TRIM works on this drive"), "and the TRIM test");
+  check(text(".modal .browser-tool").includes("Tor Browser 15.0.24 is in the RAM disk"), "and the browser panel, following a set-up");
+  check($$(".modal .box-card button.primary")[0]?.textContent === "Start", "and Boxes");
+  const said = $$("#toasts .toast").map(t => t.textContent);
+  check(said.length === 1 && said[0].startsWith("Lost contact with the app's server (The app was busy.)"),
+        "three failures in a row are said once, the others not at all: " + said.join(" | "));
+  for (const key of Object.keys(real)) routes[key] = real[key];
+  for (let i = 0; i < 5; i++) { $$(".modal").at(-1).querySelector(".buttons button").click(); await tick(); }
+  check(!$$(".modal").length, "(all closed)");
+  trialNow = null; keepsJob = null; trimJob = null; browserJob = null; }
+
 // Escape in a search box with text in it clears the box (WebKit would only in its default action, once the dialog had
 // been closed); the next Escape closes the dialog
 { await window.openKeeps(); await tick();

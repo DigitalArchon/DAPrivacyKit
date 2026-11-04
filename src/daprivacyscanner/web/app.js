@@ -1717,6 +1717,16 @@ function openHelperNote() {
 const fmtSize = (n) => n >= 1e12 ? `${(n / 1e12).toFixed(1)} TB` : n >= 1e9 ? `${(n / 1e9).toFixed(1)} GB` : n >= 1e6 ? `${(n / 1e6).toFixed(1)} MB`
   : n >= 1e3 ? `${Math.round(n / 1e3)} kB` : `${n} bytes`;
 
+// A panel following something that runs (a trial, a watch, the TRIM test, a browser's set-up, a Box) asks again when
+// a request fails, as the online tests' strip does: one failure (the app busy for a moment) had left the panel showing
+// that moment for good, an hour-long TRIM test included. `lost` is how many failed in a row: at LOST_AFTER it says so,
+// once, and it goes on asking.
+const LOST_AFTER = 3;
+function lostContact(lost, e) {
+  if (lost === LOST_AFTER) toast(`Lost contact with the app's server (${e.message}): what this shows may be out of date. `
+    + "It keeps asking.", "error", 10000);
+}
+
 async function toolsInfo() {
   return api("GET", "/api/tools");
 }
@@ -2774,10 +2784,18 @@ async function openBrowserTool(reloadTools) {
     if (d && !editing && browserShown(d) !== browserShown(data)) { data = d; render(); return; }
     follow();                                     // unchanged, or the user is typing here: not under their hands
   };
+  // a set-up running: drawn at every answer, as reload does, and asked again when one fails
+  let lost = 0;
+  const jobPoll = async () => {
+    followUntil = Date.now() + FOLLOW_AFTER;
+    try { data = await api("GET", "/api/tools/browser"); } catch (e) { lostContact(++lost, e); follow(); return; }
+    lost = 0;
+    render();
+  };
   const follow = () => {
     clearTimeout(timer);
     if (closed) return;
-    if (data.job?.state === "running") timer = setTimeout(reload, 1000);
+    if (data.job?.state === "running") timer = setTimeout(jobPoll, 1000);
     else if (data.browsers?.some(b => b.running || b.outbox?.on) || Date.now() < followUntil) timer = setTimeout(poll, 2000);
   };
   const render = () => {
@@ -3761,10 +3779,14 @@ async function openTrial(reloadTools) {
     try { take(await api("POST", path, payload || {})); return true; }
     catch (e) { toast(e.message, "error", 12000); if (btn) { btn.disabled = false; btn.textContent = label; } return false; }
   };
+  let lost = 0;
   const follow = () => {
     clearTimeout(timer);
     if (!closed) timer = setTimeout(async () => {
-      try { take(await api("GET", "/api/tools/trial/status")); } catch (e) { toast(e.message, "error"); }
+      let r;
+      try { r = await api("GET", "/api/tools/trial/status"); } catch (e) { lostContact(++lost, e); follow(); return; }
+      lost = 0;
+      take(r);
     }, 1500);
   };
   const render = () => {
@@ -4007,12 +4029,18 @@ async function openBoxes() {
   modal({ title: "Boxes", wide: true, body, buttons: [{ label: "Close", kind: "primary" }],
     onClose: () => { closed = true; clearTimeout(timer); } });
   const spec = S.state.catalogue.find(s => s.id === "app.boxes");
+  let lost = 0, following = false;                   // following: a Box was running at the last answer
+  const again = () => { clearTimeout(timer); if (!closed) timer = setTimeout(load, 3000); };
   const load = async () => {
     let data;
-    try { data = await api("GET", "/api/tools/boxes"); } catch (e) { toast(e.message, "error"); return; }
+    try { data = await api("GET", "/api/tools/boxes"); } catch (e) {
+      if (following) { lostContact(++lost, e); again(); } else toast(e.message, "error");
+      return;
+    }
+    lost = 0;
     fill(body, boxesBody(data.boxes, spec, load));
-    clearTimeout(timer);
-    if (!closed && data.boxes.some(b => b.running)) timer = setTimeout(load, 3000);
+    following = data.boxes.some(b => b.running);
+    if (following) again(); else clearTimeout(timer);
   };
   await load();
 }
@@ -4093,7 +4121,13 @@ async function openKeeps() {
   const reload = async () => {
     try { data = await api("GET", "/api/tools/keeps"); render(); } catch (e) { toast(e.message, "error"); }
   };
-  const follow = () => { clearTimeout(timer); if (!closed) timer = setTimeout(reload, 2000); };
+  let lost = 0;
+  const ask = async () => {
+    try { data = await api("GET", "/api/tools/keeps"); } catch (e) { lostContact(++lost, e); follow(); return; }
+    lost = 0;
+    render();
+  };
+  const follow = () => { clearTimeout(timer); if (!closed) timer = setTimeout(ask, 2000); };
   const render = () => {
     const job = data.job;
     S.adminActive = !!data.admin_active; renderTop();
@@ -4266,9 +4300,15 @@ async function openTrim() {
   const reload = async () => {
     try { data = await api("GET", "/api/tools/trim"); render(); } catch (e) { toast(e.message, "error"); }
   };
+  let lost = 0;
+  const ask = async () => {
+    try { data = await api("GET", "/api/tools/trim"); } catch (e) { lostContact(++lost, e); follow(); return; }
+    lost = 0;
+    render();
+  };
   const follow = () => {
     clearTimeout(timer);
-    if (!closed) timer = setTimeout(reload, 2000);
+    if (!closed) timer = setTimeout(ask, 2000);
   };
   const render = () => {
     const job = data.job;
