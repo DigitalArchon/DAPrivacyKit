@@ -522,6 +522,14 @@ def rebuild(top: Path, rel: str) -> dict:
             moved = _move_all(old, new)
             notes += _finish(old, new, st)
             os.fsync(new)
+            # the swap goes by name: the name must still be the folder its entries came from (renamed and another
+            # put in its place meanwhile, that other would have been swapped, and its entries merged into this)
+            try:
+                now = os.stat(name, dir_fd=parent, follow_symlinks=False)
+            except OSError:
+                now = None
+            if now is None or (now.st_dev, now.st_ino) != (st.st_dev, st.st_ino):
+                raise Refused("it was renamed or replaced while its entries were moved")
         except BaseException as e:
             back = None                          # why moving the entries back stopped, if it did
             try:

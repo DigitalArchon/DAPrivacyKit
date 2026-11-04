@@ -806,6 +806,33 @@ def test_a_failure_after_the_swap_names_the_old_folder_and_what_is_left_in_it(tm
     assert (docs / "late.txt").read_text() == "and a newer one in the new" and (docs / "a.txt").read_text() == "a"
 
 
+@pytest.mark.parametrize("exchange", [True, False])
+def test_a_folder_renamed_and_replaced_while_it_is_rebuilt_is_left_as_it_was(tmp_path, monkeypatch, exchange):
+    """The swap goes by name: a folder renamed meanwhile, and another put in its place, had that other one swapped
+    into the hidden name, its entries then merged into the rebuilt folder and it removed. The name must still be the
+    folder the entries came from; otherwise they go back into it, wherever it is now."""
+    top = tmp_path / "home"
+    docs = top / "Documents"
+    docs.mkdir(parents=True)
+    for n in ("a.txt", "b.txt"):
+        (docs / n).write_text(n)
+    if not exchange:
+        monkeypatch.setattr(R, "EXCHANGE", lambda parent, a, b: False)
+    real = R.MOVE
+
+    def move(src, name, dst):
+        real(src, name, dst)
+        if not (top / "Documents.old").exists():
+            os.rename(docs, top / "Documents.old")                       # renamed, and another folder put there
+            docs.mkdir()
+            (docs / "theirs.txt").write_text("someone else's")
+    monkeypatch.setattr(R, "MOVE", move)
+    with pytest.raises(R.Refused, match="renamed or replaced"):
+        R.rebuild(top, "Documents")
+    assert sorted(os.listdir(top)) == ["Documents", "Documents.old"]
+    assert sorted(os.listdir(top / "Documents.old")) == ["a.txt", "b.txt"] and os.listdir(docs) == ["theirs.txt"]
+
+
 def test_a_folder_reached_through_a_link_isnt_rebuilt(tmp_path):
     top = tmp_path / "home"
     (tmp_path / "elsewhere").mkdir()

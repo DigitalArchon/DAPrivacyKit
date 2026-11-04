@@ -1438,7 +1438,8 @@ holds.
   other users'): *fillers* for small folders (empty files with names as long as each deleted one, a round
   at a time, re-read until the names are gone; the folder stays the same inode) or a *rebuild* for large
   indexed folders (a new folder with the same group, mode, flags, xattrs and ACLs, every entry moved with
-  `renameat2(RENAME_NOREPLACE)`, then swapped with `RENAME_EXCHANGE`, rolled back on failure). Fillers
+  `renameat2(RENAME_NOREPLACE)`, then swapped with `RENAME_EXCHANGE` while the name is still the folder
+  they came from, rolled back on failure). Fillers
   are also used wherever a folder can't be swapped (the home itself, a disk's top folder, one with a disk
   mounted in it) or TRIM never reaches the drive. Either is refused for a folder that isn't the user's, is
   immutable or append-only, or is watched (inotify/fanotify marks from `/proc/PID/fdinfo`) by a program
