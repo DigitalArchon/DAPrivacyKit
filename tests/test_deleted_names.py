@@ -87,23 +87,29 @@ def folder_block(ino, entries, gen=GEN):
     return bytes(b)
 
 
-def inode_record(gen, deleted=True):
+def inode_record(gen, deleted=True, uid=None, gid=None, mode=0o40755):
+    """An inode's record: the caller's own folder unless `uid` says whose (uid and gid in their two halves)."""
+    uid = os.geteuid() if uid is None else uid
+    gid = os.getegid() if gid is None else gid
     raw = bytearray(INODE_SIZE)
-    struct.pack_into("<H", raw, 0, 0o40755)
+    struct.pack_into("<H", raw, 0, mode)
+    struct.pack_into("<HH", raw, 0x02, uid & 0xFFFF, 0)
+    struct.pack_into("<H", raw, 0x18, gid & 0xFFFF)
+    struct.pack_into("<HH", raw, 0x78, uid >> 16, gid >> 16)
     struct.pack_into("<I", raw, 0x14, 1791810135 if deleted else 0)
     struct.pack_into("<H", raw, 0x1A, 0 if deleted else 2)
     struct.pack_into("<I", raw, 0x64, gen)
     return bytes(raw)
 
 
-def inode(dev, ino, gen, deleted=True):
+def inode(dev, ino, gen, deleted=True, **owner):
     """Its record in the inode table (group 0's descriptor at block 1 says where the table is)."""
     gd = bytearray(32)
     struct.pack_into("<I", gd, 8, INODE_TABLE)
     put(dev, 1, bytes(gd))
     with open(dev, "r+b") as f:
         f.seek(INODE_TABLE * BLOCK + (ino - 1) * INODE_SIZE)
-        f.write(inode_record(gen, deleted))
+        f.write(inode_record(gen, deleted, **owner))
 
 
 def csum_disk(root, monkeypatch, **sb):
@@ -228,6 +234,29 @@ def test_a_deleted_folders_names_are_listed_under_the_folder_it_was_in(root, mon
     inode(dev, 12, 41, deleted=False)
     _, r = everything()
     assert [f["path"] for f in r["folders"]] == ["Documents"] and r["journal"]["orphans"] == 4
+
+
+def test_another_accounts_deleted_folder_stays_untied_however_it_is_found(root, monkeypatch):
+    """The walk lists only the caller's own folders under the home: a folder of another account's deleted from
+    one of theirs (a shared folder) is no more theirs to see once it is gone. Its blocks are counted, and named
+    only when asked for, as every untied block is."""
+    dev, home = csum_disk(root, monkeypatch)
+    docs = os.stat(home / "Documents").st_ino
+    monkeypatch.setattr(helper, "FIEMAP", lambda fd: [(256 * BLOCK, BLOCK)] if os.fstat(fd).st_ino == docs else [])
+    put(dev, JOURNAL_AT + 5, descriptor([256, 800, 801]))
+    put(dev, JOURNAL_AT + 6, folder_block(docs, [(docs, b".", 2), (2, b"..", 2), (12, b"bobs-private", 2)]))
+    put(dev, JOURNAL_AT + 7, folder_block(12, [(12, b".", 2), (docs, b"..", 2), (30, b"bobs-letter.odt", 1)], gen=41))
+    inode(dev, 12, 41, uid=os.geteuid() + 4242, mode=0o40700)
+    _, r = everything()
+    assert [f["path"] for f in r["folders"]] == ["Documents"] and r["folders"][0]["names"] == ["bobs-private"]
+    assert r["journal"]["orphans"] == 1 and call("names_orphans")["names"] == ["bobs-letter.odt"]
+    # the caller's own, it is listed where it was (uid's high half read too)
+    inode(dev, 12, 41)
+    _, r = everything()
+    assert [(f["path"], f["names"]) for f in r["folders"]][1] == ("Documents/bobs-private", ["bobs-letter.odt"])
+    inode(dev, 12, 41, uid=os.geteuid() + (1 << 16))
+    _, r = everything()
+    assert [f["path"] for f in r["folders"]] == ["Documents"]
 
 
 def test_a_deleted_folder_whose_inode_was_used_again_is_found_by_the_journals_copy_of_the_inode(root, monkeypatch):

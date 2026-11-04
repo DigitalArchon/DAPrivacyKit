@@ -3258,10 +3258,10 @@ def parse_btrfs_superblock(sb: bytes) -> dict | None:
             "nodesize": int.from_bytes(sb[0x94:0x98], "little"), "csum": int.from_bytes(sb[0xc4:0xc6], "little")}
 
 
-def parse_btrfs_leaf(block: bytes, fs: dict, owners: set[int]) -> list[tuple[int, int, bytes]]:
-    """(tree, folder inode, name) for every folder entry a leaf of one of the `owners` trees holds,
-    in its items and in stale item headers past them. [] if it isn't such a leaf or its checksum
-    is wrong."""
+def parse_btrfs_leaf(block: bytes, fs: dict, owners: set[int]) -> list[tuple[int, int, bytes, int]]:
+    """(tree, folder inode, name, transid) for every folder entry a leaf of one of the `owners` trees holds,
+    in its items and in stale item headers past them; transid is the transaction that made the entry (its
+    btrfs_dir_item's). [] if it isn't such a leaf or its checksum is wrong."""
     import struct
     n = fs["nodesize"]
     if len(block) < n or block[32:48] != fs["fsid"] or block[100] != 0:
@@ -3284,12 +3284,12 @@ def parse_btrfs_leaf(block: bytes, fs: dict, owners: set[int]) -> list[tuple[int
             continue
         p, end = 101 + off, 101 + off + size
         while p + 30 <= end:
-            data_len, name_len = struct.unpack_from("<HH", block, p + 25)
+            transid, data_len, name_len = struct.unpack_from("<QHH", block, p + 17)
             if not name_len or p + 30 + name_len + data_len > end:
                 break
             name = bytes(block[p + 30:p + 30 + name_len])
             if _good_name(name):
-                out.append((owner, obj, name))
+                out.append((owner, obj, name, transid))
             p += 30 + name_len + data_len
     return out
 
@@ -3491,12 +3491,12 @@ def _journal_copies(fd: int, bsize: int, homes: set[int]) -> tuple[str, dict[int
 
 def _walk_folders(root: str, uid: int, groups: set[int], own_only: bool, ext4: bool) -> tuple[dict, list, bool, dict]:
     """The folders under `root` the listing may cover: (tree, inode) -> path under root (tree 0 on
-    ext4; on btrfs each subvolume's id), and for ext4 each folder's blocks and its inode's generation.
-    Never through a link, never into another mount; with `own_only`, only the caller's own folders,
-    otherwise those the caller can open."""
+    ext4; on btrfs each subvolume's id), for ext4 each folder's blocks, and each folder's generation (ext4:
+    by inode; btrfs: by (tree, inode)). Never through a link, never into another mount; with `own_only`, only
+    the caller's own folders, otherwise those the caller can open."""
     dirs: dict[tuple[int, int], str] = {}
     blocks: list = []
-    gens: dict[int, int] = {}
+    gens: dict = {}
     trees: dict[int, int] = {}                  # st_dev -> btrfs tree id
     mounts = {_unescape(f[1]) for f in _proc_mounts()}
     full = False
@@ -3517,6 +3517,10 @@ def _walk_folders(root: str, uid: int, groups: set[int], own_only: bool, ext4: b
             if tree is None:
                 return
         dirs[(tree, st.st_ino)] = rel
+        if not ext4:
+            gen = GENERATION(fd)
+            if gen is not None:
+                gens[(tree, st.st_ino)] = gen       # btrfs: the transaction that made it (see names_step)
         if ext4:
             flags = _dir_flags(fd)
             if not flags & FS_ENCRYPT_FL:
@@ -3785,10 +3789,11 @@ def _in_ranges(ranges: list[tuple[int, int]], n: int) -> bool:
     return i >= 0 and ranges[i][0] <= n < ranges[i][1]
 
 
-def _ext4_inode_gens(fd: int, j: dict, ino: int) -> dict[int, bool]:
-    """Each generation an inode number is on record with, and whether a record has it deleted then (a
-    deletion time, no links): the inode table as it is, and the journal's copies of that block of it. The
-    generation changes whenever the number is used again, so an older one is a file or folder that is gone."""
+def _ext4_inode_gens(fd: int, j: dict, ino: int) -> dict[int, tuple[bool, set[tuple[int, int, int]]]]:
+    """Each generation an inode number is on record with: whether a record has it deleted then (a deletion
+    time, no links), and the owner, group and mode each record gives it (uid, gid, mode): the inode table as it
+    is, and the journal's copies of that block of it. The generation changes whenever the number is used
+    again, so an older one is a file or folder that is gone."""
     g = j["inodes"]
     if not g or ino < 1:
         return {}
@@ -3799,14 +3804,19 @@ def _ext4_inode_gens(fd: int, j: dict, ino: int) -> dict[int, bool]:
     block, at = divmod(index * g["size"], j["bsize"])
     block += _ext4_group_table(desc, g["desc"])
     home, bad = _aligned_read(fd, block * j["bsize"], j["bsize"])
-    out: dict[int, bool] = {}
+    out: dict[int, tuple[bool, set[tuple[int, int, int]]]] = {}
     for data in [None if bad else home] + [_journal_block(fd, j, lblk) for lblk in j["icopies"].get(block, [])]:
         if data is None or len(data) < at + 128:
             continue
         raw = data[at:at + 128]
         gen = int.from_bytes(raw[0x64:0x68], "little")
         deleted = bool(int.from_bytes(raw[0x14:0x18], "little")) and not int.from_bytes(raw[0x1A:0x1C], "little")
-        out[gen] = out.get(gen, False) or deleted
+        # i_uid and i_gid: the low halves, and the high ones in osd2 (l_i_uid_high, l_i_gid_high); a deleted
+        # inode keeps them
+        uid = int.from_bytes(raw[0x02:0x04], "little") | int.from_bytes(raw[0x78:0x7A], "little") << 16
+        gid = int.from_bytes(raw[0x18:0x1A], "little") | int.from_bytes(raw[0x7A:0x7C], "little") << 16
+        was, owners = out.get(gen, (False, set()))
+        out[gen] = (was or deleted, owners | {(uid, gid, int.from_bytes(raw[0x00:0x02], "little"))})
     return out
 
 
@@ -3844,11 +3854,24 @@ def _names_gone_folders(s: dict, fd: int) -> list[tuple[str, set[bytes]]]:
     One counts when a copy of a listed folder (or of a gone folder found this way) names it as a subfolder,
     no inode of that number and generation exists now (the kernel says; where it can't be asked, a record
     of the inode table must have it deleted), blocks in the journal carry that inode's checksum, and one of
-    them is its first block, naming itself and that parent. Their blocks leave the ones tied to no folder."""
+    them is its first block, naming itself and that parent. And it must have been a folder the listing would
+    have covered while it was there, by the same rule (the caller's own, or one they could open: every record
+    of its inode says so): another account's private folder deleted from a shared one stays tied to nothing,
+    counted, and named only when asked for (names_orphans). Their blocks leave the ones tied to no folder."""
     j = s["j"]
     if not j["csum"] or not j["inodes"] or not j["orphans"]:
         return []
     n = j["bsize"] - 12
+    uid = s["uid"]
+    groups = s.get("groups", set())
+
+    def covered(owner: tuple[int, int, int]) -> bool:
+        o_uid, o_gid, mode = owner
+        if s["own_only"]:
+            return o_uid == uid
+        st = os.stat_result((mode, 0, 0, 0, o_uid, o_gid, 0, 0, 0, 0))
+        return _caller_may(st, uid, groups, 0o5)
+
     out, seen, looked = [], set(), 0
     queue = [(ino, s["dirs"][(0, ino)], kids) for ino, kids in j["kids"].items() if (0, ino) in s["dirs"]]
     while queue:
@@ -3859,9 +3882,11 @@ def _names_gone_folders(s: dict, fd: int) -> list[tuple[str, set[bytes]]]:
             seen.add(ino)
             looked += 1
             key, blocks = None, []
-            for gen, deleted in _ext4_inode_gens(fd, j, ino).items():
+            for gen, (deleted, owners) in _ext4_inode_gens(fd, j, ino).items():
                 key = _ext4_seed_key(j["basis"], j["seed"], ino, gen)
                 if key not in j["orphans"]:
+                    continue
+                if not all(covered(o) for o in owners):              # not the caller's to see: stays untied
                     continue
                 live = INODE_LIVE(s, ino, gen)
                 if live or (live is None and not deleted):           # a folder there now, which the listing doesn't cover
@@ -3909,15 +3934,17 @@ def names_begin(args: dict) -> dict:
     real, st = _fs_device(f)
     ext4 = f[2] == "ext4"
     _NAMES.clear()
-    dirs, blocks, full, gens = _walk_folders(root, uid, _caller_groups(uid, gid), own_only, ext4)
+    groups = _caller_groups(uid, gid)
+    dirs, blocks, full, gens = _walk_folders(root, uid, groups, own_only, ext4)
     state = {"uid": uid, "home": root, "scope": "home" if own_only else "mount", "fstype": f[2], "device": real,
              "rdev": st.st_rdev, "ino": st.st_ino, "size": _device_size(real), "dirs": dirs, "blocks": blocks,
              "done": 0, "found": {}, "full": full, "trees": {k[0] for k in dirs}, "unreadable": 0, "mount": f[1],
-             "own_only": own_only}
+             "own_only": own_only, "groups": groups}
     if ext4:
         state["total"] = len(blocks)
         state["j"] = _names_journal_begin(state, gens)
     else:
+        state["gens"] = gens
         fd = _trim_open(real)
         buf = mmap.mmap(-1, 4096)
         try:
@@ -4011,7 +4038,14 @@ def names_step(args: dict) -> dict:
                     while i != -1:
                         at = i - 32
                         if at >= 0 and (pos + at) % fs["sectorsize"] == 0 and at + node <= n:
-                            for tree, ino, name in parse_btrfs_leaf(buf[at:at + node], fs, s["trees"]):
+                            for tree, ino, name, transid in parse_btrfs_leaf(buf[at:at + node], fs, s["trees"]):
+                                # an entry older than the folder of that number is a previous holder's: btrfs
+                                # uses an inode number again (the highest ones, after a remount), and a stale
+                                # block of another account's deleted folder would be tied to the caller's
+                                # folder by tree and number alone. A folder's generation is the transaction
+                                # that made it (FS_IOC_GETVERSION: 32 bits), and every entry in it is newer.
+                                if transid & 0xFFFFFFFF < s["gens"].get((tree, ino), 0):
+                                    continue
                                 _add_name(s, (tree, ino), name)
                         i = buf.find(fs["fsid"], i + 1, n)
                     pos += n if pos + n >= s["size"] else n - node      # overlap: a block across two reads

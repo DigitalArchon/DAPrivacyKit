@@ -786,18 +786,18 @@ def test_crc32c():
 FSID = bytes(range(16, 32))
 
 
-def dir_item(name, typ=1):
-    return struct.pack("<QBQQHHB", 300, 1, 0, 7, 0, len(name), typ) + name
+def dir_item(name, typ=1, transid=7):
+    return struct.pack("<QBQQHHB", 300, 1, 0, transid, 0, len(name), typ) + name
 
 
 def btrfs_leaf(owner, items, stale=(), node=16384):
-    """A leaf of the `owner` tree holding DIR_INDEX items (folder inode, name), and stale headers
-    past them pointing at stale data in its free space; crc32c checksum."""
+    """A leaf of the `owner` tree holding DIR_INDEX items (folder inode, name[, the transaction that made the
+    entry: 7]), and stale headers past them pointing at stale data in its free space; crc32c checksum."""
     b = bytearray(node)
     b[32:48], b[88:96], b[96:100], b[100] = FSID, owner.to_bytes(8, "little"), len(items).to_bytes(4, "little"), 0
     off = node - 101
-    for i, (ino, name) in enumerate(list(items) + list(stale)):
-        data = dir_item(name)
+    for i, (ino, name, *transid) in enumerate(list(items) + list(stale)):
+        data = dir_item(name, transid=transid[0] if transid else 7)
         off -= len(data) + (64 if i >= len(items) else 0)
         b[101 + off:101 + off + len(data)] = data
         struct.pack_into("<QBQII", b, 101 + 25 * i, ino, helper.BTRFS_DIR_INDEX, i + 2, off, len(data))
@@ -808,7 +808,7 @@ def btrfs_leaf(owner, items, stale=(), node=16384):
 def test_btrfs_leaves_give_their_folder_entries_stale_ones_too():
     fs = {"fsid": FSID, "nodesize": 16384, "sectorsize": 4096, "csum": 0}
     leaf = btrfs_leaf(5, [(257, b"kept.txt")], stale=[(257, b"old-diary.txt")])
-    assert helper.parse_btrfs_leaf(leaf, fs, {5}) == [(5, 257, b"kept.txt"), (5, 257, b"old-diary.txt")]
+    assert helper.parse_btrfs_leaf(leaf, fs, {5}) == [(5, 257, b"kept.txt", 7), (5, 257, b"old-diary.txt", 7)]
     assert helper.parse_btrfs_leaf(leaf, fs, {6}) == []                       # another subvolume's tree
     broken = bytearray(leaf)
     broken[5000] ^= 1
@@ -883,6 +883,7 @@ def test_btrfs_names_from_the_home_subvolumes_tree(root, monkeypatch):
     home = home_folders(root)
     docs = os.stat(home / "Documents").st_ino
     monkeypatch.setattr(helper, "BTRFS_TREE_ID", lambda fd: 5)
+    monkeypatch.setattr(helper, "GENERATION", lambda fd: 5)          # each folder made in transaction 5
     sb = bytearray(4096)
     sb[0x20:0x30], sb[0x40:0x48] = FSID, b"_BHRfS_M"
     sb[0x90:0x94], sb[0x94:0x98] = (4096).to_bytes(4, "little"), (16384).to_bytes(4, "little")
@@ -895,6 +896,10 @@ def test_btrfs_names_from_the_home_subvolumes_tree(root, monkeypatch):
         f.write(btrfs_leaf(5, [(docs, b"keep.txt")], stale=[(docs, b"letter.odt")]))
         f.seek((4 << 20) - 16384)
         f.write(btrfs_leaf(9, [(docs, b"other-subvolume.txt")]))
+        # a stale block from before Documents was made: its number then was another folder's (btrfs uses the
+        # highest numbers again after a remount), whose entries are older than Documents
+        f.seek(2 << 20)
+        f.write(btrfs_leaf(5, [(docs, b"bobs-old-folders-file.txt", 3)], stale=[(docs, b"bobs-letter.odt", 4)]))
     b = call("names_begin", mount="/")
     assert b["unit"] == "bytes" and b["total"] == DEVICE_SIZE
     while call("names_step")["done"] < b["total"]:
@@ -911,6 +916,7 @@ def test_names_when_the_home_is_a_subvolume_of_the_system_disk(root, monkeypatch
     home = home_folders(root)
     docs = os.stat(home / "Documents").st_ino
     monkeypatch.setattr(helper, "BTRFS_TREE_ID", lambda fd: 5)
+    monkeypatch.setattr(helper, "GENERATION", lambda fd: 5)
     sb = bytearray(4096)
     sb[0x20:0x30], sb[0x40:0x48] = FSID, b"_BHRfS_M"
     sb[0x90:0x94], sb[0x94:0x98] = (4096).to_bytes(4, "little"), (16384).to_bytes(4, "little")
