@@ -172,6 +172,42 @@ def test_other_exposed_services_named_by_their_unit(cat, tmp_path):
     assert steps["Port 8443/tcp"].commands[0] == "sudo ss -ltnp 'sport = :8443'"
 
 
+def test_a_service_from_an_autostart_entry_is_kept_from_starting_by_its_entry(cat, tmp_path):
+    """GNOME and Plasma 6 run autostart entries as units systemd makes from them at every login: the guide showed
+    `systemctl --user disable --now app-syncthing\\x2dstart@autostart.service`, unquoted (bash makes x2d of \\x2d),
+    which can't disable a unit made that way and so stopped it until the next login only, while the text promised
+    to keep it from starting."""
+    ss = ('tcp LISTEN 0 511 0.0.0.0:22000 0.0.0.0:* users:(("syncthing",pid=777,fd=3))\n'
+          'tcp LISTEN 0 511 0.0.0.0:27036 0.0.0.0:* users:(("steam",pid=778,fd=3))\n'
+          'tcp LISTEN 0 511 0.0.0.0:3000 0.0.0.0:* users:(("node",pid=779,fd=3))\n')
+    apps = "0::/user.slice/user-1000.slice/user@1000.service/app.slice/"
+    host = make_host(tmp_path, files={"/proc/777/cgroup": apps + "app-syncthing\\x2dstart@autostart.service\n",
+                                      "/proc/778/cgroup": apps + "app-steam@autostart.service\n",
+                                      "/proc/779/cgroup": apps + "dev\\x2dserver.service\n",
+                                      "/etc/xdg/autostart/syncthing-start.desktop": "[Desktop Entry]\nExec=syncthing\n"},
+                     home_files={".config/autostart/steam.desktop": "[Desktop Entry]\nExec=steam\n"})
+    g = build(cat, host, "net.exposed_services", listeners=network.parse_ss(ss), desktop=("kde",), plasma_major=6,
+              exposed_services=ContextValue("exposed_services", True, [], ""))
+    steps = {st.title: st for st in g.steps}
+    sync, steam = steps["Port 22000/tcp (syncthing)"], steps["Port 27036/tcp (steam)"]
+    assert "entry /etc/xdg/autostart/syncthing-start.desktop" in sync.text and "System Settings → Autostart" in sync.text
+    assert sync.commands == ["systemsettings kcm_autostart", "mkdir -p ~/.config/autostart",
+                             "printf '[Desktop Entry]\\nHidden=true\\n' > ~/.config/autostart/syncthing-start.desktop",
+                             "systemctl --user stop 'app-syncthing\\x2dstart@autostart.service'"]
+    assert "entry ~/.config/autostart/steam.desktop" in steam.text
+    assert steam.commands == ["systemsettings kcm_autostart", "rm ~/.config/autostart/steam.desktop",
+                              "systemctl --user stop app-steam@autostart.service"]
+    # a unit of the user's own: quoted too
+    assert steps["Port 3000/tcp (node)"].commands == ["systemctl --user disable --now 'dev\\x2dserver.service'"]
+    # the user's copy of the system's entry: deleting it would bring the system's back, so it is hidden too
+    (host.home / ".config/autostart/syncthing-start.desktop").write_text("[Desktop Entry]\nExec=syncthing -x\n")
+    g = build(cat, host, "net.exposed_services", listeners=network.parse_ss(ss), desktop=("kde",), plasma_major=6,
+              exposed_services=ContextValue("exposed_services", True, [], ""))
+    sync = next(st for st in g.steps if st.title == "Port 22000/tcp (syncthing)")
+    assert "entry ~/.config/autostart/syncthing-start.desktop" in sync.text and "your copy of it" in sync.text
+    assert not any(c.startswith("rm ") for c in sync.commands) and any("Hidden=true" in c for c in sync.commands)
+
+
 # ------------------------------------------------------------------ user-level options
 
 def test_home_permissions(cat, tmp_path):

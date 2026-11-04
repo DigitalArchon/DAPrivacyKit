@@ -127,3 +127,7 @@ def test_how_to_gives_this_desktops_place_and_commands(cat, tmp_path):
     assert "cinnamon-settings startup" in cmds and "systemctl --user disable --now syncthing.service" in cmds
     assert "crontab -e" in cmds and "rm ~/.local/bin/sudo" in cmds and "rm ~/'.config/autostart/my app.desktop'" in cmds
     assert not g.plans
+    # a unit's name with systemd's escapes in it, quoted (bash made x2d of \x2d)
+    host = login_host(tmp_path / "e", home={".config/systemd/user/default.target.wants/my\\x2dsync.service": ""})
+    g = load_all()[CHECK](cat[CHECK]).plan_guide(make_scan(host, desktop=("x-cinnamon",)), Outcome(Status.WARN, "x"))
+    assert "systemctl --user disable --now 'my\\x2dsync.service'" in [c for s in g.steps for c in s.commands]

@@ -132,18 +132,59 @@ def _unit_of(scan, pid: int) -> tuple[str, str] | None:
     return ("user" if any(p.startswith("user@") for p in parts[:-1]) else "system", unit)
 
 
+def _autostart_step(scan, s, title: str, unit: str, tail: str) -> Step:
+    """A listener started from an XDG autostart entry: GNOME and Plasma 6 run each one as a unit systemd makes from it
+    at every login (app-<the entry's name, escaped>@autostart.service), which systemctl can't disable. What keeps it
+    from starting is the entry: the user's own is deleted, the system's hidden by a file of the same name in the
+    user's folder (which a copy of it there, being read instead, gives way to)."""
+    from ...fix import shell_path
+    host, d, names = scan.host, scan.context.desktop, set(scan.context.desktop.names)
+    name = re.sub(r"\\x([0-9a-fA-F]{2})", lambda m: chr(int(m.group(1), 16)),
+                  unit.removeprefix("app-").removesuffix("@autostart.service")) + ".desktop"
+    mine = scan.paths.config_home / "autostart" / name
+    system = next((str(p) for p in (c / "autostart" / name for c in scan.paths.config_dirs())
+                   if isfile(host.sys_path(str(p)))), None)
+    if d.is_kde:
+        where, cmds = (" Turn it off in System Settings → Autostart: select it and Remove it.",
+                       ["systemsettings kcm_autostart"])
+    elif names & {"x-cinnamon", "cinnamon"}:
+        where, cmds = " Turn it off in System Settings → Startup Applications.", ["cinnamon-settings startup"]
+    elif d.is_gnome:
+        where, cmds = (" Turn it off in GNOME Tweaks → Startup Applications (install GNOME Tweaks if it's missing).",
+                       ["gnome-tweaks"])
+    else:
+        where, cmds = "", []
+    entry = host.display(mine) if isfile(mine) else system or name     # the name alone: gone since the session started
+    if system:
+        where += (" Or hide it for your account: a file of the same name in your own autostart folder that says "
+                  "Hidden=true takes the place of the system's" + (", and of your copy of it" if isfile(mine) else "")
+                  + ".")
+        cmds += [shell(["mkdir", "-p", host.display(mine.parent)]),
+                 "printf '[Desktop Entry]\\nHidden=true\\n' > " + shell_path(host.display(mine))]
+    elif isfile(mine):
+        where += f" Or delete {entry}: the program stays installed."
+        cmds.append(f"rm {shell_path(entry)}")
+    return Step(title, f"{s.process} starts with your desktop, from the autostart entry {entry}: systemd makes {unit} "
+                "from it at every login, so the entry is what keeps it from starting." + where
+                + " The last command stops it now." + tail,
+                commands=[*cmds, shell(["systemctl", "--user", "stop", unit])])
+
+
 def _other_service(scan, s) -> Step:
     """What a listening program is, and how to stop it."""
     title = f"Port {s.port}/{s.proto}" + (f" ({s.process})" if s.process else "")
     tail = (" If you need it only on this computer, its settings may let it listen on 127.0.0.1 (localhost) only, "
             "which other machines can't reach.")
     unit = _unit_of(scan, s.pid) if s.pid else None
+    if unit and unit[0] == "user" and re.fullmatch(r"app-.+@autostart\.service", unit[1]):
+        return _autostart_step(scan, s, title, unit[1], tail)
     if unit and unit[0] == "user":
         return Step(title, f"{s.process} runs as your own service {unit[1]}. If you don't use it, stop it and keep it "
-                    "from starting at login." + tail, commands=[f"systemctl --user disable --now {unit[1]}"])
+                    "from starting at login." + tail,
+                    commands=[shell(["systemctl", "--user", "disable", "--now", unit[1]])])
     if unit:
         return Step(title, f"It is the system service {unit[1]}. If you don't use it, stop it and keep it from starting "
-                    "at boot." + tail, commands=[f"sudo systemctl disable --now {unit[1]}"])
+                    "at boot." + tail, commands=[shell(["sudo", "systemctl", "disable", "--now", unit[1]])])
     if s.pid:
         return Step(title, f"{s.process} is a program you started (from the desktop or a terminal). Close it if you "
                     "don't need it; a development server can usually be started on 127.0.0.1 instead (for example "

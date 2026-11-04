@@ -161,7 +161,7 @@ def login_items(check, scan, outcome):
     units = [i for i in enabled_user_units(scan) if i.yours]
     if units:
         steps.append(Step("User services", "These run under your account's systemd. Turn one off (and stop it now):",
-                          commands=[f"systemctl --user disable --now {i.item.removeprefix('user unit ')}"
+                          commands=[f"systemctl --user disable --now {shlex.quote(i.item.removeprefix('user unit '))}"
                                     for i in units[:10]]))
     cron, _, _ = crontab_entries(scan)
     if cron:
