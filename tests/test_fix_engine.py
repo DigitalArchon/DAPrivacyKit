@@ -67,6 +67,35 @@ def test_write_file_backup_restore_and_conflict(tmp_path):
     assert log.get(res.entry_id)["state"] == "partly reverted"
 
 
+def test_what_is_already_back_as_it_was_is_no_conflict(tmp_path):
+    """A file the fix made, deleted since; a file put back exactly by hand; a timer turned off again by hand: the
+    machine is as it was before the fix, and reverting said it had been changed since, offering "Revert anyway"."""
+    from daprivacyscanner.fix import UserUnitSet
+    from daprivacyscanner.host import CommandResult
+    host, _, log = setup(tmp_path, home_files={".config/a.conf": "A=1\n"})
+    made, edited = host.home / ".config/new/x.conf", host.home / ".config/a.conf"
+    unit = {"state": "disabled"}
+
+    def systemctl(argv):
+        if "is-enabled" in argv:
+            return CommandResult(argv, 0, unit["state"] + "\n", "")
+        unit["state"] = "enabled" if "enable" in argv else "disabled"
+        return CommandResult(argv, 0, "", "")
+    host.runner.handlers["systemctl"] = systemctl
+    res = apply_plan(FixPlan("x", "t", [WriteFile(made, lambda old: "X=1\n", "create", "~/.config/new/x.conf"),
+                                        WriteFile(edited, lambda old: "A=2\n", "edit", "~/.config/a.conf"),
+                                        UserUnitSet("systemd-tmpfiles-clean.timer", True)]), host, log)
+    assert res.ok and unit["state"] == "enabled"
+    made.unlink()
+    edited.write_text("A=1\n")
+    unit["state"] = "disabled"
+    results = revert_entry(log.get(res.entry_id), host, log)
+    assert [(r.ok, r.conflict) for r in results] == [(True, False)] * 3, [r.message for r in results]
+    assert log.get(res.entry_id)["state"] == "reverted" and unit["state"] == "disabled"
+    assert edited.read_text() == "A=1\n" and not made.parent.exists()           # the folder the fix made goes too
+    assert "already" in results[0].message and "already" in results[2].message
+
+
 def test_write_file_keeps_a_link_and_changes_the_file_it_points_to(tmp_path):
     """A dotfiles manager's link (~/.ssh/config -> ~/dotfiles/ssh_config) stays a link, both ways."""
     host, _, log = setup(tmp_path, home_files={"dotfiles/ssh_config": "ForwardAgent yes\n"})

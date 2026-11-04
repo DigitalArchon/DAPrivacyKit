@@ -1147,13 +1147,14 @@ class UserUnitSet(Action):
     @staticmethod
     def revert(record: dict, ctx: FixContext, force: bool = False) -> RevertResult:
         now = UserUnitSet._state(ctx.host, record["unit"])
-        if now != record["after"] and not force:
+        if now not in (record["after"], record["before"]) and not force:     # already back by hand: no conflict
             return RevertResult(False, f"{record['unit']} has been changed since (now {now})", True)
         if record["before"] in ("enabled", "disabled") and record["before"] != now:
             verb = "enable" if record["before"] == "enabled" else "disable"
             _change(ctx.host, "systemctl", "--user", verb, "--now", record["unit"])
-        return RevertResult(True, _with_notes(f"{record['unit']} back to {record['before']}",
-                                              remove_made_dirs(record.get("dirs") or [])))
+        back = f"{record['unit']} was already {now}" if now == record["before"] != record["after"] else \
+            f"{record['unit']} back to {record['before']}"
+        return RevertResult(True, _with_notes(back, remove_made_dirs(record.get("dirs") or [])))
 
 
 def _sha(data: bytes | None) -> str | None:
@@ -1300,12 +1301,17 @@ class WriteFile(Action):
     def revert(record: dict, ctx: FixContext, force: bool = False) -> RevertResult:
         p = Path(record["path"])
         now = _read_bytes(p)
+        data = _read_bytes(Path(record["backup"])) if record["backup"] else None
+        if record["backup"] and data is None:
+            return RevertResult(False, f"The backup of {record['display']} is missing")
+        if now == data:
+            # already as it was before the fix (put back by hand, or the file it made deleted since): no conflict
+            WriteFile._then(record, ctx)
+            return RevertResult(True, _with_notes(f"{record['display']} was already as it was before",
+                                                  remove_made_dirs(record.get("dirs") or [])))
         if _sha(now) != record["after_sha"] and not force:
             return RevertResult(False, f"{record['display']} has been edited since", True)
         if record["backup"]:
-            data = _read_bytes(Path(record["backup"]))
-            if data is None:
-                return RevertResult(False, f"The backup of {record['display']} is missing")
             # the file's own mode, also when it was removed since (a backup is 0600 and a new file gets the umask's)
             _write_atomic(p, data, None if p.exists() or record.get("mode") is None else record["mode"])
             did(shell(["cp", record["backup"], record["path"]]))
