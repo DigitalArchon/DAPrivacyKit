@@ -86,6 +86,10 @@ class Check:
     # (checks/guides.py); fix_needs_root when applying the auto fix needs the privileged helper.
     supports_fix: ClassVar[bool] = False
     fix_needs_root: ClassVar[bool] = False
+    # The context keys detect() reads itself (directly or through the functions it calls), beyond those its
+    # modifiers name; Context.listeners counts as exposed_services. The rescan after a fix runs the check again when
+    # one of them has changed (a test reads the checks' source for them).
+    reads_context: ClassVar[tuple[str, ...]] = ()
 
     def __init__(self, spec: "CheckSpec"):
         self.spec = spec

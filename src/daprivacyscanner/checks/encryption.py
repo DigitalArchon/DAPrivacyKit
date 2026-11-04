@@ -135,6 +135,7 @@ def partition_text(d: blockdev.Device) -> str:
 @register
 class UnmountedUnencrypted(Check):
     id = "enc.unmounted_unencrypted"
+    reads_context = ("virtualization",)
 
     def detect(self, scan: Scan) -> Outcome:
         if scan.context["virtualization"] == "container":
@@ -265,6 +266,7 @@ def hibernation_encrypted(scan: Scan) -> bool | None:
 @register
 class HibernateUnencrypted(Check):
     id = "enc.hibernate_unencrypted"
+    reads_context = ("hibernation",)
 
     def detect(self, scan: Scan) -> Outcome:
         hib = scan.context.values["hibernation"]
@@ -411,6 +413,7 @@ class LuksWeakKdf(Check):
 @register
 class TpmNoPin(Check):
     id = "enc.tpm_no_pin"
+    reads_context = ("tpm_unlock_no_pin",)
 
     def detect(self, scan: Scan) -> Outcome:
         tpm = scan.context.values["tpm_unlock_no_pin"]
@@ -530,6 +533,7 @@ def other_backups(scan: Scan) -> list[tuple[str, str, str]]:
 @register
 class BackupsUnencrypted(Check):
     id = "enc.backups_unencrypted"
+    reads_context = ("virtualization",)
 
     def detect(self, scan: Scan) -> Outcome:
         host = scan.host
@@ -754,6 +758,7 @@ HOME_OUT = Note("risk", "Keep your home folder out of them",
 @register
 class SnapshotsRetainDeleted(Check):
     id = "enc.snapshots_retain_deleted"
+    reads_context = ("fde",)
 
     def detect(self, scan: Scan) -> Outcome:
         host = scan.host
@@ -1484,6 +1489,7 @@ def trim_timer(host) -> str:
 @register
 class TrimOff(Check):
     id = "enc.trim_off"
+    reads_context = ("virtualization",)
     # what the guide can turn on, from the last detect: "luks" (TRIM stops at LUKS), "raid" (RAID 4/5/6),
     # "never_runs" (no discard option and the fstrim timer off). Not findings: no severity depends on them.
     blocked: frozenset[str] = frozenset()
@@ -1625,6 +1631,7 @@ def deleted_data_note(scan: Scan) -> str:
 @register
 class DeletedDataRecoverable(Check):
     id = "enc.deleted_data_recoverable"
+    reads_context = ("virtualization",)
 
     def detect(self, scan: Scan) -> Outcome:
         if _devices(scan) is None:

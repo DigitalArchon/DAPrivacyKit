@@ -23,6 +23,7 @@ from ._util import (absent, children, chromium_dirs, chromium_profiles, failed, 
 @register
 class Autologin(Check):
     id = "auth.autologin"
+    reads_context = ("autologin",)
 
     def detect(self, scan: Scan) -> Outcome:
         a = scan.context.values["autologin"]
@@ -450,6 +451,7 @@ REMOTE_PROCESSES = {"krdpserver": "KDE remote desktop", "krfb": "KDE desktop sha
 @register
 class RemoteDesktop(Check):
     id = "auth.remote_desktop"
+    reads_context = ("exposed_services",)
 
     def detect(self, scan: Scan) -> Outcome:
         host = scan.host
@@ -1942,6 +1944,7 @@ def ssh_server_reachable(scan: Scan) -> bool | None:
 @register
 class SshAuthorizedKeys(Check):
     id = "auth.ssh_authorized_keys"
+    reads_context = ("exposed_services",)
 
     def detect(self, scan: Scan) -> Outcome:
         host = scan.host

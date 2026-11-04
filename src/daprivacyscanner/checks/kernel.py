@@ -357,6 +357,7 @@ def no_pass_when_unsupported(scan: Scan, o: Outcome) -> Outcome:
 @register
 class Updates(Check):
     id = "kern.updates"
+    reads_context = ("virtualization",)
 
     def detect(self, scan: Scan) -> Outcome:
         result = _pending(scan)
@@ -743,6 +744,7 @@ def landlock_state(scan: Scan) -> tuple[str, int | None, list[Evidence]]:
 @register
 class Landlock(Check):
     id = "kern.landlock"
+    reads_context = ("virtualization",)
 
     def detect(self, scan: Scan) -> Outcome:
         if scan.context["virtualization"] == "container":
@@ -954,6 +956,7 @@ def hibernate_delay(scan: Scan) -> str:
 @register
 class SuspendKeysInRam(Check):
     id = "kern.suspend_keys_in_ram"
+    reads_context = ("hibernation", "virtualization")
 
     def detect(self, scan: Scan) -> Outcome:
         from .encryption import hibernation_encrypted
@@ -992,6 +995,7 @@ class SuspendKeysInRam(Check):
 @register
 class Dma(Check):
     id = "kern.dma"
+    reads_context = ("virtualization",)
 
     def detect(self, scan: Scan) -> Outcome:
         host = scan.host

@@ -258,6 +258,70 @@ def test_rescan_keeps_context_that_needs_root_once_root_has_gone(cat, tmp_path, 
     assert "enc.tpm_no_pin" not in again.results and "auth.autologin" not in again.results
 
 
+def test_rescan_runs_again_the_checks_that_read_a_changed_key(cat, tmp_path, monkeypatch):
+    """Checks that read a context key in detect(), not in their modifiers, kept their results after a fix changed it:
+    the swap guide ruled hibernation out and enc.hibernate_unencrypted still said the image goes to an unencrypted
+    disk; a fix stopped one of two services listening and net.exposed_services still listed it (the key stays true)."""
+    from daprivacyscanner import runner
+    from daprivacyscanner.catalogue import CONTEXT_KEYS
+    from daprivacyscanner.context import Context, ContextValue
+    from daprivacyscanner.desktop import DesktopInfo
+
+    def context(hibernation, listening):
+        values = {k: ContextValue(k, None) for k in CONTEXT_KEYS}
+        values["hibernation"] = ContextValue("hibernation", hibernation)
+        values["exposed_services"] = ContextValue("exposed_services", True, [Evidence.val("Listening", s) for s in listening])
+        return Context(values, DesktopInfo(("gnome",), None, 46), [], [])
+    two, one = ["22/tcp (ssh, sshd)", "631/tcp (ipp, cupsd)"], ["22/tcp (ssh, sshd)"]
+    before = context(True, two).to_dict()
+    host = make_host(tmp_path)
+
+    def rerun(now):
+        monkeypatch.setattr(runner, "detect_context", lambda h: now)
+        return set(Runner(cat, host).rescan(["auth.screen_lock"], before).results) - {"auth.screen_lock"}
+    assert rerun(context(True, two)) == set()
+    hib = rerun(context(False, two))
+    assert {"enc.hibernate_unencrypted", "kern.suspend_keys_in_ram"} <= hib and "net.exposed_services" not in hib
+    ports = rerun(context(True, one))
+    assert {"net.exposed_services", "auth.remote_desktop", "net.kdeconnect"} <= ports
+    assert "enc.hibernate_unencrypted" not in ports
+
+
+def test_checks_declare_the_context_keys_they_read(cat):
+    """A check that reads a context key in detect() (in its class, or in a function of its module or of _util that it
+    calls) names it in `reads_context`, unless its modifiers do: the rescan after a fix runs it again by those.
+    Context.listeners is exposed_services' (ss's sockets). Online checks are never rescanned."""
+    import ast
+    import importlib
+    import inspect
+    import re
+    from daprivacyscanner.checks import CHECK_MODULES, load_all
+
+    read = re.compile(r'context(?:\.values)?\["(\w+)"\]|context\.(listeners)\b')
+    functions = {}
+    for name in (*CHECK_MODULES, "_util"):
+        text = inspect.getsource(importlib.import_module(f"daprivacyscanner.checks.{name}"))
+        functions.update({(name, n.name): ast.get_source_segment(text, n) for n in ast.parse(text).body
+                          if isinstance(n, ast.FunctionDef)})
+
+    def keys(module, source, seen):
+        out = {"exposed_services" if m.group(2) else m.group(1) for m in read.finditer(source)}
+        for (mod, name), body in functions.items():
+            if mod in (module, "_util") and (mod, name) not in seen and re.search(rf"\b{name}\(", source):
+                seen.add((mod, name))
+                out |= keys(mod, body, seen)
+        return out
+    missing = {}
+    for cid, cls in load_all().items():
+        if cat[cid].scope.value == "online":
+            continue
+        named = set().union(*(m.when.names for m in cat[cid].modifiers))
+        extra = keys(cls.__module__.rsplit(".", 1)[1], inspect.getsource(cls), set()) - named - set(cls.reads_context)
+        if extra:
+            missing[cid] = sorted(extra)
+    assert missing == {}
+
+
 def test_what_needs_administrator_access_says_so(cat, tmp_path):
     """needs_root() and an unreadable file in a system check without root: couldn't check, and a
     scan with administrator access would. Other unknowns don't claim that."""

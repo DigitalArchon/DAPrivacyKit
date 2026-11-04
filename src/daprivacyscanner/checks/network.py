@@ -229,6 +229,7 @@ def firewall_rules(scan: Scan) -> tuple[str | None, net.FirewallRules | None, st
 @register
 class ExposedServices(Check):
     id = "net.exposed_services"
+    reads_context = ("exposed_services",)
     FINDING = "firewall_blocks_exposed"
 
     def detect(self, scan: Scan) -> Outcome:
@@ -646,6 +647,7 @@ def dhcp_hostname_elsewhere(host: Host, virt: str | None = None) -> list[str]:
 @register
 class HostnameBroadcast(Check):
     id = "net.hostname_broadcast"
+    reads_context = ("exposed_services", "virtualization")
 
     def detect(self, scan: Scan) -> Outcome:
         host = scan.host
@@ -695,6 +697,7 @@ class HostnameBroadcast(Check):
 @register
 class KdeConnect(Check):
     id = "net.kdeconnect"
+    reads_context = ("exposed_services",)
 
     def detect(self, scan: Scan) -> Outcome:
         host = scan.host

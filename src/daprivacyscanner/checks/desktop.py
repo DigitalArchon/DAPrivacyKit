@@ -399,6 +399,7 @@ def recoll_topdirs(scan: Scan, conf: Path) -> list[str]:
 @register
 class Indexers(Check):
     id = "desk.indexers"
+    reads_context = ("fde",)
     FINDING = "indexes_outside_home"
     UNENCRYPTED = "index_on_unencrypted_disk"
 

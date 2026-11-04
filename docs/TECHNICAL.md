@@ -327,7 +327,9 @@ list that still has entries, a change that waits for a restart), and is then nei
 ### Rescan
 
 After a fix or revert, the context is recomputed and every check whose severity depends on a changed key
-is run again (`Runner.rescan`).
+is run again (`Runner.rescan`), and every check whose detection reads one (`Check.reads_context`, kept in
+step with the checks' source by a test: the hibernation image, the services listening). The services
+listening have changed also when the list of them has, though some still listen.
 
 ---
 

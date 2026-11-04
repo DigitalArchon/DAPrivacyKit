@@ -255,7 +255,9 @@ class Runner:
     def rescan(self, check_ids: Iterable[str], previous: Mapping[str, Any] | None = None) -> ScanReport:
         """After a fix or a revert: the context again (a fix may have changed it, e.g. autologin
         off), the given checks, and every check whose severity depends on a context key that
-        changed since `previous` (the report's context: {"values": {key: {"value": ...}}}).
+        changed since `previous` (the report's context: {"values": {key: {"value": ...}}}), or that
+        reads one in detect() (`Check.reads_context`). exposed_services has changed also when the
+        services it lists have (a fix stopped one of three: the key is still true).
 
         A key known before but unknown now is kept as it was (listed in `kept_context`): a fix
         doesn't make the machine unknowable, the difference is that administrator access has
@@ -271,8 +273,13 @@ class Runner:
                 kept.append(key)
         if previous:
             changed = {k for k, v in context.vars().items() if k in before and v != before[k]}
+            listed = ((previous.get("values") or {}).get("exposed_services") or {}).get("evidence")
+            if "exposed_services" not in kept and listed is not None \
+                    and [e.to_dict() for e in context.values["exposed_services"].evidence] != listed:
+                changed.add("exposed_services")
             wanted |= {s.id for s in self.catalogue if s.scope is not Scope.ONLINE
-                       and any(m.when.names & changed for m in s.modifiers)}
+                       and (any(m.when.names & changed for m in s.modifiers)
+                            or changed & set(getattr(self.registry.get(s.id), "reads_context", ())))}
         scan = self._scan(context)
         results, states = {}, {}
         for spec in self.catalogue:
