@@ -907,6 +907,27 @@ def test_btrfs_names_from_the_home_subvolumes_tree(root, monkeypatch):
     assert call("names_result")["folders"] == [{"path": "Documents", "names": ["letter.odt", "old-diary.txt"]}]
 
 
+def test_mount_points_are_read_with_every_escape_the_kernel_writes(root, monkeypatch):
+    """The kernel writes space, tab, newline and backslash in /proc/mounts as \\ooo. On btrfs the walk has nothing
+    but this path to tell another filesystem mounted inside the home, and with only the space undone it went in."""
+    assert helper._unescape("/mnt/a\\040b\\011c\\012d\\134e") == "/mnt/a b\tc\nd\\e"
+    make_storage(root, fstype="btrfs")
+    home = home_folders(root)
+    (home / "stick\tdisk/inside").mkdir(parents=True)
+    with open(root / "proc/self/mounts", "a") as f:
+        f.write("/dev/sdb1 /home/alice/stick\\011disk vfat rw 0 0\n")
+    monkeypatch.setattr(helper, "BTRFS_TREE_ID", lambda fd: 5)
+    sb = bytearray(4096)
+    sb[0x20:0x30], sb[0x40:0x48] = FSID, b"_BHRfS_M"
+    sb[0x90:0x94], sb[0x94:0x98] = (4096).to_bytes(4, "little"), (16384).to_bytes(4, "little")
+    with open(root / "dev/nvme0n1p2", "r+b") as f:
+        f.seek(helper.BTRFS_SUPER)
+        f.write(sb)
+    call("names_begin", mount="/")
+    listed = set(helper._NAMES["dirs"].values())
+    assert "Documents" in listed and not any(p.startswith("stick") for p in listed)
+
+
 def test_names_when_the_home_is_a_subvolume_of_the_system_disk(root, monkeypatch):
     """Fedora, openSUSE and Timeshift layouts: / and /home are subvolumes of one device, and the
     test (deduplicated by device) names "/": the home's folders are still what is listed."""

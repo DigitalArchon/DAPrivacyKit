@@ -2415,7 +2415,10 @@ TRIM_PAYLOAD = TRIM_RECORD - 40 - 32
 
 
 def _unescape(target: str) -> str:
-    return target.replace("\\040", " ")
+    """A path from /proc/mounts or mountinfo: the kernel writes space, tab, newline and backslash as \\ooo. With only
+    the space undone, a disk mounted at a path with one of the others couldn't be chosen, and the btrfs walk, for
+    which this path is the only sign of another filesystem mounted inside, went into it."""
+    return _unescape_swap(target)
 
 
 def _holding(table: list[list[str]], path: str) -> list[str] | None:
