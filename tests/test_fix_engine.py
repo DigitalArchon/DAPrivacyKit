@@ -110,6 +110,21 @@ def test_write_file_keeps_a_link_and_changes_the_file_it_points_to(tmp_path):
     assert r.ok and link.is_symlink() and (host.home / "dotfiles/ssh_config").read_text() == "ForwardAgent yes\n"
 
 
+def test_write_file_through_a_link_to_no_file_yet_reverts_the_file_it_made(tmp_path):
+    """A dotfiles manager's link whose file isn't there yet: writing makes the file it points to (and its folders).
+    Reverting removed the link instead, and left the file and the folders."""
+    host, _, log = setup(tmp_path)
+    link, real = host.home / ".foo.conf", host.home / "dotfiles/conf/foo.conf"
+    link.symlink_to(real)
+    res = apply_plan(FixPlan("x", "t", [WriteFile(link, lambda old: "X=1\n", "create", "~/.foo.conf")]), host, log)
+    assert res.ok and link.is_symlink() and real.read_text() == "X=1\n"
+    [rec] = log.get(res.entry_id)["records"]
+    [r] = revert_entry(log.get(res.entry_id), host, log)
+    assert r.ok and link.is_symlink() and not (host.home / "dotfiles").exists()
+    # History names the file written, so the way to undo it by hand removes that file, not the link
+    assert rec["path"] == str(real) and rec["dirs"] == [str(host.home / "dotfiles"), str(real.parent)]
+
+
 def test_delete_stays_inside_its_root_and_never_follows_symlinks(tmp_path):
     host, _, log = setup(tmp_path, home_files={"cache/a/x": "1", "cache/b": "2", "keep/secret": "3"})
     (host.home / "cache/link").symlink_to(host.home / "keep/secret")

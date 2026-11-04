@@ -1271,7 +1271,10 @@ class WriteFile(Action):
     def apply(self, ctx: FixContext) -> dict:
         old, old_text, new_text = self._old_new()
         new = new_text.encode("utf-8", errors="surrogateescape")
-        dirs = made_dirs(self.path.resolve() if self.path.is_symlink() else self.path)
+        # a link: the file it points to is the one written, and recorded (reverting a file made through a link whose
+        # file wasn't there removed the link, and left the file)
+        real = self.path.resolve() if self.path.is_symlink() else self.path
+        dirs = made_dirs(real)
         for d in dirs:
             did(shell(["mkdir", d]))                   # _write_atomic makes them, outermost first
         backup = old_mode = None
@@ -1279,14 +1282,15 @@ class WriteFile(Action):
             ctx.backups.mkdir(parents=True, exist_ok=True, mode=0o700)
             backup = ctx.backups / f"{uuid.uuid4().hex}-{self.path.name}"
             _write_atomic(backup, old, 0o600)
-            old_mode = self.path.stat().st_mode & 0o7777
-        _write_atomic(self.path, new, None if old is not None else self.mode)
+            old_mode = real.stat().st_mode & 0o7777
+        _write_atomic(real, new, None if old is not None else self.mode)
         if self.then:
             ctx.host.run(*self.then)
             did(shell(self.then))
-        return {"kind": self.kind, "path": str(self.path), "display": self.display, "backup": str(backup) if backup else None,
+        display = self.display if real == self.path else f"{self.display} (→ {_shown(str(real))})"
+        return {"kind": self.kind, "path": str(real), "display": display, "backup": str(backup) if backup else None,
                 "mode": old_mode, **({"then": self.then} if self.then else {}),
-                "after_sha": _sha(new), "text": f"{self.text} ({self.display})",
+                "after_sha": _sha(new), "text": f"{self.text} ({display})",
                 "lines": list(self.lines) if self.lines is not None else changed_lines(old_text, new_text),
                 "dirs": dirs}
 
@@ -1318,8 +1322,10 @@ class WriteFile(Action):
             WriteFile._then(record, ctx)
             return RevertResult(True, f"{record['display']} restored")
         if now is not None:
+            # the file, never a link to it (an entry from before the file a link points to was recorded names the link)
+            p = p.resolve() if p.is_symlink() else p
             p.unlink()
-            did(shell(["rm", record["path"]]))
+            did(shell(["rm", str(p)]))
         WriteFile._then(record, ctx)
         return RevertResult(True, _with_notes(f"{record['display']} removed", remove_made_dirs(record.get("dirs") or [])))
 
