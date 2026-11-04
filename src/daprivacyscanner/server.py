@@ -913,8 +913,9 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
         if everything:
             await asyncio.to_thread(forget_scans, paths_of(host))
         undone = await asyncio.to_thread(recheck_undone, host)
-        return {"forgotten": gone, "entries": [UndoLog.summary(e) for e in reversed(log.entries())], "undone": undone,
-                "damaged": log.damaged(host)}
+        # with the host, as GET /api/undo: History draws the entries left from this answer, Wi-Fi connections by name
+        entries = await asyncio.to_thread(lambda: [UndoLog.summary(e, host) for e in reversed(log.entries())])
+        return {"forgotten": gone, "entries": entries, "undone": undone, "damaged": log.damaged(host)}
 
     # ------------------------------------------------------------ tools (docs/TECHNICAL.md, Tools)
     # Started by the user on files they chose; nothing is kept and nothing leaves the machine.

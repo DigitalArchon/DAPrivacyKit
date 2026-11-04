@@ -717,6 +717,22 @@ def test_a_guide_asks_for_administrator_access_again(cat, tmp_path):
     assert any("LUKS1" in s["title"] for s in r["guide"]["steps"])
 
 
+def test_history_names_a_saved_connection_after_forgetting_too(cat, tmp_path):
+    """After "Forget reverted and old entries" History is drawn from the forget answer: a Wi-Fi connection's step is
+    named there as GET /api/undo names it (looked up by its UUID, never kept in the log), not "Saved connection"."""
+    from daprivacyscanner.undo import UndoLog
+    host = make_host(tmp_path, commands={("nmcli", "-g", "connection.id", "connection", "show", "u1"): "Home Wi-Fi\n"})
+    UndoLog(host.home / ".local/state/daprivacyscanner").add("e1", "net.wifi_mac_random", "Random address", [
+        {"kind": "nmcli", "uuid": "u1", "prop": "wifi.cloned-mac-address", "before": "", "after": "random", "value": "random",
+         "text": "Saved connection: wifi.cloned-mac-address (default) → random"}])
+    c = TestClient(create_app(TOKEN, cat, make_host=lambda: host))
+    h = {"X-Token": TOKEN}
+    [shown] = c.get("/api/undo", headers=h).json()["entries"]
+    r = c.post("/api/undo/forget", headers=h, json={}).json()
+    assert r["forgotten"] == 0
+    assert shown["steps"][0]["text"] == r["entries"][0]["steps"][0]["text"] == "Home Wi-Fi: wifi.cloned-mac-address (default) → random"
+
+
 def test_a_backup_kept_for_a_while_can_be_deleted_from_history(cat, tmp_path):
     """History shows until when known_hosts' plain copy is kept, and deletes it on request."""
     from daprivacyscanner.undo import UndoLog
