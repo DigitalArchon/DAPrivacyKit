@@ -52,11 +52,13 @@ XFCE_DND = ["xfconf-query", "-c", "xfce4-notifyd", "-p", "/do-not-disturb"]
 class CommandSetting(Action):
     """A setting read and written through a program (xfconf-query, copyq): `get` prints the value
     ("" when it isn't set); `set` maps each value to the command that sets it ("" resets it).
+    `unread`: for a program whose `get` fails when it can't be asked (CopyQ, while it isn't running),
+    rather than when the setting isn't set (xfconf-query), what to say then.
     VERIFY: xfconf-query's output for a bool, CopyQ's `monitoring` output, on real systems."""
     kind = "cmdsetting"
 
-    def __init__(self, label: str, get: list[str], set_: dict[str, list[str]], value: str):
-        self.label, self.get, self.set, self.value = label, get, set_, value
+    def __init__(self, label: str, get: list[str], set_: dict[str, list[str]], value: str, unread: str = ""):
+        self.label, self.get, self.set, self.value, self.unread = label, get, set_, value, unread
 
     def describe(self) -> str:
         return shell(self.set[self.value])
@@ -72,7 +74,7 @@ class CommandSetting(Action):
         if not r.ok:
             raise FixError(f"{shell(self.set[self.value])} failed: {(r.stderr or r.stdout).strip()[:200]}")
         return {"kind": self.kind, "label": self.label, "get": self.get, "set": self.set, "before": before,
-                "after": self.value, "text": f"{self.label}: {before or '(not set)'} → {self.value}"}
+                "after": self.value, "unread": self.unread, "text": f"{self.label}: {before or '(not set)'} → {self.value}"}
 
     @staticmethod
     def ran(record: dict) -> list[str]:
@@ -85,7 +87,12 @@ class CommandSetting(Action):
 
     @staticmethod
     def revert(record: dict, ctx: FixContext, force: bool = False) -> RevertResult:
-        now = CommandSetting._read(ctx.host, record["get"])
+        r = ctx.host.run(*record["get"])
+        if not r.ok and not r.missing and record.get("unread") and not force:
+            # it couldn't be asked, which isn't the user changing it: the record stays, to be tried again, rather than
+            # being forgotten with nothing left to turn CopyQ's recording back on
+            return RevertResult(False, record["unread"])
+        now = r.stdout.strip().lower() if r.ok else ""
         if now != record["after"] and not force:
             return RevertResult(False, f"{record['label']} has changed since (now {now or 'not set'})", True)
         argv = record["set"].get(record["before"]) or record["set"].get("")
@@ -249,7 +256,8 @@ def plan(host: Host, info: DesktopInfo | None = None) -> Plan:
         if r.ok and r.stdout.strip().lower() == "true":
             p.changes.append(("CopyQ stops recording what you copy", CommandSetting(
                 "CopyQ clipboard monitoring", ["copyq", "monitoring"],
-                {"false": ["copyq", "disable"], "true": ["copyq", "enable"]}, "false")))
+                {"false": ["copyq", "disable"], "true": ["copyq", "enable"]}, "false",
+                unread="CopyQ isn't running, so its recording of what you copy couldn't be put back: start CopyQ")))
     if not banners:
         p.notes.append(f"The app can't turn notification banners off on this desktop ({info.label}): GNOME, Cinnamon, "
                        "KDE Plasma and Xfce are the ones it knows. Use the desktop's own Do Not Disturb.")

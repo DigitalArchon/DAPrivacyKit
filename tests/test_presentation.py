@@ -182,6 +182,32 @@ def test_xfce_and_copyq(tmp_path):
     assert xf["value"] is None and copyq["on"] is True
 
 
+def test_copyq_not_running_when_it_is_turned_off_is_tried_again(tmp_path):
+    """`copyq monitoring` fails while CopyQ isn't running, and that was taken for the user's change: left as it was,
+    the record forgotten, nothing left to turn CopyQ's recording back on. It stays on, to try again, and says why."""
+    copyq = {"on": True, "running": True}
+
+    def cq(argv):
+        if not copyq["running"]:
+            return fail("Cannot connect to server! Start CopyQ server first.")
+        if argv[1] == "monitoring":
+            return CommandResult(argv, 0, "true\n" if copyq["on"] else "false\n")
+        copyq["on"] = argv[1] == "enable"
+        return OK
+
+    host, gs = gnome_host(tmp_path, extra={"copyq": cq})
+    P.turn_on(host)
+    assert copyq["on"] is False
+    copyq["running"] = False                                # quit meanwhile
+    off = P.turn_off(host)
+    assert off["on"] is True and off["kept"] == [] and off["changed"] == ["CopyQ stops recording what you copy"]
+    assert off["failed"] == ["CopyQ isn't running, so its recording of what you copy couldn't be put back: start CopyQ"]
+    assert gs.values[NOTIF] == "true"                       # the rest is put back
+    copyq["running"] = True
+    off = P.turn_off(host)
+    assert off["on"] is False and off["failed"] == [] and copyq["on"] is True
+
+
 def test_a_failure_part_way_puts_back_what_was_changed(tmp_path):
     def cq(argv):
         return CommandResult(argv, 0, "true\n") if argv[1] == "monitoring" else fail("CopyQ isn't running")
