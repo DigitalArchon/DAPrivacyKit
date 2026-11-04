@@ -1830,5 +1830,54 @@ while ($$(".modal").length) { $$(".modal .buttons button").at(-1).click(); await
         "toasts are read out: an error at once");
   await new Promise(r => setTimeout(r, 80)); }
 
+// Escape closes a panel as its Close button does: what it follows is let go, the server is told to forget a listing of
+// deleted file names, and the Tools panel behind is brought up to date (the 2026-11-04 review: they went on behind it)
+{ const doc = window.document;
+  const esc = () => (doc.activeElement || doc.body).dispatchEvent(new window.KeyboardEvent("keydown",
+    { key: "Escape", code: "Escape", keyCode: 27, bubbles: true, cancelable: true }));
+  const closedAt = {};                 // each panel's polling route: how many requests had been made when it was closed
+  const shut = async (route) => { esc(); await tick(); closedAt[route] = calls.length; };
+  let toolsReloads = 0;
+  const namesJob = routes["GET /api/tools/names/job"], namesClean = routes["GET /api/tools/names/clean"];
+  routes["GET /api/tools/names/job"] = () => ({ job: { state: "running", phase: "Reading the journal", done: 1, total: 4 } });
+  await window.openNames(); await tick();
+  [...$$(".modal").at(-1).querySelectorAll("button")].find(b => b.textContent === "Find them").click(); await tick(); await tick();
+  const forgets = namesCalls.filter(c => c === "forget").length;
+  check(text(".modal .trim-progress").includes("Reading the journal"), "(Deleted file names is listing them)");
+  await shut("GET /api/tools/names/job");
+  check(!$$(".modal").length && namesCalls.filter(c => c === "forget").length === forgets + 1,
+        "Escape closes Deleted file names, and the server is told to forget the listing");
+  routes["GET /api/tools/names/clean"] = () => ({ job: { state: "running", steps: [{ label: "Rebuilding ~/Documents", state: "running" }] } });
+  await window.openNamesPlan("/", ["Documents"], () => {}); await tick();
+  $$(".modal").at(-1).querySelector("label.confirm input").click();
+  [...$$(".modal").at(-1).querySelectorAll(".buttons button")].at(-1).click(); await tick(); await tick();
+  check(text(".modal .trim-steps").includes("Rebuilding ~/Documents"), "(a clean-up is running)");
+  await shut("GET /api/tools/names/clean");
+  routes["POST /api/tools/trim/start"]({ mount: "/" });
+  await window.openTrim(); await tick();
+  check(!!$(".modal .trim-progress"), "(the TRIM test is running)");
+  await shut("GET /api/tools/trim");
+  routes["POST /api/tools/keeps/start"]({ app: "foo.desktop" });
+  await window.openKeeps(); await tick();
+  check(text(".modal .activity").includes("Watching Foo"), "(an app is being watched)");
+  await shut("GET /api/tools/keeps");
+  routes["POST /api/tools/trial/start"]({ network: "off", nested: false, gpu: false, sound: false });
+  await window.openTrial(() => { toolsReloads++; }); await tick();
+  check(text(".modal .trial").includes("is running in its sandbox"), "(a trial is running)");
+  await shut("GET /api/tools/trial/status");
+  check(toolsReloads === 1, "closing Try an app with Escape brings the Tools panel up to date");
+  browserJob = { state: "running", name: "Tor Browser", phase: "Downloading the archive", done: 1, total: 10, stopping: false };
+  await window.openBrowserTool(() => { toolsReloads++; }); await tick();
+  await shut("GET /api/tools/browser");
+  check(toolsReloads === 2, "and so does closing the browser panel with it");
+  await window.openBoxes(); await tick();
+  check($$(".modal .box-card button.primary")[0]?.textContent === "Running", "(a Box is running)");
+  await shut("GET /api/tools/boxes");
+  await new Promise(r => setTimeout(r, 3300));       // longer than any of them waits between two requests
+  const asked = Object.entries(closedAt).filter(([route, n]) => calls.slice(n).includes(route)).map(([route]) => route);
+  check(!$$(".modal").length && !asked.length, "and none of them asks the server for anything once closed: " + asked.join(", "));
+  routes["GET /api/tools/names/job"] = namesJob; routes["GET /api/tools/names/clean"] = namesClean;
+  trimJob = null; keepsJob = null; trialNow = null; browserJob = null; }
+
 if (failures) { console.error(`${failures} front-end checks failed`); process.exit(1); }
 console.log("front-end: all checks passed");

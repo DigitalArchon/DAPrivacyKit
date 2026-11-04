@@ -768,7 +768,8 @@ function reveal(id) {
 // announced as a dialog named by its title (role, aria-modal, aria-labelledby); the focus moves into it and stays
 // there (Tab and Shift+Tab go round inside it, and what is behind is inert: not reachable, not read out); Escape
 // closes the one on top, as clicking beside it does, unless it is sticky; and closing it puts the focus back
-// where it was.
+// where it was. What a dialog must do when it goes (stop following a job, tell the server) is its onClose, run
+// however it is closed: a panel that did it from its Close button alone went on behind an Escape.
 const MODALS = [];                 // the open dialogs, the one on top last
 let modalSeq = 0, modalWatch = null;
 const FOCUSABLE = "a[href], button:not([disabled]), input:not([disabled]):not([type=hidden]), select:not([disabled]), "
@@ -815,7 +816,7 @@ document.addEventListener("keydown", (e) => {
   else if (!e.shiftKey && at === last) { e.preventDefault(); first.focus(); }
 });
 
-function modal({ title, body, buttons = [], wide = false, cls = "", sticky = false, foot = null }) {
+function modal({ title, body, buttons = [], wide = false, cls = "", sticky = false, foot = null, onClose = null }) {
   const root = $("#modal-root");
   const heading = h("h2", { id: `modal-title-${++modalSeq}` }, title);
   const box = h("div", { class: `modal${wide ? " wide" : ""}${cls ? " " + cls : ""}`, role: "dialog", "aria-modal": "true",
@@ -832,6 +833,7 @@ function modal({ title, body, buttons = [], wide = false, cls = "", sticky = fal
     // back to where the focus was: the button that opened it, else the dialog now on top
     if (opener && opener !== document.body && opener.isConnected && !opener.closest("[inert]")) opener.focus();
     else if (below) below.box.focus();
+    onClose?.();
   };
   for (const b of buttons) {
     const el = h("button", { class: b.kind || "", disabled: b.disabled }, b.label);
@@ -2716,10 +2718,8 @@ async function openBrowserTool(reloadTools) {
   // how it starts: in the sandbox (when it can be), sound and the graphics card off unless asked; kept while the panel is open
   const opts = { sandbox: !!data.sandbox?.available, sound: false, nested: false, gpu: false };
   const stopFollowing = () => { closed = true; clearTimeout(timer); reloadTools?.(); };
-  const m = modal({ title: "Tor or Mullvad Browser in memory", wide: true, body, buttons: [{ label: "Close", kind: "primary",
-    onclick: (close) => { stopFollowing(); close(); } }] });
-  const overlay = m.box.parentElement;
-  overlay.addEventListener("click", (e) => { if (e.target === overlay) stopFollowing(); });
+  modal({ title: "Tor or Mullvad Browser in memory", wide: true, body, buttons: [{ label: "Close", kind: "primary" }],
+    onClose: stopFollowing });
   // After anything done here (a start above all), and for as long as a browser runs, the panel follows it: Tor's
   // progress, the browser ending (Start again), downloads arriving.
   let followUntil = 0;
@@ -3710,10 +3710,7 @@ async function openTrial(reloadTools) {
   const body = h("div", { class: "activity trial" });
   let timer = null, closed = false;
   const shut = () => { closed = true; clearTimeout(timer); reloadTools?.(); };
-  const m = modal({ title: "Try an app", wide: true, body, buttons: [{ label: "Close", kind: "primary",
-    onclick: (close) => { shut(); close(); } }] });
-  const overlay = m.box.parentElement;
-  overlay.addEventListener("click", (e) => { if (e.target === overlay) shut(); });
+  modal({ title: "Try an app", wide: true, body, buttons: [{ label: "Close", kind: "primary" }], onClose: shut });
   const take = (r) => { data = { ...data, trial: r.trial }; render(); };
   const call = async (path, payload, btn, busy) => {
     const label = btn?.textContent;
@@ -3964,10 +3961,8 @@ const BOX_NET = { off: "no network", observed: "its own network, observed", on: 
 async function openBoxes() {
   const body = h("div", { class: "activity boxes" });
   let timer = null, closed = false;
-  const m = modal({ title: "Boxes", wide: true, body, buttons: [{ label: "Close", kind: "primary",
-    onclick: (close) => { closed = true; clearTimeout(timer); close(); } }] });
-  const overlay = m.box.parentElement;
-  overlay.addEventListener("click", (e) => { if (e.target === overlay) { closed = true; clearTimeout(timer); } });
+  modal({ title: "Boxes", wide: true, body, buttons: [{ label: "Close", kind: "primary" }],
+    onClose: () => { closed = true; clearTimeout(timer); } });
   const spec = S.state.catalogue.find(s => s.id === "app.boxes");
   const load = async () => {
     let data;
@@ -4050,10 +4045,8 @@ async function openKeeps() {
   try { data = await api("GET", "/api/tools/keeps"); } catch (e) { toast(e.message, "error"); return; }
   const body = h("div", { class: "activity" });
   let timer = null, closed = false;
-  const m = modal({ title: "What does this app keep?", wide: true, body, buttons: [{ label: "Close", kind: "primary",
-    onclick: (close) => { closed = true; clearTimeout(timer); close(); } }] });
-  const overlay = m.box.parentElement;
-  overlay.addEventListener("click", (e) => { if (e.target === overlay) { closed = true; clearTimeout(timer); } });
+  modal({ title: "What does this app keep?", wide: true, body, buttons: [{ label: "Close", kind: "primary" }],
+    onClose: () => { closed = true; clearTimeout(timer); } });
   const reload = async () => {
     try { data = await api("GET", "/api/tools/keeps"); render(); } catch (e) { toast(e.message, "error"); }
   };
@@ -4225,10 +4218,8 @@ async function openTrim() {
   try { data = await api("GET", "/api/tools/trim"); } catch (e) { toast(e.message, "error"); return; }
   const body = h("div", { class: "trim" });
   let timer = null, closed = false;
-  const m = modal({ title: "TRIM test", wide: true, body, buttons: [{ label: "Close", kind: "primary",
-    onclick: (close) => { closed = true; clearTimeout(timer); close(); } }] });
-  const overlay = m.box.parentElement;
-  overlay.addEventListener("click", (e) => { if (e.target === overlay) { closed = true; clearTimeout(timer); } });
+  modal({ title: "TRIM test", wide: true, body, buttons: [{ label: "Close", kind: "primary" }],
+    onClose: () => { closed = true; clearTimeout(timer); } });
   const reload = async () => {
     try { data = await api("GET", "/api/tools/trim"); render(); } catch (e) { toast(e.message, "error"); }
   };
@@ -4403,11 +4394,8 @@ async function openNames(mount = null) {
   const body = h("div", { class: "trim names" });
   let timer = null, closed = false, chosen = null;
   const forget = () => { closed = true; clearTimeout(timer); api("POST", "/api/tools/names/forget").catch(() => {}); };
-  const m = modal({ title: "Deleted file names", wide: true, body, buttons: [{ label: "Close", kind: "primary",
-    onclick: (close) => { forget(); close(); } }] });
-  const overlay = m.box.parentElement;
-  overlay.addEventListener("click", (e) => { if (e.target === overlay) forget(); });
-  const closeAll = () => { forget(); m.close(); };
+  const m = modal({ title: "Deleted file names", wide: true, body, buttons: [{ label: "Close", kind: "primary" }], onClose: forget });
+  const closeAll = m.close;
   const usable = data.targets.filter(t => !t.blocked);
   chosen = (usable.find(t => t.mount === mount) || usable[0])?.mount;
 
@@ -4666,9 +4654,10 @@ async function openNamesPlan(mount, folders, relist, rebuild = [], clearJournal 
   const synced = h("input", { type: "checkbox" });
   let goBtn, timer = null, closed = false;
   const m = modal({ title: "Clean folders", wide: true, body, buttons: [
-    { label: "Cancel", onclick: (close) => { closed = true; clearTimeout(timer); close(); } },
+    { label: "Cancel" },
     { label: ok.length ? `Clean ${plural(ok.length, "folder")}` : "Nothing to clean", kind: "primary", disabled: !ok.length || plan.ask_synced,
-      ref: (el) => { goBtn = el; }, onclick: (close, el) => go(el) }] });
+      ref: (el) => { goBtn = el; }, onclick: (close, el) => go(el) }],
+    onClose: () => { closed = true; clearTimeout(timer); } });
   synced.addEventListener("change", () => { goBtn.disabled = !synced.checked; });
   fill(body,
     h("ul", { class: "small" }, plan.folders.map(f => h("li", {}, h("b", {}, f.path), " ",
