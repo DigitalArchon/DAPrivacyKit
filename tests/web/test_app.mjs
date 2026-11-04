@@ -1111,6 +1111,15 @@ check(toolBodies.applied?.plan_id === "off" && !text(".modal .browser-tool").inc
   gpuBox.checked = true; gpuBox.dispatchEvent(new window.Event("change"));
   check(!gpuNote().hidden && gpuNote().textContent.includes("get out of the sandbox"), "ticking it says what it costs");
   gpuBox.checked = false; gpuBox.dispatchEvent(new window.Event("change"));
+  // and hidden is hidden in the window too: the user agent's [hidden] rule loses to any display of the page's own
+  // (.notebox's flex), so the stylesheet says it again. jsdom lets its own [hidden] beat a stylesheet's rule, which a
+  // browser doesn't: an inline display stands for one here.
+  const css = window.document.createElement("style");
+  css.textContent = readFileSync(join(web, "style.css"), "utf8");
+  window.document.head.append(css);
+  const shown = (el) => { el.style.display = "flex"; const d = window.getComputedStyle(el).display; el.style.display = ""; return d; };
+  check(shown(note()) === "none" && shown(gpuNote()) === "none", "the boxes the page hides stay hidden, whatever display their class gives");
+  css.remove();
 }
 check(text(".modal .browser-tool").includes("thumbnails are kept on the disk (~/.cache/thumbnails)")
       && $$(".modal .browser-tool button").some(b => b.textContent === "Keep thumbnails in memory…"),

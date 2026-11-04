@@ -85,6 +85,9 @@ select option { color: var(--option-text); background: var(--panel); }
 .small { font-size: 12px; }
 .spacer { flex: 1; }
 .hidden { display: none !important; }
+/* the user agent's own [hidden] rule loses to any display of the page's (.notebox's flex): a box hidden with the
+   attribute stayed on screen in the window */
+[hidden] { display: none !important; }
 .check { display: flex; gap: 6px; align-items: center; }
 .vpnsetup { margin: 6px 0; }
 .vpnsetup p { margin: 2px 0 0 22px; }
