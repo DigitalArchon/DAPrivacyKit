@@ -588,6 +588,29 @@ def test_capture_writes_sanitised_samples(tmp_path, capsys):
     assert "skipped" in capsys.readouterr().out                              # commands not installed are listed
 
 
+def test_capture_leaves_the_distributions_names_and_other_words_alone(tmp_path):
+    """Fedora's default host name is "fedora" (a live or cloud image's login "ubuntu" the same): replaced wherever it
+    appeared, os-release said NAME="user Linux" and ID=user, and Flatpak's ids org.userproject.*. A name is replaced
+    as a word of its own, or with a device word run on, never inside another word ("ann" in "annotator")."""
+    import io
+
+    from daprivacyscanner import capture
+
+    release = 'NAME="Fedora Linux"\nVERSION_ID=43\nID=fedora\nPRETTY_NAME="Fedora Linux 43 (Workstation Edition)"\n'
+    apps = "org.fedoraproject.MediaWriter\nio.github.annotator\n"
+    host = make_host(tmp_path, env={"USER": "ann"}, files={"/proc/sys/kernel/hostname": "fedora\n",
+                                                           "/etc/os-release": release},
+                     commands={("cat", "/etc/os-release"): release,
+                               ("flatpak", "list", "--app", "--columns=application"): apps,
+                               ("bluetoothctl", "show"): "Controller AA:BB:CC:DD:EE:FF (public)\n\tAlias: AnnsPC\n"
+                                                         "\tName: ann\n"})
+    capture.capture(host, tmp_path / "out", io.StringIO())
+    misc = tmp_path / "out/fedora-43/misc"
+    assert (misc / "os-release.txt").read_text() == release and (misc / "flatpak-list.txt").read_text() == apps
+    bt = (misc / "bluetoothctl-show.txt").read_text()
+    assert "Alias: user\n" in bt and "Name: user\n" in bt
+
+
 def test_last_report_is_restored_on_the_next_start(cat, tmp_path):
     c, host, gs = fix_client(cat, tmp_path)
     h = {"X-Token": TOKEN}

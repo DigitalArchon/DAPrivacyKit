@@ -42,16 +42,24 @@ MAC = re.compile(r"\b([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}\b")
 
 class Sanitiser:
     def __init__(self, host: Host):
-        from .checks._util import user_names
+        from .checks._util import _DEVICE_TAIL, user_names
         self.login, self.words = user_names(host)
+        self.tail = _DEVICE_TAIL.pattern
         self.hostname = (host.read_sys("/proc/sys/kernel/hostname") or "").strip()
         self.home = str(host.home)
+        # the distribution's own names (os-release's ID, ID_LIKE and NAME): Fedora's default host name is "fedora", and
+        # a live or cloud image's login "ubuntu", which name nobody; replaced, os-release said ID=user
+        release = host.read_sys("/etc/os-release") or ""
+        self.distro = {w.lower() for k in ("ID", "ID_LIKE", "NAME")
+                       for w in (re.search(rf'^{k}="?([^"\n]*)', release, re.M) or [None, ""])[1].split()}
 
     def __call__(self, text: str) -> str:
         text = text.replace(self.home, "/home/user")
         for n in [self.hostname, self.login, *self.words]:
-            if len(n) >= 3:
-                text = re.sub(re.escape(n), "user", text, flags=re.I)
+            if len(n) >= 3 and n.lower() not in self.distro:
+                # as a word of its own, or with a device word run on ("alicepc", "AlicesPC"), never inside another
+                # word (a host called "fedora" made Flatpak's org.fedoraproject.MediaWriter org.userproject.MediaWriter)
+                text = re.sub(rf"(?<!\w){re.escape(n)}(?:{self.tail})(?!\w)", "user", text, flags=re.I)
         text = MAC.sub("00:11:22:33:44:55", text)
         # a disk's UUID (luks-<UUID> device names) identifies it
         text = UUID.sub("12345678-1234-4321-8765-123456789abc", text)
