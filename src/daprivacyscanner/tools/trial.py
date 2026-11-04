@@ -166,6 +166,7 @@ class Trial:
     name: str
     what: str
     argv: list[str] = field(default_factory=list)       # inside the sandbox (or `flatpak run …` on the computer)
+    prepared: list[str] | None = None    # argv before the arguments the user gives: each start's choose() adds them to it
     candidates: list[dict] = field(default_factory=list)
     flatpak: str | None = None
     host_opt: bool = False               # the computer's /opt, read-only (an installed app that lives there)
@@ -661,8 +662,12 @@ def choose(t: Trial, rel: str, extra: str = "") -> None:
         if c["what"] == "an AppImage":
             t.env["APPIMAGE_EXTRACT_AND_RUN"] = "1"
         t.argv += args
-    elif args:
-        t.argv = [*t.argv, *args]
+    else:
+        # from the command as prepared each time: a start that failed after this (pasta not usable, no Xephyr) left
+        # them added, the next start added them again, and a Box kept from the trial had them twice for good
+        if t.prepared is None:
+            t.prepared = list(t.argv)
+        t.argv = [*t.prepared, *args]
 
 
 # ------------------------------------------------------------------ the sandbox's command

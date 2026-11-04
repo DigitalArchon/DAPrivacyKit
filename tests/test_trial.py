@@ -169,6 +169,17 @@ def test_a_program_linked_in_a_package_runs_where_it_really_is(tmp_path):
     assert a.argv == ["/bin/sh", "/app/" + str(outside).lstrip("/")]
 
 
+def test_arguments_are_given_once_however_often_the_start_is_tried(tmp_path):
+    """The review of 2026-11-04: a start that failed after the arguments were added (pasta not usable, no Xephyr) left
+    them in the command, and each start tried again added them again; a Box kept from the trial had them all."""
+    t = a_trial(tmp_path, kind="appimage", argv=["/app/Tool.AppImage"])
+    trial.choose(t, "", "--profile work")
+    trial.choose(t, "", "--profile work")
+    assert t.argv == ["/app/Tool.AppImage", "--profile", "work"]
+    trial.choose(t, "", "")
+    assert t.argv == ["/app/Tool.AppImage"], "arguments taken out again are gone"
+
+
 # ------------------------------------------------------------------ the sandbox's command
 
 def parts(host, tmp_path, **kw):
