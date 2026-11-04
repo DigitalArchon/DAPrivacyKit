@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import stat
 import time
 from pathlib import Path
@@ -263,6 +264,38 @@ def test_a_file_mat2_fails_on_gets_no_copy_however_it_fails(tmp_path):
     o = M.run_outbox(host)
     assert o.cleaned == [] and o.not_cleaned == [("voice.mp3", crashed)]
     assert (box / "Not cleaned/voice.mp3").read_text() == "tags" and not (box / "Cleaned").exists()
+
+
+def cleans_audio_as_mat2_does(argv):
+    """mat2 0.13 to 0.15 clean an MP3, OGG or FLAC (MutagenParser.remove_all) by copying it, mode and all
+    (shutil.copy), and writing to the copy: a read-only one can't be opened for writing, and the run ends in a
+    traceback."""
+    for f in [Path(x) for x in argv[argv.index("--") + 1:]]:
+        out = M.cleaned_name(f)
+        shutil.copy(f, out)
+        if not out.stat().st_mode & stat.S_IWUSR:
+            return CommandResult(tuple(argv), 1, "", "Traceback (most recent call last):\n  PermissionError\nValueError\n")
+        out.write_text("clean")
+    return CommandResult(tuple(argv), 0)
+
+
+def test_a_read_only_file_is_cleaned_from_a_copy_mat2_can_write_to(tmp_path):
+    """A read-only MP3 made mat2 crash, whether chosen on its own, in a folder or put in the Outbox: the copies the
+    app gives mat2 are its owner's to write. The original keeps its mode."""
+    host = make_host(tmp_path, home_files={"Album/a.mp3": "tags", "song.mp3": "tags", "Outbox/voice.mp3": "tags"},
+                     env={"XDG_RUNTIME_DIR": str(tmp_path)})
+    host.runner.handlers["mat2"] = cleans_audio_as_mat2_does
+    for f in ("Album/a.mp3", "song.mp3", "Outbox/voice.mp3"):
+        os.chmod(host.home / f, 0o444)
+    run = M.clean_many(host, M.collect([host.home / "Album", host.home / "song.mp3"]).files, check_after=False)
+    assert [(r.chosen.rel, r.ok, r.message) for r in run.results] == [("song.mp3", True, ""), ("a.mp3", True, "")]
+    assert (host.home / "Album (cleaned)/a.mp3").read_text() == "clean"
+    assert (host.home / "song.cleaned.mp3").read_text() == "clean"
+    assert stat.S_IMODE((host.home / "song.cleaned.mp3").stat().st_mode) == 0o644
+    assert stat.S_IMODE((host.home / "song.mp3").stat().st_mode) == 0o444 and (host.home / "song.mp3").read_text() == "tags"
+    os.utime(host.home / "Outbox/voice.mp3", (1, 1))
+    assert M.run_outbox(host).cleaned == ["voice.mp3"]
+    assert (host.home / "Outbox/Cleaned/voice.mp3").read_text() == "clean"
 
 
 def test_a_file_replaced_by_a_link_after_it_was_listed_isnt_cleaned(tmp_path):

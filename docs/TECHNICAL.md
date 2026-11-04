@@ -1498,7 +1498,9 @@ OACS, FNA and SANICAP via the helper's ioctl), read on request and kept for the 
   (`FILE.cleaned.EXT`, never over one), cleaned from a copy in a hidden folder there; the ticked files of
   a folder go into a new folder beside it, `NAME (cleaned)` (or `(cleaned 2)`…, never one already there),
   with the same subfolders, cleaned from copies in a hidden working folder inside it (contents and mode
-  only: no extended attributes, where browsers keep a download's address). Each copy is read from a
+  only: no extended attributes, where browsers keep a download's address; the mode with the owner's read
+  and write added, as the Outbox's copy has it, since mat2 writes to a copy of an MP3, OGG or FLAC it
+  makes with the mode, and crashed on a read-only one). Each copy is read from a
   descriptor of the file the listing saw (its device and inode; a folder's opened without following a
   link: the browser can swap one in for a listed download, and mat2 followed it, its cleaned copy of
   whatever the link pointed to landing where the browser sees it), so mat2 cleans nothing else and never

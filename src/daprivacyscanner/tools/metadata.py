@@ -304,7 +304,8 @@ def _tmp_beside(folder: Path, runtime: str | None = None):
 
 def clean(host: Host, path: Path, lightweight: bool = False, check_after: bool = True) -> CleanResult:
     """A cleaned copy beside the file, made by mat2. Never overwrites anything: refuses when the
-    copy's name is taken."""
+    copy's name is taken. Its callers (the Outbox, the browser tool) give it a working copy of their
+    own that its owner may write to, as `_working_copy`'s."""
     path = Path(path)
     if not host.runner.which("mat2"):
         return CleanResult(path, False, message="Cleaning needs mat2, which isn't installed.")
@@ -659,7 +660,9 @@ def _working_copy(c: Chosen, folder: Path, follow: bool = False) -> Path:
     listed file, or a folder on the way, with a link before its batch comes (the browser, in its Downloads, at any
     time), and mat2 followed it, so the cleaned copy of whatever it pointed to went into the cleaned folder, which the
     browser sees. Contents and permissions only: no extended attributes (browsers keep a download's address in one).
-    Replaced when it isn't that regular file any more."""
+    The copy is its owner's to read and write, whatever the file's mode: mat2 0.13 to 0.15 clean an MP3, OGG or FLAC
+    by copying it, mode and all, and writing to that copy, and crashed on a read-only one. Replaced when it isn't
+    that regular file any more."""
     try:
         fd = os.open(c.path, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC | (0 if follow else os.O_NOFOLLOW))
     except OSError as e:
@@ -674,7 +677,7 @@ def _working_copy(c: Chosen, folder: Path, follow: bool = False) -> Path:
         out = os.open(copy, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
         with open(fd, "rb", closefd=False) as src, open(out, "wb") as dst:
             shutil.copyfileobj(src, dst, 1 << 20)
-            os.fchmod(out, stat.S_IMODE(st.st_mode) & 0o777)
+            os.fchmod(out, (stat.S_IMODE(st.st_mode) & 0o777) | stat.S_IRUSR | stat.S_IWUSR)
     finally:
         os.close(fd)
     return copy
@@ -907,6 +910,7 @@ def run_outbox(host: Host, folder: Path | None = None, settle: float = 2.0) -> O
                                          dir=base if base and os.path.isdir(base) else folder) as tmp:
             work = Path(tmp) / entry.name
             shutil.copy2(entry, work)
+            os.chmod(work, stat.S_IMODE(os.stat(work).st_mode) | stat.S_IRUSR | stat.S_IWUSR)   # as _working_copy's
             res = clean(host, work, check_after=False)
             if res.ok and res.output:
                 (folder / CLEANED).mkdir(mode=0o700, exist_ok=True)
