@@ -764,13 +764,17 @@ class SnapshotsRetainDeleted(Check):
         host = scan.host
         ev, found, long_kept = [], [], []
         kept_on: list[str | None] = []                  # the filesystems the long-kept snapshots are of (and on)
-        configs, partial = snapper_configs(scan)
+        configs, unread = snapper_configs(scan)
+        partial = bool(unread)
         for name, cfg in configs:
             found.append(f"Snapper ({name})")
             if not snapper_short(cfg):
                 long_kept.append(f"Snapper ({name})")
                 kept_on.append(cfg.get("SUBVOLUME"))
             ev.append(Evidence.val(f"Snapper config {name}", f"{cfg.get('SUBVOLUME', '?')}: {snapper_keeps(cfg)}"))
+        for name in unread:
+            found.append(f"Snapper ({name})")
+            ev.append(Evidence.val(f"Snapper config {name}", "couldn't be read"))
         ts = timeshift_settings(scan)
         if not timeshift_btrfs(ts):
             ts = None
@@ -801,8 +805,8 @@ class SnapshotsRetainDeleted(Check):
             return passed("No filesystem snapshots are configured.")
         home_in, home_unknown = home_snapshotted(scan, configs, ts, zfs)
         ev.append(Evidence.val("Home folder in them", ", ".join(home_in) if home_in
-                               else "couldn't be told" if home_unknown else "no"))
-        notes = [] if home_in or home_unknown else [HOME_OUT]
+                               else "couldn't be told" if home_unknown or unread else "no"))
+        notes = [] if home_in or home_unknown or unread else [HOME_OUT]
         if home_unknown and not home_in:
             notes.append(Note("limitation", "Whether your home folder is in them couldn't be told",
                               "The mount table didn't say which subvolume or dataset holds it. If it is in them, every "
@@ -815,9 +819,13 @@ class SnapshotsRetainDeleted(Check):
                           findings={ON_ENCRYPTED_DISK: encrypted})
         if long_kept:
             encrypted = None if None in kept_on else on_encrypted_disk(scan, *kept_on)
-            out = "" if home_unknown else " Your home folder isn't in them."
+            out = "" if home_unknown or unread else " Your home folder isn't in them."
             return failed(f"Filesystem snapshots keep deleted files for a long time: {', '.join(long_kept)}.{out}", *ev,
                           partial=partial, notes=notes, findings={ON_ENCRYPTED_DISK: encrypted})
+        if unread:
+            what = f"snapper's config{'s' if len(unread) > 1 else ''} ({', '.join(unread)})"
+            return needs_root(f"Reading {what}", *ev) if scan.privileged is None else \
+                unknown(f"Couldn't read {what}, so how long its snapshots keep deleted files isn't known.", *ev)
         return passed(f"Snapshots are kept for a short time only: {', '.join(found)}.", *ev, partial=partial,
                       notes=[Note("info", "Deleted files still linger for a few days",
                                   "A file you delete stays in the snapshots taken before, until they are cleaned "
@@ -984,16 +992,18 @@ SNAPPER_DEFAULTS = {"NUMBER_LIMIT": "50", "NUMBER_LIMIT_IMPORTANT": "10", "TIMEL
                     "TIMELINE_LIMIT_MONTHLY": "10", "TIMELINE_LIMIT_QUARTERLY": "0", "TIMELINE_LIMIT_YEARLY": "10"}
 
 
-def snapper_configs(scan: Scan) -> tuple[list[tuple[str, dict[str, str]]], bool]:
-    """Snapper's configs as {KEY: value}, and whether any couldn't be read."""
-    out, partial = [], False
+def snapper_configs(scan: Scan) -> tuple[list[tuple[str, dict[str, str]]], list[str]]:
+    """Snapper's configs that could be read, as {KEY: value}, and the names of those that couldn't (openSUSE keeps them
+    root-only): one of those is never judged on snapper's defaults, which keep a long timeline."""
+    out, unread = [], []
     for f in children(scan.host.sys_path("/etc/snapper/configs")):
         try:
             text = scan.host.read_sys(f"/etc/snapper/configs/{f.name}") or ""
         except Unreadable:
-            partial, text = True, ""
+            unread.append(f.name)
+            continue
         out.append((f.name, {m.group(1): m.group(2) for m in re.finditer(r'^\s*([A-Z_]+)\s*=\s*"?([^"\n]*)"?', text, re.M)}))
-    return out, partial
+    return out, unread
 
 
 def snapper_keeps(cfg: dict[str, str]) -> str:

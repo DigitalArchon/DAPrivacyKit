@@ -563,3 +563,21 @@ def test_long_kept_snapshots_without_the_home_folder_say_so(cat, tmp_path):
     o = detect(cat, "enc.snapshots_retain_deleted", make_scan(host))
     assert o.status is Status.FAIL and o.summary.endswith("Your home folder isn't in them.")
     assert any(n.title == "Keep your home folder out of them" for n in o.notes)
+
+
+@skip_if_root
+def test_a_snapper_config_that_cant_be_read_is_never_judged_on_snappers_defaults(cat, tmp_path):
+    """openSUSE keeps /etc/snapper/configs/* root-only: the config was read as empty, snapper's defaults (a long
+    timeline) were taken for it, and the check said it keeps deleted files for a long time."""
+    host = _snapshot_host(tmp_path, "@home", {"/etc/snapper/configs/root": SHORT_SNAPPER.format(sv="/")})
+    os.chmod(host.sys_path("/etc/snapper/configs/root"), 0)
+    try:
+        o = detect(cat, "enc.snapshots_retain_deleted", make_scan(host))
+        assert o.status is Status.UNKNOWN and o.needs_admin
+        assert ev(o)["Snapper config root"] == "couldn't be read" and ev(o)["Home folder in them"] == "couldn't be told"
+        (host.root / "etc/snapper/configs/home").write_text('SUBVOLUME="/home"\n')       # one that can be: judged
+        o = detect(cat, "enc.snapshots_retain_deleted", make_scan(host))
+        assert o.status is Status.FAIL and o.partial and "Your home folder isn't in them" not in o.summary
+    finally:
+        os.chmod(host.sys_path("/etc/snapper/configs/root"), 0o644)
+    assert detect(cat, "enc.snapshots_retain_deleted", make_scan(host)).status is Status.FAIL

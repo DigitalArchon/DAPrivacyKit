@@ -417,6 +417,8 @@ checks:
     applies_to: [openSUSE (Snapper default), btrfs, zfs, Timeshift]
     detect:
       - 'snapper list-configs; snapper -c <cfg> list'
+      - '/etc/snapper/configs/*: one that can''t be read (openSUSE keeps them root-only) is unknown and needs
+        administrator access, never judged on snapper''s defaults'
       - 'btrfs subvolume list -s /'
       - 'zfs list -t snapshot'
       - '/etc/timeshift/timeshift.json (btrfs mode, include @home?)'
