@@ -545,6 +545,13 @@ def test_editor_residue_skips_running_editors(cat, tmp_path):
     assert not (host.home / "Documents/report.txt~").exists()
 
 
+def test_editor_files_step_done_says_none_are_left(cat, tmp_path):
+    """Done, the step still said "Swap files of documents open now are in use: close the editor first."."""
+    host = make_host(tmp_path, home_files={"Documents/report.txt~": "b"})
+    step = build(cat, host, "app.editor_residue").steps[0]
+    assert step.done and step.text == "None are left to delete."
+
+
 def test_another_accounts_programs_never_block_this_users_options(cat, tmp_path, monkeypatch):
     """The process list was every account's: another user logged in with Firefox open blocked this user's Firefox
     options ("Close Firefox first"), their KolourPaint this user's KDE recent files, their Vim this user's Vim history.

@@ -99,6 +99,7 @@ def editor_residue(check, scan, outcome):
                 else:
                     stray.append(p)
     steps = [Step("Delete editor swap, undo and history files",
+                  "None are left to delete." if not acts and not skipped else
                   "Swap files of documents open now are in use: close the editor first. " + " ".join(skipped),
                   options=[option(check, "Delete them", acts, side_effects=skipped)] if acts else [],
                   done=not acts and not skipped)]
