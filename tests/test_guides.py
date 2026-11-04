@@ -344,6 +344,22 @@ def test_history_retention_two_choices(cat, tmp_path):
     assert build_status(cat, host, "br.history_retention") is Status.PASS
 
 
+def test_history_retention_turns_on_the_history_pref_firefox_reads(cat, tmp_path):
+    """With "Delete cookies and site data when Firefox is closed" ticked, sanitizeOnShutdown is on and
+    browsingHistoryAndDownloads off: the guide never offered the profile, and its option, setting sanitizeOnShutdown
+    alone, would have changed nothing."""
+    host = make_host(tmp_path)
+    prof = firefox(host.home, prefs=pref("privacy.sanitize.sanitizeOnShutdown", True)
+                   + pref("privacy.clearOnShutdown_v2.browsingHistoryAndDownloads", False)
+                   + pref("privacy.sanitize.clearOnShutdown.hasMigratedToNewPrefs3", True))
+    g = build(cat, host, "br.history_retention")
+    plan = next(p for k, p in options(g).items() if k.startswith("Clear history, cookies"))
+    assert [a.key for a in plan.actions] == ["privacy.clearOnShutdown_v2.browsingHistoryAndDownloads"]
+    apply(host, plan)
+    assert '"privacy.clearOnShutdown_v2.browsingHistoryAndDownloads", true' in (prof / "prefs.js").read_text()
+    assert build_status(cat, host, "br.history_retention") is Status.PASS
+
+
 def test_firefox_blocker_names_the_program_that_is_running(cat, tmp_path):
     """Thunderbird running doesn't block Firefox's options, and the blocker names what to close."""
     host = make_host(tmp_path)

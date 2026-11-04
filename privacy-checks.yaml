@@ -2059,6 +2059,10 @@ checks:
     tier: guided
     detect:
       - 'Firefox: privacy.sanitize.sanitizeOnShutdown and related clearOnShutdown prefs'
+      - 'Firefox''s history: privacy.clearOnShutdown_v2.browsingHistoryAndDownloads, which its shutdown sanitizer
+        reads (Sanitizer.sys.mjs), or, until maybeMigratePrefs has run
+        (privacy.sanitize.clearOnShutdown.hasMigratedToNewPrefs3), the pref it copies from: historyFormDataAndDownloads
+        (hasMigratedToNewPrefs2), else privacy.clearOnShutdown.history'
       - 'Chromium: ClearBrowsingDataOnExitList policy'
     fix: >
       Offer clear-on-exit for cookies, cache and history, with exceptions for sites the user wants to stay logged

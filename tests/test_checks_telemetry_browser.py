@@ -213,6 +213,26 @@ def test_history_retention(cat, tmp_path):
     assert o.status is Status.FAIL and ev(o)["Google Chrome, Default"].startswith("cookies cleared")
 
 
+MIGRATED3 = pref("privacy.sanitize.clearOnShutdown.hasMigratedToNewPrefs3", True)
+MIGRATED2 = pref("privacy.sanitize.clearOnShutdown.hasMigratedToNewPrefs2", True)
+
+
+@pytest.mark.parametrize("prefs, state", [
+    # what "Delete cookies and site data when Firefox is closed" leaves (privacy.mjs: resetCleaningPrefs): history kept,
+    # though the old prefs the check read, at their defaults, said it was cleared
+    (MIGRATED3 + pref("privacy.clearOnShutdown_v2.browsingHistoryAndDownloads", False), "kept"),
+    (MIGRATED3, "cleared when it closes"),
+    (MIGRATED3 + pref("privacy.clearOnShutdown.history", False), "cleared when it closes"),     # migrated from
+    (MIGRATED2 + pref("privacy.clearOnShutdown_v2.historyFormDataAndDownloads", False), "kept"),
+    (MIGRATED2 + pref("privacy.clearOnShutdown.history", False), "cleared when it closes"),
+    (pref("privacy.clearOnShutdown.history", False), "kept"),                  # the old dialog's, before migrating
+], ids=["v3-off", "v3-default", "v3-old-off", "v2-off", "v2-old-off", "v1-off"])
+def test_firefox_history_is_judged_by_the_pref_its_shutdown_sanitizer_reads(cat, tmp_path, prefs, state):
+    host = make_host(tmp_path)
+    firefox(host.home, prefs=pref("privacy.sanitize.sanitizeOnShutdown", True) + prefs)
+    assert ev(detect(cat, "br.history_retention", make_scan(host)))["Firefox profile abcd.default-release"] == state
+
+
 @pytest.mark.parametrize("prefs, status", [
     ("", Status.FAIL), (pref("browser.contentblocking.category", "strict"), Status.PASS),
     (pref("browser.contentblocking.category", "custom"), Status.WARN),

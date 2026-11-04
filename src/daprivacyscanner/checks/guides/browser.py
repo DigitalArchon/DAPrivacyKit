@@ -17,6 +17,18 @@ def _ff_keeping(prefs, p) -> bool:
     return not _ff_clears_history(prefs, {})
 
 
+def _ff_clearing(more: dict):
+    """The prefs that have Firefox clear history as it closes, for ff_prefs: sanitizeOnShutdown, and the pref its
+    shutdown sanitizer reads for history (ff_history_pref) where the profile has it off ("Delete cookies and site data
+    when Firefox is closed" leaves it off): on its own, sanitizeOnShutdown already on, the option changed nothing."""
+    def prefs(p, current: dict) -> dict:
+        from ..browser import ff_history_pref
+        history = ff_history_pref(current)
+        return {"privacy.sanitize.sanitizeOnShutdown": True, **more,
+                **({history: True} if current.get(history, True) is not True else {})}
+    return prefs
+
+
 def _chromium_flagged(scan, outcome, bad) -> set[str]:
     """The Chromium-based browser folders (by label) with a profile whose evidence value `bad` accepts: those a policy
     option is offered for."""
@@ -31,13 +43,14 @@ def history_retention(check, scan, outcome):
     from .._util import chromium_policies
     from ..browser import _browsers
     opts = ff_prefs(check, scan, "Clear history, cookies and site data when Firefox closes",
-                    {"privacy.sanitize.sanitizeOnShutdown": True}, want=_ff_keeping,
+                    _ff_clearing({}), want=_ff_keeping,
                     side_effects=["You're logged out of sites each time; keep the ones you want under Settings → "
                                   "Privacy & Security → Cookies and Site Data → Manage Exceptions.", SESSION_LOST],
                     recommended=True)
     opts += ff_prefs(check, scan, "Clear history only, stay logged in",
-                     {"privacy.sanitize.sanitizeOnShutdown": True, "privacy.clearOnShutdown_v2.cookiesAndStorage": False,
-                      "privacy.clearOnShutdown.cookies": False, "privacy.clearOnShutdown.offlineApps": False},
+                     _ff_clearing({"privacy.clearOnShutdown_v2.cookiesAndStorage": False,
+                                   "privacy.clearOnShutdown.cookies": False,
+                                   "privacy.clearOnShutdown.offlineApps": False}),
                      want=_ff_keeping, side_effects=[SESSION_LOST])
     # the check counts a Chromium-based profile as clearing only with the policy's list: those without it
     keeping = {d.label for d, profiles in _browsers(scan)[1]

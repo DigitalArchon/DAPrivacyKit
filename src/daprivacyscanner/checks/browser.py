@@ -336,6 +336,21 @@ class VpnExtensions(Check):
                       notes=notes)
 
 
+def ff_history_pref(prefs: dict) -> str:
+    """The pref that says whether Firefox clears history as it closes (with privacy.sanitize.sanitizeOnShutdown on),
+    each true by default: privacy.clearOnShutdown_v2.browsingHistoryAndDownloads, which its shutdown sanitizer reads
+    (Sanitizer.sys.mjs, sanitizeOnShutdown), once maybeMigratePrefs("clearOnShutdown") has run (hasMigratedToNewPrefs3);
+    until then the one that migration copies into it: historyFormDataAndDownloads after the earlier migration
+    (hasMigratedToNewPrefs2), else the old dialog's privacy.clearOnShutdown.history. Reading either of the others
+    as well, left at its default, took a profile whose "Browsing history" is unticked (as "Delete cookies and site data
+    when Firefox is closed" leaves it, privacy.mjs: resetCleaningPrefs) for one that clears it."""
+    if prefs.get("privacy.sanitize.clearOnShutdown.hasMigratedToNewPrefs3") is True:
+        return "privacy.clearOnShutdown_v2.browsingHistoryAndDownloads"
+    if prefs.get("privacy.sanitize.clearOnShutdown.hasMigratedToNewPrefs2") is True:
+        return "privacy.clearOnShutdown_v2.historyFormDataAndDownloads"
+    return "privacy.clearOnShutdown.history"
+
+
 def _ff_clears_history(prefs: dict, policies: dict) -> bool:
     if prefs.get("browser.privatebrowsing.autostart") is True:
         return True
@@ -343,8 +358,7 @@ def _ff_clears_history(prefs: dict, policies: dict) -> bool:
     if sanitize is True or (isinstance(sanitize, dict) and sanitize.get("History")):
         return True
     if prefs.get("privacy.sanitize.sanitizeOnShutdown") is True:
-        return (prefs.get("privacy.clearOnShutdown_v2.historyFormDataAndDownloads", True) is True
-                or prefs.get("privacy.clearOnShutdown.history", True) is True)
+        return prefs.get(ff_history_pref(prefs), True) is True
     return False
 
 
