@@ -128,7 +128,7 @@ import uuid
 # Bumped whenever the actions or their arguments change: an installed (root-owned) copy from an
 # older version is then refused with a clear message instead of failing on an unknown action. Also
 # bumped when an action's answer is corrected, so an installed copy is named out of date and replaced.
-PROTOCOL = 29
+PROTOCOL = 30
 # Prefix for every path the helper writes or journals. Empty in use; tests point it at a fixture
 # tree (and replace RUN), so nothing in the test suite touches the real system.
 ROOT = ""
@@ -1129,8 +1129,8 @@ def set_service(args: dict) -> dict:
     # mask: turned off for good, so that nothing starts them again (cups-browsed's Wants=avahi-daemon.service started
     # a disabled Avahi at every boot, and at every restart of cups-browsed: Mint 22.3)
     mask = args.get("mask", False)
-    if not isinstance(units, list) or not 1 <= len(units) <= 4 or len(set(units)) != len(units) or \
-            any(u not in SERVICES for u in units):
+    if not isinstance(units, list) or not 1 <= len(units) <= 4 or not all(isinstance(u, str) for u in units) or \
+            len(set(units)) != len(units) or any(u not in SERVICES for u in units):
         raise Refused("that unit isn't on the helper's list")
     if enable not in (True, False, None) or start not in (True, False, None) or (enable is None and start is None) or \
             mask not in (True, False) or (mask and (enable is not False or start is not False)):

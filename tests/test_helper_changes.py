@@ -225,6 +225,12 @@ def test_only_listed_services(root, unit):
         call("set_service", unit=unit, enable=False, start=False)
 
 
+@pytest.mark.parametrize("units", [[["ssh.service"]], [{}], [None]])
+def test_unit_names_that_arent_text_are_refused_as_such(root, units):
+    with pytest.raises(helper.Refused, match="list"):
+        call("set_service", units=units, enable=False, start=False)
+
+
 def test_missing_unit_is_refused(root):
     with pytest.raises(helper.Refused, match="isn't installed"):
         call("set_service", unit="xrdp.service", enable=False, start=False)
