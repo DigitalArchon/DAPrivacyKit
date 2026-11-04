@@ -123,6 +123,22 @@ def test_known_hosts_plain_copy_is_kept_for_a_week_only(cat, tmp_path):
     assert log.get(res.entry_id)["state"] == "reverted"
 
 
+def test_known_hosts_plain_copy_goes_after_a_week_also_once_reverted(cat, tmp_path):
+    """Reverted, the entry kept its plain copy of known_hosts for good: expiring passed over reverted steps."""
+    import os
+    import time
+
+    from daprivacyscanner.fix import revert_entry
+    host = make_host(tmp_path, home_files={".ssh/known_hosts": KH})
+    host.runner.handlers["ssh-keygen"] = fake_ssh_keygen
+    plan, res, log = run_fix(cat, host, "auth.ssh_known_hosts_plain")
+    backup = next(r for r in log.get(res.entry_id)["records"] if r["kind"] == "hashkh")["backup"]
+    assert all(r.ok for r in revert_entry(log.get(res.entry_id), host, log))
+    assert log.get(res.entry_id)["state"] == "reverted" and (host.home / ".ssh/known_hosts").read_text() == KH
+    assert log.expire_backups() == 0 and os.path.exists(backup)                      # not yet
+    assert log.expire_backups(now=time.time() + 8 * 86400) == 1 and not os.path.exists(backup)
+
+
 def test_known_hosts_plain_copy_can_be_deleted_from_history(cat, tmp_path):
     host = make_host(tmp_path, home_files={".ssh/known_hosts": KH})
     host.runner.handlers["ssh-keygen"] = fake_ssh_keygen

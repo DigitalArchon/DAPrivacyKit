@@ -145,7 +145,8 @@ class UndoLog:
 
     def expire_backups(self, now: float | None = None) -> int:
         """Deletes the backups that were kept only for a while (`backup_expires`: known_hosts' plain copy, the very
-        list its fix hides), once that time has passed. Returns how many went."""
+        list its fix hides), once that time has passed: also a reverted step's, which has nothing more to put back.
+        Returns how many went."""
         now = time.time() if now is None else now
         return self._drop(lambda e, r: r["backup_expires"] <= now)
 
@@ -157,7 +158,7 @@ class UndoLog:
         entries, gone = self.entries(), 0
         for e in entries:
             for r in e["records"]:
-                if r.get("backup") and r.get("backup_expires") and not r.get("reverted") and which(e, r):
+                if r.get("backup") and r.get("backup_expires") and which(e, r):
                     try:
                         Path(r["backup"]).unlink()
                     except FileNotFoundError:
