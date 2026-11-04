@@ -196,6 +196,24 @@ def test_the_appimage_is_named_after_the_version_it_builds(tmp_path):
         assert run.startswith("run ") and f"VERSION={version} " in run, (mode, run)
 
 
+def test_verify_release_says_it_couldnt_check_rather_than_they_differ(tmp_path):
+    """Exit status 0 the same, 1 they differ, 2 it couldn't be checked: under set -e alone, any of its own steps that
+    failed (here the build left no AppImage to hash) ended it with 1, "they differ"."""
+    import hashlib
+    import subprocess
+    build = '#!/bin/bash\nmkdir -p dist\n[ -z "${OUT:-}" ] || printf %s "$OUT" > dist/DAPrivacyKit-1.0-x86_64.AppImage\n'
+    repo, env = _repo(tmp_path, {"pyproject.toml": '[project]\nversion = "1.0"\n', "packaging/build-appimage.sh": build})
+    same = hashlib.sha256(b"built").hexdigest()
+
+    def verify(out: str | None) -> subprocess.CompletedProcess:
+        return subprocess.run(["bash", str(ROOT / "packaging/verify-release.sh"), "v1.0", same], cwd=repo,
+                              env={**env, **({"OUT": out} if out is not None else {})}, capture_output=True, text=True)
+    assert verify("built").returncode == 0
+    r = verify("something else")
+    assert r.returncode == 1 and "DIFFERENT" in r.stderr and (repo / "dist/verify/DAPrivacyKit-1.0-x86_64.AppImage").exists()
+    assert verify(None).returncode == 2
+
+
 def test_the_wheel_carries_the_catalogue():
     import tomllib
     data = tomllib.loads((ROOT / "pyproject.toml").read_text())

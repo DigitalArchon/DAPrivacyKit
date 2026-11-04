@@ -9,6 +9,7 @@
 # touched: the tag is checked out beside it, built there, and removed. Exit status 0 when they are the same,
 # 1 when they differ, 2 when it couldn't be checked.
 set -euo pipefail
+trap 'exit 2' ERR       # anything else that fails means it couldn't be checked (set -e alone gave 1: "they differ")
 RELEASES="https://github.com/DigitalArchon/DAPrivacyKit/releases/download"
 
 die() { echo "$*" >&2; exit 2; }
@@ -55,9 +56,9 @@ echo "Expected:    $expected  ($from)"
 if [ "$built" = "$expected" ]; then
     echo "The same: $name of $tag is what this source builds to."
 else
-    mkdir -p dist/verify
-    cp "$WORK/src/dist/$name" "dist/verify/$name"
     echo "DIFFERENT: the release is not what this source builds to here." >&2
-    echo "The build is kept in dist/verify/$name: diffoscope on the two files shows where they differ." >&2
+    if mkdir -p dist/verify && cp "$WORK/src/dist/$name" "dist/verify/$name"; then
+        echo "The build is kept in dist/verify/$name: diffoscope on the two files shows where they differ." >&2
+    fi
     exit 1
 fi
