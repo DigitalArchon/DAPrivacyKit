@@ -13,7 +13,7 @@ def redactor(tmp_path):
 
 def test_saved_network_names_are_redacted_in_labels_and_text(tmp_path):
     r = redactor(tmp_path)
-    # net.mac_permanent uses each saved network's name as the evidence label
+    # wherever a saved network's name is, a label included (net.mac_permanent's were, until 2026-11-04)
     assert r.evidence({"kind": "value", "label": "CafeFreeWiFi", "value": "permanent"})["label"] == "[redacted]"
     assert r.text("joined Home:5G yesterday") == "joined [redacted] yesterday"
 
@@ -154,6 +154,29 @@ def test_the_saved_report_leaves_out_wifi_network_names():
     assert "Airport Free WiFi" not in text and "HomeNet" not in text
     assert saved["results"]["net.hidden_ssid"]["evidence"][0]["value"] == NOT_KEPT_VALUE
     assert saved["not_kept"] == ["the network names net.open_autoconnect listed", "the network names net.hidden_ssid listed"]
+
+
+def test_the_wifi_checks_name_networks_only_where_the_saved_report_leaves_them_out(cat, tmp_path):
+    """net.mac_permanent used each saved network's name as an evidence label, and net.hidden_ssid named them in its
+    summary: both reached last-report.json. They are shown on the page, under labels the saved report leaves out."""
+    from conftest import detect, make_scan
+    from daprivacyscanner.history import strip_for_saving
+    from fakes import FakeNmcli
+    host = make_host(tmp_path)
+    host.runner.handlers["nmcli"] = FakeNmcli({
+        "u1": {"type": "802-11-wireless", "connection.id": "Airport Free WiFi", "802-11-wireless.hidden": "yes",
+               "802-11-wireless.cloned-mac-address": ""},
+        "u2": {"type": "802-11-wireless", "connection.id": "Hotel Bellevue Guest", "802-11-wireless.hidden": "no",
+               "802-11-wireless.cloned-mac-address": "random"}})
+    results = {}
+    for cid in ("net.mac_permanent", "net.hidden_ssid"):
+        o = detect(cat, cid, make_scan(host))
+        results[cid] = {"status": o.status.value, "summary": o.summary, "notes": [],
+                        "evidence": [e.to_dict() for e in o.evidence]}
+    shown = json.dumps(results)
+    assert "Airport Free WiFi (default)" in shown and "Hotel Bellevue Guest (random)" in shown
+    saved = json.dumps(strip_for_saving({"started": 1, "results": results}))
+    assert "Airport" not in saved and "Hotel" not in saved
 
 
 def test_export_everything_carries_what_history_shows(tmp_path):

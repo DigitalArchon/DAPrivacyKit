@@ -174,7 +174,8 @@ class Baseline:
 # networks named by their checks (a café's, an airport's), shown on the page, never saved; label -> what it is
 NOT_KEPT_LABELS = {"Public IPv4 address websites see": "addresses", "Public IPv6 address websites see": "addresses",
                    "Websites see you as": "addresses", "Looks like telemetry": "addresses", "Answered with": "addresses",
-                   "Hidden network": "network names", "Open network that reconnects by itself": "network names"}
+                   "Hidden network": "network names", "Open network that reconnects by itself": "network names",
+                   "Saved Wi-Fi network": "network names"}
 NOT_KEPT_VALUE = "not kept between runs: scan or run the test again to see it"
 
 

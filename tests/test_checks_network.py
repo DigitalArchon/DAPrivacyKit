@@ -151,7 +151,8 @@ WIFI = {NM_LIST: "u1:802-11-wireless\nu2:802-11-wireless\nu3:802-3-ethernet\n",
 def test_mac_permanent(cat, tmp_path):
     o = detect(cat, "net.mac_permanent", make_scan(make_host(tmp_path, commands=WIFI)))
     assert o.status is Status.FAIL and o.summary.startswith("1 of 2")
-    assert ev(o)["Cafe: Free"] == "random"
+    saved = [e.value for e in o.evidence if e.label == "Saved Wi-Fi network"]
+    assert saved == ["Home (default)", "Cafe: Free (random)"]
 
 
 def test_mac_global_default(cat, tmp_path):
@@ -164,7 +165,7 @@ def test_hidden_ssid(cat, tmp_path):
     host = make_host(tmp_path, commands={NM_LIST: "u1:802-11-wireless\n",
                                          nm("u1", "connection.id", "802-11-wireless.hidden"): "Office\nyes\n"})
     o = detect(cat, "net.hidden_ssid", make_scan(host))
-    assert o.status is Status.FAIL and "Office" in o.summary
+    assert o.status is Status.FAIL and ev(o)["Hidden network"] == "Office"
 
 
 def test_no_wifi(cat, tmp_path):

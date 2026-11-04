@@ -470,7 +470,8 @@ class MacPermanent(Check):
             effective = default if value == "default" and default else value
             if effective in ("default", "preserve", "permanent", ""):
                 permanent.append(v["connection.id"])
-            ev.append(Evidence.val(v["connection.id"] or uuid, value))
+            # under a label of its own, never as the label: the saved report leaves the names out (NOT_KEPT_LABELS)
+            ev.append(Evidence.val("Saved Wi-Fi network", f"{v['connection.id'] or uuid} ({value})"))
         problems = []
         if permanent:
             problems.append(f"{len(permanent)} of {len(wifi)} saved Wi-Fi network{'s use' if len(wifi) > 1 else ' uses'} "
@@ -502,8 +503,9 @@ class HiddenSsid(Check):
             if v["802-11-wireless.hidden"] == "yes":
                 hidden.append(v["connection.id"])
         if hidden:
-            return failed(f"Saved hidden networks are probed for everywhere: {', '.join(hidden[:10])}.",
-                          *(Evidence.val("Hidden network", h) for h in hidden[:20]))
+            # named in the evidence only, which the saved report leaves out (NOT_KEPT_LABELS): never in the summary
+            return failed(f"{len(hidden)} saved hidden network{'s are' if len(hidden) > 1 else ' is'} probed for "
+                          "everywhere.", *(Evidence.val("Hidden network", h) for h in hidden[:20]))
         return passed("No saved hidden networks.") if wifi else absent("No saved Wi-Fi networks.")
 
 
