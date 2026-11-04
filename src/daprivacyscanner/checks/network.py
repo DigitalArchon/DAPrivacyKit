@@ -1181,7 +1181,9 @@ class DnsUnencrypted(Check):
                               "unencrypted.", *ev, notes=notes)
             return (warned if warn else failed)(text, *ev, notes=notes)
 
-        if any(s.startswith("127.0.0.53") for s in servers):
+        # its stub at 127.0.0.53 or 127.0.0.54, or nss-resolve: as the VPN checks judge it (the second stub alone was
+        # "a local resolver the app doesn't recognise")
+        if resolved_answers(host):
             links = resolved_links(host)
             dot = [s["dot"] for s in links.values() if s["dot"]]
             ev.append(Evidence.val("systemd-resolved DNSOverTLS", ", ".join(sorted(set(dot))) or "unknown"))

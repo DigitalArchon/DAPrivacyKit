@@ -364,6 +364,9 @@ def test_no_vpn(cat, tmp_path):
     ("nameserver 127.0.0.53\n", RESOLVECTL_LEAK, {}, Status.FAIL),
     ("nameserver 127.0.0.53\n", RESOLVECTL_LEAK.replace("-DNSOverTLS", "+DNSOverTLS"), {}, Status.PASS),
     ("nameserver 127.0.0.53\n", "Global\n  Protocols: DNSOverTLS=opportunistic\n", {}, Status.WARN),
+    # systemd-resolved's other stub: judged by resolved's settings as the first one is, not "a local resolver the app
+    # doesn't recognise"
+    ("nameserver 127.0.0.54\n", RESOLVECTL_LEAK.replace("-DNSOverTLS", "+DNSOverTLS"), {}, Status.PASS),
     ("nameserver 127.0.0.1\n", "", {"/proc/9/comm": "dnscrypt-proxy\n"}, Status.PASS),
     ("nameserver 127.0.0.1\n", "", {"/proc/9/comm": "unbound\n"}, Status.UNKNOWN),      # recursive, plain DNS by default
     ("nameserver 192.168.1.1\n", "", {}, Status.FAIL),

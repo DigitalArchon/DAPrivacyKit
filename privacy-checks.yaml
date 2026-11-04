@@ -1509,7 +1509,8 @@ checks:
     scope: system
     tier: guided
     detect:
-      - 'resolvectl status (DNSOverTLS setting); check whether systemd-resolved is in use at all'
+      - 'resolvectl status (DNSOverTLS setting); check whether systemd-resolved is in use at all (resolv.conf names its
+        stub, 127.0.0.53 or 127.0.0.54, or nsswitch.conf asks nss-resolve: as net.vpn_leaks judges it)'
       - 'A local resolver: dnscrypt-proxy, stubby and cloudflared always encrypt; unbound, kresd, AdGuard Home,
         dnsproxy and blocky may send plain DNS (unbound resolves recursively in plain text by default): unknown'
       - 'A VPN tunnel that carries the traffic and takes every lookup (as net.vpn_leaks judges it: a "~." routing
