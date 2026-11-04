@@ -85,7 +85,7 @@ def test_the_programs_in_an_unpacked_package(tmp_path):
     (tree / "usr/share/applications/foo.desktop").write_text("[Desktop Entry]\nName=Foo Editor\nExec=/opt/Foo/foo %U\n")
     os.symlink("/etc/passwd", tree / "usr/bin/leaves-the-tree")
     got = trial.candidates(tree, deb=True)
-    assert got[0] == {"rel": "opt/Foo/foo", "what": "a Linux program", "label": "Foo Editor"}     # the menu entry's first
+    assert got[0] == {"rel": "opt/Foo/foo", "what": "a Linux program", "label": "Foo Editor", "real": "opt/Foo/foo"}  # the menu entry's first
     assert [c["rel"] for c in got] == ["opt/Foo/foo", "usr/bin/foo-helper"]
 
 
@@ -138,6 +138,35 @@ def test_an_unpacked_tree_is_read_without_following_links_out_of_it(tmp_path):
     got = [(c["rel"], c["label"]) for c in json.loads(r.stdout)]
     assert got == [("opt/Inner/inner", "Inner"), ("usr/games/prog", "")], got
     assert trial.in_tree(str(tree), "usr/bin/sneaky") is None and trial.in_tree(str(tree), "usr/../usr/games/prog") == "usr/games/prog"
+
+
+def test_a_program_linked_in_a_package_runs_where_it_really_is(tmp_path):
+    """The review of 2026-11-04: Google Chrome's and Brave's packages have /usr/bin/x -> /opt/…/x. The program listed
+    is the link, and choosing it opened it here, where the link led to the computer's own /opt: it couldn't be started
+    (or, with the app installed, the computer's file was read). It is now read where it is in the tree, without
+    following a link, and run from there; the page gets the list as before."""
+    t = a_trial(tmp_path, kind="deb")
+    (t.app / "usr/bin").mkdir(parents=True)
+    (t.app / "opt/Foo").mkdir(parents=True)
+    (t.app / "opt/Foo/foo").write_bytes(ELF + b"\0" * 8 + b"\x02\x00" + b"\0" * 40)
+    os.chmod(t.app / "opt/Foo/foo", 0o755)
+    os.symlink("/opt/Foo/foo", t.app / "usr/bin/foo")
+    (t.app / "bin").mkdir()
+    (t.app / "bin/elsewhere").write_text("#!/bin/sh\n")                       # not in what the sandbox gives the package
+    t.candidates = trial.candidates(t.app, deb=True)
+    assert [c["rel"] for c in t.candidates] == ["usr/bin/foo"] and not os.path.exists("/opt/Foo/foo")
+    trial.choose(t, "usr/bin/foo")
+    assert t.argv == ["/opt/Foo/foo"] and "real" not in t.view()["candidates"][0]
+    # an archive's absolute link names a file of the computer's, which isn't what runs: the tree's is
+    outside = tmp_path / "outside.sh"
+    outside.write_text("#!/bin/sh\n")
+    a = trial.Trial("0a1b2c3d4e5e", tmp_path / "t2", "memory", "archive", "x.tar", "an archive")
+    (a.app / str(outside.parent).lstrip("/")).mkdir(parents=True)
+    (a.app / str(outside).lstrip("/")).write_text("echo it has no #! line\n")
+    os.symlink(str(outside), a.app / "run.sh")
+    a.candidates = trial.candidates(a.app, deb=False)
+    trial.choose(a, "run.sh")
+    assert a.argv == ["/bin/sh", "/app/" + str(outside).lstrip("/")]
 
 
 # ------------------------------------------------------------------ the sandbox's command

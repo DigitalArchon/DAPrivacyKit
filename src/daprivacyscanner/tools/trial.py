@@ -209,7 +209,8 @@ class Trial:
             live = {**watch.counts(), "decoys_seen": watch.decoys()[:12],
                     "hosts": flows.result()["hosts"][:12] if flows is not None else None}
         return {"id": self.id, "kind": self.kind, "name": self.name, "what": self.what, "where": self.where,
-                "state": self.state, "command": shlex.join(self.argv) if self.argv else "", "candidates": self.candidates,
+                "state": self.state, "command": shlex.join(self.argv) if self.argv else "",
+                "candidates": [{k: v for k, v in c.items() if k != "real"} for c in self.candidates],
                 "options": self.options, "how": self.how, "started": self.started, "ended": self.ended,
                 "exit": self.exit, "stopped": self.stopped, "notes": self.notes, "live": live, "result": self.result,
                 "now": time.time()}
@@ -464,9 +465,10 @@ def _read_in_tree(root: str, rel: str, most: int) -> tuple[bytes, int] | None:
 
 
 def candidates(tree: Path, deb: bool) -> list[dict]:
-    """The programs in an unpacked archive or package that the user can pick: {"rel", "what", "label"}. A menu
-    entry's program first (a .deb's /usr/share/applications), then programs near the top, every path resolved inside
-    the tree (in_tree), never through a link to the computer's files."""
+    """The programs in an unpacked archive or package that the user can pick: {"rel", "what", "label", "real"}, "real"
+    being where it really is in the tree (the server's: what choose() runs). A menu entry's program first (a .deb's
+    /usr/share/applications), then programs near the top, every path resolved inside the tree (in_tree), never
+    through a link to the computer's files."""
     found: dict[str, dict] = {}
     root = os.path.realpath(tree)
 
@@ -474,10 +476,12 @@ def candidates(tree: Path, deb: bool) -> list[dict]:
         real = in_tree(root, rel)
         if real is None or real in found or len(found) >= CANDIDATES_MAX:
             return
+        if deb and not real.startswith(("usr/", "opt/")):         # the sandbox has only these of the package
+            return
         got = _read_in_tree(root, real, 20)
         what = _looks_runnable(real, *got) if got else None
         if what:
-            found[real] = {"rel": rel, "what": what, "label": label}
+            found[real] = {"rel": rel, "what": what, "label": label, "real": real}
 
     desks = []
     for folder in ("usr/share/applications", ""):
@@ -637,12 +641,19 @@ def choose(t: Trial, rel: str, extra: str = "") -> None:
         c = next((c for c in t.candidates if c["rel"] == rel), None)
         if c is None:
             raise TrialError("Choose one of the programs listed.")
-        inside = ("/" + rel) if t.kind == "deb" else f"{APP_IN}/{rel}"
-        with (t.app / rel).open("rb") as f:
-            first = f.read(2)
+        # the program where it really is in the tree, as candidates() found it, read without following a link and run
+        # there: the path listed can be a link (a package's /usr/bin/x -> /opt/X/x, as Google Chrome's and Brave's
+        # are), which opened here led to the computer's own /opt, so it couldn't be started, or the computer's file
+        # was read in its place (the review of 2026-11-04)
+        real = c["real"]
+        got = _read_in_tree(os.path.realpath(t.app), real, 2)
+        if got is None:
+            raise TrialError(f"{rel} can't be read in what was unpacked.")
+        first, mode = got
+        inside = ("/" + real) if t.kind == "deb" else f"{APP_IN}/{real}"
         if c["what"] == "a script" and first != b"#!":
-            t.argv = [sandbox.PYTHON if rel.endswith(".py") else "/bin/sh", inside]
-        elif c["what"] == "a script" and not os.access(t.app / rel, os.X_OK):
+            t.argv = [sandbox.PYTHON if real.endswith(".py") else "/bin/sh", inside]
+        elif c["what"] == "a script" and not mode & stat.S_IXUSR:
             t.argv = ["/bin/sh", "-c", 'exec "$(sed -n \'1s/^#! *//p\' "$0" | cut -d" " -f1)" "$0" "$@"', inside]
         else:
             t.argv = [inside]
