@@ -95,6 +95,33 @@ def test_firewall_rules_seen_with_root(cat, tmp_path):
     assert detect(cat, "net.firewall_off", make_scan(host)).status is Status.FAIL
 
 
+def test_a_unit_that_loads_rules_is_no_firewall_when_they_filter_nothing(cat, tmp_path):
+    """Debian's and Fedora's own /etc/nftables.conf hooks input with policy accept and no rules: nftables.service
+    running passed as "a host firewall is active", even with the helper's count of 0 chains filtering what comes in."""
+    host = make_host(tmp_path, commands={"systemctl is-active nftables": "active\n"}, installed=["systemctl"])
+    o = detect(cat, "net.firewall_off", make_scan(host))
+    assert o.status is Status.PASS and o.partial and o.notes[0].title == "Its rules weren't read"
+    host.privileged = FakePrivileged(firewall={"nft_tables": 1, "nft_rules": 0, "nft_input_filters": 0})
+    o = detect(cat, "net.firewall_off", make_scan(host))
+    assert o.status is Status.FAIL and o.summary == ("No host firewall is active: nftables is running, but no rule "
+                                                     "filters connections coming in.")
+    host.privileged = FakePrivileged(firewall={"nft_tables": 1, "nft_rules": 6, "nft_input_filters": 1})
+    o = detect(cat, "net.firewall_off", make_scan(host))
+    assert o.status is Status.PASS and not o.partial
+    # iptables-persistent's rules are in nft's ruleset where iptables is its nf_tables variant, not the legacy one's
+    for variant, status in (("nf_tables", Status.FAIL), ("legacy", Status.PASS)):
+        host = make_host(tmp_path / variant, installed=["systemctl"], commands={
+            "systemctl is-active netfilter-persistent": "active\n",
+            "/usr/sbin/iptables --version": f"iptables v1.8.10 ({variant})\n"})
+        host.privileged = FakePrivileged(firewall={"nft_tables": 0, "nft_rules": 0, "nft_input_filters": 0})
+        assert detect(cat, "net.firewall_off", make_scan(host)).status is status
+    # ufw (or firewalld) filters by its own defaults: a pass with it is no guess
+    host = make_host(tmp_path / "ufw", files={"/etc/ufw/ufw.conf": "ENABLED=yes\n"}, installed=["systemctl"],
+                     commands={"systemctl is-active ufw": "active\n", "systemctl is-active nftables": "active\n"})
+    o = detect(cat, "net.firewall_off", make_scan(host))
+    assert o.status is Status.PASS and not o.partial
+
+
 DOCKER_ONLY = """table ip nat {
 \tchain POSTROUTING {
 \t\ttype nat hook postrouting priority srcnat; policy accept;

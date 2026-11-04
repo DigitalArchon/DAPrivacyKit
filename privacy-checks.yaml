@@ -1315,6 +1315,10 @@ checks:
       - 'ufw status; firewall-cmd --state; nft list ruleset: only chains hooked on input that drop or reject
         (policy drop, or drop/reject rules) count; Docker, libvirt and Tailscale add NAT and forward rules that
         filter nothing coming in'
+      - 'nftables.service, netfilter-persistent and iptables.service load rules from a file, whatever is in it
+        (Debian''s and Fedora''s own /etc/nftables.conf lets everything in): running, they count only while a chain
+        filters what comes in (iptables'' rules are in nft''s ruleset where `iptables --version` says nf_tables, not
+        legacy); without administrator access a pass resting on them alone is partial'
     fix: >
       Enable ufw or firewalld with a default-deny inbound policy. ufw: the helper's ufw_enable runs ufw --force enable
       and, where ufw.service isn't enabled and running (Arch's package enables nothing), enables and starts it, which

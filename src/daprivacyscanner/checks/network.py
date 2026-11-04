@@ -412,13 +412,24 @@ class DockerBypass(Check):
         return r.ok and "rootless" in r.stdout
 
 
+def iptables_in_nft(host: Host) -> bool:
+    """Whether iptables here is its nf_tables variant (`iptables --version`, which needs no root), whose rules nft's
+    ruleset shows: the legacy variant's it doesn't."""
+    r = host.run(system_program(host, "iptables"), "--version")
+    return r.ok and "(nf_tables)" in r.stdout
+
+
 @register
 class FirewallOff(Check):
     id = "net.firewall_off"
 
+    # running, these load rules from a file, whatever is in it: Debian's and Fedora's own /etc/nftables.conf hooks
+    # input with policy accept and no rules
+    RULE_FILES = {"nftables": "nftables is running", "iptables rules": "iptables rules are loaded"}
+
     def detect(self, scan: Scan) -> Outcome:
         host = scan.host
-        ev, active = [], []
+        ev, active, idle, fw = [], [], [], {}
         ufw_conf = host.read_sys("/etc/ufw/ufw.conf") or ""
         if re.search(r"^\s*ENABLED\s*=\s*yes", ufw_conf, re.M) and systemctl_state(host, "is-active", "ufw") == "active":
             active.append("ufw")
@@ -439,13 +450,27 @@ class FirewallOff(Check):
                 ev.append(Evidence.count("nftables chains filtering incoming connections", fw["nft_input_filters"]))
                 if fw["nft_input_filters"] > 0 and not active:
                     active.append("nftables rules")
+                elif fw["nft_input_filters"] == 0:
+                    # nothing filters what comes in, though a unit that loads rules runs: the iptables units' rules
+                    # are in nft's ruleset only where iptables is its nf_tables variant
+                    idle = [a for a in active if a == "nftables" or (a == "iptables rules" and iptables_in_nft(host))]
+                    active = [a for a in active if a not in idle]
             if fw.get("ufw"):
                 ev.append(Evidence.val("ufw", fw["ufw"]))
                 if fw["ufw"].endswith("inactive"):
                     active = [a for a in active if a != "ufw"]
         ev.insert(0, Evidence.val("Active firewall", ", ".join(active) or "none found"))
+        said = lambda units: " and ".join(dict.fromkeys(self.RULE_FILES[a] for a in units))  # noqa: E731
         if active:
-            return passed(f"A host firewall is active ({', '.join(active)}).", *ev)
+            # resting on a unit that runs alone, a pass says nothing of its rules until they are read
+            unread = set(active) <= set(self.RULE_FILES) and fw.get("nft_input_filters") is None
+            return passed(f"A host firewall is active ({', '.join(active)}).", *ev, partial=unread, notes=[Note(
+                "limitation", "Its rules weren't read",
+                f"{said(active)}, but what the rules let in can only be read with administrator access: Debian's and "
+                "Fedora's own /etc/nftables.conf lets everything in. A scan with administrator access tells.")]
+                if unread else [])
+        if idle:
+            return failed(f"No host firewall is active: {said(idle)}, but no rule filters connections coming in.", *ev)
         return failed("No host firewall is active.", *ev, partial=scan.privileged is None)
 
 
