@@ -400,8 +400,10 @@ with open(src, "rb") as f:
 
 def unpack_argv(host: Host, source: Path, dest: Path, limit: int = UNPACK_MAX, most: int = MEMBERS_MAX) -> list[str]:
     """The archive or .deb `source` unpacked into `dest` by the computer's python3 in a sandbox with no network,
-    which sees only the file (read-only) and the folder: at most `limit` bytes and `most` files and folders."""
-    return [sandbox._need(host, sandbox.BWRAP), *sandbox.namespaces(False), *sandbox.system(host),
+    which sees only the file (read-only) and the folder: at most `limit` bytes and `most` files and folders. It ends
+    with bubblewrap (--die-with-parent): at the time limit, or with the app killed, only bubblewrap was ended, and the
+    unpacker went on writing into the folder removed meanwhile (the review of 2026-11-04)."""
+    return [sandbox._need(host, sandbox.BWRAP), "--die-with-parent", *sandbox.namespaces(False), *sandbox.system(host),
             "--ro-bind", str(source), "/in/source", "--bind", str(dest), "/out", "--chdir", "/out",
             "--setenv", "PATH", "/usr/bin:/bin", "--",
             sandbox.PYTHON, "-I", "-c", UNPACK, "/in/source", "/out", str(limit), str(most)]

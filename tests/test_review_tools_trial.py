@@ -536,6 +536,66 @@ def test_preparing_passes_the_room_there_is(tmp_path, monkeypatch):
     assert got[0][-2:] == [str((900 << 20) - trial.ROOM_KEPT), str(trial.MEMBERS_MAX)]
 
 
+def _descendants(pid: int) -> set[int]:
+    kids: dict[int, list[int]] = {}
+    for name in os.listdir("/proc"):
+        if name.isdigit():
+            try:
+                with open(f"/proc/{name}/stat") as f:
+                    kids.setdefault(int(f.read().rsplit(")", 1)[1].split()[1]), []).append(int(name))
+            except (OSError, IndexError, ValueError):
+                pass
+    out, todo = set(), [pid]
+    while todo:
+        for c in kids.get(todo.pop(), []):
+            if c not in out:
+                out.add(c)
+                todo.append(c)
+    return out
+
+
+def _runs(pid: int, argv: list[str]) -> bool:
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            return f.read().split(b"\0")[:len(argv)] == [a.encode() for a in argv]
+    except OSError:
+        return False
+
+
+@pytest.mark.skipif(not os.path.exists("/usr/bin/bwrap") or not os.path.exists("/usr/bin/python3"), reason="bubblewrap")
+def test_unpacking_ends_with_its_bubblewrap(tmp_path):
+    """The review of 2026-11-04: the unpacking sandbox had no --die-with-parent, so at the 900 s time limit (or with the
+    app killed) only bubblewrap was ended, and the unpacker went on writing into the trial's folder, removed meanwhile.
+    Here it waits for an archive that never comes (a pipe), and bubblewrap is killed."""
+    from pathlib import Path
+    from daprivacyscanner.host import FakeRunner, Host
+    host = Host(home=tmp_path, environ={}, runner=FakeRunner(installed=["bwrap"]), root=Path("/"), uid=os.getuid())
+    source, out = tmp_path / "source", tmp_path / "out"
+    os.mkfifo(source)
+    out.mkdir()
+    argv = trial.unpack_argv(host, source, out)
+    assert "--die-with-parent" in argv[:argv.index("--")]
+    p = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    unpacker = None
+    try:
+        deadline = time.monotonic() + 10
+        while unpacker is None and p.poll() is None and time.monotonic() < deadline:
+            unpacker = next((c for c in _descendants(p.pid) if _runs(c, [trial.sandbox.PYTHON, "-I", "-c", trial.UNPACK])), None)
+            time.sleep(0.05)
+        if unpacker is None:
+            pytest.skip("bubblewrap can't make a sandbox here")
+        p.kill()
+        p.wait()
+        assert _gone(unpacker), "the unpacker ends with bubblewrap"
+    finally:
+        p.kill()
+        if unpacker is not None and not _gone(unpacker, 0.1):     # the old way: it waits on the pipe for good
+            try:
+                os.close(os.open(source, os.O_WRONLY | os.O_NONBLOCK))
+            except OSError:
+                pass
+
+
 def test_the_box_says_its_site_codes_can_be_tested(cat, tmp_path):
     """E7, the owner's decision: the per-host HMACs in runs.json stay (they count the new hosts), and the text that said
     no names of sites were kept says what they allow: anyone who can read the Box's folder can test a guess."""
