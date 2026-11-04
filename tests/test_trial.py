@@ -7,6 +7,7 @@ from __future__ import annotations
 import ipaddress
 import json
 import os
+import stat
 import struct
 import subprocess
 import sys
@@ -448,6 +449,33 @@ def test_folders_left_by_a_run_that_was_killed_are_cleared(host):
     assert trial.leftovers(host) == [str(base / "0a1b2c3d4e5f")]
     trial.clear_leftovers(host)
     assert not (base / "0a1b2c3d4e5f").exists() and (base / "not-a-trial").exists()
+
+
+def test_a_trial_on_the_disk_goes_with_its_read_only_folders(tmp_path):
+    """The review of 2026-11-04: a trial on the disk whose home held a read-only folder (Go's module cache, a tarball's,
+    or the program's own chmod) wasn't removed by Discard or by the clean-up at each start, which only delete there:
+    shutil.rmtree can't delete what is in a read-only folder. Its folders are made writable first, as in memory, never
+    through a link."""
+    folder = tmp_path / "cache" / trial.FOLDER / "0a1b2c3d4e5f"
+    mod = folder / "home/go/pkg/mod/example.com/m@v1.0.0"
+    mod.mkdir(parents=True)
+    (folder / "app").mkdir()
+    (mod / "go.mod").write_text("module example.com/m\n")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "kept").write_text("x")
+    os.symlink(str(elsewhere), folder / "home/go/link")
+    for p, mode in ((mod / "go.mod", 0o444), (mod, 0o555), (folder / "home/go", 0o500), (folder / "home", 0o500),
+                    (elsewhere, 0o555)):
+        os.chmod(p, mode)
+    try:
+        trial._remove(folder, in_memory=False)
+        assert not folder.exists() and not folder.parent.exists()
+        assert (elsewhere / "kept").exists() and stat.S_IMODE(elsewhere.stat().st_mode) == 0o555, "a link's folder is left as it is"
+    finally:
+        for p in [elsewhere, *([folder, *folder.rglob("*")] if folder.exists() else [])]:     # pytest's own clean-up
+            if p.is_dir() and not p.is_symlink():
+                os.chmod(p, 0o700)
 
 
 def test_a_trial_through_the_api(cat, host):

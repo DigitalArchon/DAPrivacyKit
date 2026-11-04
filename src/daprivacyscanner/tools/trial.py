@@ -286,8 +286,31 @@ def _remove(folder: Path, in_memory: bool) -> None:
             ramdisk.wipe(folder)                      # overwritten in place: its pages are memory (rule 8)
         except OSError:
             pass
+    else:
+        _writable(folder)
     shutil.rmtree(folder, ignore_errors=True)
     _remove_base(folder.parent)
+
+
+def _writable(folder: Path) -> None:
+    """Every folder under `folder` made its owner's to change (u+rwx), as ramdisk.wipe does in memory: shutil.rmtree
+    can't delete what is in a read-only folder (Go's module cache, a tarball's, the program's own chmod), and a trial on
+    the disk stayed in the cache folder for good, the clean-up at each start doing no better (the review of 2026-11-04).
+    Never through a link, never onto another filesystem."""
+    try:
+        dev = os.stat(folder, follow_symlinks=False).st_dev
+    except OSError:
+        return
+    for _top, dirs, _files, dfd in os.fwalk(folder, follow_symlinks=False):
+        for d in list(dirs):
+            try:
+                st = os.stat(d, dir_fd=dfd, follow_symlinks=False)
+                if st.st_dev != dev or not stat.S_ISDIR(st.st_mode):
+                    dirs.remove(d)
+                elif stat.S_IMODE(st.st_mode) & 0o700 != 0o700:
+                    os.chmod(d, stat.S_IMODE(st.st_mode) | 0o700, dir_fd=dfd)
+            except OSError:
+                dirs.remove(d)
 
 
 def _remove_base(base: Path) -> None:
