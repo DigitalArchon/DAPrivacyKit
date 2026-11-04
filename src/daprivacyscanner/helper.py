@@ -122,6 +122,7 @@ import stat
 import struct as _struct
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 
@@ -4613,9 +4614,39 @@ def vacuum_journal(args: dict) -> dict:
     return {"freed": m.group(1) if m else "0B"}
 
 
+class _Monitor:
+    """`resolvectl monitor` for the window, writing into a file of its own (unlinked, root's): a pipe no one read
+    until the window ended filled with a burst of lookups bigger than it (a browser starting), resolvectl then
+    blocked, and the lookups behind it were lost."""
+
+    def __init__(self):
+        self.out = tempfile.TemporaryFile()
+        try:
+            self.proc = subprocess.Popen(["resolvectl", "monitor", "--json=short"], stdout=self.out,
+                                         stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL, env=_ENV)
+        except OSError:
+            self.out.close()
+            raise
+
+    def stop(self) -> str:
+        """Ends it (killed when it won't end, reaped either way) and gives what it wrote."""
+        self.proc.terminate()
+        try:
+            self.proc.wait(timeout=MONITOR_END_WAIT)
+        except subprocess.TimeoutExpired:
+            self.proc.kill()
+            self.proc.wait()
+        with self.out:
+            self.out.seek(0)
+            return self.out.read(MONITOR_MAX).decode(errors="replace")
+
+
+MONITOR_MAX = 64 << 20                        # what is read of the monitor's output (the queries are capped anyway)
+MONITOR_END_WAIT = 5                          # seconds it is given to end before it is killed
+
+
 def _monitor():
-    return subprocess.Popen(["resolvectl", "monitor", "--json=short"], stdout=subprocess.PIPE,
-                            stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL, text=True, env=_ENV)
+    return _Monitor()
 
 
 MONITOR = _monitor          # tests replace it, and SLEEP
@@ -4685,13 +4716,7 @@ def observe_traffic(args: dict) -> dict:
                     conns.append(c)
             SLEEP(1)
     finally:
-        text = ""
-        if mon is not None:
-            mon.terminate()
-            try:
-                text = mon.communicate(timeout=5)[0] or ""
-            except subprocess.TimeoutExpired:
-                mon.kill()
+        text = mon.stop() if mon is not None else ""
     return {"queries": parse_monitor(text)[:10000], "connections": conns[:10000], "monitor": mon is not None}
 
 

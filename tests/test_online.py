@@ -453,13 +453,10 @@ def test_a_shared_address_is_not_pinned_on_one_service(cat, tmp_path):
 
 def test_helper_observes_traffic(monkeypatch):
     class Mon:
-        def terminate(self):
-            pass
-
-        def communicate(self, timeout):
+        def stop(self):
             line = {"question": [{"class": 1, "type": 1, "name": "nmcheck.gnome.org"}],
                     "answer": [{"rr": {"key": {"name": "nmcheck.gnome.org"}, "address": [151, 101, 1, 91]}}]}
-            return json.dumps(line) + "\nnot json\n", ""
+            return json.dumps(line) + "\nnot json\n"
     monkeypatch.setattr(helper, "MONITOR", lambda: Mon())
     monkeypatch.setattr(helper, "SLEEP", lambda s: None)
     monkeypatch.setattr(helper, "RUN", lambda argv: (0, 'tcp ESTAB 0 0 10.0.0.2:5 151.101.1.91:443 users:(("NetworkManager",pid=1,fd=2))\n', ""))
@@ -468,6 +465,28 @@ def test_helper_observes_traffic(monkeypatch):
     assert r["connections"] == [{"process": "NetworkManager", "peer": "151.101.1.91", "proto": "tcp"}]
     with pytest.raises(helper.Refused):
         helper.observe_traffic({"seconds": 100000})
+
+
+def test_the_dns_monitor_writes_into_a_file_of_its_own_and_is_reaped_however_it_ends(monkeypatch, tmp_path):
+    """Its output went into a pipe no one read until the window ended: a burst of lookups filled it and blocked
+    resolvectl; one that wouldn't end was killed and never reaped, and everything read was thrown away."""
+    import subprocess
+    stubborn = tmp_path / "resolvectl"
+    stubborn.write_text("#!/bin/sh\ntrap '' TERM\nhead -c 200000 /dev/zero | tr '\\0' x\necho\necho last\n"
+                        "while :; do sleep 0.1; done\n")
+    stubborn.chmod(0o755)
+    real = subprocess.Popen
+
+    def popen(argv, **kw):
+        assert argv[0] == "resolvectl" and kw["stdout"] not in (subprocess.PIPE, None)
+        return real([str(stubborn), *argv[1:]], **kw)
+    monkeypatch.setattr(helper.subprocess, "Popen", popen)
+    monkeypatch.setattr(helper, "MONITOR_END_WAIT", 0.3)
+    mon = helper._monitor()
+    import time
+    time.sleep(0.5)
+    out = mon.stop()
+    assert len(out) > 200000 and out.rstrip().endswith("last") and mon.proc.returncode is not None
 
 
 # ------------------------------------------------------------------ server
