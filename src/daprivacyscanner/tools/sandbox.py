@@ -956,12 +956,15 @@ def screen_size(host: Host) -> str:
     return f"{min(NESTED_MAX[0], max(800, room[0]))}x{min(NESTED_MAX[1], max(600, room[1]))}"
 
 
-def nested(host: Host, private: Path, title: str, size: str) -> Nested | None:
+def nested(host: Host, private: Path, title: str, size: str, die_with_parent: bool = True) -> Nested | None:
     """Xephyr's sandbox and the display the browser then gets; None outside a local X11 session. Writes its
     authority files and socket folder into `private` (the app's folder in the RAM disk, never shown to the
     browser). Xephyr reaches the computer's X server by its socket's path (no network of its own, so not
     its abstract socket), listens only on its socket file (-nolisten tcp, -nolisten local) with a cookie of
-    its own, and ends when the browser's last connection closes (-terminate)."""
+    its own, and ends when the browser's last connection closes (-terminate). `die_with_parent`: all of the
+    sandbox ends with whatever started bubblewrap (a trial's, under TETHER); without it, killing bubblewrap's
+    process left its init, the focus keeper and Xephyr running. The browser's display outlives the app with the
+    browser, so it doesn't (browser._end_nested ends it by its processes)."""
     m = re.fullmatch(r"(?:unix)?:(\d+)(?:\.\d+)?", host.environ.get("DISPLAY", ""))
     if not m or not host.sys_path(f"/tmp/.X11-unix/X{m.group(1)}").exists():
         return None
@@ -983,7 +986,8 @@ def nested(host: Host, private: Path, title: str, size: str) -> Nested | None:
     for name, data in files.items():
         _write_private(private / name, data)
     xephyr, bwrap = _need(host, XEPHYR), _need(host, BWRAP)
-    argv = [bwrap, *namespaces(False), *system(host), "--bind", str(x11), "/tmp/.X11-unix",
+    argv = [bwrap, *(["--die-with-parent"] if die_with_parent else []), *namespaces(False), *system(host),
+            "--bind", str(x11), "/tmp/.X11-unix",
             "--ro-bind", f"/tmp/.X11-unix/X{outer}", f"/tmp/.X11-unix/X{outer}",
             "--ro-bind", str(private / "xauth-xephyr"), "/tmp/.xephyr-auth",
             "--setenv", "DISPLAY", f":{outer}", "--setenv", "HOME", "/tmp"]

@@ -1183,6 +1183,50 @@ def test_on_x11_a_display_of_its_own_keeps_it_from_other_windows(host, monkeypat
     assert (private / "xauth-computer").read_bytes().endswith(b"A" * 16)                # the real cookie: Xephyr's only
 
 
+def test_a_display_of_its_own_goes_whole_when_the_start_fails(host, monkeypatch):
+    """Killing Xephyr's bubblewrap left its init, the focus keeper and Xephyr running (no --die-with-parent): after a
+    start that failed, an empty window "Tor Browser, in a display of its own" stayed about 130 seconds, for good
+    without python3, one more for each try. Everything under bubblewrap's process goes with it now, and nothing
+    else: a Xephyr of the user's stays. Sleeping processes stand in for them."""
+    import subprocess
+    from daprivacyscanner.tools import wayland as W
+    installed(host, "mullvad")
+    bwrap_ok(host)
+    (host.root / "tmp/.X11-unix").mkdir(parents=True)
+    (host.root / "tmp/.X11-unix/X0").write_text("")
+    (host.root / "proc/net").mkdir()
+    (host.root / "proc/net/unix").write_text("")
+    host.environ["DISPLAY"] = ":0"
+    host.runner.handlers["Xephyr"] = lambda argv: CommandResult(tuple(argv), 0)
+    monkeypatch.setattr(B, "START_WAIT", 0.05)
+    b = B.BROWSERS["mullvad"]
+    outer, init, keeper, xephyr, users = sleeping = [subprocess.Popen(["sleep", "60"]) for _ in range(5)]
+    procs = {outer.pid: (os.getpid(), "bwrap"), init.pid: (outer.pid, "bwrap"), keeper.pid: (init.pid, "python3"),
+             xephyr.pid: (keeper.pid, "Xephyr"), users.pid: (1, "Xephyr")}
+    monkeypatch.setattr(B, "_procs", lambda host: dict(procs))
+    shown = []
+
+    def spawn(argv, **kw):
+        if "Xephyr" in argv:                                            # it opens its socket
+            shown.append(argv)
+            sock = W.socket.socket(W.socket.AF_UNIX)
+            W._bind(sock, B.private_dir(host, b) / "x11/X1")
+            return outer
+        return Proc(rc=1)                                               # the browser's sandbox stops at once
+    try:
+        with pytest.raises(B.BrowserError, match="couldn't start"):
+            B.start(host, b, spawn=spawn, nested=True)
+        assert [p.wait(timeout=5) for p in (outer, init, keeper, xephyr)] == [-9] * 4
+        assert users.poll() is None
+    finally:
+        for p in sleeping:
+            p.kill()
+            p.wait()
+    # the browser's display outlives the app with the browser; a trial's ends with what started it (TETHER)
+    assert "--die-with-parent" not in shown[0]
+    assert "--die-with-parent" in S.nested(host, B.private_dir(host, b), "t", "1400x1000").argv
+
+
 def test_xephyr_runs_under_the_focus_keeper_where_the_computer_has_python3(host):
     """tools/xfocus.py, by the computer's python3, starts Xephyr and keeps the focus on the browser's windows
     (without a window manager its menus closed when the pointer moved onto them); without python3, Xephyr alone."""

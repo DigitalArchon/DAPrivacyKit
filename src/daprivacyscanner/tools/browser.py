@@ -1560,7 +1560,7 @@ def _start(host: Host, b: Browser, spawn: Callable, sandboxed: bool, with_sound:
             # the app's own directory, never the RAM disk; none of the app's environment (sandbox.SPAWN_ENV)
             cmd, cwd, env = argv, "/", dict(sandbox.SPAWN_ENV)
         except BaseException:
-            _abort(xephyr, sync)
+            _abort(host, xephyr, sync)
             raise
     else:
         cmd, cwd, env = [str(script), "--detach"], str(script.parent), environment(host, b, session)
@@ -1578,7 +1578,7 @@ def _start(host: Host, b: Browser, spawn: Callable, sandboxed: bool, with_sound:
                 proc = spawn(cmd, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=log,
                              start_new_session=True, pass_fds=(sync,) if sync is not None else ())
         except OSError:
-            _abort(xephyr, sync)
+            _abort(host, xephyr, sync)
             sync = None
             if sandboxed and not marked_before:         # it never started: no website ever reached this copy
                 (private / "sandboxed").unlink(missing_ok=True)
@@ -1589,7 +1589,7 @@ def _start(host: Host, b: Browser, spawn: Callable, sandboxed: bool, with_sound:
         try:
             _watch(b, proc, log)
         except BrowserError:
-            _abort(xephyr, None)                        # it would wait for a browser that never comes
+            _abort(host, xephyr, None)                  # it would wait for a browser that never comes
             # the mark stays unless the log says the sandbox stopped before the browser ran: a browser that ran, even
             # briefly, could have been reached (or, taken over, stopped itself with an error to shed the mark)
             if sandboxed and not marked_before and _never_ran(sandbox.read_log(log)):
@@ -1600,13 +1600,31 @@ def _start(host: Host, b: Browser, spawn: Callable, sandboxed: bool, with_sound:
     return how
 
 
-def _abort(xephyr, sync: int | None) -> None:
+def _abort(host: Host, xephyr, sync: int | None) -> None:
     """Undoes what a start made before it could spawn: Xephyr (it would wait for a browser that never comes)
     and the compositor's listener (held by the pipe until it is closed)."""
-    if xephyr is not None and hasattr(xephyr, "kill"):
-        xephyr.kill()
+    if xephyr is not None:
+        _end_nested(host, xephyr)
     if sync is not None:
         os.close(sync)
+
+
+def _end_nested(host: Host, proc) -> None:
+    """A display of its own that no browser will use, ended whole: bubblewrap's process, the one the app started, and
+    everything under it, its init, the focus keeper and Xephyr. Its sandbox has no --die-with-parent (the browser's
+    display outlives the app with the browser), so killing bubblewrap's process alone left the rest: after a start
+    that failed, an empty window "Tor Browser, in a display of its own" stayed for about 130 seconds (for good
+    without python3, the focus keeper being Xephyr's only client), one more for each try."""
+    import signal
+    if not hasattr(proc, "kill"):
+        return                                          # a test's stand-in
+    pid = getattr(proc, "pid", None)
+    for p in sorted(_with_descendants(_procs(host), {pid}) - {pid}) if isinstance(pid, int) else ():
+        try:
+            os.kill(p, signal.SIGKILL)                  # with its init gone, the kernel ends anything started since
+        except (ProcessLookupError, PermissionError):
+            pass
+    proc.kill()
 
 
 NESTED_WAIT = 5.0                       # seconds Xephyr has to open its socket
@@ -1619,7 +1637,8 @@ def _start_nested(host: Host, b: Browser, private: Path, disp, spawn: Callable):
         raise BrowserError("A display of its own needs Xephyr, which isn't installed"
                            + (f" ({_install_command(host, 'Xephyr')})." if _install_command(host, "Xephyr") else ".")
                            + " Untick it to start the browser on this display.")
-    nest = sandbox.nested(host, private, sandbox.XEPHYR_TITLE.format(name=b.name), sandbox.screen_size(host))
+    nest = sandbox.nested(host, private, sandbox.XEPHYR_TITLE.format(name=b.name), sandbox.screen_size(host),
+                          die_with_parent=False)        # quitting the app leaves the browser running, in its display
     if nest is None:
         raise BrowserError("A display of its own works on this computer's own X11 display only. Untick it.")
     log = private / "xephyr.log"
@@ -1642,7 +1661,7 @@ def _start_nested(host: Host, b: Browser, private: Path, disp, spawn: Callable):
             break
         time.sleep(0.1)
     if proc.poll() is None:
-        proc.kill()
+        _end_nested(host, proc)
     raise BrowserError(f"Xephyr didn't open its display: {_log_reason(_file_text(log), proc.poll() or 0)}")
 
 
