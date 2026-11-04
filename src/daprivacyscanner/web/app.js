@@ -451,7 +451,7 @@ function summaryBar(views) {
       resolved.length ? [`${plural(resolved.length, "resolved")}`, ...chips(resolved, "resolved")] : null,
       notChecked.length ? [`${notChecked.length} not checked again`, ...notChecked.map(u => h("span", { class: "chip unchecked",
         title: lastCheckedText(u), onclick: () => reveal(u.id) }, titleOf(u.id)))] : null,
-      changed.length ? [`${changed.length} changed severity`, ...changed.map(c => h("span", { class: "chip", title: c.id, onclick: () => reveal(c.id) },
+      changed.length ? [`${changed.length} changed severity`, ...changed.map(c => h("span", { class: "chip", title: "Show it in the list", onclick: () => reveal(c.id) },
         `${titleOf(c.id)}: severity ${c.from} → ${c.to}`))] : null,
       ...Object.entries(ch.new_items || {}).map(([id, items]) => h("span", { class: "chip new", onclick: () => reveal(id),
         title: items.join("\n") }, `${items.length} new in ${titleOf(id).toLowerCase()}`)),

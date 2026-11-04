@@ -484,6 +484,8 @@ await window.scan(); await tick();
   const titled = (cid) => fixture.state.catalogue.find(sp => sp.id === cid).title;
   check(text(".report .changes").includes(titled(gone)) && !text(".report .changes").includes(titled("tel.location")) && text(".report .changes").includes(`${titled(id)}: severity 2 → 5`)
         && !$$(".report .changes .chip").some(c => c.textContent === id), "the chips name each check by its title, not its id");
+  check($$(".report .changes .chip").every(c => c.title === "Show it in the list"),
+        "nor their tooltips, outside developer mode: " + $$(".report .changes .chip").map(c => c.title).join(" | "));
   // fixed since the scan: the new finding's chip goes; one whose severity changed is resolved now
   const id2 = Object.keys(results).find(k => k !== id && results[k].is_finding && !fixture.state.accepted[k]);
   S.report.changes = { previous: 1790000000, new: [id], resolved: [], changed: [{ id: id2, from: 2, to: 5 }] };
