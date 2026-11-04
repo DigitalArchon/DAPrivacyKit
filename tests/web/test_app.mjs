@@ -323,7 +323,10 @@ const trialResultData = { seconds: 95, failed: false, output: [], missed: 0, net
   decoys: [{ path: "~/.ssh/id_ed25519", what: "an SSH private key", listed: 0, opened: 2, changed: 0, first: 1 },
            { path: "~/.gnupg", what: "the folder ~/.gnupg", listed: 1, opened: 0, changed: 0, first: 2 }],
   left: { files: 3, bytes: 5000, folders: 2 },
-  hosts: { hosts: [{ host: "telemetry.example.net", named_by: "dns", addresses: 1, ports: ["443"], connections: 2, sent: 4000, received: 900 }],
+  hosts: { hosts: [{ host: "telemetry.example.net", named_by: "dns", addresses: ["203.0.113.80"], more_addresses: false, ports: ["443"],
+                     connections: 2, sent: 4000, received: 900 },
+                   { host: "github.com", named_by: "program", addresses: ["203.0.113.7"], more_addresses: false, ports: ["443"],
+                     connections: 1, sent: 200, received: 90 }],
            looked_up: ["unused.example.org"], packets: 60, left_out: 0, broken: 0 },
   summary: { seconds: 95, files: 3, totals: { opened: 0, written: 0, created: 3, deleted: 0, ran: 0 },
     kinds: { app: "Programs' own data", yours: "Your files", temp: "Temporary files", media: "Other disks", system: "The system" },
@@ -1482,6 +1485,8 @@ $$(".modal .trial button").find(b => b.textContent === "End the trial").click();
         && out.includes("Folders it looked into (1)"), "decoys opened are a warning; a folder only listed is apart");
   check(out.includes("telemetry.example.net") && out.includes("Looked up and not connected to: unused.example.org"),
         "the hosts it contacted are listed, and names it only looked up");
+  check(out.includes("203.0.113.80") && out.includes("github.com (named by the program)") && out.includes("203.0.113.7"),
+        "the servers' addresses are listed, and a name the program gave without looking it up is marked (the review of 2026-11-04)");
   check(out.includes("~/.config/Tool/id.json") && out.includes("3 files (5 kB) are there now"), "what it wrote is named: the home is made up");
   check(out.includes("bwrap --die-with-parent") && out.includes("discarding overwrites and removes it")
         && out.includes("What swap took of it meanwhile can stay on the disk"),

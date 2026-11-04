@@ -9,11 +9,15 @@ DNS answer that had given the address it connected to (the sandbox's DNS goes th
 text on this link, over UDP or TCP), else the address. Per connection, not per address: one address serves many
 sites (a CDN's, Cloudflare's), and two connections to it naming two sites are two hosts (found in the 2026-10-17
 review: the last DNS answer for an address had named every connection to it). Connections with the same name are
-summed up as one host. Names looked up and never used are listed apart. DNS sent to pasta's forwarder is the
-sandbox's own resolver, never a host; DNS sent anywhere else goes to a server of the program's own choosing, which
-is listed. A TCP connection is counted once, however often its first packet is sent again (one lookup hanging on a
-server that didn't answer was counted as five connections). What can't be told: what was sent (it is encrypted),
-and a name hidden by Encrypted Client Hello. Standard library only."""
+summed up as one host, with the servers' addresses. Names looked up and never used are listed apart. DNS sent to
+pasta's forwarder is the sandbox's own resolver, never a host; DNS sent anywhere else goes to a server of the
+program's own choosing, which is listed, and whose answers name nothing: a program could have its own server say
+any name was any address. A name the program gave when connecting that the resolver never gave for that address is
+only the program's word, and such a host is kept apart, named_by "program" (the review of 2026-11-04: everything
+sent to one server of its own could be listed as dns.google and github.com). A TCP connection is counted once,
+however often its first packet is sent again (one lookup hanging on a server that didn't answer was counted as five
+connections). What can't be told: what was sent (it is encrypted), and a name hidden by Encrypted Client Hello.
+Standard library only."""
 
 from __future__ import annotations
 
@@ -26,6 +30,7 @@ ETHERNET = 1
 CONNS_MAX = 20000
 HOSTS_MAX = 2000
 NAMES_MAX = 5000
+ADDRESSES_MAX = 8                       # a host's addresses kept to show; more are said as more
 PACKET_MAX = 262144 + 64
 STREAM_MAX = 70000                      # DNS over TCP: what is kept of a message not complete yet (one is 65537 at most)
 
@@ -122,9 +127,10 @@ class Flows:
         self.order: str | None = None
         self.link = ETHERNET
         self.names: dict[str, str] = {}                 # address -> the name whose lookup last gave it
+        self.gave: set[tuple[str, str]] = set()         # (address, name): every answer of the sandbox's resolver
         self.asked: dict[str, int] = {}                 # names looked up -> how often
         self.conns: dict[tuple, dict] = {}              # (src, sport, dst, dport, proto) -> that connection's sums
-        self.folded: dict[str, dict] = {}               # connections the table had no more room for, summed by name
+        self.folded: dict[tuple, dict] = {}             # connections the table had no more room for, summed by host
         self.used: set[str] = set()                     # the names those were made under (DNS, SNI, Host)
         self.streams: dict[tuple, list] = {}            # DNS over TCP, each way: [the next sequence number, bytes]
         self.packets = self.broken = self.left_out = 0
@@ -201,9 +207,12 @@ class Flows:
                 self.asked[name] = self.asked.get(name, 0) + 1
 
     def _answers(self, data: bytes) -> None:
+        """The sandbox's own resolver's answers (only its: _udp, _tcp), which name the addresses they give."""
         for address, name in dns(data)[1].items():
             if address in self.names or len(self.names) < NAMES_MAX:
                 self.names[address] = name
+            if (address, name) in self.gave or len(self.gave) < NAMES_MAX:
+                self.gave.add((address, name))
 
     def _resolver(self, address: str) -> bool:
         """Whether DNS to or from `address` is the sandbox's own lookups (pasta's forwarder), not a host contacted."""
@@ -250,17 +259,26 @@ class Flows:
         if not self._add(self.folded, c):
             self.left_out += 1
 
-    def _add(self, merged: dict[str, dict], c: dict) -> bool:
-        """Adds the connection `c` to the hosts in `merged`, by its name; False when there is no room for another."""
+    def _add(self, merged: dict[tuple, dict], c: dict) -> bool:
+        """Adds the connection `c` to the hosts in `merged`, by its name; False when there is no room for another. A
+        name it gave when connecting that the sandbox's resolver never gave for its address is the program's word only
+        ("program"): a host apart from one the resolver named so, which can't then be passed off as it."""
         known = c["dns"] or self.names.get(c["address"])
-        name = c["said"] or known or c["address"]
-        m = merged.get(name)
+        said = c["said"]
+        how = ("tls" if said in (known, c["dns"]) or (c["address"], said) in self.gave else "program") if said \
+            else "dns" if known else "address"
+        name = said or known or c["address"]
+        m = merged.get((name, how == "program"))
         if m is None:
             if len(merged) >= HOSTS_MAX:
                 return False
-            m = merged[name] = {"host": name, "named_by": "tls" if c["said"] else "dns" if known else "address",
-                                "addresses": set(), "ports": set(), "connections": 0, "sent": 0, "received": 0}
-        m["addresses"].add(c["address"])
+            m = merged[(name, how == "program")] = {"host": name, "named_by": how, "addresses": set(),
+                                                    "more_addresses": False, "ports": set(), "connections": 0, "sent": 0,
+                                                    "received": 0}
+        if c["address"] in m["addresses"] or len(m["addresses"]) < ADDRESSES_MAX:
+            m["addresses"].add(c["address"])
+        else:
+            m["more_addresses"] = True
         m["ports"].add(f"{c['port']}/udp" if c["proto"] == "udp" else str(c["port"]))
         m["connections"] += 1
         m["sent"] += c["sent"]
@@ -285,7 +303,7 @@ class Flows:
             self._open(out, dst, dport, "tcp", seq)
             return
         if flags & 0x12 == 0x12:                            # SYN-ACK: where the answers' bytes start
-            if sport == 53 and back in self.streams:
+            if sport == 53 and back in self.streams and self._resolver(src):      # the sandbox's resolver's only
                 self.streams[out] = [(seq + 1) & 0xFFFFFFFF, bytearray()]
             return
         if dport == 53:
@@ -312,10 +330,9 @@ class Flows:
             self._questions(data)
             if self._resolver(dst):
                 return
-        elif sport == 53:
+        elif sport == 53 and self._resolver(src):          # a server of the program's own names nothing
             self._answers(data)
-            if self._resolver(src):
-                return
+            return
         out, back = (src, sport, dst, dport, "udp"), (dst, dport, src, sport, "udp")
         c = self.conns.get(back)
         if c is not None:
@@ -325,8 +342,9 @@ class Flows:
         c["sent"] += len(data)
 
     def result(self) -> dict:
-        """{"hosts": [{"host", "named_by", "addresses", "ports", "connections", "sent", "received"}], "looked_up":
-        [names asked for and never used], "packets", "left_out"}: hosts by what was sent, most first."""
+        """{"hosts": [{"host", "named_by" (dns, tls, program, address), "addresses" (the servers', ADDRESSES_MAX at
+        most), "more_addresses", "ports", "connections", "sent", "received"}], "looked_up": [names asked for and never
+        used], "packets", "left_out"}: hosts by what was sent, most first."""
         with self.lock:
             return self._result()
 
@@ -337,8 +355,10 @@ class Flows:
             used.update(n for n in (c["said"], c["dns"]) if n)
             if not self._add(merged, c):
                 left_out += 1
-        hosts = sorted(merged.values(), key=lambda m: (-m["sent"], -m["connections"], m["host"]))
+        hosts = sorted(merged.values(), key=lambda m: (-m["sent"], -m["connections"], m["host"], m["named_by"]))
         for m in hosts:
-            m["addresses"], m["ports"] = len(m["addresses"]), sorted(m["ports"], key=lambda p: (len(p), p))
-        return {"hosts": hosts, "looked_up": sorted(n for n in self.asked if n not in merged and n not in used),
+            m["addresses"] = sorted(m["addresses"], key=lambda a: (ipaddress.ip_address(a).version, ipaddress.ip_address(a)))
+            m["ports"] = sorted(m["ports"], key=lambda p: (len(p), p))
+        shown = {m["host"] for m in hosts}
+        return {"hosts": hosts, "looked_up": sorted(n for n in self.asked if n not in shown and n not in used),
                 "packets": self.packets, "left_out": left_out, "broken": self.broken}

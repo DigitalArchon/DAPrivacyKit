@@ -3847,11 +3847,20 @@ function decoyList(decoys) {
      d.listed ? "its contents listed" : null].filter(Boolean).join(", "))));
 }
 
+// how a host was named (pcap.Flows' named_by): a name the program gave for an address it hadn't looked up under that
+// name is only its word, and said so; the servers' addresses are listed, so a name can be checked against where it went
+const HOST_NAMED = { dns: "The name it looked up: this computer's resolver gave it this address",
+  tls: "The name it gave when connecting, which it had looked up for this address",
+  program: "The name it gave when connecting, which it hadn't looked up for this address: only its own word",
+  address: "It connected to the address without looking up a name" };
+
 function hostsTable(hosts) {
   return h("table", { class: "places" },
-    h("thead", {}, h("tr", {}, h("th", {}, "Host"), h("th", {}, "Ports"), h("th", {}, "Connections"), h("th", {}, "Sent"), h("th", {}, "Received"))),
-    h("tbody", {}, hosts.map(x => h("tr", {}, h("td", { class: "folder", title: x.named_by === "dns" ? "The name it looked up"
-        : x.named_by === "tls" ? "The name it gave when connecting" : "It connected to the address without looking up a name" }, x.host),
+    h("thead", {}, h("tr", {}, h("th", {}, "Host"), h("th", {}, "Addresses"), h("th", {}, "Ports"), h("th", {}, "Connections"),
+      h("th", {}, "Sent"), h("th", {}, "Received"))),
+    h("tbody", {}, hosts.map(x => h("tr", {}, h("td", { class: "folder", title: HOST_NAMED[x.named_by] || HOST_NAMED.address },
+        x.host, x.named_by === "program" ? h("span", { class: "muted" }, " (named by the program)") : null),
+      h("td", { class: "folder" }, (x.addresses || []).join(", ") + (x.more_addresses ? ", and more" : "")),
       h("td", {}, x.ports.join(", ")), h("td", {}, `${x.connections}`), h("td", {}, fmtSize(x.sent)), h("td", {}, fmtSize(x.received))))));
 }
 
@@ -3894,7 +3903,9 @@ function trialResult(t, call, st = {}) {
     r.network === "off" ? h("p", { class: "small" }, "It had no network.")
       : r.network === "on" ? h("p", { class: "small" }, "It had its usual network; what it contacted wasn't observed.")
       : r.hosts.hosts.length ? [h("p", { class: "small" }, `It contacted ${plural(r.hosts.hosts.length, "host")}. What it sent is `
-          + "encrypted and can't be read; the names are the ones it asked for."), hostsTable(r.hosts.hosts),
+          + "encrypted and can't be read. The names are the ones it looked up through this computer's resolver, or gave "
+          + "when connecting: a name it hadn't looked up for the address it went to is only its word, and marked so."),
+          hostsTable(r.hosts.hosts),
           r.hosts.looked_up.length ? h("div", { class: "small muted" }, "Looked up and not connected to: " + r.hosts.looked_up.join(", ") + ".") : null]
       : h("p", { class: "small" }, "It could reach the internet and contacted nothing."
           + (r.hosts.looked_up.length ? ` It looked up: ${r.hosts.looked_up.join(", ")}.` : "")),

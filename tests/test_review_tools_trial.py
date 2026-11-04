@@ -211,7 +211,7 @@ def test_two_sites_on_one_address_are_two_hosts():
     hosts = {h["host"]: h for h in r["hosts"]}
     assert set(hosts) == {"one.one.one.one", "site-b.example", "1dot1dot1dot1.cloudflare-dns.com"}
     assert hosts["one.one.one.one"]["named_by"] == "tls" and hosts["one.one.one.one"]["connections"] == 1
-    assert hosts["site-b.example"]["received"] == 300 and hosts["site-b.example"]["named_by"] == "tls"
+    assert hosts["site-b.example"]["received"] == 300 and hosts["site-b.example"]["named_by"] == "program"
     assert hosts["1dot1dot1dot1.cloudflare-dns.com"]["named_by"] == "dns"
     assert hosts["1dot1dot1dot1.cloudflare-dns.com"]["ports"] == ["80"]
     assert r["looked_up"] == ["never-used.example"]
@@ -259,6 +259,39 @@ def test_a_full_table_folds_the_older_connections_into_their_hosts(monkeypatch):
     r = _flows(p)
     assert sum(h["connections"] for h in r["hosts"]) == 9 and len(r["hosts"]) == 2
     assert _flows(p)["hosts"] == r["hosts"], "summing up twice changes nothing"
+
+
+def test_a_program_cant_have_its_own_server_named_as_it_likes():
+    """The review of 2026-11-04: answers from any DNS server named addresses, the program's own server's too, and a
+    name given when connecting labelled a connection whatever address it went to, while the page had only a count of
+    addresses: sending everything to one server of its own, a program could have the list read dns.google and
+    github.com. Names come from the sandbox's own resolver's answers only, a name the program gave that the resolver
+    never gave for that address is marked as its word (apart from the same name looked up), and the servers' addresses
+    are listed."""
+    evil, real = "203.0.113.7", "140.82.121.4"
+    p = [eth(ip4(ME, evil, 17, udp(40000, 53, _query(1, "dns.google")))),
+         eth(ip4(evil, ME, 17, udp(53, 40000, _answer(1, "dns.google", evil)))),          # "dns.google is me"
+         eth(ip4(ME, evil, 17, udp(40001, 53, _query(2, "github.com")))),
+         eth(ip4(evil, ME, 17, udp(53, 40001, _answer(2, "github.com", evil)))),          # "github.com is me"
+         eth(ip4(ME, evil, 6, _tcp(50000, 443, 0x02))),
+         eth(ip4(ME, evil, 6, _tcp(50000, 443, 0x18, 1, b"\x00" * 3000))),               # no name of its own
+         eth(ip4(ME, evil, 6, _tcp(50001, 443, 0x02))),
+         eth(ip4(ME, evil, 6, _tcp(50001, 443, 0x18, 1, client_hello("github.com")))),     # never looked up for it
+         eth(ip4(ME, FWD, 17, udp(40002, 53, _query(3, "github.com")))),                   # the real one, looked up
+         eth(ip4(FWD, ME, 17, udp(53, 40002, _answer(3, "github.com", real)))),
+         eth(ip4(ME, real, 6, _tcp(50002, 443, 0x02))),
+         eth(ip4(ME, real, 6, _tcp(50002, 443, 0x18, 1, client_hello("github.com"))))]
+    r = _flows(p)
+    hosts = {(h["host"], h["named_by"]): h for h in r["hosts"]}
+    assert set(hosts) == {(evil, "address"), ("github.com", "program"), ("github.com", "tls")}, set(hosts)
+    assert hosts[(evil, "address")]["ports"] == ["443", "53/udp"] and hosts[(evil, "address")]["addresses"] == [evil]
+    assert hosts[("github.com", "program")]["addresses"] == [evil] and hosts[("github.com", "tls")]["addresses"] == [real]
+    assert r["looked_up"] == ["dns.google"]
+    # one name on many addresses: the first few are listed, and that there are more
+    many = _flows([eth(ip4(ME, f"198.51.100.{i}", 6, _tcp(51000 + i, 443, flags, 1, data)))
+                   for i in range(12) for flags, data in ((0x02, b""), (0x18, client_hello("cdn.example")))])
+    cdn = next(h for h in many["hosts"] if h["host"] == "cdn.example")
+    assert len(cdn["addresses"]) == pcap.ADDRESSES_MAX and cdn["more_addresses"] is True
 
 
 # ------------------------------------------------------------------ E5: no /proc masks in a trial, and the page says so

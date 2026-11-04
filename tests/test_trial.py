@@ -387,9 +387,10 @@ def test_hosts_are_named_by_what_the_program_asked_or_said():
         f.feed(stream[i:i + 37])
     r = f.result()
     hosts = {h["host"]: h for h in r["hosts"]}
-    assert hosts["example.org"] == {"host": "example.org", "named_by": "dns", "addresses": 1, "ports": ["443"],
-                                    "connections": 1, "sent": 100, "received": 900}
-    assert hosts["tracker.example.net"]["named_by"] == "tls" and hosts["198.51.100.7"]["ports"] == ["123/udp"]
+    assert hosts["example.org"] == {"host": "example.org", "named_by": "dns", "addresses": ["93.184.216.34"],
+                                    "more_addresses": False, "ports": ["443"], "connections": 1, "sent": 100, "received": 900}
+    # a name it gave when connecting, never looked up for that address: only its word
+    assert hosts["tracker.example.net"]["named_by"] == "program" and hosts["198.51.100.7"]["ports"] == ["123/udp"]
     assert r["looked_up"] == ["never-used.example"] and r["packets"] == 10
     assert "xxxx" not in repr(r), "no payload is kept"
 
