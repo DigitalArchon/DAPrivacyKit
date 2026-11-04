@@ -27,8 +27,12 @@ MOUNT_ROOTS = r"(?:/run/media/[^/\s]+|/media/[^/\s]+|/mnt)/"
 _WHOLE_MOUNT = re.compile(rf"({MOUNT_ROOTS})[^/,;:()]+(/[^,;:()]*)?")    # a text that is a mount point: spaces and all
 # in a sentence: a label with spaces ("My Passport", "Taxes 2024") runs on while the next word doesn't start lower-case
 _MOUNT = re.compile(rf"({MOUNT_ROOTS})[^/\s,;:()]+(?: (?![a-z])[^/\s,;:()]+)*")
-# a Firefox-family profile's folder: a random prefix of the install's and the profile's name
+# a Firefox-family profile's folder: a random prefix of the install's and the profile's name, in words ("Firefox
+# profile k3j9x2ab.work-acme") and in a path (~/.mozilla/firefox/<it>/prefs.js, its cache ~/.cache/mozilla/firefox/<it>,
+# the forks' and Thunderbird's, Flatpak's and Snap's copies of them)
 FF_PROFILE = re.compile(r"( profile )[a-z0-9]{8}\.[^\s,;:)]+")
+FF_PROFILE_PATH = re.compile(r"((?<![^/.])(?:mozilla/firefox|librewolf|waterfox|zen|floorp|thunderbird)/)"
+                             r"[a-z0-9]{8}\.[^/\s,;:)]+")
 # names a key file, keyring or wallet has when nobody chose one: left readable
 DEFAULT_NAMES = frozenset({"login.keyring", "default.keyring", "Default_keyring.keyring", "user.keystore", "kdewallet.kwl",
                            "kdewallet.salt", "kdewallet", "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519", "id_ecdsa_sk",
@@ -102,6 +106,7 @@ class Redactor:
         whole = _WHOLE_MOUNT.fullmatch(s.strip())
         s = f"{whole.group(1)}[drive]{whole.group(2) or ''}" if whole else _MOUNT.sub(r"\1[drive]", s)
         s = FF_PROFILE.sub(r"\1[profile]", s)
+        s = FF_PROFILE_PATH.sub(r"\1[profile]", s)
         return s
 
     def evidence(self, e: dict) -> dict:
@@ -119,6 +124,11 @@ class Redactor:
         out["evidence"] = [self.evidence(e) for e in r.get("evidence", [])]
         out["notes"] = [{**n, "text": self.text(n["text"]), "title": self.text(n["title"])} for n in r.get("notes", [])]
         out["error"] = self.text(r.get("error", ""))
+        # why the app can't fix it here, and what decided the severity: either can name a connection
+        # (netplan-<interface>-<network>, net.ipv6_privacy's) or a file
+        for key in ("no_fix", "severity_reason"):
+            if key in r:
+                out[key] = self.text(r[key])
         if "items" in r:
             out["items"] = [self.text(i) for i in r["items"]]
         return out

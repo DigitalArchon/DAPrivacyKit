@@ -37,6 +37,34 @@ def test_drive_labels_uuids_and_profile_names_are_redacted(tmp_path):
     assert r.text("Firefox profile k3j9x2ab.work-acme, flatpak") == "Firefox profile [profile], flatpak"
 
 
+def test_profile_folders_in_paths_are_redacted(tmp_path):
+    """FirefoxPref's record and the comment of what it ran name the profile by its path, which only the words form
+    was redacted in: ~/.mozilla/firefox/k3j9x2ab.work-acme/prefs.js went out as it is."""
+    r = redactor(tmp_path)
+    home = str(r.home)
+    assert r.text(f"# browser.x set to true in {home}/.mozilla/firefox/k3j9x2ab.work-acme/prefs.js (with Firefox "
+                  "profile k3j9x2ab.work-acme closed)") == \
+        "# browser.x set to true in ~/.mozilla/firefox/[profile]/prefs.js (with Firefox profile [profile] closed)"
+    for path, shown in [("~/.cache/mozilla/firefox/k3j9x2ab.work-acme/cache2", "~/.cache/mozilla/firefox/[profile]/cache2"),
+                        ("~/.var/app/org.mozilla.firefox/.mozilla/firefox/k3j9x2ab.work-acme",
+                         "~/.var/app/org.mozilla.firefox/.mozilla/firefox/[profile]"),
+                        ("~/.librewolf/k3j9x2ab.work-acme/prefs.js", "~/.librewolf/[profile]/prefs.js"),
+                        ("~/.thunderbird/k3j9x2ab.work-acme", "~/.thunderbird/[profile]")]:
+        assert r.text(path) == shown
+    assert r.text("~/.local/share/k3j9x2ab.work-acme") == "~/.local/share/k3j9x2ab.work-acme"   # not a profile's
+
+
+def test_why_it_cant_be_fixed_and_what_decided_the_severity_are_redacted(tmp_path):
+    """A result's `no_fix` (net.ipv6_privacy's names a netplan connection, netplan-<interface>-<network>) and its
+    `severity_reason` went into redacted reports as they were."""
+    r = redactor(tmp_path)
+    out = r.result({"summary": "", "evidence": [], "notes": [], "error": "", "severity_reason": "",
+                    "no_fix": "netplan-wlp2s0-CafeFreeWiFi is set up by netplan, which writes ip6-privacy=0"})
+    assert "CafeFreeWiFi" not in out["no_fix"] and out["no_fix"].endswith("is set up by netplan, which writes "
+                                                                          "ip6-privacy=0")
+    assert r.result({"severity_reason": "on mint-box", "summary": ""})["severity_reason"] == "on [redacted]"
+
+
 def test_names_the_user_chose_are_redacted_everywhere(tmp_path):
     """Evidence marked `named` (a key file's or wallet's name) is redacted in labels and in every text; the default
     names say nothing and stay."""
