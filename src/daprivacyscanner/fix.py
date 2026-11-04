@@ -78,6 +78,28 @@ def _shown(path: str) -> str:
     return "~" + path[len(home):] if path.startswith(home + "/") else path
 
 
+def make_writable(folder: Path) -> None:
+    """Every folder under `folder` made its owner's to change (u+rwx), so that shutil.rmtree can delete what is in it:
+    it can't in a read-only folder (Go's module cache, a tarball's, a program's own chmod), and a copy that keeps its
+    folders' modes (a Box's program, a trial on the disk) stayed for good: a Box couldn't be reverted ("couldn't be
+    removed completely"), nor its backup forgotten. For the app's own copies only. Never through a link, never onto
+    another filesystem."""
+    try:
+        dev = os.stat(folder, follow_symlinks=False).st_dev
+    except OSError:
+        return
+    for _top, dirs, _files, dfd in os.fwalk(folder, follow_symlinks=False):
+        for d in list(dirs):
+            try:
+                st = os.stat(d, dir_fd=dfd, follow_symlinks=False)
+                if st.st_dev != dev or not stat.S_ISDIR(st.st_mode):
+                    dirs.remove(d)
+                elif stat.S_IMODE(st.st_mode) & 0o700 != 0o700:
+                    os.chmod(d, stat.S_IMODE(st.st_mode) | 0o700, dir_fd=dfd)
+            except OSError:
+                dirs.remove(d)
+
+
 def remove_made_dirs(dirs: list[str]) -> list[str]:
     """The folders a fix made, removed again deepest first, each only while it is empty: one that holds
     anything added since stays, with everything in it, and the note says what (a folder that has become a
@@ -1700,6 +1722,7 @@ def _drop_unrecorded(backups: Path, records: list[dict]) -> None:
         if str(p) in named:
             continue
         if p.is_dir() and not p.is_symlink():
+            make_writable(p)
             shutil.rmtree(p, ignore_errors=True)
         else:
             p.unlink(missing_ok=True)
@@ -1970,6 +1993,7 @@ class CopyTree(Action):
         try:
             shutil.copytree(self.source, self.dest, symlinks=True)
         except OSError:
+            make_writable(self.dest)
             shutil.rmtree(self.dest, ignore_errors=True)
             if backup is not None:
                 shutil.move(str(backup), str(self.dest))
@@ -2001,6 +2025,7 @@ class CopyTree(Action):
                 return RevertResult(False, f"{record['display']} is a later copy, not this one: revert the later change "
                                            "first", True)
         if there:
+            make_writable(p)                    # the program's own read-only folders, copied with their modes
             shutil.rmtree(p, ignore_errors=True)
             if p.exists():
                 return RevertResult(False, f"{record['display']} couldn't be removed completely")

@@ -9,7 +9,7 @@ import os
 import time
 from pathlib import Path
 
-from .fix import ACTION_KINDS, IRREVERSIBLE_KINDS, ROOT_KINDS
+from .fix import ACTION_KINDS, IRREVERSIBLE_KINDS, ROOT_KINDS, make_writable
 from .history import locked, write_json
 from .host import Host
 from .paths import PathResolver
@@ -312,6 +312,7 @@ class UndoLog:
                 drop = (everything or e["state"] == "reverted" or (e["state"] == "failed" and not left)
                         or e["applied"] < cutoff)
                 if drop:
+                    make_writable(self.backup_dir(e["id"]))      # a Box's program kept there, read-only folders and all
                     shutil.rmtree(self.backup_dir(e["id"]), ignore_errors=True)
                     gone += 1
                 else:
@@ -319,6 +320,7 @@ class UndoLog:
             if everything:
                 # all of the backups, also those no entry names (a step that failed after taking its copy, before that
                 # was cleared up: a plain copy of known_hosts among them), and a log kept aside as unreadable
+                make_writable(self.dir / "backups")
                 shutil.rmtree(self.dir / "backups", ignore_errors=True)
                 for f in self.dir.glob(f"{UNREADABLE}*"):
                     f.unlink(missing_ok=True)

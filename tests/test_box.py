@@ -185,6 +185,38 @@ def test_copying_a_tree_refuses_a_place_that_is_taken(tmp_path, host):
     assert CopyTree.revert(rec, ctx).message.endswith("already gone")
 
 
+def test_a_program_with_read_only_folders_is_removed_on_revert_and_its_backup_forgotten(tmp_path, host):
+    """A program's tree copied with its modes (a tarball's, Go's module cache): shutil.rmtree couldn't delete what is
+    in its read-only folders, so the Box couldn't be reverted ("couldn't be removed completely"), nor the copy a newer
+    program replaced forgotten with History."""
+    from daprivacyscanner.fix import FixPlan, apply_plan, revert_entry
+    from daprivacyscanner.undo import UndoLog
+    for v in ("v1", "v2"):
+        (tmp_path / v / "lib/cache").mkdir(parents=True)
+        (tmp_path / v / "lib/cache/mod").write_text(v)
+        os.chmod(tmp_path / v / "lib/cache", 0o500)
+        os.chmod(tmp_path / v / "lib", 0o555)
+    log = UndoLog(host.home / ".local/state/daprivacyscanner")
+    dest = host.home / "Boxes/prog/app"
+    dest.parent.mkdir(parents=True)
+    try:
+        one = apply_plan(FixPlan("app.boxes", "Box", [CopyTree(tmp_path / "v1", dest, "~/Boxes/prog/app", "prog")]),
+                         host, log)
+        two = apply_plan(FixPlan("app.boxes", "Box", [CopyTree(tmp_path / "v2", dest, "~/Boxes/prog/app", "prog",
+                                                               replace=True)]), host, log)
+        assert one.ok and two.ok and (dest / "lib/cache/mod").read_text() == "v2"
+        assert all(r.ok for r in revert_entry(log.get(two.entry_id), host, log)) and (dest / "lib/cache/mod").read_text() == "v1"
+        assert all(r.ok for r in revert_entry(log.get(one.entry_id), host, log)) and not dest.exists()
+        apply_plan(FixPlan("app.boxes", "Box", [CopyTree(tmp_path / "v1", dest, "~/Boxes/prog/app", "prog")]), host, log)
+        apply_plan(FixPlan("app.boxes", "Box", [CopyTree(tmp_path / "v2", dest, "~/Boxes/prog/app", "prog",
+                                                         replace=True)]), host, log)
+        assert log.forget(everything=True) and not (log.dir / "backups").exists()
+    finally:
+        for p in [*tmp_path.rglob("*")]:
+            if p.is_dir() and not p.is_symlink():
+                os.chmod(p, 0o700)
+
+
 def _two_copies(tmp_path, host):
     """A Box set up with its program, then a newer program of the same name kept in it: two History entries."""
     from daprivacyscanner.fix import FixPlan, MakeDir, apply_plan
