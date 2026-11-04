@@ -5139,7 +5139,9 @@ class _Watched:
         elif fs["top"]:
             if not private:
                 raise OSError(errno.EXDEV, "its top level can't be reached here")
-            at = self.made = f"{WATCH_MOUNT_DIR}/{index}"
+            # named by this process: another copy's watch has a child of its own, whose folders are no one else's
+            # to remove (_watch_forget)
+            at = self.made = f"{WATCH_MOUNT_DIR}/{os.getpid()}-{index}"
             os.makedirs(at, mode=0o700, exist_ok=True)
             # nosuid, nodev, noexec, noatime: it is only looked through
             if libc.mount(fs["source"].encode(), at.encode(), fs["fstype"].encode(), 2 | 4 | 8 | 1024, b"subvolid=5"):
@@ -5459,13 +5461,26 @@ def _watch_forget() -> None:
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait()
-    # the folders its private mounts were made on (never the mounts, which ended with it): empty ones removed, one
-    # still mounted (another copy's watch, in its own mount namespace: rmdir refuses a mount point) left as it is
+    # the folders its private mounts were made on (never the mounts, which ended with it), and those of any watch
+    # whose process has ended (killed before it could remove them). Never the folders of a watch still running (another
+    # copy's, with a helper of its own): rmdir doesn't refuse a mount point that is one only in another mount namespace,
+    # it detaches the mount there (Linux 3.18 and later), and that watch would no longer see the paths under it
     try:
         names = os.listdir(WATCH_MOUNT_DIR)
     except OSError:
         return
     for name in names:
+        m = re.fullmatch(r"(\d+)-\d+", name)
+        if m is None:
+            continue
+        if proc is None or int(m[1]) != proc.pid:
+            try:
+                os.kill(int(m[1]), 0)
+                continue                                # its watch is running
+            except ProcessLookupError:
+                pass
+            except OSError:
+                continue
         try:
             os.rmdir(os.path.join(WATCH_MOUNT_DIR, name))
         except OSError:
@@ -5506,8 +5521,21 @@ def watch_begin(args: dict) -> dict:
     if ROOT:
         raise Refused("the watch runs on the real system only")
     _watch_forget()                                 # and the folders an earlier one left, if it was killed
-    proc = subprocess.Popen([sys.executable, "-I", os.path.abspath(__file__), "--watch"], stdin=subprocess.PIPE,
-                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, close_fds=True)
+    # the child runs the code this helper read as it started (own_source), from a memory file only root holds, never
+    # this file as it is now: until the helper is installed that is a copy in the user's runtime folder, which the
+    # user, anything running as them, or another copy of the app (another version) can have changed since
+    try:
+        code = os.memfd_create("daprivacyscanner-watch", os.MFD_CLOEXEC)
+    except (AttributeError, OSError):
+        raise Refused("the watch couldn't be started") from None
+    try:
+        with os.fdopen(os.dup(code), "wb") as f:
+            f.write(own_source())
+        proc = subprocess.Popen([sys.executable, "-I", f"/proc/self/fd/{code}", "--watch"], stdin=subprocess.PIPE,
+                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, close_fds=True,
+                                pass_fds=(code,))
+    finally:
+        os.close(code)
     _WATCH.update({"proc": proc, "uid": uid})
     try:
         proc.stdin.write(json.dumps({"units": units}) + "\n")

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import os
 import struct
+import subprocess
 import time
 from pathlib import Path
 
@@ -276,6 +277,71 @@ def test_the_watch_is_refused_off_the_real_system(tmp_path, monkeypatch):
     r = helper.handle('{"id": 1, "action": "watch_begin", "args": {"units": ["daprivacyscanner-watch-ab.scope"]}}')
     assert not r["ok"] and "real system" in r["error"]
     assert not helper.handle('{"id": 2, "action": "watch_end", "args": {}}')["ok"]
+
+
+def test_ending_a_watch_leaves_another_watchs_folders_alone(tmp_path, monkeypatch):
+    """Each copy of the app has a helper and a watch of its own, each child mounting btrfs top levels on folders
+    in the one /run: rmdir of a folder that is a mount point only in another namespace detaches that mount, so a
+    watch removes its own child's folders and those of watches that have ended, never a running one's."""
+    d = tmp_path / "watch"
+    monkeypatch.setattr(helper, "WATCH_MOUNT_DIR", str(d))
+    dead = 2 ** 22 + 12345                                         # above pid_max's default: no such process
+    mine = subprocess.Popen(["true"])
+    mine.wait()
+    for name in (f"{os.getpid()}-0", f"{os.getpid()}-1", f"{dead}-0", f"{mine.pid}-0", "0"):
+        (d / name).mkdir(parents=True)
+
+    class Proc:
+        pid, stdin = mine.pid, open(os.devnull, "w")
+
+        def wait(self, timeout=None):
+            return 0
+
+    monkeypatch.setattr(helper, "_WATCH", {"proc": Proc(), "uid": 1000})
+    helper._watch_forget()
+    assert sorted(p.name for p in d.iterdir()) == ["0", f"{os.getpid()}-0", f"{os.getpid()}-1"]
+
+
+def test_the_watchs_child_runs_the_code_the_helper_started_with(tmp_path, monkeypatch):
+    """Until the helper is installed it runs from a copy in the user's runtime folder, which anything running as
+    the user (or another copy of the app) can change after the password was given: the watch's child, which runs
+    as root, gets what the helper read as it started, never the file as it is when the watch begins."""
+    copy = tmp_path / "helper.py"
+    copy.write_bytes(b"# the code that was authorised\n")
+    monkeypatch.setattr(helper, "SELF", str(copy))
+    monkeypatch.setattr(helper, "_SOURCE", None)
+    helper.own_source()                                             # as the helper starts
+    copy.write_bytes(b"import os; os.system('id > /tmp/owned')\n")  # changed afterwards, as the user
+    monkeypatch.setattr(helper, "ROOT", "")
+    monkeypatch.setattr(helper, "_must_be_root", lambda: None)
+    monkeypatch.setattr(helper, "CALLER", (1000, 1000, "/home/alice"))
+    monkeypatch.setattr(helper, "WATCH_MOUNT_DIR", str(tmp_path / "watch"))
+    monkeypatch.setattr(helper, "_WATCH", {})
+    r, w = os.pipe()
+    os.write(w, b'{"watched": [], "skipped": []}\n')
+    os.close(w)
+    seen = {}
+
+    class Proc:
+        def __init__(self):
+            self.stdin, self.stdout = open(os.devnull, "w"), os.fdopen(r, "r")
+
+        def poll(self):
+            return None
+
+    def popen(argv, **kw):
+        (fd,) = kw["pass_fds"]
+        assert argv[-2] == f"/proc/self/fd/{fd}" and argv[1] == "-I" and argv[-1] == "--watch"
+        with open(argv[-2], "rb") as f:
+            seen["code"] = f.read()
+        seen["proc"] = Proc()
+        return seen["proc"]
+
+    monkeypatch.setattr(helper.subprocess, "Popen", popen)
+    assert helper.watch_begin({"units": ["daprivacyscanner-watch-ab.scope"]})["watched"] == []
+    assert seen["code"] == b"# the code that was authorised\n"
+    seen["proc"].stdin.close()
+    seen["proc"].stdout.close()
 
 
 # ------------------------------------------------------------------ the menu, and the tool
