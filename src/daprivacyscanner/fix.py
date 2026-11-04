@@ -1750,7 +1750,9 @@ class ClearInFile(Action):
 
 @action
 class ChmodPath(Action):
-    """A file or folder's permissions."""
+    """A file or folder's permissions. A link (a dotfiles manager's ~/.netrc) is followed, as chmod follows it: the
+    file it points to is the one changed, and the one recorded, so History and reverting read and set that file's
+    mode, never the link's own (always 777, which reverting wrote back through the link: a world-writable file)."""
     kind = "chmod"
 
     @staticmethod
@@ -1761,15 +1763,20 @@ class ChmodPath(Action):
         self.path, self.mode, self.display = path, mode, display
 
     def describe(self) -> str:
-        return shell(["chmod", f"{self.mode:o}", self.display])
+        cmd = shell(["chmod", f"{self.mode:o}", self.display])
+        if self.path.is_symlink():
+            return f"{cmd}   (a link: the file it points to, {_shown(str(self.path.resolve()))}, is the one changed)"
+        return cmd
 
     def apply(self, ctx: FixContext) -> dict:
-        before = stat.S_IMODE(os.lstat(self.path).st_mode)
-        os.chmod(self.path, (before & ~0o777) | self.mode)
-        did(shell(["chmod", f"{self.mode:o}", str(self.path)]))
-        after = stat.S_IMODE(os.lstat(self.path).st_mode)
-        return {"kind": self.kind, "path": str(self.path), "display": self.display, "before": before, "after": after,
-                "text": f"{self.display}: mode {before:o} → {after:o}"}
+        real = self.path.resolve(strict=True) if self.path.is_symlink() else self.path
+        before = stat.S_IMODE(os.stat(real).st_mode)
+        os.chmod(real, (before & ~0o777) | self.mode)
+        did(shell(["chmod", f"{self.mode:o}", str(real)]))
+        after = stat.S_IMODE(os.stat(real).st_mode)
+        display = self.display if real == self.path else f"{self.display} (→ {_shown(str(real))})"
+        return {"kind": self.kind, "path": str(real), "display": display, "before": before, "after": after,
+                "text": f"{display}: mode {before:o} → {after:o}"}
 
     @staticmethod
     def ran(record: dict) -> list[str]:
@@ -1778,7 +1785,7 @@ class ChmodPath(Action):
     @staticmethod
     def changed_back(record: dict, host: Host) -> str | None:
         try:
-            now = stat.S_IMODE(os.lstat(Path(record["path"])).st_mode)
+            now = stat.S_IMODE(os.stat(Path(record["path"])).st_mode)
         except FileNotFoundError:
             return f"{record['display']} no longer exists"
         return f"{record['display']} is mode {now:o} again (the fix set {record['after']:o})" \
@@ -1788,9 +1795,14 @@ class ChmodPath(Action):
     def revert(record: dict, ctx: FixContext, force: bool = False) -> RevertResult:
         p = Path(record["path"])
         try:
-            now = stat.S_IMODE(os.lstat(p).st_mode)
+            st = os.lstat(p)
         except FileNotFoundError:
             return RevertResult(False, f"{record['display']} no longer exists")
+        if stat.S_ISLNK(st.st_mode):
+            # the fix changed a file, never a link (an entry made before links were followed recorded the link, and
+            # its own mode, 777): chmod would set the file it points to
+            return RevertResult(False, f"{record['display']} is a link: left as it is")
+        now = stat.S_IMODE(st.st_mode)
         if now not in (record["after"], record["before"]) and not force:
             return RevertResult(False, f"{record['display']}'s permissions have changed since (now {now:o})", True)
         os.chmod(p, record["before"])

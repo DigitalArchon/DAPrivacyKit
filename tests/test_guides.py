@@ -243,6 +243,24 @@ def test_plaintext_credentials_chmod(cat, tmp_path):
     assert (host.home / ".git-credentials").stat().st_mode & 0o777 == 0o644
 
 
+def test_plaintext_credentials_chmod_through_a_link(cat, tmp_path):
+    """~/.netrc a dotfiles manager's link: the file it points to is changed and recorded. The link's own mode (777)
+    was recorded as the mode before, History said 777 → 777, and reverting made the credentials world-writable."""
+    host = make_host(tmp_path, home_files={"dotfiles/netrc": "machine example.org login bob password s3cret\n"})
+    target = host.home / "dotfiles/netrc"
+    target.chmod(0o644)
+    (host.home / ".netrc").symlink_to(target)
+    plan = options(build(cat, host, "auth.plaintext_credentials"))["Restrict to you (chmod 600)"]
+    assert "a link: the file it points to" in plan.dry_run()
+    log, res = apply(host, plan)
+    [rec] = log.get(res.entry_id)["records"]
+    assert target.stat().st_mode & 0o777 == 0o600 and (host.home / ".netrc").is_symlink()
+    assert rec["path"] == str(target) and (rec["before"], rec["after"]) == (0o644, 0o600)
+    assert rec["text"].endswith("mode 644 → 600")
+    revert(host, log, res)
+    assert target.stat().st_mode & 0o777 == 0o644
+
+
 def test_firefox_prefs_set_while_closed_and_reverted_alone(cat, tmp_path):
     host = make_host(tmp_path)
     prof = firefox(host.home, pref("browser.startup.page", 3))
