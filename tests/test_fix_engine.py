@@ -6,7 +6,7 @@ from daprivacyscanner.fix import (ClearInFile, Command, DeleteFiles, FixPlan, GS
                                 apply_plan, revert_entry)
 from daprivacyscanner.undo import UndoLog
 
-from conftest import make_host
+from conftest import make_host, skip_if_root
 from fakes import FakeGSettings, FakeKwriteconfig, fail
 
 SCREEN = ("org.gnome.desktop.screensaver", "lock-enabled")
@@ -130,6 +130,22 @@ def test_failure_rolls_back_earlier_steps(tmp_path):
     assert s["steps"][1]["revert_ran"] == ["gsettings set org.gnome.desktop.session idle-delay 'uint32 0'"]
     assert log.undone({"x": {"status": "fail", "effective_severity": 3}}) == []     # a failed attempt fixed nothing
     assert log.forget() == 1
+
+
+@skip_if_root
+def test_a_write_that_failed_leaves_no_copy_in_the_backups(tmp_path):
+    """The file was copied into History's backups, then writing it failed (its folder read-only): the copy, which no
+    record names, stayed there with the failed entry (with none, when it was the first step: for good)."""
+    host, gs, log = setup(tmp_path, home_files={".config/app/token.conf": "TOKEN=abc\n"})
+    folder = host.home / ".config/app"
+    folder.chmod(0o555)
+    try:
+        res = apply_plan(FixPlan("x", "t", [GSettingsSet(*SCREEN, "true"), WriteFile(
+            folder / "token.conf", lambda old: old + "umask 077\n", "edit", "~/.config/app/token.conf")]), host, log)
+    finally:
+        folder.chmod(0o755)
+    assert not res.ok and log.get(res.entry_id)["state"] == "failed" and gs.values[SCREEN] == "false"
+    assert not log.backup_dir(res.entry_id).exists()
 
 
 def test_an_attempt_that_changed_nothing_leaves_no_entry(tmp_path):

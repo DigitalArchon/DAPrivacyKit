@@ -252,6 +252,10 @@ class UndoLog:
                 gone += 1
             else:
                 keep.append(e)
+        if everything:
+            # all of the backups, also those no entry names (a step that failed after taking its copy, before that
+            # was cleared up: a plain copy of known_hosts among them)
+            shutil.rmtree(self.dir / "backups", ignore_errors=True)
         if gone:
             self._save(keep)
         return gone

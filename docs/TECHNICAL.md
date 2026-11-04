@@ -290,7 +290,9 @@ reverted another fix of the same check since.
 `apply_plan` rolls a failed attempt back step by step (each rollback's commands collected as a revert's
 are) and, when any step had run, keeps the attempt as a `failed` entry with its `error`, the step it failed
 at (`failed_step`), each step marked reverted with `revert_ran`, and a step that couldn't be put back left
-revertible from History. An attempt that changed nothing leaves no entry. `/api/fix/apply` and
+revertible from History. An attempt that changed nothing leaves no entry. A copy the failing step had taken
+into the backups, which no record names, is deleted (a plain copy of known_hosts when ssh-keygen failed:
+nothing would ever have forgotten or expired it); "Forget everything" empties the backups folder whole. `/api/fix/apply` and
 `/api/easy/apply` answer with each entry as made (`UndoLog.summary`), which the page shows at once
 (`doneDialog`). "Export everything" (`report.changes_of`) carries all of it: commands, lines, files,
 folders, what reverting ran, `via`, failures.

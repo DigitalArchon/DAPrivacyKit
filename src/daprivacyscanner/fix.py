@@ -1656,6 +1656,7 @@ def apply_plan(plan: FixPlan, host: Host, log: "UndoLog", confirmed_irreversible
             if res.ok and (res.ran or ran):
                 rec["revert_ran"] = res.ran or ran
             rolled.append(res.message if res.ok else f"NOT put back: {res.message}")
+        _drop_unrecorded(ctx.backups, records)
         if records:
             # the attempt changed something: History keeps it, as failed, with what each step did and what
             # putting it back did, so the user can see what happened (and revert a step that couldn't be)
@@ -1671,6 +1672,29 @@ def apply_plan(plan: FixPlan, host: Host, log: "UndoLog", confirmed_irreversible
     log.add(entry_id, plan.check_id, plan.title, records, extra={"via": dict(plan.via) or {"fix": True},
                                                                  "also": list(plan.also) or None})
     return ApplyResult(True, entry_id, [r["text"] for r in records])
+
+
+def _drop_unrecorded(backups: Path, records: list[dict]) -> None:
+    """A failed attempt's backups that no record names, deleted, and its backup folder once empty: a step that failed
+    after taking its copy (ssh-keygen failing once the plain copy of known_hosts was taken) left one that neither
+    History, its 7 days nor forgetting ever saw, kept for good when the attempt had no entry."""
+    import shutil
+    named = {r["backup"] for r in records if r.get("backup")}
+    try:
+        found = list(backups.iterdir())
+    except FileNotFoundError:
+        return
+    for p in found:
+        if str(p) in named:
+            continue
+        if p.is_dir() and not p.is_symlink():
+            shutil.rmtree(p, ignore_errors=True)
+        else:
+            p.unlink(missing_ok=True)
+    try:
+        backups.rmdir()
+    except OSError:
+        pass                                    # it holds the copies the attempt's records name
 
 
 def revert_entry(entry: dict, host: Host, log: "UndoLog", force: bool = False) -> list[RevertResult]:

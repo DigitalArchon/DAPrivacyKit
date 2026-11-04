@@ -139,6 +139,27 @@ def test_known_hosts_plain_copy_goes_after_a_week_also_once_reverted(cat, tmp_pa
     assert log.expire_backups(now=time.time() + 8 * 86400) == 1 and not os.path.exists(backup)
 
 
+def test_a_known_hosts_fix_that_fails_keeps_no_plain_copy(cat, tmp_path):
+    """ssh-keygen failing once the plain copy was taken: the attempt changed nothing, so it has no History entry, and
+    the copy, which no record named, was kept for good, out of reach of the 7 days and of Forget everything."""
+    from daprivacyscanner.fix import FixPlan, HashKnownHosts, apply_plan
+    from daprivacyscanner.undo import UndoLog
+    from fakes import fail
+    host = make_host(tmp_path, home_files={".ssh/known_hosts": KH})
+    host.runner.handlers["ssh-keygen"] = lambda argv: fail("ssh-keygen: something went wrong")
+    log = UndoLog(host.home / ".local/state/daprivacyscanner")
+    res = apply_plan(FixPlan("auth.ssh_known_hosts_plain", "Hash", [
+        HashKnownHosts(host.home / ".ssh/known_hosts", "~/.ssh/known_hosts")]), host, log)
+    assert not res.ok and res.entry_id is None and log.entries() == []
+    assert [p for p in (log.dir / "backups").rglob("*") if p.is_file()] == []
+    # one left by a version before this: Forget everything deletes it too
+    stray = log.dir / "backups/0123456789abcdef"
+    stray.mkdir(parents=True)
+    (stray / "x-known_hosts").write_text(KH)
+    log.forget(everything=True)
+    assert not stray.exists()
+
+
 def test_known_hosts_plain_copy_can_be_deleted_from_history(cat, tmp_path):
     host = make_host(tmp_path, home_files={".ssh/known_hosts": KH})
     host.runner.handlers["ssh-keygen"] = fake_ssh_keygen
