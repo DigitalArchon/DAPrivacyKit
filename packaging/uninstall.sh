@@ -157,6 +157,65 @@ else
     say "  none"
 fi
 
+# ------------------------------------------------------------------ the RAM disks' folders
+# A restart or a logout ends ~/RAMDisk or ~/TempBrowser and leaves its folder empty and read-only (0500), for the app
+# to put back as it starts (ramdisk.put_back): without the app it would stay so. What the folder was before comes
+# from the record the open put on it (helper.RAMDISK_XATTR), checked as the app and its helper check it: the folder is
+# removed when the app made it, and gets its permissions back otherwise. "show" says which, "do" does it.
+ramdisk_left() {
+    python3 -I -c '
+import json, os, stat, sys
+path, act, name = sys.argv[1], sys.argv[2] == "do", "user.daprivacyscanner.ramdisk"
+try:
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+except OSError:
+    sys.exit()                              # not there, or a link: not what an open left
+st = os.fstat(fd)
+if st.st_uid != os.getuid() or os.listdir(fd) or os.path.ismount(path):
+    sys.exit()
+try:
+    rec = json.loads(os.getxattr(fd, name))
+except (OSError, ValueError):
+    rec = None
+mode = rec.get("folder_mode") if isinstance(rec, dict) else None
+if not isinstance(rec, dict) or rec.get("created") not in (True, False) or not (
+        mode is None or isinstance(mode, int) and not isinstance(mode, bool) and 0 <= mode <= 0o7777):
+    if stat.S_IMODE(st.st_mode) != 0o500:   # no record of an open, nor the mode it gives: a folder of theirs
+        sys.exit()
+    rec, mode = {"created": False}, None
+if rec["created"]:
+    if act:
+        os.rmdir(path)
+    print(f"removed {path}" if act else f"{path} (the app made it: it is removed)")
+else:
+    mode = mode or 0o700
+    if act:
+        os.fchmod(fd, mode)
+        try:
+            os.removexattr(fd, name)
+        except OSError:
+            pass
+    print(f"put back the permissions of {path} ({mode:o})" if act else f"{path} (its permissions go back to {mode:o})")
+' "$@" 2>/dev/null
+}
+say "Folders a RAM disk left read-only, as a restart or a logout ended it (the app puts them back as it starts):"
+ramdisks=()
+if command -v python3 >/dev/null; then
+    for d in "$HOME/RAMDisk" "$HOME/TempBrowser"; do
+        how="$(ramdisk_left "$d" show)"
+        [ -z "$how" ] || { say "  $how"; ramdisks+=("$d"); }
+    done
+fi
+if [ "${#ramdisks[@]}" -gt 0 ]; then
+    if confirm "  Put them back as they were?"; then
+        for d in "${ramdisks[@]}"; do
+            how="$(ramdisk_left "$d" do)" && [ -n "$how" ] && say "  $how" || say "  $d couldn't be put back."
+        done
+    fi
+else
+    say "  none"
+fi
+
 # ------------------------------------------------------------------ the app's own data
 say "The app's data (History and its backups, the last report, accepted findings) and settings:"
 data=()

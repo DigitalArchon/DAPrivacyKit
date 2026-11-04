@@ -150,3 +150,42 @@ def test_kept_browser_downloads_go_even_with_keep_data(tmp_path):
     assert r.returncode == 0 and not archive.parents[1].exists()
     assert (home / ".config/daprivacyscanner/ui.json").exists()                  # what --keep-data keeps, kept
     assert f'$CACHE/daprivacyscanner/{kept.FOLDER}' in SCRIPT.read_text()
+
+
+def test_a_ram_disks_folder_left_read_only_is_put_back(tmp_path):
+    """A restart or a logout ends ~/TempBrowser or ~/RAMDisk and leaves its folder empty, read-only (0500) and marked
+    with the open's record, for the app to put back as it starts: without the app it stayed so. The script does what
+    the app would (ramdisk.put_back): it removes the folder the app made, gives a folder of the user's its permissions
+    back, and leaves alone an empty folder the user made and one with something in it."""
+    import pytest
+
+    from daprivacyscanner import helper
+
+    home, env, _ = _home(tmp_path)
+    try:
+        os.setxattr(home, "user.daprivacyscanner.test", b"1")
+    except OSError:
+        pytest.skip("no user extended attributes on this filesystem")
+
+    def left(name: str, created: bool, mode: int | None, files=()):
+        d = home / name
+        d.mkdir()
+        for f in files:
+            (d / f).write_text("x")
+        os.setxattr(d, helper.RAMDISK_XATTR, json.dumps({"created": created, "folder_mode": mode}).encode())
+        d.chmod(0o500)
+        return d
+    browser, disk = left("TempBrowser", True, None), left("RAMDisk", False, 0o750)
+    r = _run(env, "--dry-run")
+    assert f"{browser} (the app made it: it is removed)" in r.stdout and f"{disk} (its permissions go back to 750)" in r.stdout
+    assert browser.is_dir() and (disk.stat().st_mode & 0o777) == 0o500                     # a dry run changes nothing
+    r = _run(env, "--yes")
+    assert r.returncode == 0 and f"removed {browser}" in r.stdout and not browser.exists()
+    assert (disk.stat().st_mode & 0o777) == 0o750 and helper.RAMDISK_XATTR not in os.listxattr(disk)
+    disk.rmdir()
+    browser, disk = left("TempBrowser", True, None, files=["kept.txt"]), home / "RAMDisk"     # not empty: not left so
+    disk.mkdir(mode=0o700)                                                                    # the user's own
+    r = _run(env, "--yes")
+    assert r.returncode == 0 and (browser / "kept.txt").exists() and disk.is_dir()
+    assert "Folders a RAM disk left read-only" in r.stdout and str(browser) not in r.stdout
+    browser.chmod(0o700)                                                                       # so pytest can clean up
