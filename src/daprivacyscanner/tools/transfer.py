@@ -520,11 +520,17 @@ def _add_fd(host: Host, folder: str, sfd: int, src_name: str, clean: bool,
                 _copy(sfd, sdir, name, 0o600)
             finally:
                 os.close(sdir)
-            res = metadata.clean(host, stage_path / name, check_after=False)
+            res = metadata.clean(host, stage_path / name)
             if settled is not None and not settled():
                 raise StillArriving(f"{src_name} changed while it was cleaned.")
             if not res.ok:
                 raise TransferError(f"{src_name} couldn't be cleaned: {res.message}")
+            # what the cleaned copy still says, looked at as the Outbox does: a copy with where it was made, who
+            # made it, the device or a title or comment left in it went into To upload as cleaned
+            left = res.remaining.telling() if res.remaining else []
+            if left:
+                raise TransferError(f"{src_name}'s cleaned copy still says {metadata.says(left)}: mat2 couldn't remove "
+                                    "all of it, so it wasn't added.")
             cfd = os.open(res.output, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
             try:
                 final = _copy(cfd, ufd, name, 0o600)

@@ -315,6 +315,12 @@ def _tmp_beside(folder: Path, runtime: str | None = None):
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def says(groups: list[str]) -> str:
+    """What `FileMeta.telling` found, in words: "where it was made and who made it"."""
+    words = [SAYS[g] for g in groups]
+    return words[0] if len(words) == 1 else ", ".join(words[:-1]) + " and " + words[-1]
+
+
 def clean(host: Host, path: Path, lightweight: bool = False, check_after: bool = True) -> CleanResult:
     """A cleaned copy beside the file, made by mat2. Never overwrites anything: refuses when the
     copy's name is taken. Its callers (the Outbox, the browser tool) give it a working copy of their
@@ -929,10 +935,8 @@ def run_outbox(host: Host, folder: Path | None = None, settle: float = 2.0) -> O
             res = clean(host, work)
             left = res.remaining.telling() if res.ok and res.remaining else []
             if left:
-                words = [SAYS[g] for g in left]
-                what = words[0] if len(words) == 1 else ", ".join(words[:-1]) + " and " + words[-1]
-                res = CleanResult(work, False, message=f"Its cleaned copy still says {what}: mat2 couldn't remove all "
-                                                       f"of it, so it wasn't put in {CLEANED}.")
+                res = CleanResult(work, False, message=f"Its cleaned copy still says {says(left)}: mat2 couldn't remove "
+                                                       f"all of it, so it wasn't put in {CLEANED}.")
             if res.ok and res.output:
                 (folder / CLEANED).mkdir(mode=0o700, exist_ok=True)
                 (folder / ORIGINALS).mkdir(mode=0o700, exist_ok=True)

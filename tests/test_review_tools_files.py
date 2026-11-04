@@ -307,6 +307,34 @@ def test_a_copy_that_pauses_isn_t_cleaned_half_way(host, outbox):
     assert (up / "photo.jpg").read_bytes() == b"whole" and (box / "Originals/photo.jpg").read_bytes() == b"whole+gps"
 
 
+def test_a_cleaned_copy_that_still_says_who_made_it_never_reaches_to_upload(host, outbox):
+    """As the permanent Outbox now does: what mat2 couldn't remove (here the author, which this fake mat2 leaves in)
+    kept the copy out of the browser's reach, and the original goes to "Not cleaned"."""
+    from daprivacyscanner.host import CommandResult
+    box, run, _ = outbox
+    cleaning = host.runner.handlers["mat2"]
+
+    def mat2(argv):
+        if "--show" in argv:
+            p = Path(argv[-1])
+            said = "    Author: Ann Example\n" if b"+author" in p.read_bytes() else ""
+            return CommandResult(tuple(argv), 0, f"[+] Metadata for {p}:\n{said}" if said else
+                                 f"  No metadata found in {p}.\n")
+        return cleaning(argv)
+    host.runner.handlers["mat2"] = mat2
+    (box / "letter.odt").write_bytes(b"text+gps+author")
+    (box / "photo.jpg").write_bytes(b"photo+gps")
+    for f in ("letter.odt", "photo.jpg"):
+        old(box / f)
+    run()
+    run()
+    up = T.uploads_dir(host, "tor-browser")
+    assert sorted(p.name for p in up.iterdir()) == ["photo.jpg"]
+    assert (box / "Not cleaned/letter.odt").read_bytes() == b"text+gps+author"
+    [said] = [r for r in T.recent("tor-browser") if r["name"] == "letter.odt"]
+    assert said["what"] == "not_cleaned" and "still says who made it" in said["detail"]
+
+
 def test_a_file_that_changes_while_it_is_cleaned_goes_no_further(host, outbox):
     box, run, hooks = outbox
     (box / "photo.jpg").write_bytes(b"part+gps")
