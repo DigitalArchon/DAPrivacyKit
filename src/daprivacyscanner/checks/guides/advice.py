@@ -32,11 +32,14 @@ def kernel_option_steps(scan, args: str) -> list[Step]:
                     f"{param}= there), then write the entries again.")
             cmds = ["sudoedit /etc/default/limine", "sudo limine-update"]
         else:
-            text = ("Limine's entries are made by limine-entry-tool: a drop-in file adds the option to every kernel's "
-                    "entry, after the others (the kernel uses the last one given), and limine-update writes them "
-                    "again.")
+            text = ("Limine's entries are made by limine-entry-tool: a drop-in file of its own adds the option to every "
+                    "kernel's entry, after the others (the kernel uses the last one given), and limine-update writes "
+                    "them again.")
+            # a file for each option: tee replaces the file, and with one for all of them a second guide's option
+            # took the first one's out at the next limine-update
             cmds = ["sudo mkdir -p /etc/limine-entry-tool.d",
-                    f"echo 'KERNEL_CMDLINE[default]+={args}' | sudo tee /etc/limine-entry-tool.d/60-daprivacyscanner.conf",
+                    f"echo 'KERNEL_CMDLINE[default]+={args}' | "
+                    f"sudo tee /etc/limine-entry-tool.d/60-daprivacyscanner-{param}.conf",
                     "sudo limine-update"]
     elif has("/etc/sdboot-manage.conf"):
         text = ("sdboot-manage writes the systemd-boot entries: add the option at the end of the LINUX_OPTIONS line of "

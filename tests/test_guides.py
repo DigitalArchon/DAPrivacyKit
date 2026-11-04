@@ -124,6 +124,18 @@ def test_kernel_option_with_limine(cat, tmp_path):
     assert step.commands == ["sudoedit /etc/default/limine", "sudo limine-update"] and "inside its quotes" in step.text
 
 
+def test_kernel_options_with_limine_each_have_a_drop_in_of_their_own(cat, tmp_path):
+    """tee replaces the file it writes: with one drop-in for every option, a second guide's (init_on_alloc after
+    init_on_free) took the first one's option out at the next limine-update."""
+    from daprivacyscanner.checks.guides.advice import kernel_option_steps
+    host = make_host(tmp_path, files={"/usr/bin/limine-update": "", "/etc/os-release": "ID=cachyos\nID_LIKE=arch\n",
+                                      "/etc/default/limine": 'ENABLE_UKI=yes\n'})
+    written = [kernel_option_steps(make_scan(host), a)[0].commands[1].rsplit(" ", 1)[1]
+               for a in ("init_on_free=1", "init_on_alloc=1", "intel_iommu=on", "lsm=landlock,lockdown,yama")]
+    assert written == [f"/etc/limine-entry-tool.d/60-daprivacyscanner-{p}.conf"
+                       for p in ("init_on_free", "init_on_alloc", "intel_iommu", "lsm")]
+
+
 def test_secure_boot_with_limine_enrols_its_config(cat, tmp_path):
     host = make_host(tmp_path, files={"/usr/bin/limine-update": "", "/usr/bin/sbctl-batch-sign": "",
                                       "/etc/os-release": "ID=cachyos\nID_LIKE=arch\n"})
