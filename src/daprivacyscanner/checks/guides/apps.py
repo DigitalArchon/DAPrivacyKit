@@ -547,7 +547,9 @@ def cups_spool(check, scan, outcome):
             "Set PreserveJobFiles No and PreserveJobHistory No in /etc/cups/cupsd.conf")],
             side_effects=effects, recommended=True))
     day = files == 0 and history is not None and 0 <= history <= 86400
-    if not day:
+    # the job list for a day only where it is kept longer now (for ever, or more than a day): with no list kept, or
+    # one for less, PreserveJobHistory No became 1d
+    if not day and (history is None or history > 86400):
         opts.append(option(check, "Keep the job list for a day, not the documents", [RootChange(
             "edit_config", {"target": "cups", "values": {"PreserveJobFiles": "No", "PreserveJobHistory": "1d"}},
             "Set PreserveJobFiles No and PreserveJobHistory 1d in /etc/cups/cupsd.conf")], side_effects=effects))

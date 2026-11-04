@@ -616,6 +616,20 @@ def test_cups_a_days_job_list_without_documents_passes(cat, tmp_path, system, mo
     revert(host, log, res)
 
 
+def test_cups_never_offers_a_longer_job_list_than_it_keeps(cat, tmp_path):
+    """With no job list kept (PreserveJobHistory No) and the documents for a day, "Keep the job list for a day, not
+    the documents" set the list to 1d: more than now. Only "neither" is offered then, and it leaves the list as it is."""
+    for conf, offered in (("PreserveJobHistory No\nPreserveJobFiles 1d\n", ["Keep neither documents nor job history"]),
+                          ("PreserveJobHistory 12h\nPreserveJobFiles Yes\n", ["Keep neither documents nor job history"]),
+                          ("PreserveJobHistory Yes\nPreserveJobFiles 1d\n",
+                           ["Keep neither documents nor job history", "Keep the job list for a day, not the documents"]),
+                          ("PreserveJobHistory 2d\nPreserveJobFiles No\n",
+                           ["Keep neither documents nor job history", "Keep the job list for a day, not the documents"])):
+        host = make_host(tmp_path / str(len(conf)), files={"/etc/cups/cupsd.conf": conf},
+                         commands={"lpstat -W completed -o": ""})
+        assert list(options(build(cat, host, "app.cups_spool"))) == offered, conf
+
+
 def test_cups_wording_by_what_is_kept(cat, tmp_path):
     for conf, status, summary in (
             ("PreserveJobFiles No\n", Status.FAIL, "CUPS keeps no printed documents, but keeps the list of print jobs, "
