@@ -521,6 +521,47 @@ def test_tor_browser_starts_its_gate(host, monkeypatch):
     assert oct(os.stat(disk / ".tor-browser-app/tor").st_mode & 0o777) == "0o700"
 
 
+def test_nothing_tors_sandbox_puts_in_its_folder_holds_the_app(host, monkeypatch):
+    """tor's sandbox can write in the app's tor folder: a FIFO there as status.json, read at every poll of the panel
+    while the browser runs, held a server thread for good each time until none was left, and one as the torrc held a
+    start, and the browser's lock, until something read it. Only a regular file is read now, without waiting, and the
+    torrc is written under a new name and renamed into place."""
+    import threading
+    disk = installed(host, "tor")
+    wayland(host)
+    bwrap_ok(host)
+    (host.root / "usr/bin").mkdir(parents=True)
+    (host.root / "usr/bin/python3").write_text("")
+    monkeypatch.setattr(B, "START_WAIT", 0.05)
+    b = B.BROWSERS["tor"]
+    tor = disk / ".tor-browser-app/tor"
+    tor.mkdir(parents=True)
+    os.mkfifo(tor / "status.json")
+    os.mkfifo(tor / "torrc")
+
+    errors = []
+
+    def returns(fn, fifo: Path, other_end: int) -> bool:
+        """Whether fn() returns within 2 seconds; if not, the FIFO's other end is opened, so that it does."""
+        def run():
+            try:
+                fn()
+            except Exception as e:  # noqa: BLE001 - said by the assertion below
+                errors.append(e)
+        t = threading.Thread(target=run, daemon=True)
+        t.start()
+        t.join(2)
+        if not t.is_alive():
+            return True
+        os.close(os.open(fifo, other_end | os.O_NONBLOCK))
+        t.join(5)
+        return False
+    assert returns(lambda: B.tor_status(host, b), tor / "status.json", os.O_WRONLY) and B.tor_status(host, b) is None
+    assert returns(lambda: B.start(host, b, spawn=spawner([])), tor / "torrc", os.O_RDONLY) and errors == []
+    assert (tor / "torrc").is_file() and (tor / "torrc").read_text().startswith("# Written by DA Privacy Kit")
+    assert sorted(p.name for p in tor.iterdir()) == ["torrc"]                  # the FIFO replaced, nothing else left
+
+
 def test_a_failed_start_says_why(host, monkeypatch):
     installed(host, "mullvad")
     wayland(host)

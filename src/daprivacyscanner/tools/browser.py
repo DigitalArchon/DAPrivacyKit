@@ -133,13 +133,16 @@ def installed(host: Host, b: Browser) -> bool:
 
 
 def _read_small(path: Path, limit: int = 65536) -> str:
-    """At most `limit` bytes of a small file of the app's own, opened without following links; "" when it
-    can't be read."""
+    """At most `limit` bytes of a small file of the app's own, opened without following links or waiting; "" when it
+    can't be read or isn't a regular file. tor's sandbox can write in tor/: a FIFO it put there as status.json, read at
+    every poll of the panel, held a server thread for good each time, until none was left."""
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
     except OSError:
         return ""
     try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return ""
         return os.read(fd, limit).decode("utf-8", "replace")
     except OSError:
         return ""
@@ -1532,9 +1535,17 @@ def _start(host: Host, b: Browser, spawn: Callable, sandboxed: bool, with_sound:
                                        "Tor's. Untick \"Run it in a sandbox\" to use it here.")
                 tor_dir = _dir(host, f"{private.name}/tor")
                 os.chmod(tor_dir, 0o700)
-                fd = os.open(tor_dir / "torrc", os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
-                with os.fdopen(fd, "w") as f:
-                    f.write(torrc(host, b))
+                # under a new name, then renamed into place: tor's sandbox can write here, and a FIFO it left as the
+                # torrc held the start, and the browser's lock, until something read it
+                text, new = torrc(host, b), tor_dir / f".torrc-{os.urandom(4).hex()}"
+                fd = os.open(new, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+                try:
+                    with os.fdopen(fd, "w") as f:
+                        f.write(text)
+                    os.replace(new, tor_dir / "torrc")
+                except BaseException:
+                    new.unlink(missing_ok=True)
+                    raise
                 (tor_dir / "status.json").unlink(missing_ok=True)
                 etc = sandbox.identity_files(private / "etc", None)
                 gate = (Path(__file__).with_name("torgate.py")).read_text()
