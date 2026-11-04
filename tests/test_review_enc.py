@@ -882,6 +882,19 @@ def test_fedora_dnf5_guide_gives_dnf5_commands_only(cat, tmp_path):
     assert not any("dnf-automatic-install" in c for c in step.commands)
 
 
+@pytest.mark.parametrize("os_release, command", [
+    ('ID="opensuse-tumbleweed"\nID_LIKE="opensuse suse"\n', "sudo zypper dup"),
+    ('ID="opensuse-slowroll"\nID_LIKE="suse opensuse opensuse-tumbleweed"\n', "sudo zypper dup"),
+    ('ID="opensuse-leap"\nID_LIKE="suse opensuse"\n', "sudo zypper update")])
+def test_opensuse_updates_by_its_release(cat, tmp_path, os_release, command):
+    """`sudo zypper update` for every openSUSE: Tumbleweed (and Slowroll) are updated with zypper dup, the way openSUSE
+    supports for them; update leaves out what a new snapshot replaces or removes."""
+    from daprivacyscanner.model import Evidence
+    host = make_host(tmp_path, files={"/etc/os-release": os_release})
+    g = _guide_with(cat, "kern.updates", host, Outcome(Status.FAIL, "x", [Evidence.count("Pending updates", 3)]))
+    assert g.steps[0].commands == [command]
+
+
 def test_nothing_to_install_and_ubuntus_own_automatic_updates_are_done(cat, tmp_path):
     from daprivacyscanner.model import Evidence
     host = make_host(tmp_path, files={"/etc/os-release": "ID=ubuntu\nID_LIKE=debian\n", "/usr/bin/unattended-upgrade": ""})

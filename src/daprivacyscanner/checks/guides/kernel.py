@@ -11,8 +11,11 @@ from . import guide, option, dropin, os_release, family, install
 @guide("kern.updates")
 def updates(check, scan, outcome):
     fam, (os_id, _) = family(scan), os_release(scan)
+    # Tumbleweed and Slowroll, rolling releases, are kept up to date with zypper dup, the one way openSUSE supports
+    # (zypper update leaves out what a new snapshot replaces or removes); Leap and SLE with zypper update
+    suse = "sudo zypper dup" if os_id in ("opensuse-tumbleweed", "opensuse-slowroll") else "sudo zypper update"
     cmd = {"debian": "sudo apt update && sudo apt upgrade", "fedora": "sudo dnf upgrade --refresh",
-           "arch": "sudo pacman -Syu", "suse": "sudo zypper update"}.get(fam or "")
+           "arch": "sudo pacman -Syu", "suse": suse}.get(fam or "")
     value = lambda label: next((e.value for e in outcome.evidence if e.label == label), None)   # noqa: E731
     none_waiting = value("Pending updates") == 0            # only a restart or firmware left: nothing to install here
     steps = [Step("Install the updates", "No package updates are waiting." if none_waiting else
