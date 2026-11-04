@@ -393,6 +393,15 @@ with open(src, "rb") as f:
                 mode = (i.external_attr >> 16) & 0o777
                 if mode and not i.is_dir():
                     os.chmod(out, mode | 0o600)
+    elif head[:4] == b"\x28\xb5\x2f\xfd" and sys.version_info < (3, 14):      # a .tar.zst: through zstd, as a .deb's
+        try:
+            p = subprocess.Popen(["zstd", "-dcq", src], stdout=subprocess.PIPE)
+        except OSError:
+            sys.exit("It is compressed with zstd, and unpacking it needs the zstd program (the zstd package): install "
+                     "it, or unpack it yourself and try the program in it.")
+        tar(p.stdout)
+        p.stdout.close()
+        sys.exit(p.wait())
     else:
         tar(f)
 """

@@ -519,6 +519,35 @@ def test_a_zstd_package_goes_through_the_same_limit(tmp_path):
     assert _unpack(deb, tmp_path / "ok", 64 << 20).returncode == 0 and (tmp_path / "ok/usr/share/big/blob").stat().st_size == 3 << 20
 
 
+@pytest.mark.skipif(sys.version_info >= (3, 14), reason="tarfile reads zstd itself from Python 3.14")
+def test_a_zstd_tarball_goes_through_zstd(tmp_path):
+    """The review of 2026-11-04: a .tar.zst was taken as an archive and then failed to unpack, "tarfile.ReadError:
+    truncated header" (tarfile reads zstd only from Python 3.14). It goes through zstd, as a .deb's files do, within
+    the same limits; without zstd it says so in plain words."""
+    import tarfile
+    zst = tmp_path / "tool.tar.zst"
+    zst.write_bytes(b"\x28\xb5\x2f\xfd" + b"\0" * 60)
+    (tmp_path / "nothing").mkdir()
+    (tmp_path / "none").mkdir()
+    r = subprocess.run([sys.executable, "-I", "-c", trial.UNPACK, str(zst), str(tmp_path / "none"), str(1 << 20), "100"],
+                       capture_output=True, text=True, timeout=60, env={"PATH": str(tmp_path / "nothing")})
+    assert r.returncode and r.stderr.strip().endswith("unpack it yourself and try the program in it.")
+    if not os.path.exists("/usr/bin/zstd"):
+        pytest.skip("zstd isn't installed")
+    (tmp_path / "tool").mkdir()
+    (tmp_path / "tool/run.sh").write_text("#!/bin/sh\necho hi\n")
+    with tarfile.open(tmp_path / "tool.tar", "w") as t:
+        t.add(tmp_path / "tool", arcname="tool")
+    zst.unlink()
+    subprocess.run(["/usr/bin/zstd", "-q", str(tmp_path / "tool.tar"), "-o", str(zst)], check=True)
+    assert trial.classify(zst).kind == "archive"
+    r = _unpack(zst, tmp_path / "out", 64 << 20)
+    assert r.returncode == 0, r.stderr
+    assert (tmp_path / "out/tool/run.sh").read_text() == "#!/bin/sh\necho hi\n"
+    r = _unpack(zst, tmp_path / "small", 4)
+    assert r.returncode and "the most there is room for here" in r.stderr
+
+
 def test_preparing_passes_the_room_there_is(tmp_path, monkeypatch):
     from daprivacyscanner.host import FakeRunner, Host
     root = tmp_path / "root"
