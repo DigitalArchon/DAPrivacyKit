@@ -14,13 +14,14 @@ The sandbox's own files (its /etc, the X authority copy, the marked Wayland sock
 the runtime folder, never in the Box.
 
 Each run is watched as a trial is, only while it runs (no monitor is ever left on), and what is kept of it is
-numbers: when, how long, how many files it wrote, how many hosts it contacted and how many of those it had
-never contacted before. The hosts are kept as salted hashes (as the scan's baseline keeps what starts at login),
-never by name: a list of the sites a boxed browser visits would be a history. The salt is in the same file, so
-anyone who can read it can test a guess (was this site contacted?): the panel and the guide say so (the owner's
-decision of 2026-10-17), and the Box's home holds the app's own records anyway. The last RUNS_KEPT runs are kept;
-the panel can clear them. The Tools panel starts a Box as the menu does (the launcher's command, on its own), so
-a Box never depends on the app's window being open.
+numbers: when, how long, how many files it wrote, how many were put in its Exchange folder (counted apart: that
+folder's own watch), how many hosts it contacted and how many of those it had never contacted before. The hosts are
+kept as salted hashes (as the scan's baseline keeps what starts at login), never by name: a list of the sites a
+boxed browser visits would be a history. The salt is in the same file, so anyone who can read it can test a guess
+(was this site contacted?): the panel and the guide say so (the owner's decision of 2026-10-17), and the Box's home
+holds the app's own records anyway. The last RUNS_KEPT runs are kept; the panel can clear them. The Tools panel
+starts a Box as the menu does (the launcher's command, on its own), so a Box never depends on the app's window being
+open.
 
 Set up through the guide and reverted from History like any set-up: reverting removes the launcher, the settings
 and a program copied from a trial, and leaves the home and Exchange when they hold anything, saying so."""
@@ -307,6 +308,8 @@ def record_run(host: Host, box: Box, t: trial.Trial) -> dict:
     totals = (r.get("summary") or {}).get("totals") or {}
     run = {"when": round(t.started or time.time()), "seconds": r.get("seconds", 0),
            "written": totals.get("written", 0) + totals.get("created", 0), "deleted": totals.get("deleted", 0),
+           # what it saved in its Exchange folder (bound into its home, so not among what it wrote there): apart
+           "exchange": r.get("exchange") or 0,
            "network": box.network, "hosts": len(names) if box.network == "observed" else None,
            "new_hosts": sum(1 for h in hashes if h not in seen) if box.network == "observed" else None,
            "sent": sum(h["sent"] for h in ((r.get("hosts") or {}).get("hosts") or [])) if box.network == "observed" else None,

@@ -1808,7 +1808,8 @@ trialNow = null;
   routes["GET /api/tools/boxes"] = () => ({ boxes: [
     { slug: "chat-app", name: "Chat App", kind: "installed", network: "observed", gpu: true, sound: false, folder: "~/Boxes/chat-app",
       exchange: "~/Boxes/chat-app/Exchange", problem: null, launcher: true, running: boxRunning,
-      runs: [{ when: 1790000000, seconds: 1260, written: 14, deleted: 2, network: "observed", hosts: 5, new_hosts: 1, sent: 52000, failed: false }] },
+      runs: [{ when: 1790000000, seconds: 1260, written: 14, deleted: 2, exchange: 3, network: "observed", hosts: 5, new_hosts: 1,
+               sent: 52000, failed: false }] },
     { slug: "old-tool", name: "Old Tool", kind: "appimage", network: "off", gpu: false, sound: false, folder: "~/Boxes/old-tool",
       exchange: "~/Boxes/old-tool/Exchange", problem: "its program is missing from the Box", launcher: false, running: false, runs: [] }] });
   routes["POST /api/tools/boxes/start"] = (body) => { boxCalls.push("start:" + body.box); boxRunning = true; return { ok: true }; };
@@ -1817,9 +1818,11 @@ trialNow = null;
   const cards = $$(".modal .box-card");
   check(cards.length === 2 && cards[0].textContent.includes("its own network, observed") && cards[0].textContent.includes("~/Boxes/chat-app/Exchange"),
         "each Box says what it gets and where files go in and out");
-  check(cards[0].textContent.includes("Its last 1 run, in numbers") && $$(".modal .box-card table.places tbody td").map(t => t.textContent).slice(1, 6).join("|")
-        === "21 min|14|5|1|52 kB" && cards[0].textContent.includes("could check whether it contacted a site they have in mind"),
+  check(cards[0].textContent.includes("Its last 1 run, in numbers") && $$(".modal .box-card table.places tbody td").map(t => t.textContent).slice(1, 7).join("|")
+        === "21 min|14|3|5|1|52 kB" && cards[0].textContent.includes("could check whether it contacted a site they have in mind"),
         "its runs are numbers: " + $$(".modal .box-card table.places tbody td").map(t => t.textContent).join("|"));
+  check($$(".modal .box-card table.places th").map(t => t.textContent).includes("Put in Exchange"),
+        "what it put in its Exchange folder is counted apart from what it wrote in its home");
   check(cards[1].textContent.includes("It can't start: its program is missing from the Box") && cards[1].textContent.includes("menu entry is missing")
         && cards[1].querySelector("button.primary").disabled, "a Box that can't start says why, and can't be started");
   cards[0].querySelector("button.primary").click(); await tick();

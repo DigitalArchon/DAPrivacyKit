@@ -419,7 +419,8 @@ def boxes(check, scan, outcome):
          "can't use the desktop's password store, so it may "
          "ask you to sign in again or keep its login in its own home."),
         ("Each run in numbers", "While a Box runs it is watched as a trial is, and what is kept is numbers: when, how "
-         "long, how many files it wrote, how many hosts it contacted and how many of those were new. No names of files "
+         "long, how many files it wrote, how many were put in its Exchange folder, how many hosts it contacted and how "
+         "many of those were new. No names of files "
          "are kept. Sites aren't kept by name either, but each as a code (a salted hash), so the next run can count the "
          "new ones: anyone who can read the Box's folder could check whether it contacted a site they have in mind. "
          "The app's own files in its home can say more anyway (a browser's history). Nothing watches while it isn't "

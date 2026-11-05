@@ -193,6 +193,7 @@ class Trial:
     proc: object = None
     xephyr: object = None
     watch: homewatch.HomeWatch | None = None
+    shared: list[homewatch.HomeWatch] = field(default_factory=list)      # a Box's: its Exchange folder's (binds)
     flows: pcap.Flows | None = None
     output: "Tail | None" = None
     reader: "PipeReader | None" = None
@@ -1309,6 +1310,9 @@ def start(host: Host, t: Trial, options: dict, spawn: Callable = subprocess.Pope
         t.decoys = bait.plant(t.home)
     ignore = FLATPAK_OWN if eng.id == "flatpak" else ()
     t.watch = homewatch.HomeWatch(t.home, t.decoys, ignore)
+    # a Box's Exchange folder is bound into the home: what the app saves there goes to that folder, which the home's
+    # watch never sees (only the empty mount point under the bind), so it has a watch of its own (put_in_shared)
+    t.shared = [homewatch.HomeWatch(Path(outside)) for outside, _inside in t.binds]
     try:
         if eng.id == "bubblewrap":
             if t.kind == "deb" and (t.app / "usr").is_dir():
@@ -1355,6 +1359,8 @@ def start(host: Host, t: Trial, options: dict, spawn: Callable = subprocess.Pope
                  "decoys": sum(1 for k in t.decoys if not t.decoys[k].startswith("the folder ")),
                  "whole": shown(cmd)}
         t.watch.start()
+        for w in t.shared:
+            w.start()
         if t.reader is not None:
             t.reader.start()
         through_stdin = bool(pasta_path) and sync is not None
@@ -1397,6 +1403,10 @@ def _abort(t: Trial, sync: int | None) -> None:
         t.xephyr = None
     if t.watch is not None and t.watch.fd >= 0:
         t.watch.stop()
+    for w in t.shared:
+        if w.fd >= 0:
+            w.stop()
+    t.shared = []
     if t.reader is not None:
         t.reader.stop()
         t.reader = None
@@ -1495,6 +1505,8 @@ def _finish(host: Host, t: Trial) -> None:
     time.sleep(0.3)                                     # the last events
     if t.watch is not None:
         t.watch.stop()
+    for w in t.shared:
+        w.stop()
     if t.reader is not None:
         t.reader.stop()
     if t.xephyr is not None and hasattr(t.xephyr, "poll") and t.xephyr.poll() is None:
@@ -1523,9 +1535,19 @@ def _finish(host: Host, t: Trial) -> None:
         "output": t.output.lines() if t.output is not None and (failed or seconds < 5) else [],
         "missed": (t.watch.overflow if t.watch is not None else 0) + (t.watch.left_out if t.watch is not None else 0),
         "copies_ended": copies,
+        "exchange": put_in_shared(t.shared) if t.binds else None,
     }
     t.watch = None
+    t.shared = []
     t.reader = None
+
+
+def put_in_shared(watches: list[homewatch.HomeWatch]) -> int:
+    """How many files were put in a Box's Exchange folder while it ran (made, written or moved in, and still there),
+    from that folder's own watch. inotify doesn't say who did it: one copied in from outside meanwhile counts too."""
+    return sum(1 for w in watches for path, flags, *_ in w.records()
+               if not flags & activity.DIR and flags & (activity.CREATED | activity.WRITTEN | activity.MOVED)
+               and not flags & activity.DELETED)
 
 
 CRASHES = ("SIGSEGV", "SIGABRT", "SIGBUS", "SIGILL", "SIGFPE", "SIGSYS", "SIGTRAP")

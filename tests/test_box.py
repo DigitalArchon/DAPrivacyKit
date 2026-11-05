@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 import stat
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -473,6 +474,37 @@ def test_a_flatpak_box_isnt_started_while_its_app_is_open(host):
     assert not spawned and not B.running(host, "meet") and B.runs(host, "meet")["runs"] == []
 
 
+def test_what_a_box_puts_in_its_exchange_folder_is_counted_apart(host):
+    """Found in use: a Box's runs missed what the app saved in its Exchange folder, which is bound into its home: the
+    home's watch saw only the empty mount point under the bind, never the folder's files. The folder has a watch of
+    its own while the Box runs, and what was put there (made, written or moved in, and still there) is counted apart
+    from what it wrote in its home, in the run's numbers."""
+    f = set_up(host, a_box())
+    t = B.as_trial(host, B.read(host, "chat-app"))
+    trial.start(host, t, B.options(a_box()), lambda argv, **kw: SimpleNamespace(pid=1 << 22, stdout=None))
+    try:
+        time.sleep(0.2)
+        for name in ("report.pdf", "photo.jpg"):                    # as the app saves them, through the bind
+            (f / "Exchange" / name).write_text("saved")
+        (f / "Exchange/part.tmp").write_text("x")
+        (f / "Exchange/part.tmp").unlink()                          # gone again: nothing was put there
+        (f / "Exchange/Sub").mkdir()                                # a folder isn't a file
+        (f / "home/settings.conf").write_text("its own")
+        time.sleep(0.3)
+    finally:
+        trial.stop(host, t)
+    assert t.result["exchange"] == 2 and t.result["summary"]["totals"]["created"] == 1, "apart from what it wrote at home"
+    run = B.record_run(host, B.read(host, "chat-app"), t)
+    assert run["exchange"] == 2 and run["written"] == 1
+    own = host.home / "a-trial"
+    for sub in ("home", "app", "private"):
+        (own / sub).mkdir(parents=True)
+    plain = trial.Trial("0a1b2c3d4e5f", own, "disk", "installed", "Chat", "an installed app", argv=["/usr/bin/chat"])
+    trial.start(host, plain, {}, lambda argv, **kw: SimpleNamespace(pid=1 << 22, stdout=None))
+    trial.stop(host, plain)
+    assert plain.result["exchange"] is None, "a trial has no Exchange folder"
+
+
 def test_runs_are_kept_in_numbers_and_hosts_as_hashes(host):
     box = a_box(network="observed")
     f = set_up(host, box)
@@ -480,10 +512,10 @@ def test_runs_are_kept_in_numbers_and_hosts_as_hashes(host):
     def a_run(hosts):
         return SimpleNamespace(started=1790000000, result={
             "seconds": 600, "failed": False, "summary": {"totals": {"written": 2, "created": 5, "deleted": 1}},
-            "hosts": {"hosts": [{"host": h, "sent": 1000} for h in hosts]}})
+            "exchange": 3, "hosts": {"hosts": [{"host": h, "sent": 1000} for h in hosts]}})
     first = B.record_run(host, box, a_run(["chat.example.net", "cdn.example.net"]))
-    assert first == {"when": 1790000000, "seconds": 600, "written": 7, "deleted": 1, "network": "observed", "hosts": 2,
-                     "new_hosts": 2, "sent": 2000, "failed": False, "signal": None}
+    assert first == {"when": 1790000000, "seconds": 600, "written": 7, "deleted": 1, "exchange": 3, "network": "observed",
+                     "hosts": 2, "new_hosts": 2, "sent": 2000, "failed": False, "signal": None}
     second = B.record_run(host, box, a_run(["chat.example.net", "tracker.example.org"]))
     assert second["hosts"] == 2 and second["new_hosts"] == 1, "one host it had never contacted before"
     saved = (f / "runs.json").read_text()
