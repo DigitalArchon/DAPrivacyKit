@@ -15,7 +15,7 @@ from typing import Any, Callable
 from . import blockdev, ini, network
 from .catalogue import CONTEXT_KEYS
 from .desktop import DesktopInfo, detect_desktop
-from .host import Host, Unreadable
+from .host import Host, Unreadable, unescape_mount
 from .model import Evidence, Note
 
 
@@ -115,7 +115,8 @@ def home_encryption(host: Host, devices: list[blockdev.Device] | None) -> tuple[
     native encryption: lsattr shows E), "ecryptfs" (mounted over it at login), or None."""
     home = str(host.home)
     m = max((ln.split() for ln in (host.read_sys("/proc/mounts") or "").splitlines() if len(ln.split()) >= 3
-             and (home == ln.split()[1].replace("\\040", " ") or home.startswith(ln.split()[1].rstrip("/") + "/"))),
+             and (home == unescape_mount(ln.split()[1])
+                  or home.startswith(unescape_mount(ln.split()[1]).rstrip("/") + "/"))),
             key=lambda f: len(f[1]), default=None)
     if m is not None and m[2] == "ecryptfs":
         return "ecryptfs", [Evidence.val("Home folder", "eCryptfs, mounted at login")]
@@ -236,7 +237,7 @@ def _shared_folders(host: Host) -> list[str]:
     for line in (host.read_sys("/proc/mounts") or "").splitlines():
         f = line.split()
         if len(f) >= 3 and f[2] in SHARED_FS:
-            out.append(f[1].replace("\\040", " "))
+            out.append(unescape_mount(f[1]))
     return out[:10]
 
 
@@ -550,7 +551,7 @@ def read_swaps(host: Host) -> list[tuple[str, str, int]]:
     for line in (host.read_sys("/proc/swaps") or "").splitlines()[1:]:
         f = line.split()
         if len(f) >= 3 and f[2].isdigit():
-            out.append((f[0].replace("\\040", " "), f[1], int(f[2]) * 1024))
+            out.append((unescape_mount(f[0]), f[1], int(f[2]) * 1024))
     return out
 
 

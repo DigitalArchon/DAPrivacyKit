@@ -27,7 +27,7 @@ from pathlib import Path
 
 from .. import blockdev
 from ..fix import DeleteFiles, FixContext
-from ..host import Host
+from ..host import Host, unescape_mount
 
 WALK_LIMIT = 200_000
 LIST_LIMIT = 5_000              # paths listed per group (the rest are counted)
@@ -102,7 +102,7 @@ def _mount_options(host: Host) -> dict[str, str]:
     for ln in text.splitlines():
         f = ln.split()
         if len(f) > 3:
-            out[f[1].replace("\\040", " ")] = f[3]
+            out[unescape_mount(f[1])] = f[3]
     return out
 
 

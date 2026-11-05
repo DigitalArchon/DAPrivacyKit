@@ -30,7 +30,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, ClassVar
 
-from .host import Host
+from .host import Host, unescape_mount
 
 if TYPE_CHECKING:
     from .undo import UndoLog
@@ -76,6 +76,9 @@ def made_dirs(path: Path) -> list[str]:
 def _shown(path: str) -> str:
     home = os.path.expanduser("~")
     return "~" + path[len(home):] if path.startswith(home + "/") else path
+
+
+MOUNT_TABLE = "/proc/self/mounts"           # what DeleteFiles reads to keep out of other filesystems (tests replace it)
 
 
 def make_writable(folder: Path) -> None:
@@ -1439,11 +1442,11 @@ class DeleteFiles(Action):
     def _mounted_under(path: Path) -> bool:
         """Something is mounted at or below `path` (a folder deleted whole must not reach into another filesystem)."""
         try:
-            text = Path("/proc/self/mounts").read_text()
+            text = Path(MOUNT_TABLE).read_text()
         except OSError:
             return True
         p = str(path).rstrip("/")
-        targets = (ln.split()[1].replace("\\040", " ") for ln in text.splitlines() if len(ln.split()) >= 2)
+        targets = (unescape_mount(ln.split()[1]) for ln in text.splitlines() if len(ln.split()) >= 2)
         return any(t == p or t.startswith(p + "/") for t in targets)
 
     def _delete_whole(self, f: Path, root: Path) -> bool:

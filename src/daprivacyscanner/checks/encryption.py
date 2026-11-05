@@ -15,7 +15,7 @@ from pathlib import Path
 from .. import blockdev, ini
 from ..context import read_swaps
 from ..desktop import parse_gvariant
-from ..host import Host, Unreadable
+from ..host import Host, Unreadable, unescape_mount
 from ..model import Evidence, Note, Outcome, Status
 from ..privileged import HelperError
 from . import Check, Scan, register
@@ -844,7 +844,7 @@ def _mount_of(ms: list, path: str):
 def _subvol(m) -> str | None:
     """The btrfs subvolume a mount shows (its subvol= option, which the kernel lists since 4.x), or None."""
     opt = re.search(r"(?:^|,)subvol=([^,]*)", m.options)
-    return opt.group(1).replace("\\040", " ") if opt else None
+    return unescape_mount(opt.group(1)) if opt else None
 
 
 def _btrfs_place(ms: list, path: str) -> tuple[str, str] | None:

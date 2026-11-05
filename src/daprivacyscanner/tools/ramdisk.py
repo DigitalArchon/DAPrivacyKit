@@ -20,7 +20,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from ..host import Host
+from ..host import Host, unescape_mount
 
 NAME = "RAMDisk"
 BROWSER = "TempBrowser"                 # the browser in memory's (tools/browser.py)
@@ -59,7 +59,9 @@ def _mounts(host: Host) -> list[list[str]]:
         text = host.read_sys("/proc/mounts") or ""
     except Exception:  # noqa: BLE001 - no mount table: nothing is open
         text = ""
-    return [ln.split() for ln in text.splitlines() if len(ln.split()) > 3]
+    # the source and the mount point as they are (a home folder's path with a space in it: never open otherwise)
+    return [[unescape_mount(f[0]), unescape_mount(f[1]), *f[2:]] for f in (ln.split() for ln in text.splitlines())
+            if len(f) > 3]
 
 
 def _memory_mb(host: Host) -> int | None:
@@ -133,7 +135,7 @@ def mounts_inside(host: Host, path: Path) -> list[str]:
     as ~/NAME/…, from the mount table. Closing waits until it is unmounted: its files aren't the RAM disk's to
     overwrite and delete, and the RAM disk can't be unmounted around it."""
     real = _seen(host, path)
-    inside = sorted({m for f in _mounts(host) if (m := f[1].replace("\\040", " ")).startswith(real + "/")})
+    inside = sorted({f[1] for f in _mounts(host) if f[1].startswith(real + "/")})
     return [f"~/{Path(path).name}/{m[len(real) + 1:]}" for m in inside]
 
 

@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
-from ..host import FormatChanged, Host, Unreadable
+from ..host import FormatChanged, Host, Unreadable, unescape_mount
 from ..model import Evidence, Note, Outcome, Status
 from ..paths import Base, Location, PathResolver
 
@@ -439,7 +439,7 @@ def mounts(host: Host) -> list[Mount]:
     for line in (host.read_sys("/proc/mounts") or "").splitlines():
         f = line.split()
         if len(f) >= 4:
-            out.append(Mount(f[0], f[1].replace("\\040", " "), f[2], f[3]))
+            out.append(Mount(f[0], unescape_mount(f[1]), f[2], f[3]))
     return out
 
 

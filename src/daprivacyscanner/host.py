@@ -6,6 +6,7 @@ output instead of the developer's real system."""
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass, field
@@ -109,6 +110,17 @@ class FakeRunner(CommandRunner):
 
     def which(self, name: str) -> bool:
         return name in self.installed or name in self.handlers
+
+
+def unescape_mount(field: str) -> str:
+    """A path from /proc/mounts, /proc/swaps or mountinfo: the kernel writes space, tab, newline and backslash in it as
+    \\ooo. Only the space was undone, so a folder mounted at a path with one of the others (or a RAM disk in a home
+    folder whose path has a space, where nothing was undone) wasn't recognised as mounted, and a whole folder's
+    deletion went on into a filesystem mounted there."""
+    return _OCTAL.sub(lambda m: chr(int(m.group(1), 8)), field)
+
+
+_OCTAL = re.compile(r"\\([0-7]{3})")
 
 
 class Unreadable(Exception):

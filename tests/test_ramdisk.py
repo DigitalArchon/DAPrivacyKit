@@ -306,6 +306,28 @@ def test_what_is_mounted_inside_it_is_named(tmp_path):
     assert R.mounts_inside(host, folder) == []
 
 
+def test_mount_points_are_read_with_every_escape_the_kernel_writes(tmp_path, monkeypatch):
+    """The kernel writes space, tab, newline and backslash in a mount point as \\ooo: a RAM disk in a home folder whose
+    path has a space was never seen open (nothing was undone), and a whole folder's deletion went on into a
+    filesystem mounted at a path with a tab in it (only the space was)."""
+    from daprivacyscanner import fix as F
+    from daprivacyscanner.host import FakeRunner, Host, unescape_mount
+    assert unescape_mount("/home/Ann\\040Lee/a\\011b\\012c\\134d") == "/home/Ann Lee/a\tb\nc\\d"
+    home = tmp_path / "home" / "Ann Lee"
+    (home / "RAMDisk").mkdir(parents=True)
+    (tmp_path / "root/proc").mkdir(parents=True)
+    host = Host(home=home, environ={"HOME": str(home)}, runner=FakeRunner({}), root=tmp_path / "root", uid=1000)
+    escaped = str(home / "RAMDisk").replace(" ", "\\040")
+    (tmp_path / "root/proc/mounts").write_text(f"tmpfs {escaped} tmpfs rw,size=1048576k,mode=700 0 0\n")
+    assert R.status(host).open and R.mounted(host)
+    cache = tmp_path / "cache"
+    (cache / "a\tdisk").mkdir(parents=True)
+    table = tmp_path / "mounts"
+    table.write_text(f"/dev/sdb1 {cache}/a\\011disk vfat rw 0 0\n")
+    monkeypatch.setattr(F, "MOUNT_TABLE", str(table))
+    assert F.DeleteFiles._mounted_under(cache)
+
+
 def test_status_reads_the_mount_and_says_what_it_cant_protect(tmp_path):
     from daprivacyscanner.host import CommandResult
     host = make_host(tmp_path, files={"/proc/mounts": "", "/proc/swaps": "Filename Type Size Used Priority\n/swapfile file 4194300 0 -2\n",

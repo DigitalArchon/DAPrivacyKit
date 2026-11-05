@@ -10,7 +10,7 @@ from dataclasses import dataclass
 
 from pathlib import Path
 
-from .host import Host, Unreadable
+from .host import Host, Unreadable, unescape_mount
 
 
 def read_text(host: Host, path: Path) -> str | None:
@@ -142,7 +142,7 @@ def stacks(host: Host) -> list[Stack]:
     for line in (host.read_sys("/proc/mounts") or "").splitlines():
         f = line.split()
         if len(f) >= 4:
-            table.append((f[0], f[1].replace("\\040", " "), f[2], f[3]))
+            table.append((f[0], unescape_mount(f[1]), f[2], f[3]))
     out: list[Stack] = []
     for where in ("/", logical(host, host.home)):
         best = None
