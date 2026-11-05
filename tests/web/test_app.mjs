@@ -332,7 +332,8 @@ const trialStatus = { available: true, why: "", apparmor: false, python: true, d
   xephyr: { available: true, install: "" }, sound: true, gpu: true, flatpak: true,
   places: [{ id: "memory", words: "In memory", folder: "/run/user/1000/daprivacyscanner-trial", free: 3e9, noexec: false,
              swap: ["/swapfile"], hibernation: false },
-           { id: "disk", words: "On the disk", folder: "/home/a/.cache/daprivacyscanner-trial", free: 4e11, noexec: false }] };
+           { id: "disk", words: "On the disk", folder: "/home/a/.cache/daprivacyscanner-trial", free: 4e11, noexec: false }],
+  room_kept: 128 * 1048576 };
 const trialResultData = { seconds: 95, failed: false, output: [], missed: 0, network: "observed", decoys_planted: 34,
   decoys: [{ path: "~/.ssh/id_ed25519", what: "an SSH private key", listed: 0, opened: 2, changed: 0, first: 1 },
            { path: "~/.gnupg", what: "the folder ~/.gnupg", listed: 1, opened: 0, changed: 0, first: 2 }],
@@ -1721,6 +1722,9 @@ check(text(".modal .trial").includes("swap on a disk (/swapfile)") && !text(".mo
   prep.click(); await tick(); await tick(); }
 check(trialCalls.join() === "prepare:/home/a/Downloads/tool.tar.gz:memory" && text(".modal .trial").includes("Nothing has run yet")
       && $$(".modal .trial input[name=trial-prog]").length === 2, "prepared, it lists the programs in the archive: " + trialCalls.join());
+check(text(".modal .trial").includes("In memory, it has the room your session's runtime folder has left, 3.0 GB now.")
+      && text(".modal .trial").includes("If it fills that to within 128 MB, the trial is ended"),
+      "before the start, a trial in memory says it is ended before it fills the session's runtime folder");
 check(text(".modal .trial .notebox.risk").includes("This is an X11 session") && text(".modal .trial .notebox.risk").includes("a display of its own"),
       "on X11 it says other windows can be read, and offers a display of its own");
 { const net = $$(".modal .trial input[name=trial-net]");
@@ -1784,6 +1788,18 @@ await window.openTrial(); await tick();
 check(text(".modal .trial .notebox.risk").includes("marking this one failed"), "a connection that couldn't be marked is said");
 while ($$(".modal").length) { $$(".modal .buttons button").at(-1).click(); await tick(); }
 Object.assign(trialStatus, { display: "x11", wayland_context: null, wayland_risky: null, wlroots: false });
+trialNow = null;
+// a trial ended before it filled the runtime folder says so, and what discarding it gives back
+trialNow = { ...trialBase(), state: "ended", stopped: true, exit: -15, started: 1790000000,
+  how: { engine: "bubblewrap", engine_name: "bubblewrap", network: "off", display: "x11", gpu: true, decoys: 34, whole: "bwrap …" },
+  result: { ...trialResultData, network: "off", hosts: null, short_of_room: 120e6,
+            ended: "was ended here: the memory it runs in, which your whole session shares, was nearly full" } };
+await window.openTrial(); await tick();
+check(text(".modal .trial").includes("ran for 2 min and was ended here: the memory it runs in, which your whole session shares, was nearly full")
+      && text(".modal .trial .warnbox").includes("Less than 128 MB was left (120.0 MB) in your session's runtime folder")
+      && text(".modal .trial .warnbox").includes("discard the trial to give it back"),
+      "a trial ended for the room it took says so: " + text(".modal .trial").slice(0, 160));
+while ($$(".modal").length) { $$(".modal .buttons button").at(-1).click(); await tick(); }
 trialNow = null;
 
 // Boxes: each with what it gets and its runs in numbers; started as from the menu

@@ -3986,9 +3986,16 @@ function trialReady(data, t, call) {
   const discard = h("button", { class: "small" }, "Discard it");
   discard.addEventListener("click", () => call("/api/tools/trial/discard", {}, discard, "Discarding…"));
   const pasta = st.pasta || {};
+  // in memory, the session's runtime folder is all the room it has: it is ended before it fills that (trial.RoomWatch)
+  const memory = t.where === "memory" ? (st.places || []).find(p => p.id === "memory") : null;
   return [
     h("p", {}, h("b", {}, t.name), ` — ${TRIAL_KIND[t.kind] || t.what}. Nothing has run yet.`),
     t.notes.map(n => h("div", { class: "notebox info small" }, n)),
+    memory ? h("div", { class: "notebox info small" }, h("b", {}, "In memory, it has the room your session's runtime "
+      + `folder has left, ${fmtSize(memory.free)} now. `), "If it fills that to within "
+      + `${Math.round((st.room_kept || 0) / 1048576)} MB, the trial is ended, what it did is shown, and your other `
+      + "programs keep room for their own files there. For a large program, or one that writes a lot (a browser's "
+      + "cache), prepare it on the disk.") : null,
     t.candidates.length ? [h("h4", {}, "Which program in it to start"),
       h("div", { class: "applist" }, t.candidates.map(c => h("label", {},
         h("input", { type: "radio", name: "trial-prog", checked: c.rel === program, onchange: () => { program = c.rel; } }),
@@ -4083,6 +4090,10 @@ function trialResult(t, call, st = {}) {
   return [
     h("p", {}, h("b", {}, t.name), ` ran for ${fmtMinutes(r.seconds)} and `, r.ended || (t.stopped ? "was ended here" : r.failed
       ? `ended with an error (exit status ${t.exit})` : "ended by itself"), "."),
+    r.short_of_room != null ? h("div", { class: "warnbox" }, `Less than ${Math.round((st.room_kept || 0) / 1048576)} MB `
+      + `was left (${fmtSize(r.short_of_room)}) in your session's runtime folder, where it ran in memory: that is where `
+      + "your other programs keep their own runtime files, so it was ended before it filled it. What it wrote is still "
+      + "there, taking that room: discard the trial to give it back, or prepare it again on the disk.") : null,
     h("div", { class: "small muted" }, trialHow(t.how)), trialUnmarked(t.how),
     r.output.length ? h("details", { class: "small", open: r.failed }, h("summary", {}, "What it printed last"),
       h("pre", { class: "output" }, r.output.join("\n"))) : null,

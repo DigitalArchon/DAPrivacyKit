@@ -32,7 +32,8 @@ A program that opens them has gone looking.
 
 The trial's folder is in memory ($XDG_RUNTIME_DIR, a tmpfs) or, for something large, on the disk
 ($XDG_CACHE_HOME); discarding overwrites and deletes it in memory, and only deletes it on the disk (rule 8: that
-doesn't erase it, and the page says so). One trial at a time; quitting the app ends and discards it."""
+doesn't erase it, and the page says so). In memory it is ended before it fills the runtime folder, which the whole
+session uses (RoomWatch). One trial at a time; quitting the app ends and discards it."""
 
 from __future__ import annotations
 
@@ -61,7 +62,10 @@ APP_IN = "/app"
 COPY_MAX = 8 << 30                       # the largest file copied in
 UNPACK_MAX = 8 << 30                     # the most an archive may unpack to (and no more than there is room for)
 MEMBERS_MAX = 200000                     # the most files and folders it may unpack to
-ROOM_KEPT = 128 << 20                    # what unpacking leaves free where it unpacks (the runtime folder is the session's)
+ROOM_KEPT = 128 << 20                    # what unpacking leaves free where it unpacks (the runtime folder is the session's),
+                                         # and a trial in memory while it runs: it is ended when less is left (RoomWatch)
+ROOM_EVERY = 1.0                         # seconds between looks at the room left, while a trial in memory runs
+ROOM_WORDS = "was ended here: the memory it runs in, which your whole session shares, was nearly full"
 CANDIDATES_MAX = 60
 OUTPUT_KEPT = 16000                      # the last of the program's own output, shown when it fails
 START_WAIT = 2.0
@@ -184,6 +188,7 @@ class Trial:
     notes: list[str] = field(default_factory=list)
     private_at: Path | None = None       # a Box's: the sandbox's own files in the runtime folder, not in the Box
     binds: list[tuple[str, str]] = field(default_factory=list)      # a Box's: (a folder, where it is inside), writable
+    short_of_room: int | None = None     # ended for it (RoomWatch): the room that was left in the runtime folder
     # while it runs
     proc: object = None
     xephyr: object = None
@@ -191,6 +196,7 @@ class Trial:
     flows: pcap.Flows | None = None
     output: "Tail | None" = None
     reader: "PipeReader | None" = None
+    room: "RoomWatch | None" = None
     lock: threading.Lock = field(default_factory=threading.Lock)     # ending it (stop, poll, discard) happens once
 
     @property
@@ -1178,6 +1184,37 @@ class PipeReader(threading.Thread):
             pass
 
 
+def room(folder: Path) -> int | None:
+    """The room left on the filesystem of `folder` for the user's files, or None when it can't be told."""
+    try:
+        vfs = os.statvfs(folder)
+    except OSError:
+        return None
+    return vfs.f_bavail * vfs.f_frsize
+
+
+class RoomWatch(threading.Thread):
+    """A trial in memory is in the runtime folder, the session's own tmpfs (a tenth or so of the memory), and nothing
+    held it to a size while it ran: a browser's or an Electron app's cache, or a program writing all it can, filled
+    it, and the session's other programs couldn't write their runtime files there until the trial was discarded. This
+    looks at the room left every ROOM_EVERY seconds while it runs, whether or not the panel is open, and ends the trial
+    (its result kept, as Stop's) once less than ROOM_KEPT is left. What it wrote stays until it is discarded."""
+
+    def __init__(self, host: Host, t: "Trial"):
+        super().__init__(name="trial-room", daemon=True)
+        self.host, self.t, self.every, self.done = host, t, ROOM_EVERY, threading.Event()
+
+    def run(self) -> None:
+        while not self.done.wait(self.every):
+            if self.t.state != "running":
+                return
+            left = room(self.t.folder)
+            if left is not None and left < ROOM_KEPT:
+                self.t.short_of_room = left
+                stop(self.host, self.t)
+                return
+
+
 # ------------------------------------------------------------------ starting, ending
 
 def status(host: Host) -> dict:
@@ -1196,7 +1233,7 @@ def status(host: Host) -> dict:
             "pasta": sb["pasta"], "display": sb["display"], "wayland_context": sb["wayland_context"],
             "wayland_risky": sb["wayland_risky"], "wlroots": sb["wlroots"], "xephyr": sb["xephyr"],
             "sound": sb["sound"], "gpu": sb["gpu"],
-            "flatpak": flat is None, "places": where,
+            "flatpak": flat is None, "places": where, "room_kept": ROOM_KEPT,
             "engines": [{"id": e.id, "name": e.name} for e in ENGINES.values()]}
 
 
@@ -1235,6 +1272,11 @@ def start(host: Host, t: Trial, options: dict, spawn: Callable = subprocess.Pope
     why = eng.probe(host)
     if why:
         raise TrialError(f"It can't be run here: {why}")
+    left = room(t.folder) if t.where == "memory" else None
+    if left is not None and left < ROOM_KEPT:
+        raise TrialError(f"There is too little room left in memory for it to run: {left >> 20} MB in the runtime folder, "
+                         f"which your whole session shares, and a trial there is ended when less than {ROOM_KEPT >> 20} "
+                         "MB is left. Discard it and prepare it on the disk instead.")
     network = options.get("network") if options.get("network") in ("off", "observed", "on") else "off"
     if network == "on" and eng.id != "flatpak":
         raise TrialError("A trial never shares this computer's network: choose no network, or the observed one.")
@@ -1325,6 +1367,9 @@ def start(host: Host, t: Trial, options: dict, spawn: Callable = subprocess.Pope
     if sync is not None:
         os.close(sync)                                  # bubblewrap holds it now
     t.state, t.started = "running", time.time()
+    if t.where == "memory":                             # the session's own tmpfs: it is ended before it fills it
+        t.room = RoomWatch(host, t)
+        t.room.start()
     if getattr(t.proc, "stdout", None) is not None:
         t.output = Tail(t.proc.stdout)
         t.output.start()
@@ -1443,6 +1488,9 @@ def stop(host: Host, t: Trial) -> None:
 def _finish(host: Host, t: Trial) -> None:
     t.exit = t.proc.poll() if hasattr(t.proc, "poll") else 0
     t.ended, t.state = time.time(), "ended"
+    if t.room is not None:
+        t.room.done.set()
+        t.room = None
     copies = end_flatpak_copies(host, t) if t.kind == "flatpak" else 0     # what it started through Flatpak's portal
     time.sleep(0.3)                                     # the last events
     if t.watch is not None:
@@ -1462,7 +1510,8 @@ def _finish(host: Host, t: Trial) -> None:
     # exit status of its own, or a crash, is an error
     failed = t.exit not in (0, None) and not t.stopped and (sig is None or sig in CRASHES)
     t.result = {
-        "signal": sig, "ended": ended_words(t.exit, t.stopped, sig),
+        "signal": sig, "ended": ROOM_WORDS if t.short_of_room is not None else ended_words(t.exit, t.stopped, sig),
+        "short_of_room": t.short_of_room,
         "summary": activity.summarise(records, w, seconds, names=True),
         "decoys": t.watch.decoys() if t.watch is not None else [],
         "decoys_planted": t.how.get("decoys", 0),

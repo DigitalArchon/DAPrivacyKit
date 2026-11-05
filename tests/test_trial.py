@@ -565,6 +565,42 @@ def test_a_flatpak_isnt_started_while_it_is_open_already(host, tmp_path):
     trial.stop(host, t)
 
 
+def test_a_trial_in_memory_is_ended_before_it_fills_the_runtime_folder(host, tmp_path, monkeypatch):
+    """A trial in memory is in the runtime folder, the session's own tmpfs (1.2 GB on the Mint PC), and nothing held it
+    to a size while it ran: a browser's cache or a program writing all it can filled it, and the session's programs
+    couldn't write their runtime files until it was discarded. Its room is looked at while it runs, whether the panel
+    asks or not, and the trial is ended, its result kept, once less than ROOM_KEPT is left; a start with less is
+    refused, and the status says how much is kept free."""
+    monkeypatch.setattr(trial, "ROOM_EVERY", 0.05)
+    left = {"now": 900 << 20}
+    monkeypatch.setattr(trial, "room", lambda folder: left["now"])
+    spawn = lambda argv, **kw: SimpleNamespace(pid=1 << 22, stdout=None)     # noqa: E731
+    t = a_trial(tmp_path, argv=["/app/tool"])
+    trial.start(host, t, {}, spawn)
+    try:
+        time.sleep(0.3)
+        assert t.state == "running", "with room left it runs on"
+        left["now"] = trial.ROOM_KEPT - (1 << 20)                            # it wrote nearly all there was
+        wait_for(lambda: t.result is not None)
+        assert t.state == "ended" and t.short_of_room == trial.ROOM_KEPT - (1 << 20)
+        assert t.result["ended"] == trial.ROOM_WORDS and t.result["short_of_room"] == t.short_of_room
+        assert t.result["summary"] is not None and not t.result["failed"], "what it did is kept, as when ended here"
+        assert t.room is None
+    finally:
+        trial.stop(host, t)
+    # with too little room already, it isn't started at all
+    t2 = a_trial(tmp_path / "2", argv=["/app/tool"])
+    with pytest.raises(trial.TrialError, match="too little room left in memory.*prepare it on the disk"):
+        trial.start(host, t2, {}, lambda argv, **kw: pytest.fail("started"))
+    # on the disk, the session's room isn't at stake: not watched
+    t3 = a_trial(tmp_path / "3", argv=["/app/tool"])
+    t3.where = "disk"
+    trial.start(host, t3, {}, spawn)
+    assert t3.room is None and t3.state == "running"
+    trial.stop(host, t3)
+    assert trial.status(host)["room_kept"] == trial.ROOM_KEPT
+
+
 def test_the_overlays_lower_folder_is_escaped_for_mount(tmp_path):
     """overlayfs reads ":" "," and "\\" in lowerdir as separators unless escaped: a trial under a folder with one of
     them in its path would have failed to start. Run as the sandbox runs it, with a stand-in for mount."""
