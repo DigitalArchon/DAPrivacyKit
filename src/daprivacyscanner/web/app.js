@@ -3549,8 +3549,9 @@ function soundRisks(list = false, trial = false) {
     "Leave it off unless you need sound, above all in Tor Browser."];
 }
 
+// one text: strings side by side in an element run together ("computer.It also", seen in the window)
 function gpuRisks() {
-  return ["The browser gets the graphics card's device files. Pages draw faster (3D, maps, games, video effects), and "
+  return [["The browser gets the graphics card's device files. Pages draw faster (3D, maps, games, video effects), and "
     + "WebGL answers as the browser outside the sandbox would, so that detail no longer sets it apart. But the graphics "
     + "drivers then handle whatever a website sends them: the card's driver in the kernel, one of its largest and most "
     + "often flawed parts, and its driver in the browser itself (NVIDIA's closed one, on a computer with NVIDIA). A website "
@@ -3559,7 +3560,7 @@ function gpuRisks() {
     "It also lets the browser read the card's own serial number (NVIDIA's driver gives it to every program that may use "
     + "the card), the same in every session.",
     "Leave it off unless a site you need is too slow without it, above all in Tor Browser. With a display of its own "
-    + "(Xephyr, on X11) it isn't given the card: it would draw in software there anyway."];
+    + "(Xephyr, on X11) it isn't given the card: it would draw in software there anyway."].join(" ")];
 }
 
 // Mullvad Browser set up for Mullvad VPN (browser.preset_vpn): the tick on its card, on by default, kept while the app

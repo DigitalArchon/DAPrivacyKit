@@ -1321,6 +1321,8 @@ check(toolBodies.applied?.plan_id === "off" && !text(".modal .browser-tool").inc
   check(gpuBox && !gpuBox.checked && !gpuBox.disabled && gpuNote()?.hidden, "the graphics card is off until ticked");
   gpuBox.checked = true; gpuBox.dispatchEvent(new window.Event("change"));
   check(!gpuNote().hidden && gpuNote().textContent.includes("get out of the sandbox"), "ticking it says what it costs");
+  check(!/[a-z]\.[A-Z]/.test(gpuNote().textContent), "its sentences don't run together (\"computer.It\", seen in the window): "
+        + gpuNote().textContent.match(/.{0,20}[a-z]\.[A-Z].{0,20}/)?.[0]);
   gpuBox.checked = false; gpuBox.dispatchEvent(new window.Event("change"));
   // and hidden is hidden in the window too: the user agent's [hidden] rule loses to any display of the page's own
   // (.notebox's flex), so the stylesheet says it again. jsdom lets its own [hidden] beat a stylesheet's rule, which a
