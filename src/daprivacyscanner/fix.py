@@ -1744,6 +1744,16 @@ def _drop_unrecorded(backups: Path, records: list[dict]) -> None:
         pass                                    # it holds the copies the attempt's records name
 
 
+def _still_in(folder: str, records: list[dict]) -> str | None:
+    """What one of these steps, not put back, still has inside `folder` (its display name), or None."""
+    for r in records:
+        path = r.get("path")
+        if (not r.get("reverted") and r["kind"] not in IRREVERSIBLE_KINDS and isinstance(path, str)
+                and path != folder and path.startswith(folder.rstrip("/") + "/")):
+            return r.get("display") or path
+    return None
+
+
 def revert_entry(entry: dict, host: Host, log: "UndoLog", force: bool = False) -> list[RevertResult]:
     ctx = FixContext(host, log.backup_dir(entry["id"]))
     results = []
@@ -1752,6 +1762,14 @@ def revert_entry(entry: dict, host: Host, log: "UndoLog", force: bool = False) -
             continue
         if rec.get("backup_dropped"):              # kept only for a while, and gone: said, and left as it is
             results.append(RevertResult(True, ACTION_KINDS[rec["kind"]].undo_hint(rec)))
+            continue
+        inside = _still_in(rec["path"], entry["records"]) if rec["kind"] == MakeDir.kind and not force else None
+        if inside:
+            # a folder this change made that one of its own steps still has something in (a Box's copy of its
+            # program, which a newer copy's entry stands over): left, and not counted as put back, so that reverting
+            # this entry again, once that step can be, removes it too. Counted as put back, it stayed for good, empty
+            results.append(RevertResult(False, f"{rec['display']} stays for now: {inside}, from this change, is still "
+                                               "in it"))
             continue
         try:
             res, ran = _doing(lambda: ACTION_KINDS[rec["kind"]].revert(rec, ctx, force))

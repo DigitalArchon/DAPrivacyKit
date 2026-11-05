@@ -244,6 +244,9 @@ def test_reverting_a_box_leaves_a_newer_copy_to_its_own_entry(tmp_path, host):
     assert (f / "app/bin/prog").read_text() == "v2"
     assert all(r.ok for r in revert_entry(log.get(two), host, log)) and (f / "app/bin/prog").read_text() == "v1"
     assert all(r.ok for r in revert_entry(log.get(one), host, log)) and not (f / "app").exists()
+    # and the Box's folders, which the first revert left while the newer copy stood in them, went with it: counted as
+    # put back then, they stayed for good, empty
+    assert not f.exists() and not f.parent.exists() and log.get(one)["state"] == "reverted"
 
 
 def test_a_copy_put_back_never_makes_its_folders_again(tmp_path, host):
