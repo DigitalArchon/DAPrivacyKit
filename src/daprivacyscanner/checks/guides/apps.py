@@ -430,9 +430,24 @@ def boxes(check, scan, outcome):
         return Guide(check.id, "A Box for an app", "", steps)
     ids = tuple(c[0] for c in choices)
     source = Input.read(params, "source", "choice", ids[0], choices=ids)
+    target, into_input = None, None                     # the Box whose program a program on trial replaces
     if source == "trial":
         name, kind, argv, env, flat, host_opt = cur.name, cur.kind, list(cur.argv), dict(cur.env), None, False
-        name = B.clean_name(Path(name).stem if kind != "installed" else name)
+        # named after its program, not its file, so a newer release (Obsidian-1.7.4.AppImage) is offered the Box of the
+        # one kept before (Obsidian-1.6.7.AppImage), also one named after its file before this; or any other to replace
+        name = B.program_name(name)
+        kept = {b.slug: b for b in existing.values() if b.kind in B.KEPT}
+        same = next((b for b in kept.values() if B.slug_of(B.program_name(b.name)) == B.slug_of(name)), None)
+        into = Input.read(params, "into", "choice", same.slug if same else "new", choices=("new", *kept))
+        target = kept.get(into)
+        if kept:
+            into_input = Input("into", "Keep it in", "choice", into, same.slug if same else "new",
+                               choices=[("new", f"A new Box, “{name}”")]
+                               + [(b.slug, f"Replace the program of Box “{b.name}”") for b in kept.values()],
+                               help="Replacing a Box's program keeps its home and Exchange folders, with what the app "
+                                    "keeps there; the program there now is kept in History, and put back if you revert.")
+        if target is not None:
+            name = target.name
     else:
         a = apps[source]
         name, env, flat = B.clean_name(a.name), dict(a.env), a.flatpak if a.kind == "flatpak" else None
@@ -444,18 +459,26 @@ def boxes(check, scan, outcome):
             kind, argv = "installed", [prog, *a.argv[1:]]
             host_opt = prog.startswith("/opt/") or any(x.startswith("/opt/") for x in a.argv)
     nets = ("off", "on") if kind == "flatpak" else ("off", "observed")
-    network = Input.read(params, "network", "choice", "off", choices=nets)
-    gpu = Input.read(params, "gpu", "bool", True)
-    sound = Input.read(params, "sound", "bool", False)
-    box = B.Box(B.slug_of(name), name, kind, argv, env, flat, host_opt, network, gpu, sound)
+    # a Box whose program is replaced keeps what it gets, unless changed here
+    net0, gpu0, sound0 = (target.network, target.gpu, target.sound) if target is not None else ("off", True, False)
+    network = Input.read(params, "network", "choice", net0, choices=nets)
+    gpu = Input.read(params, "gpu", "bool", gpu0)
+    sound = Input.read(params, "sound", "bool", sound0)
+    box = B.Box(target.slug if target is not None else B.slug_of(name), name, kind, argv, env, flat, host_opt, network,
+                gpu, sound)
     f = B.folder(host, box.slug)
     shown = host.display(f)
     acts, blockers = [], []
     had = existing.get(box.slug)
-    if f.exists() and had is None:
+    # what reverting an earlier Box of this name left (its home and Exchange, kept while they hold anything): taken up
+    # again, where it blocked a new set-up under that name for good ("isn't a Box this app made")
+    left = B.leftover(host, box.slug) if had is None and f.exists() else None
+    if f.exists() and had is None and left is None:
         blockers.append(f"{shown} is there already and isn't a Box this app made: move it away first.")
-    if had is not None and (had.kind, had.argv, had.flatpak) != (box.kind, box.argv, box.flatpak):
-        blockers.append(f"A Box named {box.slug} is there already for another program: revert it in History first.")
+    if had is not None and target is None and (had.kind, had.argv, had.flatpak) != (box.kind, box.argv, box.flatpak):
+        blockers.append(f"There is a Box named “{had.name}” already: choose to replace its program above, or revert it in "
+                        "History first." if had.kind in B.KEPT and source == "trial" else
+                        f"A Box named {box.slug} is there already for another program: revert it in History first.")
     if not (host.home / B.BOXES).exists():
         acts.append(MakeDir(host.home / B.BOXES, "~/" + B.BOXES, 0o700))
     # the app's own names in them go with them on revert: the runs it recorded, and the empty folder bubblewrap makes in
@@ -497,7 +520,15 @@ def boxes(check, scan, outcome):
                "Reverting removes the menu entry, its settings, the record of its runs and a program copied from a "
                "trial. The Box's home and "
                "Exchange folders stay when they hold anything, and the message says so: delete them yourself when you "
-               "no longer want its data (deleting doesn't erase it from the disk; encryption is what protects it)."]
+               "no longer want its data (deleting doesn't erase it from the disk; encryption is what protects it)."
+               if left is None else
+               f"Reverting removes the menu entry, its settings and a program copied from a trial; {shown} stays as it "
+               "is, with its home and Exchange folders and the record of its runs: delete it yourself when you no "
+               "longer want its data (deleting doesn't erase it from the disk; encryption is what protects it)."]
+    if left:
+        words = {"home": "its home folder", "Exchange": "its Exchange folder", "runs.json": "the record of its runs"}
+        effects[1] = (f"{shown} holds what a Box of this name left when it was reverted ({', '.join(words[n] for n in left)}): "
+                      f"this Box takes it up again, so the app finds in {shown}/home what it kept there.")
     if kind == "flatpak":
         effects.append("It runs in Flatpak's own sandbox with the permissions it declares for itself dropped. It can still "
                        "ask the desktop through its portals: a file chooser that you answer, notifications, opening a link. "
@@ -509,13 +540,14 @@ def boxes(check, scan, outcome):
     if source == "trial" and kind == "deb":
         effects.append("The package stays unpacked, not installed: what it depends on must be installed already.")
     if newer:
-        effects.insert(0, f"The Box already holds another copy of {cur.name} (an earlier release, or a different file "
-                       "of the same name). This one takes its place; its home and Exchange folders, with the app's "
-                       "data, stay as they are. The copy there now is kept in History, and put back if you revert this.")
+        effects.insert(0, f"The Box already holds another copy of {box.name} (an earlier release, or another file of "
+                       f"it): {cur.name} takes its place. Its home and Exchange folders, with the app's data, stay as they "
+                       "are. The copy there now is kept in History, and put back if you revert this.")
     steps.append(Step(
         "Choose the app and what it gets", "The app to keep in a Box. An installed app stays installed as it is; only "
         "the copy started from the Box's menu entry is sandboxed.",
         inputs=[Input("source", "App", "choice", source, ids[0], choices=choices),
+                *([into_input] if into_input is not None else []),
                 Input("network", "Network", "choice", network, "off",
                       choices=[("off", "None")] + ([("on", "Its usual network")] if kind == "flatpak"
                                                     else [("observed", "Its own, observed")]), help=net_help),
@@ -527,8 +559,8 @@ def boxes(check, scan, outcome):
                            "programs use sound, and ask the server to connect to any address or listen for "
                            "connections, on this computer's own network, so it could reach the internet and your local "
                            "network even with no network of its own.")],
-        options=[option(check, f"Set up a Box for {box.name}", acts, blockers=blockers, recommended=True,
-                        side_effects=effects)],
+        options=[option(check, f"Replace the program of Box {box.name}" if target is not None else
+                        f"Set up a Box for {box.name}", acts, blockers=blockers, recommended=True, side_effects=effects)],
         done=not acts and not blockers))
     steps.append(Step("Using it", "Start it from the menu, or from Tools, where each Box shows its last runs in numbers. "
                       "To give it a file, put the file in its Exchange folder; inside, the app finds it in ~/Exchange. To "

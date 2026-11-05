@@ -171,6 +171,112 @@ def test_a_program_on_trial_is_kept_by_copying_it_into_the_box(cat, host, progra
         trial.discard(host, t)
 
 
+@pytest.mark.parametrize("file, name", [
+    ("Obsidian-1.6.7.AppImage", "Obsidian"), ("Obsidian-1.7.4.AppImage", "Obsidian"), ("Great Tool.AppImage", "Great Tool"),
+    ("kdenlive-24.02.1-x86_64.AppImage", "kdenlive"), ("FreeCAD_0.21.2-Linux-x86_64.AppImage", "FreeCAD"),
+    ("OpenShot-v3.1.1-x86_64.AppImage", "OpenShot"), ("LibreWolf-128.0-1.x86_64.AppImage", "LibreWolf"),
+    ("tor-browser-linux-x86_64-14.0.tar.xz", "tor-browser"), ("hello_2.10-3_amd64.deb", "hello"),
+    ("Foo-1.2.3-beta.1.AppImage", "Foo"), ("nvim.appimage", "nvim"), ("tool.tar.gz", "tool"), ("7-Zip.AppImage", "7-Zip"),
+    ("Tool 2.AppImage", "Tool 2"), ("1.2.AppImage", "1"),
+])
+def test_a_downloaded_programs_box_is_named_without_its_release(file, name):
+    """Found in use: a Box was named after its file, so Obsidian-1.6.7.AppImage and Obsidian-1.7.4.AppImage were two
+    programs, and the newer one got a Box of its own with an empty home."""
+    assert B.program_name(file) == name
+
+
+def _kept(cat, host, src, file, data=b""):
+    """A trial of the downloaded `file`, kept in a Box through the guide; the trial discarded. (log, result)."""
+    from daprivacyscanner.runner import Runner
+    (src / file).write_bytes(b"\x7fELF\x02\x01\x01\x00AI\x02" + data + b"\0" * 80)
+    t = trial.prepare_file(host, src / file, "disk")
+    trial.CURRENT = t
+    try:
+        g = Runner(cat, host).plan_fix("app.boxes", {"source": "trial"})[1]
+        return g, t
+    except BaseException:
+        trial.discard(host, t)
+        raise
+
+
+def test_a_newer_release_replaces_the_program_of_its_box_and_keeps_its_home(cat, host, program, monkeypatch):
+    """A newer release of a program kept in a Box (another file name: Obsidian-1.7.4.AppImage) was offered a Box of its
+    own, blocked ("there already for another program") once it was named as the old one: the Box of the same program
+    is now offered, its program replaced and its home and Exchange kept; any other Box kept from a trial can be chosen;
+    reverting puts the earlier program and its settings back."""
+    monkeypatch.setattr(trial, "CURRENT", None)
+    src = host.home / "Downloads"
+    src.mkdir()
+    g, t = _kept(cat, host, src, "Obsidian-1.6.7.AppImage", b"1")
+    apply(host, options(g)["Set up a Box for Obsidian"])
+    trial.discard(host, t)
+    f = host.home / "Boxes/obsidian"
+    (f / "home/vault.md").write_text("notes")
+    (f / "Exchange/in.txt").write_text("given")
+    g, t = _kept(cat, host, src, "Obsidian-1.7.4.AppImage", b"22")
+    try:
+        step = g.steps[1]
+        into = next(i for i in step.inputs if i.name == "into")
+        assert into.value == "obsidian" and ("obsidian", "Replace the program of Box “Obsidian”") in into.choices
+        plan = options(g)["Replace the program of Box Obsidian"]
+        assert [a.kind for a in plan.actions] == ["copytree", "file"] and plan.actions[0].replace and not plan.blockers
+        assert any("already holds another copy of Obsidian" in e and "Obsidian-1.7.4.AppImage takes its place" in e
+                   for e in plan.side_effects)
+        log, res = apply(host, plan)
+        assert (f / "app/Obsidian-1.7.4.AppImage").exists() and not (f / "app/Obsidian-1.6.7.AppImage").exists()
+        assert B.read(host, "obsidian").argv == ["/app/Obsidian-1.7.4.AppImage"] and B.read(host, "obsidian").name == "Obsidian"
+        assert (f / "home/vault.md").read_text() == "notes" and (f / "Exchange/in.txt").read_text() == "given"
+        assert [b.slug for b in B.every(host)] == ["obsidian"], "no second Box"
+        revert(host, log, res)
+        assert (f / "app/Obsidian-1.6.7.AppImage").exists() and B.read(host, "obsidian").argv == ["/app/Obsidian-1.6.7.AppImage"]
+        assert (f / "home/vault.md").read_text() == "notes"
+        # a new Box of it isn't made beside the one there: it would be the same folder
+        from daprivacyscanner.runner import Runner
+        new = Runner(cat, host).plan_fix("app.boxes", {"source": "trial", "into": "new"})[1]
+        assert any("There is a Box named “Obsidian” already: choose to replace its program above" in b
+                   for o in new.steps[1].options for b in o.plan.blockers)
+    finally:
+        trial.discard(host, t)
+    # a Box named after its file before this (Obsidian-1.6.7) is the same program's, and keeps its name
+    old = json.loads((f / "box.json").read_text())
+    f = f.rename(host.home / "Boxes/obsidian-1-6-7")
+    (f / "box.json").write_text(B.config_text(B.Box("obsidian-1-6-7", "Obsidian-1.6.7", "appimage", old["argv"], old["env"])))
+    g, t = _kept(cat, host, src, "Obsidian-1.7.4.AppImage", b"22")
+    try:
+        assert [i.value for i in g.steps[1].inputs if i.name == "into"] == ["obsidian-1-6-7"]
+        assert "Replace the program of Box Obsidian-1.6.7" in options(g)
+    finally:
+        trial.discard(host, t)
+
+
+def test_a_reverted_boxs_home_is_taken_up_again(cat, host, program):
+    """Reverting a Box keeps its home and Exchange folders while they hold anything, and they then blocked a new Box of
+    that name for good ("is there already and isn't a Box this app made"). A folder holding only those is taken up
+    again, and the guide says so; anything else in it still blocks."""
+    from daprivacyscanner.runner import Runner
+    plan_of = lambda: options(Runner(cat, host).plan_fix("app.boxes", {"source": "chat.desktop"})[1])["Set up a Box for Chat App"]  # noqa: E731
+    log, res = apply(host, plan_of())
+    f = host.home / "Boxes/chat-app"
+    (f / "home/.config").mkdir()
+    (f / "home/.config/chat.db").write_text("messages")
+    revert(host, log, res)
+    assert sorted(os.listdir(f)) == ["home"]
+    plan = plan_of()
+    assert not plan.blockers and [a.kind for a in plan.actions] == ["mkdir", "file", "file"]
+    assert any("holds what a Box of this name left when it was reverted (its home folder): this Box takes it up again"
+               in e for e in plan.side_effects)
+    log, res = apply(host, plan)
+    assert B.read(host, "chat-app") is not None and (f / "home/.config/chat.db").read_text() == "messages"
+    (f / "runs.json").write_text("{}")                                  # it ran: the record of its runs stays with the home
+    revert(host, log, res)
+    assert sorted(os.listdir(f)) == ["home", "runs.json"] and not plan_of().blockers
+    (f / "notes.txt").write_text("someone's")
+    assert "isn't a Box this app made" in " ".join(plan_of().blockers)
+    (f / "notes.txt").unlink()
+    os.symlink(str(host.home), f / "Exchange")
+    assert "isn't a Box this app made" in " ".join(plan_of().blockers), "a link isn't a Box's folder"
+
+
 def test_copying_a_tree_refuses_a_place_that_is_taken(tmp_path, host):
     (tmp_path / "src/sub").mkdir(parents=True)
     (tmp_path / "src/sub/x").write_text("x")

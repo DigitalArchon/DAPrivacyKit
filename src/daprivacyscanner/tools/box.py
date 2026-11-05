@@ -46,6 +46,7 @@ RUNS_KEPT = 30
 HOSTS_KEPT = 5000
 SLUG = re.compile(r"[a-z0-9][a-z0-9-]{0,39}")
 KINDS = ("appimage", "program", "script", "archive", "deb", "installed", "flatpak")
+KEPT = ("appimage", "program", "script", "archive", "deb")      # the program is kept in the Box (from a trial): `app`
 NETWORKS = ("off", "observed", "on")
 MARK = "Written by DA Privacy Kit. Revert it in the app's History to remove it."
 FAILED_AT_ONCE = 10                     # seconds: a run that fails sooner is said in a dialog (`--box`), with its output
@@ -77,6 +78,45 @@ def clean_name(name: str) -> str:
     """A Box's name as it goes into box.json and the menu entry: one line of printable text (a file's name,
     which a trial's comes from, can hold a newline, and a newline in Name= would end that line of the entry)."""
     return " ".join(re.sub(r"[\x00-\x1f\x7f]", " ", name).split())[:120] or "app"
+
+
+# What a downloaded file's name adds to its program's: the kind of file, then the version, the machine and the system
+# it is built for, and a release's word for itself. Obsidian-1.6.7.AppImage and Obsidian-1.7.4.AppImage are one
+# program, but each was named after its file, so the newer one was made a Box of its own, with an empty home.
+FILE_KIND = re.compile(r"\.(appimage|tar|tgz|tbz2?|txz|tzst|gz|bz2|xz|zst|zip|deb|run|bin|sh|py)$", re.I)
+VERSION_PART = re.compile(r"(?:[-_.]+v?\d[\w.+~]*| +v?\d+\.\d[\w.+~]*|[-_. ]+(?:x86[-_]64|x86|amd64|x64|i[3-6]86|aarch64|arm64"
+                          r"|armhf|armv7l?|linux(?:32|64)?|gnu|portable|release|stable|alpha|beta|rc\d*|nightly|preview))$",
+                          re.I)
+
+
+def program_name(file_name: str) -> str:
+    """The name a Box of a downloaded program gets (and goes by when a newer copy is kept): its file's name without
+    its kind of file and what each release adds to it. Never empty: what is left of the name stays."""
+    name = file_name
+    for part in (FILE_KIND, VERSION_PART):
+        while (m := part.search(name)) and m.start() > 0:
+            name = name[:m.start()]
+    return clean_name(name)
+
+
+def leftover(host: Host, slug: str) -> list[str] | None:
+    """What a reverted Box left in its folder, ~/Boxes/<slug>: its home and Exchange folders, which reverting keeps
+    while they hold anything, and the record of its runs (when it had been set up in a folder that was there already).
+    The names there, or None when the folder holds anything else, or isn't a plain folder of the user's. A new set-up
+    under that name takes them up again (after a revert they blocked it: "isn't a Box this app made")."""
+    f = root(host) / slug
+    try:
+        st = os.lstat(f)
+        if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.getuid():
+            return None
+        names = sorted(os.listdir(f))
+        for n in names:
+            kind = os.lstat(f / n).st_mode
+            if not ((n in ("home", "Exchange") and stat.S_ISDIR(kind)) or (n == "runs.json" and stat.S_ISREG(kind))):
+                return None
+    except OSError:
+        return None
+    return names
 
 
 def root(host: Host) -> Path:
@@ -154,7 +194,7 @@ def problem(host: Host, box: Box) -> str | None:
         return "its home folder is missing"
     if (f / "Exchange").is_symlink():                   # it is bound into the sandbox, writable: a folder, never a link
         return "its Exchange folder is a link, which the sandbox won't be given"
-    if box.kind in ("appimage", "program", "script", "archive", "deb") and not (f / "app").is_dir():
+    if box.kind in KEPT and not (f / "app").is_dir():
         return "its program is missing from the Box"
     if box.kind == "installed" and not host.sys_path(box.argv[0]).exists():
         return f"its program ({box.argv[0]}) is no longer installed"
