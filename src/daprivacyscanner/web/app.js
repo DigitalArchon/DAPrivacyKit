@@ -865,6 +865,7 @@ function modal({ title, body, buttons = [], wide = false, cls = "", sticky = fal
                          "aria-labelledby": heading.id, tabindex: "-1" }, heading, h("div", { class: "content" }, [body].flat(Infinity)));
   const bar = h("div", { class: "buttons" });
   const opener = document.activeElement;
+  const spot = focusSpot(opener);
   const close = () => {
     if (!overlay.isConnected) return;
     overlay.remove();
@@ -872,8 +873,10 @@ function modal({ title, body, buttons = [], wide = false, cls = "", sticky = fal
     if (i >= 0) MODALS.splice(i, 1);
     modalBackground();
     const below = modalTop();
-    // back to where the focus was: the button that opened it, else the dialog now on top
-    if (opener && opener !== document.body && opener.isConnected && !opener.closest("[inert]")) opener.focus();
+    // back to where the focus was: the button that opened it, else the dialog now on top. A row's Fix…, Guide… or
+    // How to… is replaced when the list behind is drawn anew (the fix re-checks its row): the same button in the new row
+    const back = opener?.isConnected ? opener : findSpot(spot);
+    if (back && back !== document.body && back.isConnected && !back.closest("[inert]")) back.focus();
     else if (below) below.box.focus();
     onClose?.();
   };

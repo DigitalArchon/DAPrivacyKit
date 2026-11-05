@@ -2010,6 +2010,41 @@ while ($$(".modal").length) { $$(".modal .buttons button").at(-1).click(); await
   S.open.clear(); $("#show-na").checked = na0; window.setShow(show0); await tick();
   doc.activeElement?.blur(); }
 
+// closing a Fix…, Guide… or How to… dialog opened from a row puts the focus back on that row's button, though the list
+// behind was drawn anew: as the plan re-checked the row before the dialog opened, and as a fix or a step applied
+// re-checks it while it is open
+{ const S = window.eval("S"), doc = window.document, show0 = S.show;
+  const esc = () => doc.activeElement.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape", code: "Escape",
+                                                                                         keyCode: 27, bubbles: true, cancelable: true }));
+  const result0 = { ...S.report.results["enc.boot_no_secureboot"] };
+  S.report.results["enc.boot_no_secureboot"].how_to = true;
+  routes["POST /api/fix/tel.location/plan"] = () => ({ dry_run: "", result: S.report.results["tel.location"], plan: { id: "pl",
+    check_id: "tel.location", title: "Turn off location services", blockers: [], side_effects: [], needs_root: false,
+    steps: [{ kind: "gsettings", text: "gsettings set org.gnome.system.location enabled false", reversible: true,
+              irreversible: false, needs_root: false }] } });
+  for (const id of ["kern.ptrace_scope", "enc.boot_no_secureboot"]) {
+    routes[`POST /api/fix/${id}/plan`] = () => ({ dry_run: "", result: S.report.results[id],
+      guide: { check_id: id, title: "Step by step", intro: "", advice: id === "enc.boot_no_secureboot", steps: [] } });
+  }
+  window.setShow("all"); S.open.clear(); window.renderChecks(); await tick();
+  for (const [id, label] of [["tel.location", "Fix…"], ["kern.ptrace_scope", "Guide…"], ["enc.boot_no_secureboot", "How to…"]]) {
+    const button = () => $$(`#c-${id.replace(".", "\\.")} .badges button`).find(b => b.textContent === label);
+    const clicked = button();
+    clicked.focus(); clicked.click(); await tick(); await tick();
+    check($$(".modal").length === 1 && !clicked.isConnected, `(${label}: the row was drawn anew as its dialog opened)`);
+    esc(); await tick();
+    check(!$$(".modal").length && doc.activeElement === button(), `closing ${label} puts the focus back on the row's ${label}`);
+    button().focus(); button().click(); await tick(); await tick();
+    window.renderChecks(); await tick();                 // what applying it does: the row re-checked behind the dialog
+    esc(); await tick();
+    check(!$$(".modal").length && doc.activeElement === button(),
+          `and so it does when the list was drawn anew while ${label}'s dialog was open`);
+    delete routes[`POST /api/fix/${id}/plan`];
+  }
+  S.report.results["enc.boot_no_secureboot"] = result0;
+  window.setShow(show0); await tick();
+  doc.activeElement?.blur(); }
+
 // started with --browser: the page says what the user's own browser can do with it, at the top, until acknowledged
 { const S = window.eval("S");
   check(!$("#checks-list .notebox.danger"), "no browser warning in the app's window");
