@@ -493,6 +493,34 @@ def test_flatpak_override_is_backed_up_and_reverted(cat, tmp_path):
     assert not overrides.exists()
 
 
+def test_taking_away_the_flatpak_bus_name_says_what_it_allowed_and_what_stops_working(cat, tmp_path):
+    """Remmina's option read "Take away home, org.freedesktop.Flatpak", and its side effects spoke only of files:
+    nothing said that name lets the app run any program outside its sandbox, nor what stops working without it."""
+    host = make_host(tmp_path)
+    perms = {"org.remmina.Remmina": "[Context]\nfilesystems=home;\n\n[Session Bus Policy]\norg.freedesktop.Flatpak=talk\n",
+             "org.x.Tool": "[Context]\nshared=network;\n\n[Session Bus Policy]\norg.freedesktop.Flatpak=talk\n"}
+
+    def flatpak(argv):
+        if argv[1:3] == ("list", "--app"):
+            return CommandResult(argv, 0, "".join(f"{a}\n" for a in perms))
+        if argv[1:3] == ("info", "--show-permissions"):
+            return CommandResult(argv, 0, perms[argv[-1]])
+        return None
+    host.runner.handlers["flatpak"] = flatpak
+    opts = options(build(cat, host, "sbx.flatpak_broad_perms"))
+    plan = opts["Take away home, org.freedesktop.Flatpak"]
+    assert plan.actions[0].argv == ["flatpak", "override", "--user", "--nofilesystem=home",
+                                    "--no-talk-name=org.freedesktop.Flatpak", "org.remmina.Remmina"]
+    effects = " ".join(plan.side_effects)
+    assert "can't browse your folders itself" in effects
+    assert "Talking to org.freedesktop.Flatpak lets it run any program outside its sandbox, as you" in effects
+    assert "stops working: opening a terminal on the computer" in effects and "an IDE's builds" in effects
+    # only the name taken away: nothing about files, which keep the access they had
+    effects = " ".join(opts["Take away org.freedesktop.Flatpak"].side_effects)
+    assert "run any program outside its sandbox, as you" in effects and "folders" not in effects
+    assert effects.endswith("Takes effect the next time the app starts.")
+
+
 def test_leftover_flatpak_folder_removed(cat, tmp_path):
     host = make_host(tmp_path, home_files={".var/app/org.gone.App/config/x.conf": "1",
                                            ".var/app/org.gone.App/data/db": "2", ".var/app/org.kept.App/config/y": "3"})

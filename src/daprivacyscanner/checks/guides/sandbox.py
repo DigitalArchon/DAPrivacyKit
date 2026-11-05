@@ -8,6 +8,17 @@ from .._util import files_under
 from . import FLATHUB_ADD, guide, option, evidence
 
 
+# the session bus names the check flags, which reach outside the sandbox: what talking to one lets the app do, and what
+# stops working once it is taken away (the option's side effects say both, not only what taking files away does)
+BUS_NAMES = {
+    "org.freedesktop.Flatpak": (
+        "run any program outside its sandbox, as you (flatpak-spawn --host): whatever you can read, change or run, it "
+        "can too",
+        "Without it, what the app does with the computer's own programs stops working: opening a terminal on the "
+        "computer, running tools such as git, ssh or a compiler there, an IDE's builds and debugging."),
+}
+
+
 @guide("sbx.flatpak_broad_perms")
 def flatpak_broad(check, scan, outcome):
     from ..sandbox import BROAD_FS, flatpak_permissions
@@ -15,19 +26,20 @@ def flatpak_broad(check, scan, outcome):
     for app in evidence(outcome, value=""):
         perms = flatpak_permissions(scan, app)
         ctx = perms.get(("Context",), {})
-        flags = sorted({f"--nofilesystem={x.split(':')[0]}" for x in ctx.get("filesystems", "").split(";")
-                        if x.split(":")[0] in BROAD_FS})
-        if perms.get(("Session Bus Policy",), {}).get("org.freedesktop.Flatpak") == "talk":
-            flags.append("--no-talk-name=org.freedesktop.Flatpak")
-        if not flags:
+        fs = sorted({x.split(":")[0] for x in ctx.get("filesystems", "").split(";") if x.split(":")[0] in BROAD_FS})
+        bus = perms.get(("Session Bus Policy",), {})
+        names = [n for n in BUS_NAMES if bus.get(n) == "talk"]
+        if not fs and not names:
             continue
+        flags = [f"--nofilesystem={x}" for x in fs] + [f"--no-talk-name={n}" for n in names]
+        effects = ["The app can still open files you pick in its file dialog, but can't browse your folders itself. "
+                   "Some apps (IDEs, games launchers) stop working properly: revert it from History if so."] if fs else []
+        effects += [f"Talking to {n} lets it {BUS_NAMES[n][0]}. {BUS_NAMES[n][1]} Revert it from History if the app "
+                    "needs that." for n in names]
         overrides = scan.paths.data_home / "flatpak" / "overrides" / app
-        steps.append(Step(app, options=[option(check, f"Take away {', '.join(f.split('=')[1] for f in flags)}", [FileCommand(
+        steps.append(Step(app, options=[option(check, f"Take away {', '.join(fs + names)}", [FileCommand(
             ["flatpak", "override", "--user", *flags, app], overrides, "narrow its permissions",
-            scan.host.display(overrides))], side_effects=[
-            "The app can still open files you pick in its file dialog, but can't browse your folders itself. Some "
-            "apps (IDEs, games launchers) stop working properly: revert it from History if so.",
-            "Takes effect the next time the app starts."])]))
+            scan.host.display(overrides))], side_effects=[*effects, "Takes effect the next time the app starts."])]))
     steps.append(Step("Other broad permissions",
                       "Access to all devices or the whole session bus can be narrowed too, but often breaks apps; "
                       "Flatseal shows every permission with a switch.",
