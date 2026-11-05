@@ -47,6 +47,7 @@ ADMIN_IDLE = 5 * 60              # administrator access ends after this long unu
 OUTBOX_EVERY = 2.0               # seconds between looks into the browsers' TempOutboxes
 KEEPS_EVERY = 2.0                # seconds between looks at a watched app (What does this app keep?)
 KEEPS_MISSES = 3                 # polls in a row the watch may leave unanswered (busy under a heavy load) before it ends
+KEEPS_LEFT = 180.0               # seconds a watch goes on once its app has closed, or its panel was closed, then it ends
 
 
 class JSONResponse(_JSONResponse):
@@ -2061,7 +2062,7 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
                     job.update(watched=began["watched"], not_watched=began["skipped"])
                     await asyncio.to_thread(appwatch.start, host, entry, token, spawn_app)
                     job["state"], job["started"] = "running", time.time()
-                    seen, missed = False, 0
+                    seen, missed, closed_at = False, 0, None
                     while not job["cancel"]:
                         await asyncio.sleep(KEEPS_EVERY)
                         h = admin.get(prompt=False)
@@ -2093,6 +2094,17 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
                         # copy already open (LibreOffice's oosplash stays, tested), which isn't watched
                         job["quiet"] = (seen and job["alive"] > 0 and not (job["counts"] or {}).get("files")
                                         and time.time() - job["started"] > appwatch.QUIET_AFTER)
+                        # it ends itself, as End does (its result kept for the panel), KEEPS_LEFT after the app stopped
+                        # running (it closed, or it was never seen: it handed over to a copy that was open; one started
+                        # again meanwhile goes on being watched) or after its panel was closed: administrator access
+                        # was held until End was pressed, the app and the panel long gone
+                        closed_at = (closed_at or time.time()) if job["closed"] or job["absent"] else None
+                        away = max(job["away"], job["started"]) if job["away"] is not None else None
+                        since = [s for s in (closed_at, away) if s is not None]
+                        job["ends_at"] = min(since) + KEEPS_LEFT if since else None
+                        if job["ends_at"] is not None and time.time() >= job["ends_at"]:
+                            job["ended_itself"] = "closed" if closed_at is not None and closed_at == min(since) else "away"
+                            break
                     job["state"] = "ending"
                     h = admin.get(prompt=False)         # the helper running now (the one polled), not the one given at the start
                     if h is None:
@@ -2126,16 +2138,29 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
                 await asyncio.to_thread(admin.drop)
 
     @app.get("/api/tools/keeps", dependencies=[Depends(auth)])
-    async def tools_keeps():
-        """The apps that can be watched, why it can't be done here (if so), and the watch or its result."""
+    async def tools_keeps(request: Request):
+        """The apps that can be watched, why it can't be done here (if so), and the watch or its result. `?panel=open`:
+        the panel is open again, so the watch no longer ends itself for its having been closed."""
         from .tools import appwatch, menu
         host = make_host()
+        job = app.state.keeps_job
+        if job is not None and request.query_params.get("panel") == "open":
+            job["away"] = None
 
         def gather():
             return {"unavailable": appwatch.available(host),
                     "apps": [a.to_dict() for a in menu.apps(host) if not a.terminal]}
         return {**await asyncio.to_thread(gather), "warning": appwatch.WARNING, "limits": appwatch.LIMITS,
-                "job": keeps_view(app.state.keeps_job), "admin_active": admin.active()}
+                "ends_after": KEEPS_LEFT, "job": keeps_view(app.state.keeps_job), "admin_active": admin.active()}
+
+    @app.post("/api/tools/keeps/away", dependencies=[Depends(auth)])
+    async def tools_keeps_away():
+        """The panel was closed while the watch runs: it ends itself KEEPS_LEFT later, unless the panel is opened again
+        (GET with ?panel=open). Its own requests in flight then can't take this back: only an opening does."""
+        job = app.state.keeps_job
+        if job is not None and job["state"] in ("asking", "running") and job["away"] is None:
+            job["away"] = time.time()
+        return {"job": keeps_view(job)}
 
     @app.post("/api/tools/keeps/start", dependencies=[Depends(auth)])
     async def tools_keeps_start(request: Request):
@@ -2164,7 +2189,8 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
             job = app.state.keeps_job = {"id": uuid.uuid4().hex, "state": "asking", "app": entry.name,
                                          "started": None, "finished": None, "counts": None, "alive": None,
                                          "closed": False, "absent": False, "quiet": False, "watched": [],
-                                         "not_watched": [], "result": None, "error": "", "cancel": False}
+                                         "not_watched": [], "result": None, "error": "", "cancel": False,
+                                         "away": None, "ends_at": None, "ended_itself": ""}
             app.state.keeps_task = asyncio.create_task(run_keeps_job(job, entry))
         return {"job": keeps_view(job)}
 

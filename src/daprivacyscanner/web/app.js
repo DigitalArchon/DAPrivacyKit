@@ -4230,11 +4230,17 @@ function appChooser(apps, name) {
 
 async function openKeeps() {
   let data;
-  try { data = await api("GET", "/api/tools/keeps"); } catch (e) { toast(e.message, "error"); return; }
+  // ?panel=open: a watch the panel was closed on no longer ends itself for that (the server's KEEPS_LEFT)
+  try { data = await api("GET", "/api/tools/keeps?panel=open"); } catch (e) { toast(e.message, "error"); return; }
   const body = h("div", { class: "activity" });
   let timer = null, closed = false;
+  // closed while it watches: the watch ends itself a few minutes later, its result kept here (administrator access was
+  // held until End, the panel long closed)
+  const away = () => {
+    if (["asking", "running"].includes(data.job?.state)) api("POST", "/api/tools/keeps/away").catch(() => {});
+  };
   modal({ title: "What does this app keep?", wide: true, body, buttons: [{ label: "Close", kind: "primary" }],
-    onClose: () => { closed = true; clearTimeout(timer); } });
+    onClose: () => { closed = true; clearTimeout(timer); away(); } });
   const reload = async () => {
     try { data = await api("GET", "/api/tools/keeps"); render(); } catch (e) { toast(e.message, "error"); }
   };
@@ -4248,8 +4254,10 @@ async function openKeeps() {
   const render = () => {
     const job = data.job;
     S.adminActive = !!data.admin_active; renderTop();
-    if (job && ["asking", "running", "ending"].includes(job.state)) { fill(body, keepsProgress(job, reload)); follow(); return; }
-    if (job && job.state === "done" && job.result) { fill(body, keepsResult(job, reload)); return; }
+    if (job && ["asking", "running", "ending"].includes(job.state)) {
+      fill(body, keepsProgress(job, reload, data.ends_after)); follow(); return;
+    }
+    if (job && job.state === "done" && job.result) { fill(body, keepsResult(job, reload, data.ends_after)); return; }
     fill(body, keepsStart(data, job, reload));
   };
   render();
@@ -4276,6 +4284,8 @@ function keepsStart(data, job, reload) {
     h("ul", { class: "small" },
       h("li", {}, h("b", {}, "Close the app first. "), "It is started from here, so that everything it does is seen "
         + "from its first moment."),
+      h("li", {}, h("b", {}, "It ends on its own "), `${fmtMinutes(data.ends_after)} after the app closes, or after you `
+        + "close this panel, so administrator access isn't held for nothing: what it saw is kept here, as when you end it."),
       h("li", {}, h("b", {}, "What you get: "), "its own folders with how many files it read, changed, made and "
         + "deleted; the files it writes to all the time, by name; which of your own folders it opened files in, as "
         + "counts; and which files, written meanwhile by it or by another program, hold the names of what you opened."),
@@ -4287,7 +4297,7 @@ function keepsStart(data, job, reload) {
     h("div", { class: "orow" }, btn)];
 }
 
-function keepsProgress(job, reload) {
+function keepsProgress(job, reload, after) {
   const stop = h("button", { class: "primary", disabled: job.stopping || job.state !== "running" },
     job.stopping || job.state === "ending" ? "Ending…" : "End the watch and show what it did");
   stop.addEventListener("click", async () => {
@@ -4297,18 +4307,22 @@ function keepsProgress(job, reload) {
   if (job.state === "asking") return [h("p", {}, `Waiting for administrator access to watch ${job.app}…`)];
   const c = job.counts || {};
   const since = job.started ? fmtMinutes(Math.max(0, job.now - job.started)) : "";
+  const left = job.ends_at ? fmtMinutes(Math.max(0, job.ends_at - job.now)) : "";
   return [
     h("p", {}, h("b", {}, `Watching ${job.app}`), since ? ` for ${since}. ` : ". ",
       "Use it as you normally do, with everything you usually do in it, then end the watch here."),
     h("div", { class: "notebox risk small" }, "Administrator access is held until you end the watch: end it as soon as "
-      + "is practical."),
+      + `is practical. It ends on its own ${fmtMinutes(after)} after ${job.app} closes, or after you close this panel, `
+      + "and what it saw is kept here."),
     h("div", { class: "tally" },
       h("span", {}, h("b", {}, `${c.files ?? 0}`), " files touched by the app"),
       h("span", {}, h("b", {}, `${c.others ?? 0}`), " written by your other programs meanwhile"),
       h("span", { class: "muted" }, `${c.events ?? 0} events seen`)),
-    job.closed ? h("div", { class: "notebox info" }, `${job.app} has closed. End the watch to see what it did.`) : null,
+    job.closed ? h("div", { class: "notebox info" }, `${job.app} has closed. End the watch to see what it did; otherwise it `
+      + `ends on its own${left ? ` in ${left}` : ""}, what it saw kept here.`) : null,
     job.absent ? h("div", { class: "warnbox" }, `${job.app} doesn't seem to have started, or it handed over to a copy `
-      + "that was already running, which isn't watched. End the watch, close the app everywhere, and try again.") : null,
+      + "that was already running, which isn't watched. End the watch, close the app everywhere, and try again."
+      + (left ? ` Otherwise the watch ends on its own in ${left}.` : "")) : null,
     job.quiet ? h("div", { class: "warnbox" }, `${job.app} is running but hasn't opened a single file of yours or of its `
       + "own: it may have handed over to a copy that was already running (a window elsewhere, or one in the background), "
       + "which isn't watched. If so, end the watch, close the app everywhere, and try again.") : null,
@@ -4339,7 +4353,7 @@ function placesTable(r) {
     h("tbody", {}, rows));
 }
 
-function keepsResult(job, reload) {
+function keepsResult(job, reload, after) {
   const r = job.result, rec = r.records, t = r.totals;
   const dismiss = h("button", { class: "small" }, "Dismiss this result");
   dismiss.addEventListener("click", async () => {
@@ -4349,6 +4363,9 @@ function keepsResult(job, reload) {
     h("p", {}, h("b", {}, r.app), ` was watched for ${fmtMinutes(r.seconds)}. It read ${plural(t.opened, "file")}, changed `
       + `${t.written}, made ${t.created} and deleted ${t.deleted}`
       + (r.system.length ? `, besides ${r.system.reduce((n, s) => n + s.files, 0)} of the system's own (programs, libraries, settings).` : ".")),
+    job.ended_itself ? h("p", { class: "small muted" }, job.ended_itself === "closed"
+      ? `The watch ended on its own: ${r.app} hadn't been running for ${fmtMinutes(after)}.`
+      : `The watch ended on its own, ${fmtMinutes(after)} after its panel was closed.`) : null,
     !r.files ? h("div", { class: "warnbox" }, `${r.app} opened no file of yours or of its own. If a copy of it was already `
       + "running (a window elsewhere, or one in the background), it handed its work to that copy, which wasn't watched: "
       + "close it everywhere and watch it again. What that copy wrote shows below, under your other programs.") : null,

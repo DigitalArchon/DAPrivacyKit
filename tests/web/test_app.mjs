@@ -386,7 +386,7 @@ const keepsResult = { app: "Foo", seconds: 1260, files: 9, totals: { opened: 4, 
   foreign: 40, overflow: 0, unresolved: 0, others_left: 0, watched: ["/"], not_watched: [["/mnt/x", "this kind of filesystem can't be watched"]],
   limits: ["It sees this app's own processes."] };
 routes["GET /api/tools/keeps"] = () => ({ unavailable: null, warning: "This needs administrator access from the moment you start until you end it.",
-  limits: ["It sees this app's own processes."], admin_active: !!keepsJob && keepsJob.state === "running",
+  limits: ["It sees this app's own processes."], ends_after: 180, admin_active: !!keepsJob && keepsJob.state === "running",
   apps: [{ id: "foo.desktop", name: "Foo", kind: "native", comment: "Edits things", command: "foo", terminal: false },
          { id: "org.x.Bar.desktop", name: "Bar", kind: "flatpak", comment: "", command: "flatpak run org.x.Bar", terminal: false }],
   job: keepsJob && { ...keepsJob, now: 1790000600 } });
@@ -1856,6 +1856,39 @@ $$(".modal .activity button").find(b => b.textContent.startsWith("End the watch"
 $$(".modal .activity button").find(b => b.textContent === "Dismiss this result").click(); await tick(); await tick();
 check(keepsCalls.at(-1) === "dismiss" && $$(".modal .applist").length === 1, "dismissed, it is gone and the start is back");
 while ($$(".modal").length) { $$(".modal .buttons button").at(-1).click(); await tick(); }
+// the watch ends itself a few minutes after the app closed, or after its panel was closed: said before it starts and
+// while it runs, the closing told to the server, and the result says it ended so
+routes["POST /api/tools/keeps/away"] = () => { keepsCalls.push("away"); return { job: keepsJob }; };
+{ const fetch0 = window.fetch, asked = [];
+  window.fetch = (path, opts) => { asked.push(path); return fetch0(path, opts); };
+  await window.openKeeps(); await tick();
+  window.fetch = fetch0;
+  check(asked[0] === "/api/tools/keeps?panel=open", "opening the panel tells the server it is open again: " + asked[0]); }
+check(text(".modal .activity").includes("It ends on its own 3 min after the app closes, or after you close this panel"),
+      "before it starts, it says the watch ends itself");
+while ($$(".modal").length) { $$(".modal .buttons button").at(-1).click(); await tick(); }
+check(keepsCalls.at(-1) === "dismiss", "a panel closed with nothing being watched tells nothing");
+keepsJob = { state: "running", app: "Foo", started: 1790000000, counts: { files: 7, others: 2, events: 900, overflow: 0 }, alive: 0,
+             closed: true, absent: false, not_watched: [], stopping: false, error: "", ends_at: 1790000720, away: null };
+await window.openKeeps(); await tick();
+check(text(".modal .activity").includes("Foo has closed. End the watch to see what it did; otherwise it ends on its own in 2 min")
+      && text(".modal .activity .notebox.risk").includes("It ends on its own 3 min after Foo closes, or after you close this panel"),
+      "with the app closed, it says when the watch ends itself: " + text(".modal .activity .notebox.info"));
+while ($$(".modal").length) { $$(".modal .buttons button").at(-1).click(); await tick(); }
+check(keepsCalls.at(-1) === "away", "closed while it watches, the panel tells the server, which ends it a few minutes later");
+keepsJob = { ...keepsJob, closed: false, absent: true };
+await window.openKeeps(); await tick();
+check(text(".modal .activity .warnbox").includes("doesn't seem to have started")
+      && text(".modal .activity .warnbox").includes("Otherwise the watch ends on its own in 2 min."),
+      "never seen running, it says the watch ends itself too");
+while ($$(".modal").length) { $$(".modal .buttons button").at(-1).click(); await tick(); }
+keepsJob = { state: "done", app: "Foo", result: keepsResult, stopping: false, ended_itself: "closed" };
+await window.openKeeps(); await tick();
+check(text(".modal .activity").includes("The watch ended on its own: Foo hadn't been running for 3 min.")
+      && text(".modal .activity").includes("Foo was watched for 21 min"), "its result says it ended itself, and is kept as End's");
+while ($$(".modal").length) { $$(".modal .buttons button").at(-1).click(); await tick(); }
+check(keepsCalls.filter(x => x === "away").length === 2, "a finished watch's panel closed tells nothing");
+keepsJob = null;
 
 // the welcome warning: on top at start-up, read rather than clicked away; the choice is kept; the name reopens it
 { const welcomeBodies = [], opened = [];

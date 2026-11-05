@@ -358,6 +358,66 @@ def test_a_watch_busy_for_one_look_goes_on_and_one_that_stops_answering_is_said_
         assert "stopped answering" in job["error"] and "refused" not in job["error"]
 
 
+def test_a_watch_ends_itself_a_while_after_its_app_closed_or_its_panel_was(cat, menu_host, monkeypatch):
+    """Found in use: administrator access was held until End was pressed, also with the app closed and the panel
+    closed long since. The watch now ends itself KEEPS_LEFT after the app has stopped running (closed, or never seen:
+    one started again meanwhile goes on), or after its panel was closed while it ran, its result kept for the panel as
+    End keeps it, and the access given up. The panel opened again takes the second back; its own polling doesn't."""
+    from daprivacyscanner import server
+    monkeypatch.setattr(server, "KEEPS_EVERY", 0.05)
+    monkeypatch.setattr(server, "KEEPS_LEFT", 0.5)
+    monkeypatch.setattr(appwatch, "running", lambda h, a: False)
+    alive = {"n": 2}
+    monkeypatch.setattr(appwatch, "alive", lambda h, units: alive["n"])
+    ended = []
+
+    class Watch(FakeWatch):                             # a helper of its own for each watch, as the access is given up
+        def call(self, action, args, timeout=None):
+            ended.append(action) if action == "watch_end" else None
+            return super().call(action, args, timeout)
+
+    with TestClient(create_app("t0ken", cat, make_host=lambda: menu_host, start_helper=Watch,
+                               spawn_app=lambda argv, **kw: None)) as c:
+        assert c.get("/api/tools/keeps", headers=H).json()["ends_after"] == 0.5
+        # the app closes: the watch says when it ends, and does, as End would
+        assert c.post("/api/tools/keeps/start", headers=H, json={"app": "foo.desktop"}).status_code == 200
+        _wait(c, lambda j: j["state"] == "running" and j["alive"] == 2)
+        time.sleep(0.6)
+        assert _wait(c, lambda j: True)["state"] == "running" and _wait(c, lambda j: True)["ends_at"] is None, \
+            "open, the app keeps it going"
+        alive["n"] = 0
+        job = _wait(c, lambda j: j["closed"] and j["ends_at"])
+        assert job["state"] == "running" and job["ends_at"] <= time.time() + 0.6
+        job = _wait(c, lambda j: j["state"] == "done")
+        assert job["ended_itself"] == "closed" and job["result"]["app"] == "Foo" and ended == ["watch_end"]
+        assert c.get("/api/tools/keeps", headers=H).json()["admin_active"] is False, "the access is given up"
+        c.post("/api/tools/keeps/dismiss", headers=H)
+        # never seen running (it handed over to a copy that was open): as one that closed
+        assert c.post("/api/tools/keeps/start", headers=H, json={"app": "foo.desktop"}).status_code == 200
+        _wait(c, lambda j: j["state"] == "running")
+        c.app.state.keeps_job["started"] -= 30                             # past the 20 seconds that make it absent
+        job = _wait(c, lambda j: j["state"] == "done")
+        assert job["absent"] and job["ended_itself"] == "closed" and len(ended) == 2
+        c.post("/api/tools/keeps/dismiss", headers=H)
+        # the app goes on running, the panel is closed: it ends itself too
+        alive["n"] = 3
+        assert c.post("/api/tools/keeps/start", headers=H, json={"app": "foo.desktop"}).status_code == 200
+        _wait(c, lambda j: j["state"] == "running")
+        assert c.post("/api/tools/keeps/away", headers=H).json()["job"]["away"]
+        job = _wait(c, lambda j: j["state"] == "done")
+        assert job["ended_itself"] == "away" and job["result"] and len(ended) == 3
+        c.post("/api/tools/keeps/dismiss", headers=H)
+        # closed, then opened again: it goes on until it is ended
+        assert c.post("/api/tools/keeps/start", headers=H, json={"app": "foo.desktop"}).status_code == 200
+        _wait(c, lambda j: j["state"] == "running")
+        c.post("/api/tools/keeps/away", headers=H)
+        assert c.get("/api/tools/keeps?panel=open", headers=H).json()["job"]["away"] is None
+        time.sleep(0.8)
+        assert _wait(c, lambda j: True)["state"] == "running"
+        c.post("/api/tools/keeps/stop", headers=H)
+        assert _wait(c, lambda j: j["state"] == "done")["ended_itself"] == ""
+
+
 def test_the_watch_and_the_other_long_root_work_keep_apart(cat, menu_host, monkeypatch):
     """Installing the helper during a watch dropped the access and lost the watch (D13); the TRIM test or Deleted
     file names alongside it held its polling behind minutes-long disk reads (the suspicion, confirmed)."""
