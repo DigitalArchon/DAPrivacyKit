@@ -1959,6 +1959,57 @@ while ($$(".modal").length) { $$(".modal .buttons button").at(-1).click(); await
         "developer mode shows the ids, the expressions and the keys");
   S.state.dev = false; S.open.delete(spec.id); window.renderChecks(); window.renderContext(); await tick(); }
 
+// a check's row and its chips are for the keyboard and a screen reader too: the row's titles are its button (Enter or
+// Space opens and closes its details, and the focus stays on it as the list is drawn anew), and a chip is a button that
+// shows its check, the focus going with it
+{ const S = window.eval("S"), doc = window.document, na0 = $("#show-na").checked, show0 = S.show;
+  const press = (el, key, code, keyCode) => { const e = new window.KeyboardEvent("keydown", { key, code, keyCode, bubbles: true,
+                                                                                              cancelable: true });
+                                              el.dispatchEvent(e); return e; };
+  const own = (id) => $(`#c-${id.replace(".", "\\.")} .row [role=button]`);
+  const opened = () => !!$("#c-tel\\.location .details");
+  window.setShow("all"); S.open.clear(); window.renderChecks(); await tick();
+  check(own("tel.location")?.getAttribute("tabindex") === "0" && own("tel.location").getAttribute("aria-expanded") === "false"
+        && own("tel.location").textContent.startsWith(checkTitleOf("tel.location"))
+        && doc.getElementById(own("tel.location").getAttribute("aria-describedby"))?.textContent.startsWith("Problem"),
+        "a row's titles are its button, collapsed, read out with its status and severity");
+  own("tel.location").focus();
+  check(press(own("tel.location"), "Enter", "Enter", 13).defaultPrevented && opened()
+        && own("tel.location").getAttribute("aria-expanded") === "true" && doc.activeElement === own("tel.location"),
+        "Enter opens its details, and the focus is on the row's button as the list is drawn anew");
+  check(press(doc.activeElement, " ", "Space", 32).defaultPrevented && !opened()
+        && own("tel.location").getAttribute("aria-expanded") === "false" && doc.activeElement === own("tel.location"),
+        "Space closes them, the page not scrolled");
+  press(doc.activeElement, "Unidentified", "Space", 32);
+  check(opened() && doc.activeElement === own("tel.location"), "Space is known by its code and number too");
+  const fixBtn = $$("#c-tel\\.location .badges button").find(b => b.textContent === "Fix…");
+  press(fixBtn, "Enter", "Enter", 13);
+  check(opened() && !fixBtn.contains(own("tel.location")) && !own("tel.location").contains(fixBtn),
+        "the row's own buttons are beside its button, not in it: their keys don't open or close the row");
+  // its related checks: buttons the Tab key reaches, after the row's own; Enter on one (its click) shows that check
+  const spec = fixture.state.catalogue.find(sp => sp.related.length && results[sp.id] && results[sp.related[0]]);
+  S.open.clear(); S.open.add(spec.id); window.renderChecks(); await tick();
+  const row = $(`#c-${spec.id.replace(".", "\\.")}`), chips = [...row.querySelectorAll(".details .related .chip")];
+  const order = window.modalFocusables(row);
+  check(chips.length === spec.related.length && chips.every(c => c.tagName === "BUTTON" && order.includes(c))
+        && order[0] === own(spec.id), "related checks are buttons, reached by Tab after the row's own button");
+  chips[0].focus(); chips[0].click(); await tick();
+  const target = spec.related[0];
+  check(S.open.has(target) && own(target)?.getAttribute("aria-expanded") === "true" && doc.activeElement === own(target),
+        "a chip shows its check, opened, and the focus goes with it");
+  // what changed since the last scan: buttons too
+  const fresh = Object.keys(results).find(k => results[k].is_finding && !fixture.state.accepted[k]);
+  S.report.changes = { previous: 1790000000, new: [fresh], resolved: [], changed: [{ id: fresh, from: 2, to: 5 }],
+                       new_items: { "tel.location": ["~/.config/autostart/x.desktop"] } };
+  window.renderChecks(); await tick();
+  const changeChips = $$(".report .changes .chip");
+  check(changeChips.length === 3 && changeChips.every(c => c.tagName === "BUTTON"), "the chips of what changed are buttons");
+  changeChips[0].focus(); changeChips[0].click(); await tick();
+  check(doc.activeElement === own(fresh), "and one takes the focus to its check");
+  delete S.report.changes;
+  S.open.clear(); $("#show-na").checked = na0; window.setShow(show0); await tick();
+  doc.activeElement?.blur(); }
+
 // started with --browser: the page says what the user's own browser can do with it, at the top, until acknowledged
 { const S = window.eval("S");
   check(!$("#checks-list .notebox.danger"), "no browser warning in the app's window");

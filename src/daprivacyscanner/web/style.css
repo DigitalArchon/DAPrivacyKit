@@ -232,7 +232,10 @@ select option { color: var(--option-text); background: var(--panel); }
 .citem .details .mods li.miss { color: var(--muted); }
 .citem .details .mods li.unknown { color: var(--warn); }
 .related { display: flex; gap: 4px; flex-wrap: wrap; }
-.chip { font-family: var(--mono); font-size: 11.5px; padding: 1px 8px; border-radius: 10px; background: var(--bg); border: 1px solid var(--border); cursor: pointer; }
+/* a button, for the keyboard, drawn as the span it was: in the colour and alignment of the text around it (the focus
+   ring is every button's) */
+.chip { font-family: var(--mono); font-size: 11.5px; padding: 1px 8px; border-radius: 10px; background: var(--bg); border: 1px solid var(--border); cursor: pointer;
+  color: inherit; text-align: inherit; margin: 0; }
 .chip:hover { border-color: var(--accent); }
 .warnbox { background: var(--warnbox); border: 1px solid var(--warn); border-radius: 6px; padding: 6px 10px; font-size: 12.5px; }
 .evidence { display: flex; flex-direction: column; gap: 2px; font-size: 12.5px; }

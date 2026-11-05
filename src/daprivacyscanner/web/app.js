@@ -202,8 +202,9 @@ function newItems(id) {
 // mode (--dev), where the catalogue is the reference.
 const isDev = () => !!S.state?.dev;
 const checkTitle = (id) => S.state?.catalogue?.find(sp => sp.id === id)?.title || id;
-// chips naming checks, each opening its row (a set-up's opens the Tools panel)
-const relatedChips = (ids) => ids.map(id => h("span", { class: "chip", title: "Show it in the list", onclick: () => reveal(id) },
+// chips naming checks, each opening its row (a set-up's opens the Tools panel). Every chip is a button, so the
+// keyboard reaches it and Enter or Space opens it, and a screen reader says what it is
+const relatedChips = (ids) => ids.map(id => h("button", { class: "chip", title: "Show it in the list", onclick: () => reveal(id) },
   checkTitle(id)));
 
 function noteBox(n) {
@@ -431,7 +432,7 @@ function summaryBar(views) {
     .filter(id => !foundNow(id) && !uncheckedNow(id) && !acceptedHidden(id)).sort() : [];
   const notChecked = ch ? (ch.unchecked || []).filter(u => uncheckedNow(u.id) && !acceptedHidden(u.id)) : [];
   const titleOf = (id) => S.state.catalogue.find(sp => sp.id === id)?.title || id;
-  const chips = (ids, cls) => ids.map(id => h("span", { class: `chip ${cls}`, title: "Show it in the list", onclick: () => reveal(id) }, titleOf(id)));
+  const chips = (ids, cls) => ids.map(id => h("button", { class: `chip ${cls}`, title: "Show it in the list", onclick: () => reveal(id) }, titleOf(id)));
   return h("div", { class: "report" },
     h("span", { class: "headline" }, total ? plural(total, "finding") : "No findings"),
     Object.entries(bands).filter(([, n]) => n).map(([b, n]) =>
@@ -453,11 +454,11 @@ function summaryBar(views) {
         .map(([kind, label]) => [newOfKind(fresh, kind), label]).filter(([ids]) => ids.length)
         .map(([ids, label]) => [label(ids.length), ...chips(ids, "new")]),
       resolved.length ? [`${plural(resolved.length, "resolved")}`, ...chips(resolved, "resolved")] : null,
-      notChecked.length ? [`${notChecked.length} not checked again`, ...notChecked.map(u => h("span", { class: "chip unchecked",
+      notChecked.length ? [`${notChecked.length} not checked again`, ...notChecked.map(u => h("button", { class: "chip unchecked",
         title: lastCheckedText(u), onclick: () => reveal(u.id) }, titleOf(u.id)))] : null,
-      changed.length ? [`${changed.length} changed severity`, ...changed.map(c => h("span", { class: "chip", title: "Show it in the list", onclick: () => reveal(c.id) },
+      changed.length ? [`${changed.length} changed severity`, ...changed.map(c => h("button", { class: "chip", title: "Show it in the list", onclick: () => reveal(c.id) },
         `${titleOf(c.id)}: severity ${c.from} → ${c.to}`))] : null,
-      ...Object.entries(ch.new_items || {}).map(([id, items]) => h("span", { class: "chip new", onclick: () => reveal(id),
+      ...Object.entries(ch.new_items || {}).map(([id, items]) => h("button", { class: "chip new", onclick: () => reveal(id),
         title: items.join("\n") }, `${items.length} new in ${titleOf(id).toLowerCase()}`)),
       !fresh.length && !resolved.length && !notChecked.length && !changed.length && !Object.keys(ch.new_items || {}).length
         ? h("span", {}, "nothing changed") : null) : null);
@@ -484,9 +485,26 @@ function setShow(mode) {
   renderChecks();
 }
 
+// The list is drawn anew whenever something in it changes, every row replaced, and the control that had the focus went
+// with the old one: the keyboard was sent back to the top of the page (a row opened with Enter, a chip, a dialog
+// closed). Where it was: its row (or the list) and what it says, to find the same control in the new list, else that
+// row's own button. Only the list's controls: a dialog's are its own.
+function focusSpot(el) {
+  const at = el?.closest?.("#checks-list .citem, #checks-list");
+  return at ? { id: at.id, tag: el.tagName, text: el.textContent } : null;
+}
+
+function findSpot(spot) {
+  const at = spot && document.getElementById(spot.id);
+  if (!at) return null;
+  return [...at.querySelectorAll(FOCUSABLE)].find(el => el.tagName === spot.tag && el.textContent === spot.text)
+    || (at.classList.contains("citem") ? at.querySelector(".row [role=button]") : null);
+}
+
 function renderChecks() {
   const list = $("#checks-list");
   const keepScroll = list.scrollTop;
+  const spot = focusSpot(document.activeElement);
   list.replaceChildren();
   const q = $("#filter").value.trim();
   const showNA = $("#show-na").checked;
@@ -563,6 +581,7 @@ function renderChecks() {
   document.querySelectorAll("#source button").forEach(b => b.classList.toggle("on", b.dataset.source === S.source));
   document.querySelectorAll("#show button").forEach(b => b.classList.toggle("on", b.dataset.show === S.show));
   list.scrollTop = keepScroll;
+  if (spot) findSpot(spot)?.focus({ preventScroll: true });
 }
 
 // at the top: what couldn't be checked, by the severity a problem would have, so nothing
@@ -595,18 +614,24 @@ function checkRow(spec, v) {
     + `${v.status === "not_applicable" ? " dim" : ""}${isAccepted(v) ? " accepted" : ""}${v.status === "pass" ? " passed" : ""}`,
     id: `c-${spec.id}` });
   const unc = v.uncertain?.length ? uncertainText(spec, v) : null;
+  // the row's own button, for the keyboard and a screen reader: its titles open and close the details (Enter or Space,
+  // known by code and number too), read out with the status and severity. Not the whole row, whose buttons (Fix…,
+  // Un-accept) a screen reader doesn't see inside a button: their keys and clicks stay theirs
+  const titles = { class: "titles", role: "button", tabindex: "0", "aria-expanded": open ? "true" : "false",
+    "aria-describedby": `sev-${spec.id}`, onkeydown: (e) => {
+      if (keyIs(e, "Enter", 13) || keyIs(e, " ", 32) || e.code === "Space") { e.preventDefault(); toggle(spec.id); } } };
   el.append(h("div", { class: "row", onclick: () => toggle(spec.id) },
-    h("div", { class: "sevcol" },
+    h("div", { class: "sevcol", id: `sev-${spec.id}` },
       h("span", { class: `status st-${v.status}`, title: STATUS_LABEL[v.status] || v.status }, STATUS_SHORT[v.status] || v.status),
       rowPill(v, (changed ? `Severity ${v.sev} on this machine (base ${spec.severity})` : `Severity ${v.sev}`)
         + (v.result?.as_warning ? `: a risk, rated ${spec.warn_lower} below the problem it could become` : "")),
       changed ? h("span", { class: "base" }, `base ${spec.severity}`) : null),
     // a pass leads with what was found ("/boot is on encrypted storage."), not the problem's name
-    v.status === "pass" && v.summary ? h("div", { class: "titles" },
+    v.status === "pass" && v.summary ? h("div", titles,
       h("div", { class: "t" }, v.summary),
       h("div", { class: "sub" }, spec.title, isDev() ? [" · ", h("span", { class: "id" }, spec.id)] : null),
       unc ? h("div", { class: "uncertain" }, unc) : null)
-    : h("div", { class: "titles" },
+    : h("div", titles,
       h("div", { class: "t" }, spec.title),
       isDev() ? h("div", { class: "id" }, spec.id) : null,
       v.summary ? h("div", { class: "sum" }, v.summary) : null,
@@ -763,6 +788,9 @@ function reveal(id) {
   if (el) {
     el.scrollIntoView({ block: "center", behavior: "smooth" });
     el.classList.add("flash");
+    // and the keyboard with it, to the row's own button: from a chip, Tab goes on from the check it showed
+    const own = el.querySelector(".row [role=button]");
+    if (own && !own.closest("[inert]")) own.focus({ preventScroll: true });
   }
 }
 
@@ -4478,7 +4506,7 @@ function checkChip(id, close) {
   const spec = S.state.catalogue.find(s => s.id === id);
   if (!spec) return null;
   const r = S.report?.results?.[id];
-  return h("span", { class: "chip", title: r?.summary || spec.title, onclick: () => { close(); reveal(id); } }, spec.title);
+  return h("button", { class: "chip", title: r?.summary || spec.title, onclick: () => { close(); reveal(id); } }, spec.title);
 }
 
 async function openNames(mount = null) {
