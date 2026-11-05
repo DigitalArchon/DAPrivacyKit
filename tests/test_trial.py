@@ -278,6 +278,26 @@ def test_the_wrapper_is_the_sandboxs_pid_1_where_there_is_python3(host, tmp_path
     assert "--as-pid-1" in a[:end] and a[end + 1:end + 4] == [sandbox.PYTHON, "-I", "-c"] and a[end + 4] == trial.STAY
 
 
+def test_a_programs_sandbox_holds_a_logouts_sigterm_and_a_flatpaks_doesnt(host, tmp_path):
+    """bubblewrap's sandbox, with STAY in it to pass SIGTERM on, is started under TETHER's hold, so a logout's SIGTERM,
+    sent to every process at once, doesn't end bubblewrap or pasta before the program; Flatpak's own sandbox has
+    nothing of the app's inside to pass it on, and is started as before."""
+    (host.root / "usr/bin/python3").write_text("")
+    spawned = []
+    spawn = lambda argv, **kw: spawned.append(argv) or SimpleNamespace(pid=1 << 22, stdout=None)     # noqa: E731
+    t = a_trial(tmp_path, argv=["/app/tool"])
+    trial.start(host, t, {}, spawn)
+    trial.stop(host, t)
+    assert spawned[-1][3] == trial.TETHER and spawned[-1][4:6] == [str(os.getpid()), "--hold"] and trial.STAY in spawned[-1]
+    f = a_trial(tmp_path / "f", kind="flatpak", argv=["org.x.App"], flatpak="org.x.App")
+    trial.start(host, f, {"network": "on"}, spawn)
+    trial.stop(host, f)
+    assert spawned[-1][3] == trial.TETHER and "--hold" not in spawned[-1] and "flatpak" in spawned[-1]
+    assert trial.tethered(host, ["/usr/bin/Xephyr"]) == [sandbox.PYTHON, "-I", "-c", trial.TETHER, str(os.getpid()),
+                                                         "/usr/bin/Xephyr"], "Xephyr ends with the SIGTERM _finish sends"
+    compile(trial.TETHER, "tether", "exec")
+
+
 def test_the_wrapper_is_python_and_names_the_helpers_it_doesnt_wait_for():
     compile(trial.STAY, "stay", "exec")
     assert "dbus-daemon" in trial.STAY and all(len(n) <= 15 for n in trial.HELPERS)

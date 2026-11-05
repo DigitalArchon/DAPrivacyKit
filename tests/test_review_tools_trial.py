@@ -133,6 +133,142 @@ def test_ending_a_trial_lets_its_program_end_cleanly(tmp_path):
             t.proc.wait()
 
 
+# a Box's launcher (box_cli and run_to_end, the parts that matter here): told to end by a signal, it stops the run
+LAUNCHER = """
+import json, os, signal, subprocess, sys, time
+sys.path.insert(0, sys.argv[1])
+from pathlib import Path
+from daprivacyscanner.host import FakeRunner, Host
+from daprivacyscanner.tools import box, sandbox, trial
+box.end_when_told()
+folder, cmd = Path(sys.argv[2]), json.loads(sys.argv[3])
+host = Host(home=folder, environ={}, runner=FakeRunner(), root=Path("/"), uid=os.getuid())
+t = trial.Trial("0a1b2c3d4e5f", folder, "disk", "program", "tool", "a Linux program", argv=cmd, state="running")
+t.proc = subprocess.Popen(trial.tethered(host, sandbox.fresh_keyring(host, cmd), hold=True), cwd="/",
+                          env=dict(sandbox.SPAWN_ENV), stdin=subprocess.DEVNULL, start_new_session=True)
+print(t.proc.pid, flush=True)
+asked = None
+try:
+    while t.state == "running":
+        time.sleep(0.2)
+        trial.poll(host, t)
+except SystemExit:
+    asked = time.monotonic()
+    trial.stop(host, t)
+print(json.dumps({"ended": t.result["ended"], "exit": t.exit, "took": time.monotonic() - asked if asked else None}), flush=True)
+"""
+
+
+def _pasta_works() -> bool:
+    try:
+        return subprocess.run(["/usr/bin/pasta", "--config-net", "-q", "--", "/bin/true"], capture_output=True,
+                              timeout=20).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+@pytest.mark.skipif(not os.path.exists("/usr/bin/bwrap") or not os.path.exists("/usr/bin/python3"), reason="bubblewrap")
+@pytest.mark.parametrize("network, program", [("none", "traps"), ("none", "ignores"), ("pasta", "traps")])
+def test_at_a_logout_a_boxs_program_ends_as_it_chooses(tmp_path, network, program):
+    """At a logout systemd sends SIGTERM to every process of the session's unit at once: the Box's launcher, TETHER,
+    bubblewrap (and pasta), STAY and the program. bubblewrap ended at once (pasta too), --die-with-parent killed the
+    sandbox, and the program's own handling of SIGTERM never finished: a boxed mail client cut off mid-save. Now the
+    wrappers hold SIGTERM (blocked, as TETHER starts them), the program gets it at its default and ends as it chooses,
+    the launcher records the run; one that ignores it is killed by the launcher's stop() a few seconds later. Here a
+    real Box run's chain, every process of it sent SIGTERM at once, as a cgroup's stop sends it, then SIGHUP, as a
+    login session's unit is also sent (SendSIGHUP): the launcher ends once."""
+    import json
+    import shlex
+    from pathlib import Path
+    if network == "pasta" and (not os.path.exists("/usr/bin/pasta") or not _pasta_works()):
+        pytest.skip("pasta can't make a network namespace here")
+    out, ready = tmp_path / "ended", tmp_path / "ready"
+    trap = "''" if program == "ignores" else shlex.quote(f"sleep 1; echo cleanly > {out}; exit 0")
+    prog = ["/bin/sh", "-c", f"trap {trap} TERM; trap '' HUP; : > {shlex.quote(str(ready))}; while :; do sleep 0.1; done"]
+    bwrap = ["/usr/bin/bwrap", "--die-with-parent", "--unshare-pid", *([] if network == "pasta" else ["--unshare-net"]),
+             "--new-session", "--as-pid-1", "--dev-bind", "/", "/", "--", "/usr/bin/python3", "-I", "-c", trial.STAY, *prog]
+    cmd = ["/usr/bin/pasta", "--config-net", "-q", "--", "/bin/sh", "-c", 'exec "$0" "$@"', *bwrap] if network == "pasta" else bwrap
+    folder = tmp_path / "t"
+    for sub in ("home", "app", "private"):
+        (folder / sub).mkdir(parents=True)
+    src = str(Path(trial.__file__).resolve().parents[2])
+    launcher = subprocess.Popen([sys.executable, "-I", "-c", LAUNCHER, src, str(folder), json.dumps(cmd)],
+                                stdout=subprocess.PIPE, text=True, start_new_session=True)
+    everyone: set[int] = set()
+    try:
+        int(launcher.stdout.readline())
+        deadline = time.monotonic() + 15
+        while not ready.exists() and launcher.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.05)
+        if not ready.exists():
+            pytest.skip("bubblewrap can't make a sandbox here")
+        time.sleep(0.3)
+        everyone = {launcher.pid} | _descendants(launcher.pid)
+        assert len(everyone) >= 5, "the launcher, the tether, bubblewrap, the sandbox's first process and the program"
+        for sig in (signal.SIGTERM, signal.SIGHUP):    # as a cgroup's stop does: every process, at once
+            for pid in everyone:
+                try:
+                    os.kill(pid, sig)
+                except OSError:
+                    pass
+        line = launcher.stdout.readline()
+        launcher.wait(timeout=20)
+        r = json.loads(line)
+        if program == "traps":
+            assert out.exists() and out.read_text() == "cleanly\n", "the program ended as it does when asked"
+            assert r["exit"] == 0 and r["took"] < 3.5, f"by itself, before the launcher's bound: {r}"
+        else:
+            assert not out.exists() and r["took"] >= 3.5 and r["exit"] == -signal.SIGKILL, f"killed after the bound: {r}"
+        assert r["ended"] == "was ended here"
+        assert all(_gone(pid) for pid in everyone), "nothing of it is left running"
+    finally:
+        for pid in everyone | _descendants(launcher.pid):
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
+        launcher.kill()
+
+
+ONCE = """
+import os, signal, sys
+sys.path.insert(0, sys.argv[1])
+from daprivacyscanner.tools import box
+box.end_when_told()
+ended = []
+for s in (signal.SIGTERM, signal.SIGHUP, signal.SIGTERM):
+    try:
+        os.kill(os.getpid(), s)
+        sum(range(10000))                       # the handler runs here, at the latest
+    except SystemExit as e:
+        ended.append(e.code)
+print(ended)
+"""
+
+
+def test_the_launcher_ends_once_however_many_signals_come():
+    """systemd sends a login session's processes SIGHUP right after SIGTERM: a second SystemExit, raised while stop()
+    waits for the program, ended the launcher there, its tether killing the sandbox, the run unrecorded."""
+    from pathlib import Path
+    r = subprocess.run([sys.executable, "-I", "-c", ONCE, str(Path(trial.__file__).resolve().parents[2])],
+                       capture_output=True, text=True, timeout=20)
+    assert r.stdout.strip() == f"[{128 + signal.SIGTERM}]", r.stdout + r.stderr
+
+
+def test_the_program_starts_with_every_signal_at_its_default():
+    """STAY starts with SIGTERM and SIGHUP blocked (TETHER's hold, for a logout) and, being python3, with SIGPIPE and
+    SIGXFSZ ignored, which an exec keeps: programs in a sandbox had SIGPIPE and SIGXFSZ ignored (a shell can't even trap
+    a signal it was started with ignored). It gives the program every signal at its default and none blocked, as a
+    program started from the menu has them."""
+    def held():
+        signal.pthread_sigmask(signal.SIG_BLOCK, (signal.SIGTERM, signal.SIGHUP))
+        signal.signal(signal.SIGPIPE, signal.SIG_IGN)
+    r = subprocess.run([sys.executable, "-I", "-c", trial.STAY, "/bin/grep", "-E", "^Sig(Blk|Ign):", "/proc/self/status"],
+                       preexec_fn=held, capture_output=True, text=True, timeout=20)
+    got = {k: int(v, 16) for k, v in (line.split(":\t") for line in r.stdout.splitlines())}
+    assert r.returncode == 0 and got == {"SigBlk": 0, "SigIgn": 0}, r.stdout
+
+
 def test_the_commands_exit_status_is_passed_on_and_stop_reaches_the_command():
     import resource
     # with a core size limit of 1, as the app runs its own commands: the shell's SIGSEGV below left a real crash dump

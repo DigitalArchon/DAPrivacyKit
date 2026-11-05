@@ -714,26 +714,43 @@ HELPERS = ("dbus-daemon", "dbus-launch", "dbus-broker", "dbus-broker-lau", "at-s
 # reaped as ever: SIGTERM sent to the command's group reached bubblewrap (or pasta) first, which ended at once, and
 # --die-with-parent then killed the sandbox, so the program never had the grace to end cleanly (a trap on TERM inside
 # never ran: the review of 2026-11-04). The kernel passes a signal from outside to a namespace's PID 1 only when it has
-# a handler for it. Where it isn't PID 1 (a test), only the program is asked.
+# a handler for it. Where it isn't PID 1 (a test), only the program is asked. It passes one on once: at a logout every
+# process of the session's unit is sent SIGTERM at once, those in the sandbox included, and the launcher's Stop asks
+# again; a program can take a second one for "end now". It starts the program with every signal at its default and
+# none blocked, as from the menu: the wrappers before it start with SIGTERM and SIGHUP blocked (TETHER's hold), and
+# python3 ignores SIGPIPE and SIGXFSZ, which an exec keeps (programs in the sandbox had both ignored, and a shell can't
+# even trap a signal it was started with ignored).
 STAY = """\
 import ctypes, os, signal, sys, time
 HELPERS = %r
 libc = ctypes.CDLL(None, use_errno=True)
 libc.prctl(36, 1, 0, 0, 0)
 libc.prctl(1, 9, 0, 0, 0)
-first = 0
+first, asked = 0, False
 def ask(signum, frame):
+    global asked
+    if asked:
+        return
     try:
         if os.getpid() == 1:
             os.kill(-1, signum)
+            asked = True
         elif first > 0:
             os.kill(first, signum)
+            asked = True
     except OSError:
         pass
 signal.signal(signal.SIGTERM, ask)
+signal.pthread_sigmask(signal.SIG_UNBLOCK, (signal.SIGTERM, signal.SIGHUP))
 first = os.fork()
 if not first:
-    signal.signal(signal.SIGTERM, signal.SIG_DFL)
+    for s in signal.valid_signals():
+        if s not in (signal.SIGKILL, signal.SIGSTOP):
+            try:
+                signal.signal(s, signal.SIG_DFL)
+            except (OSError, ValueError):
+                pass
+    signal.pthread_sigmask(signal.SIG_SETMASK, ())
     try:
         os.execvp(sys.argv[1], sys.argv[1:])
     except OSError as e:
@@ -773,20 +790,33 @@ sys.exit(status if status >= 0 else 128 - status)
 # pidfd on it; its parent's number changing where the kernel has no pidfds), killing the command first: pasta or
 # bubblewrap, and the sandbox with it. What the app sends the group (Stop's SIGTERM) reaches the command as before:
 # TETHER ignores it, and passes the command's exit status on (a signal as 128 plus its number, as STAY does).
+# A program's sandbox (--hold) gets the time to end at a logout. systemd then sends SIGTERM to every process of the
+# session's unit at once: bubblewrap, which has no handler for it, ended at once, and pasta's handler ends it without
+# waiting for its command (pasta 2024-02-20: tested), and --die-with-parent then killed the sandbox, so a boxed mail
+# client was cut off mid-save. So the command starts with SIGTERM and SIGHUP blocked, which every exec keeps and
+# neither bubblewrap nor pasta undoes: they stay pending in bubblewrap, pasta (its network with them) and the wrappers
+# between, while STAY, which unblocks them, and the program, which it starts with every signal at its default, get
+# theirs. The program ends as it chooses; the launcher's stop() kills what is left after its few seconds, and
+# systemd's SIGKILL anything after its own (TimeoutStopSec, 5 s for user@ on Mint 22.3). Tested with bubblewrap 0.9,
+# with and without pasta: a program trapping TERM wrote its file, one ignoring it was killed by stop(), nothing was left.
 TETHER = """\
 import ctypes, os, select, signal, sys, time
 app, me, quiet = int(sys.argv[1]), os.getpid(), (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
+hold = sys.argv[2] == "--hold"
+argv = sys.argv[3:] if hold else sys.argv[2:]
 for s in quiet:
     signal.signal(s, signal.SIG_IGN)
 child = os.fork()
 if not child:
     for s in quiet:
         signal.signal(s, signal.SIG_DFL)
+    if hold:
+        signal.pthread_sigmask(signal.SIG_BLOCK, (signal.SIGTERM, signal.SIGHUP))
     ctypes.CDLL(None, use_errno=True).prctl(1, signal.SIGKILL, 0, 0, 0)
     if os.getppid() != me:
         os._exit(1)
     try:
-        os.execvp(sys.argv[2], sys.argv[2:])
+        os.execvp(argv[0], argv)
     except OSError as e:
         sys.stderr.write("It couldn't be started: %s\\n" % e.strerror)
     os._exit(127)
@@ -819,12 +849,13 @@ while True:
 """
 
 
-def tethered(host: Host, argv: list[str]) -> list[str]:
+def tethered(host: Host, argv: list[str], hold: bool = False) -> list[str]:
     """`argv` under TETHER: it ends with this process. As it is where there is no python3 (bubblewrap's own
-    --die-with-parent is all there is then)."""
+    --die-with-parent is all there is then). `hold`: a program's sandbox with STAY in it, which a logout's SIGTERM
+    doesn't end before the program has (TETHER's comment); never Xephyr's, which _finish ends with SIGTERM."""
     if not host.sys_path(sandbox.PYTHON).exists():
         return argv
-    return [sandbox.PYTHON, "-I", "-c", TETHER, str(os.getpid()), *argv]
+    return [sandbox.PYTHON, "-I", "-c", TETHER, str(os.getpid()), *(["--hold"] if hold else []), *argv]
 
 
 # "$1" is mount, "$2" the package's usr folder: its ":" "," and "\" escaped as overlayfs's options want them (a trial's
@@ -1346,7 +1377,8 @@ def start(host: Host, t: Trial, options: dict, spawn: Callable = subprocess.Pope
             etc = {}
         devices = tuple(sandbox.gpu(host)) if t.options["gpu"] and t.xephyr is None and eng.id == "bubblewrap" else ()
         parts = Parts(disp, etc, pasta_path, t.private / "packets" if pasta_path else None, sync, devices, t.options["sound"])
-        cmd = tethered(host, sandbox.fresh_keyring(host, eng.command(host, t, parts)))
+        # bubblewrap's sandbox has STAY as its first process (python3 is there: tethered needs it too), Flatpak's doesn't
+        cmd = tethered(host, sandbox.fresh_keyring(host, eng.command(host, t, parts)), hold=eng.id == "bubblewrap")
         env = dict(sandbox.SPAWN_ENV)                   # none of the app's: the program could read it (bubblewrap's)
         if eng.id == "flatpak":
             env = host_env(host.environ)
@@ -1468,8 +1500,8 @@ def _stay_of(pid: int) -> int | None:
 
 def stop(host: Host, t: Trial) -> None:
     """Ends the trial's program (it is the trial's own: started here, in its sandbox) and sums it up: asked to end
-    (SIGTERM to STAY, which passes it on in the sandbox; to the command's group where there is no STAY), killed when it
-    hasn't after a few seconds."""
+    (SIGTERM to STAY, which passes it on in the sandbox; to the command's group where there is no STAY, which a held
+    command, bubblewrap's, keeps pending), killed when it hasn't after a few seconds."""
     with t.lock:
         if t.state != "running":
             return

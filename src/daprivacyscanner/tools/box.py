@@ -378,6 +378,23 @@ def running(host: Host, slug: str) -> bool:
     return False
 
 
+def end_when_told() -> None:
+    """The launcher's signals (`--box`): at a logout or shutdown (SIGTERM, SIGHUP) SystemExit, so run_to_end stops the
+    run and records it (Python's default would skip both: live on Mint, both were lost). Once only: systemd sends a
+    unit's processes SIGHUP right after SIGTERM where it is told to (SendSIGHUP, a login session's), and a second
+    SystemExit, raised while stop() waits for the program to end, would end the launcher there, its tether killing the
+    sandbox with the program still at its own end, and the run unrecorded."""
+    import signal
+    told: list[int] = []
+
+    def told_to_end(signum, frame):
+        if not told:
+            told.append(signum)
+            raise SystemExit(128 + signum)
+    signal.signal(signal.SIGTERM, told_to_end)
+    signal.signal(signal.SIGHUP, told_to_end)
+
+
 def run_to_end(host: Host, box: Box, spawn=None, wait: float = 1.0) -> trial.Trial:
     """Starts the Box and stays until its program has ended (the launcher's own run: `--box`), then records the
     run. One run of a Box at a time."""

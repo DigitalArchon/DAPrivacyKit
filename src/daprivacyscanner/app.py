@@ -464,14 +464,10 @@ def verify_cli(path: str, keys: list[str], checksum: str) -> int:
 def box_cli(slug: str) -> int:
     """`--box NAME`: what a Box's menu entry runs. Starts the Box's app in its sandbox, stays until it has ended
     and records the run in numbers. No window of the app's own; a problem is said in a dialog."""
-    import signal
     from .host import Host
     from .tools import box, sandbox, trial
 
-    def told_to_end(signum, frame):                  # logout or shutdown: Python's default would skip the clean-up
-        raise SystemExit(128 + signum)              # and the run's record (live on Mint: both were lost)
-    signal.signal(signal.SIGTERM, told_to_end)
-    signal.signal(signal.SIGHUP, told_to_end)
+    box.end_when_told()                              # logout or shutdown: the run stopped and recorded, once
     host = Host.local()
     try:
         b = box.read(host, slug)
