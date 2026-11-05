@@ -247,7 +247,9 @@ what was put back. If a step couldn't be put back, its Revert button is there.
 
 ## 7. Save or share the report
 
-**Export…** saves the report as text or JSON, or copies it.
+**Export…** saves the report as text or JSON, or copies it. **Save…** asks for a folder and saves it there as
+DAPrivacyKit-report-*date* (or DAPrivacyKit-everything-*date*), never over a file there, readable by you only
+where the disk keeps permissions (the app says when it doesn't).
 
 - **Redact** removes your name, the computer's name, account and network names, addresses, and paths in
   your home folder, so you can share the report for help.

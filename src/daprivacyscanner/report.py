@@ -5,10 +5,15 @@ what it was before and how to undo it by hand), for the user to keep as a backup
 
 from __future__ import annotations
 
+import contextlib
+import errno
 import ipaddress
 import json
+import os
 import re
+import stat
 import time
+from pathlib import Path
 from typing import Any, Iterable
 
 from .catalogue import Catalogue
@@ -373,3 +378,42 @@ def export_all(report: dict | None, catalogue: Catalogue, entries: list[dict], a
     lines += ["", "== Not included"] + [f"- {x}" for x in NOT_INCLUDED] + [""]
     lines.append(render_text(report, catalogue, accepted) if report else "== No scan is saved: run one to include its report.")
     return "\n".join(lines)
+
+
+def file_name(what: str, fmt: str) -> str:
+    """What an export saved from the page is called: for the app as its users know it, with the day it is saved, here
+    (as its own "exported" line has it). `what` is "report" or "everything", `fmt` "text" or "json"."""
+    return f"DAPrivacyKit-{what}-{time.strftime('%Y-%m-%d')}.{'json' if fmt == 'json' else 'txt'}"
+
+
+def save(folder: Path, name: str, text: str) -> tuple[str, int]:
+    """`text` written into `folder` (its real path) as a new file readable by the user alone, 0600 as --export writes
+    it: an export describes this machine, and can hold every change in History and the notes of accepted findings.
+    Never over a file there, nor through a link: the next free name, "NAME (2).txt" and so on. A file name in it that
+    isn't UTF-8 goes in as the bytes it has, as the export routes send it (TextResponse). Returns the name written and
+    its mode, which a disk without permissions (FAT, NTFS) sets for every file whatever was asked."""
+    data = text.encode("utf-8", "surrogateescape")
+    stem, ext = os.path.splitext(name)
+    dfd = os.open(folder, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        for i in range(1, 1000):
+            target = name if i == 1 else f"{stem} ({i}){ext}"
+            try:
+                fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600,
+                             dir_fd=dfd)
+            except FileExistsError:
+                continue
+            try:
+                with os.fdopen(fd, "wb") as f:
+                    f.write(data)
+                    f.flush()
+                    os.fsync(f.fileno())
+                    mode = stat.S_IMODE(os.fstat(f.fileno()).st_mode)
+            except BaseException:
+                with contextlib.suppress(OSError):
+                    os.unlink(target, dir_fd=dfd)
+                raise
+            return target, mode
+    finally:
+        os.close(dfd)
+    raise FileExistsError(errno.EEXIST, f"there are too many files named like {name} there already")

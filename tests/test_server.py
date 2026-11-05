@@ -383,6 +383,81 @@ def test_a_file_name_that_isnt_utf8_is_exported_as_text(cat, tmp_path):
         assert c.get(f"{path}?format=json", headers=h).content.isascii()
 
 
+def test_an_export_is_saved_by_the_app_readable_by_the_user_alone(cat, tmp_path):
+    """The export dialog's Save…: a download the window's WebKitGTK wrote had the umask's mode, 0664 on Mint and Ubuntu,
+    readable by every account (tested with WebKitGTK 2.52). The app writes it itself into the folder chosen, 0600 as
+    --export does, named DAPrivacyKit-<what>-<day>, never over a file there nor through a link, a name that isn't UTF-8
+    in it as the bytes it has."""
+    import json
+    import os
+    import stat
+    import time
+    host = odd_name_host(tmp_path)
+    folder = host.home / "Downloads"
+    folder.mkdir()
+    asked = []
+    c = TestClient(create_app(TOKEN, cat, make_host=lambda: host,
+                              pick=lambda kind, multiple, start: asked.append((kind, multiple)) or [str(folder)]))
+    h = {"X-Token": TOKEN}
+    save = {"what": "report", "format": "text", "redact": False}
+    assert c.post("/api/export/save", headers=h, json=save).json()["error"] == "Scan first."
+    c.post("/api/scan", headers=h)
+    day = time.strftime("%Y-%m-%d")
+    names = [f"DAPrivacyKit-report-{day}.txt", f"DAPrivacyKit-report-{day} (2).txt", f"DAPrivacyKit-report-{day} (4).txt"]
+    elsewhere = tmp_path / "elsewhere.txt"
+    elsewhere.write_text("mine\n")
+    os.symlink(elsewhere, folder / f"DAPrivacyKit-report-{day} (3).txt")     # a link where the third would go
+    umask = os.umask(0o002)                                                 # as on Mint and Ubuntu
+    try:
+        saved = [c.post("/api/export/save", headers=h, json=save).json() for _ in names]
+    finally:
+        os.umask(umask)
+    assert asked == [("folder", False)] * 3
+    assert saved == [{"saved": f"~/Downloads/{n}", "private": True} for n in names]
+    assert all(stat.S_IMODE((folder / n).stat().st_mode) == 0o600 for n in names)
+    shown = c.get("/api/report?format=text&redact=0", headers=h).content
+    assert all((folder / n).read_bytes() == shown for n in names) and b"~/Projekt-M\xfcnchen/.env" in shown
+    assert elsewhere.read_text() == "mine\n"
+    # everything, as JSON, redacted
+    r = c.post("/api/export/save", headers=h, json={"what": "everything", "format": "json", "redact": True}).json()
+    data = json.loads((folder / f"DAPrivacyKit-everything-{day}.json").read_text())
+    assert r["saved"] == f"~/Downloads/DAPrivacyKit-everything-{day}.json" and data["redacted"]
+
+
+def test_an_export_is_saved_where_the_user_says_when_there_is_no_file_chooser(cat, tmp_path):
+    """Without a file chooser (--browser mode with neither zenity nor kdialog) the page asks for the folder, checked as
+    the tools' paths are; a chooser closed without a choice saves nothing."""
+    import os
+    host = make_host(tmp_path, commands={LSBLK: sample("lsblk/debian-12-partial.json")})
+    (host.home / "Documents").mkdir()
+    (host.home / "notes.txt").write_text("x")
+    c = TestClient(create_app(TOKEN, cat, make_host=lambda: host))
+    h = {"X-Token": TOKEN}
+    c.post("/api/scan", headers=h)
+    save = {"what": "report", "format": "text"}
+    assert c.post("/api/export/save", headers=h, json=save).json() == {"unavailable": True}
+    for bad, why in (("Documents", "starting with / or ~/"), ("~/notes.txt", "isn't a folder"), ("~/gone", "doesn't exist"),
+                     ("/proc/self", "isn't a file the tools work on")):
+        r = c.post("/api/export/save", headers=h, json={**save, "folder": bad})
+        assert r.status_code == 400 and why in r.json()["error"], (bad, r.json())
+    for bad in ({"what": "../x", "format": "text"}, {"what": "report", "format": "exe"}):
+        assert c.post("/api/export/save", headers=h, json={**bad, "folder": "~/Documents"}).status_code == 400
+    assert not os.listdir(host.home / "Documents")
+    r = c.post("/api/export/save", headers=h, json={**save, "folder": "~/Documents"}).json()
+    assert r["saved"].startswith("~/Documents/DAPrivacyKit-report-") and len(os.listdir(host.home / "Documents")) == 1
+    if os.geteuid() != 0:                   # root writes whatever the mode
+        (host.home / "Documents").chmod(0o500)
+        try:
+            r = c.post("/api/export/save", headers=h, json={**save, "folder": "~/Documents"})
+        finally:
+            (host.home / "Documents").chmod(0o700)
+        assert r.status_code == 400 and r.json()["error"] == "It couldn't be saved in ~/Documents: Permission denied."
+    cancelled = TestClient(create_app(TOKEN, cat, make_host=lambda: host, pick=lambda kind, multiple, start: []))
+    cancelled.post("/api/scan", headers=h)
+    assert cancelled.post("/api/export/save", headers=h, json=save).json() == {"cancelled": True}
+    assert len(os.listdir(host.home / "Documents")) == 1
+
+
 def test_accept_a_finding(cat, tmp_path):
     c = client(cat, tmp_path)
     h = {"X-Token": TOKEN}

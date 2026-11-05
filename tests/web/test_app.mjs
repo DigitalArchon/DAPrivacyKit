@@ -665,21 +665,40 @@ if (unknownRow) { window.reveal(unknownRow); await tick(); check($(`#c-${unknown
 await window.openExport(); await tick();
 check(text(".modal .export pre").startsWith("DA Privacy Kit report"), "the export dialog shows the report text");
 check(calls.includes("GET /api/report"), "export fetched the report");
-{ // the file downloaded is named for the app, as its users know it
-  const named = [], click0 = window.HTMLAnchorElement.prototype.click;
-  window.HTMLAnchorElement.prototype.click = function () { named.push(this.download); };
-  const download = () => $$(".modal .buttons button").find(b => b.textContent === "Download").click();
-  download();
+{ // Save… has the app save it into the folder chosen, readable by the user alone: never a download, which the window's
+  // WebKitGTK writes with the umask's mode (0664: readable by every account)
+  const saves = [], click0 = window.HTMLAnchorElement.prototype.click;
+  let downloads = 0, chooser = true, disk = true;
+  window.HTMLAnchorElement.prototype.click = function () { downloads++; };
+  routes["POST /api/export/save"] = (body) => { saves.push(body);
+    if (!chooser && !body.folder) return { unavailable: true };
+    return { saved: `${body.folder || "~/Downloads"}/DAPrivacyKit-${body.what}-2026-11-05.${body.format === "json" ? "json" : "txt"}`,
+             private: disk }; };
+  const said = (t) => $$("#toasts .toast").some(x => x.textContent === t);
+  const save = async () => { $$(".modal .buttons button").find(b => b.textContent === "Save…").click(); await tick(); await tick(); };
+  await save();
+  check(JSON.stringify(saves.at(-1)) === JSON.stringify({ what: "report", format: "text", redact: true }),
+        "Save… asks the app to save the report as the dialog shows it: " + JSON.stringify(saves.at(-1)));
+  check(said("Saved to ~/Downloads/DAPrivacyKit-report-2026-11-05.txt, readable by you only."), "and says where, readable by you only");
   const [kind, fmt] = $$(".modal .export select");
-  fmt.value = "json"; fmt.dispatchEvent(new window.Event("change")); await tick();
-  download();
   kind.value = "everything"; kind.dispatchEvent(new window.Event("change")); await tick();
-  download();
+  fmt.value = "json"; fmt.dispatchEvent(new window.Event("change")); await tick();
+  chooser = false;                             // no file chooser here: the page asks which folder, and sends it
+  await save();
+  const ask = $$(".modal").at(-1);
+  check(ask.querySelector("h2").textContent === "Save it in which folder?", "without a file chooser it asks which folder");
+  ask.querySelector("input").value = "~/Documents";
+  [...ask.querySelectorAll(".buttons button")].at(-1).click(); await tick(); await tick();
+  check(JSON.stringify(saves.at(-1)) === JSON.stringify({ what: "everything", format: "json", redact: false, folder: "~/Documents" })
+        && said("Saved to ~/Documents/DAPrivacyKit-everything-2026-11-05.json, readable by you only."),
+        "then saves there what was chosen, unredacted for everything: " + JSON.stringify(saves.at(-1)));
+  chooser = true; disk = false;                // a disk that gives every file the same permissions (FAT)
+  await save();
+  check($$("#toasts .toast").some(x => x.textContent.startsWith("Saved to ~/Downloads/DAPrivacyKit-everything-2026-11-05.json. "
+        + "The disk it is on doesn't keep who may read a file")), "where the file isn't the user's alone, it doesn't say it is");
   window.HTMLAnchorElement.prototype.click = click0;
-  const day = new window.Date().toISOString().slice(0, 10);
-  check(named.join() === [`DAPrivacyKit-report-${day}.txt`, `DAPrivacyKit-report-${day}.json`,
-                          `DAPrivacyKit-everything-${day}.json`].join(),
-        "a downloaded export is named DAPrivacyKit-report-<date> or DAPrivacyKit-everything-<date>: " + named.join(", "));
+  check(!downloads, "nothing is downloaded by the page itself");
+  delete routes["POST /api/export/save"];
   kind.value = "report"; kind.dispatchEvent(new window.Event("change"));
   fmt.value = "text"; fmt.dispatchEvent(new window.Event("change")); await tick(); }
 $$(".modal .buttons button").at(-1).click();

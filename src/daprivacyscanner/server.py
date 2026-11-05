@@ -500,6 +500,12 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
         await asyncio.to_thread(persist, host)
         return {"accepted": data, "undone": undone}
 
+    def export_text(host: Host, what: str, fmt: str, redact: bool) -> str:
+        if what == "everything":
+            return report_mod.export_all(app.state.report, catalogue, undo_log(host).entries(),
+                                         Accepted(paths_of(host)).all(), fmt, host, redact)
+        return report_mod.export(app.state.report, catalogue, fmt, host, redact, Accepted(paths_of(host)).all())
+
     @app.get("/api/report", dependencies=[Depends(auth)])
     async def export_report(request: Request):
         """The last report as text or JSON (?format=text|json), redacted with ?redact=1."""
@@ -507,9 +513,7 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
             return JSONResponse({"error": "Scan first."}, status_code=400)
         fmt = request.query_params.get("format", "text")
         redact = request.query_params.get("redact") in ("1", "true", "yes")
-        host = make_host()
-        text = await asyncio.to_thread(report_mod.export, app.state.report, catalogue, fmt, host, redact,
-                                       Accepted(paths_of(host)).all())
+        text = await asyncio.to_thread(export_text, make_host(), "report", fmt, redact)
         return TextResponse(text, media_type="application/json" if fmt == "json" else "text/plain; charset=utf-8")
 
     @app.get("/api/export", dependencies=[Depends(auth)])
@@ -519,10 +523,48 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
         (?format=text|json, ?redact=1)."""
         fmt = request.query_params.get("format", "text")
         redact = request.query_params.get("redact") in ("1", "true", "yes")
-        host = make_host()
-        text = await asyncio.to_thread(lambda: report_mod.export_all(
-            app.state.report, catalogue, undo_log(host).entries(), Accepted(paths_of(host)).all(), fmt, host, redact))
+        text = await asyncio.to_thread(export_text, make_host(), "everything", fmt, redact)
         return TextResponse(text, media_type="application/json" if fmt == "json" else "text/plain; charset=utf-8")
+
+    @app.post("/api/export/save", dependencies=[Depends(auth)])
+    async def export_save(request: Request):
+        """Body {"what": "report"|"everything", "format": "text"|"json", "redact", "folder"?}: what GET /api/report or
+        /api/export answers, saved by the app into a folder the user chooses (the file chooser in folder mode, or
+        "folder": a path the page asked for when there is none, {"unavailable": true}), as a file of its own readable by
+        the user alone (report.save). A download the window's WebKitGTK writes itself has the umask's mode: 0664 on
+        Mint and Ubuntu, readable by every account. {"saved": the path as shown, "private": whether only the user can
+        read it}, or {"cancelled": true}."""
+        from .tools.pick import PathRefused, checked, dialog, downloads, resolved
+        body = await body_of(request)
+        what, fmt = body.get("what"), body.get("format", "text")
+        if what not in ("report", "everything") or fmt not in ("text", "json"):
+            return JSONResponse({"error": "Export what, and as text or JSON?"}, status_code=400)
+        if what == "report" and app.state.report is None:
+            return JSONResponse({"error": "Scan first."}, status_code=400)
+        host = make_host()
+        folder = body.get("folder")
+        if folder is None:
+            chooser = pick or dialog(host)
+            if chooser is None:
+                return {"unavailable": True}
+            chosen = await asyncio.to_thread(chooser, "folder", False, str(downloads(host)))
+            if not chosen:
+                return {"cancelled": True}
+            folder = chosen[0]
+        try:
+            dest = checked(folder, host.home, folders=True)
+            real = resolved(dest, host.home)
+            if not real.is_dir():
+                raise PathRefused(f"{host.display(dest)} isn't a folder.")
+        except PathRefused as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+        text = await asyncio.to_thread(export_text, host, what, fmt, bool(body.get("redact")))
+        try:
+            name, mode = await asyncio.to_thread(report_mod.save, real, report_mod.file_name(what, fmt), text)
+        except OSError as e:
+            return JSONResponse({"error": f"It couldn't be saved in {host.display(dest)}: {e.strerror or e}."},
+                                status_code=400)
+        return {"saved": host.display(dest / name), "private": not mode & 0o077}
 
     def online_settings(host: Host) -> tuple[dict, str]:
         try:

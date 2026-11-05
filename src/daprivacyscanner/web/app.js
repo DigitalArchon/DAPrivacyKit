@@ -1658,14 +1658,25 @@ async function openExport(what = "report") {
     pre);
   modal({ title: everything ? "Export everything" : "Export the report", wide: true, body, buttons: [
     { label: "Copy", onclick: (close, el) => copyText(pre.textContent, el) },
-    { label: "Download", onclick: () => {
-      const blob = new Blob([pre.textContent], { type: fmt.value === "json" ? "application/json" : "text/plain" });
-      const name = sel.value === "everything" ? "everything" : "report";
-      // named for the app as users know it (its internal name, daprivacyscanner, is for the command and its folders)
-      const a = h("a", { href: URL.createObjectURL(blob), download: `DAPrivacyKit-${name}-${new Date().toISOString().slice(0, 10)}.${fmt.value === "json" ? "json" : "txt"}` });
-      document.body.append(a); a.click(); a.remove();
-    } },
+    { label: "Save…", onclick: (close, el) => saveExport({ what: sel.value, format: fmt.value, redact: redact.checked }, el) },
     { label: "Close", kind: "primary" }] });
+}
+
+// Saved by the app into the folder chosen, readable by the user alone, as --export writes it: a download is written by
+// the window's WebKitGTK itself, with the umask's mode (0664 on Mint and Ubuntu: readable by every account). The
+// server names it (DAPrivacyKit-report-<date>.txt), never over a file there.
+async function saveExport(ask, btn) {
+  btn.disabled = true;
+  try {
+    let r = await api("POST", "/api/export/save", ask);
+    if (r.unavailable) {                    // no file chooser here (--browser mode without zenity or kdialog)
+      const folder = await askPath("Save it in which folder?", "/home/you/Documents, or ~/…");
+      if (!folder) return;
+      r = await api("POST", "/api/export/save", { ...ask, folder });
+    }
+    if (r.saved) toast(r.private ? `Saved to ${r.saved}, readable by you only.` : `Saved to ${r.saved}. The disk it is on `
+      + "doesn't keep who may read a file (it gives every file the same permissions): others may be able to read it.", "ok", 10000);
+  } catch (e) { toast(e.message, "error", 10000); } finally { btn.disabled = false; }
 }
 
 // installs this version's helper root-owned (asks for the password), then updates the note
