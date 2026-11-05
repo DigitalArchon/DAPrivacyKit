@@ -360,7 +360,8 @@ listening have changed also when the list of them has, though some still listen.
   `swap_off`, `swap_on`, `trim_*`, `names_*`, `watch_*`); and `install_self` / `uninstall_self`. What
   `install_self` installs is the source the helper read as it started (`own_source`), never the file as it is
   when the request comes: the helper that isn't installed yet runs from a copy in the user's runtime folder,
-  which anything running as the user can change after it was authorised.
+  which anything running as the user can change after it was authorised. The same source is what the watch's
+  child runs (passed in a memory file only root holds), never the file as it is when the watch begins.
 - **Validation.** It never writes content the app sends: files are generated from validated settings or
   edited by fixed rules, and only units, sysctls and policies on its own lists can be touched. The calling
   user and their home come from `PKEXEC_UID`, never from the request. Folders under the home are opened
@@ -373,10 +374,11 @@ listening have changed also when the list of them has, though some still listen.
 - **Lifetime.** One authorisation covers a scan and the fixes after it. Access ends when the user drops
   it, after 5 idle minutes (`server.ADMIN_IDLE`), when the app quits, or straight after a scan that found
   nothing a root fix could act on. Long work holds it for as long as it runs (the TRIM test, a listing of deleted
-  names, a watch of an app, which says so before it starts and drops the access when it ends). The watch and the
-  other two don't run at once, nor is the helper installed or removed while any of them runs: the helper does one
-  call at a time, so a disk read for minutes held the watch's polling and its End behind it, and installing the
-  helper ended the watch with everything it had seen.
+  names, a watch of an app, which says so before it starts and drops the access when it ends, and the online tests
+  given access, whose traffic watch asks the helper every few seconds). The watch and the TRIM test and listing
+  don't run at once, nor is the helper installed or removed while any of these runs: the helper does one call at a
+  time, so a disk read for minutes held the watch's polling and its End behind it, and installing the helper ended
+  the watch with everything it had seen.
 
 ---
 
@@ -1298,7 +1300,9 @@ it, or a checksum list holding its hash, signed by a key the app lists).
   fingerprint (v4 SHA-1, v5/v6 SHA-256) and refuses a key block whose primary keys aren't exactly the
   pinned fingerprints. Keys may also come from the user's GnuPG keyring (read only, never imported into)
   and from key files the user chooses. The app never fetches a key.
-- **Checking OpenPGP signatures:** the host's `gpgv`, with a temporary home and keyrings of the app's own.
+- **Checking OpenPGP signatures:** the host's `gpgv`, with a temporary home and keyrings of the app's own; the
+  user's copies of a key (a chosen key file, their keyring) come before the app's, since gpgv uses the first it
+  finds and only theirs can hold a revocation made after the app was built.
   Where gpgv is missing, `sqv` (Sequoia) checks detached signatures, against the listed keys and chosen key
   files only (it can't read GnuPG's keybox). A good signature by a signing subkey is mapped to its primary
   key.
@@ -1308,8 +1312,13 @@ it, or a checksum list holding its hash, signed by a key the app lists).
   shown with its key id. It is never *verified* either, since the app lists no minisign keys.
 - **Checksum lists:** GNU (`hash  name`, `hash *name`), BSD (`SHA256 (name) = hash`) and bare hashes; the
   algorithm from the BSD tag, else from the length (`b2sums` is BLAKE2b). In a clearsigned list only the
-  text inside the signed block counts (RFC 9580 7.1, dash-escaping undone). A pasted checksum may carry
-  spaces, a `sha256:` prefix or a whole `hash  name` line.
+  text inside the signed block counts (RFC 9580 7.1, dash-escaping undone), read as GnuPG reads it (`clearsigned`:
+  lines end at `\n`, the armour line only at a line's start): a file with that line anywhere else, or more than
+  once, is taken as changed since it was signed, since gpgv checks the one real message and passes over the rest
+  (a line of someone else's above Fedora's real list, behind a marker hidden at a line's end, was read as signed).
+  gpgv is given that message alone and writes out the text it checked, which must be what the app read; a
+  clearsigned file chosen itself is the published file only with nothing but white space around its message. A
+  pasted checksum may carry spaces, a `sha256:` prefix or a whole `hash  name` line.
 - **Companions:** signatures and checksum lists next to the file are found automatically; if the user
   picked the signature, the file it signs is used. Recognised file names tell the user what to download
   when the companions are missing.
@@ -1433,8 +1442,10 @@ holds.
     (`open_by_handle_at` with ext4's handle of the two, as an NFS server asks; "stale" means deleted or used
     again), so a live folder outside the listing is never shown as deleted; where it can't be asked, a
     record of the inode must show it deleted. Blocks in the journal carry that inode's checksum, and one of
-    them is its first block, naming itself and that parent. Followed downwards, so a deleted tree is listed
-    folder by folder.
+    them is its first block, naming itself and that parent. And it must have been a folder the listing would
+    have covered while it was there, by the same rule (the caller's own, or one they could open, from the owner
+    and mode every record of its inode gives): another account's private folder deleted from a shared one stays
+    untied. Followed downwards, so a deleted tree is listed folder by folder.
   - *What can't be tied* (other accounts' folders, the system's, a folder whose inode was used again, and
     on a filesystem without `metadata_csum` everything) is counted and never named in the list.
     `names_orphans` returns those names only when the user asks for them, after the page has said whose
@@ -1447,7 +1458,10 @@ holds.
   call's dry-run flag. Nothing is journalled by the helper and nothing can be undone: there is nothing to
   undo. The page shows the same call as a line of Python, since no program on the system makes it.
 - **btrfs.** The whole device is read for those subvolumes' tree blocks (fsid, owner, checksum), their
-  directory items and stale item headers. As long as one TRIM-test pass.
+  directory items and stale item headers. As long as one TRIM-test pass. An entry older than the folder it would be
+  tied to (its transaction against the folder's generation, `FS_IOC_GETVERSION`) was a previous holder's of that
+  inode number, which btrfs uses again after a remount: left out, so another account's deleted folder is never shown
+  under the caller's new one.
 - **The list** goes to the page once and is dropped by the server as it hands it over. The helper keeps it
   in memory only, for the checks after a clean-up, until the window closes. Never saved, logged or
   exported.
@@ -1745,7 +1759,11 @@ drive they came from (its model, serial and size, `retire.identity`): another dr
     recorded, and it could be unmounted while the watch went on. However the watch ends (`watch_end`, the access
     dropped, the app quitting: the helper's input ends, or the helper is gone and the child gets SIGTERM), the
     child unmounts what it mounted and removes its folders in `/run/daprivacyscanner-watch` (they were left
-    behind). Opens, executions, changes, creations, deletions and renames are watched; not each read (an open is the read), nor folders being listed. The kernel's queue keeps
+    behind). They are named by the child's process, and a helper removes only its own child's and those of a child
+    that has ended: every copy of the app has a helper and a watch of its own, and since Linux 3.18 an rmdir of a
+    folder that is a mount point only in another mount namespace detaches that mount, which cut another copy's
+    watch off from every path on that btrfs. Network shares mounted in the home or under /mnt and /media aren't
+    watched, and say so: looking at one whose computer can't be reached waits for as long as it can't be. Opens, executions, changes, creations, deletions and renames are watched; not each read (an open is the read), nor folders being listed. The kernel's queue keeps
     its own limit (never `FAN_UNLIMITED_QUEUE`, with which a reader behind six busy programs let it grow from 470 MB
     to 1.7 GB of kernel memory in 25 seconds, the events' processes long gone by the time they were read): when it
     is full the kernel drops what comes next and says so, which is counted, and the page says that some of what
