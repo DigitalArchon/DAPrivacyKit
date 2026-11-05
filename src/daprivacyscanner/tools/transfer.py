@@ -678,6 +678,42 @@ def remove_outbox(host: Host, name: str) -> None:
     os.rmdir(box)
 
 
+def outbox_files(host: Host) -> list[dict]:
+    """What closing ~/TempBrowser, or quitting, deletes of the TempOutboxes that may be the user's only copy of a file
+    (turning one off is refused for that reason): in each, the files waiting to be cleaned, and what Originals and Not
+    cleaned hold, counted for the close dialog: [{"folder": "Outbox for Tor Browser/Originals", "files": 3}, …],
+    those holding nothing left out. Every folder opened from the RAM disk's top without following links."""
+    out: list[dict] = []
+    base = ramdisk.folder(host, ramdisk.BROWSER)
+    try:
+        boxes = sorted(n for n in os.listdir(base) if n.startswith(OUTBOX.format(name="")))
+    except OSError:
+        return out
+    for name in boxes:
+        try:
+            fd = _open_dir(host, base / name)
+        except TransferError:
+            continue
+        try:
+            waiting = sum(not _partial(n) for n in _outbox_files(fd))
+            if waiting:
+                out.append({"folder": name, "files": waiting, "waiting": True})
+            for sub in (OUTBOX_ORIGINALS, OUTBOX_NOT_CLEANED):
+                try:
+                    sfd = os.open(sub, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=fd)
+                except OSError:
+                    continue
+                try:
+                    files = len(os.listdir(sfd))
+                finally:
+                    os.close(sfd)
+                if files:
+                    out.append({"folder": f"{name}/{sub}", "files": files})
+        finally:
+            os.close(fd)
+    return out
+
+
 def _note(folder: str, what: str, name: str, detail: str = "") -> None:
     with _RECENT_LOCK:
         got = _RECENT.setdefault(folder, [])

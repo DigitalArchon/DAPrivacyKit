@@ -1105,6 +1105,9 @@ disk): the last 20 events are kept in memory for the panel, which follows the st
 TempOutbox is on, and forgotten when `~/TempBrowser` is wiped. Closing it stops a run after the file under way
 (`transfer.STOP`) and waits for that one (`OUTBOX_LOCK`) before it looks for programs using the disk, and holds
 both until the files are overwritten (`browser.outboxes_stopped`): the TempOutbox's own mat2 was taken for one.
+Closing, or quitting, deletes the TempOutbox with the rest, `Originals` and `Not cleaned` included, which may hold the
+user's only copy of a file, and nothing named them: the Outbox's box says so plainly, with what they hold, and the
+close dialog lists, counted, what waits in each TempOutbox and what those two hold (`transfer.outbox_files`).
 
 **Downloads.** The browser owns its Downloads folder and could fill it with anything, including a link to
 `~/.ssh/id_ed25519` that points nowhere inside the sandbox but at the real key outside. So

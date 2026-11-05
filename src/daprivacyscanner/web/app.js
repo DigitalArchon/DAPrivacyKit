@@ -2390,6 +2390,12 @@ function closeRamdisk(rd, reload) {
     h("p", {}, `Every file in ${rd.path || "~/RAMDisk"} (${plural(rd.files, "file")}) is overwritten with zeros where it lies in memory, `
       + "deleted, and the RAM disk is unmounted. This can't be undone."
       + (browserDisk ? " The browser goes with it: downloading it again takes a few minutes." : "")),
+    // the TempOutboxes' originals and what couldn't be cleaned: maybe the user's only copy, deleted with the rest
+    (rd.outbox_files || []).length ? h("div", { class: "warnbox small outbox-files" },
+      h("b", {}, "The Outbox may hold your only copy of a file "), "(an original you moved in, or one that couldn't be "
+      + "cleaned). Closing deletes these with the rest: copy out what you need first.",
+      h("ul", {}, rd.outbox_files.map(f => h("li", {},
+        `${f.folder}: ${plural(f.files, "file")}${f.waiting ? " waiting to be cleaned" : ""}`)))) : null,
     h("div", { class: "small" }, h("b", {}, "What this doesn't reach: "), "copies other programs made of these files (an "
       + "editor's autosave, the clipboard, a browser's cache), thumbnails and the recent-files list (see the checks for "
       + "them), the files' names" + (rd.noswap ? "" : ", and anything swapped to disk") + "."),
@@ -3450,8 +3456,13 @@ function browserOutbox(b, data, reload, showBtn) {
     h("b", {}, `Outbox: ${o.folder}`),
     h("div", {}, "Copy files into it with your file manager: the app removes their metadata (where a photo was taken, who "
       + "wrote a document) and puts the clean copy in To upload, out of the browser's sight until then; the original goes to "
-      + "Originals inside it. A file that can't be cleaned goes to Not cleaned, and isn't passed on. Copy rather than move: "
-      + `everything in ~/TempBrowser goes when it is closed. Folders put there are left as they are. Its name goes with it, as below.`),
+      + "Originals inside it. A file that can't be cleaned goes to Not cleaned, and isn't passed on. Closing ~/TempBrowser, or "
+      + "quitting the app, deletes all of it, Originals and Not cleaned included: copy out what you need first, and copy files "
+      + "in rather than move them. Folders put there are left as they are. Its name goes with it, as below."),
+    o.originals || o.not_cleaned.length ? h("div", { class: "warnbox small" },
+      [o.originals ? `${plural(o.originals, "file")} in Originals` : null,
+        o.not_cleaned.length ? `${plural(o.not_cleaned.length, "file")} in Not cleaned` : null].filter(Boolean).join(" and ")
+      + ": closing ~/TempBrowser, or quitting the app, deletes them. Copy out what you need first.") : null,
     !o.mat2 ? h("div", { class: "warnbox small" }, "Removing metadata needs mat2, which isn't installed: nothing put there is "
       + "passed on until it is.") : null,
     !o.watched ? h("div", { class: "warnbox small" }, "This copy of the app isn't watching it: files wait there until the app "

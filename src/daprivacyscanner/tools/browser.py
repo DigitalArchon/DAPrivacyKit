@@ -345,7 +345,9 @@ def status(host: Host) -> dict:
     return {"platform": plat, "min_mb": MIN_MB, "mat2": bool(host.runner.which("mat2")),
             "kept": kept.view(host, BROWSERS.values()),       # downloads kept for next time, on the disk
             "ramdisk": {**rd.to_dict(host.home), "max_mb": ramdisk.max_mb(host), "default_mb": ramdisk.DEFAULT_MB,
-                        "commands": ramdisk.commands(host, DISK)},
+                        "commands": ramdisk.commands(host, DISK),
+                        # what closing deletes that may be the user's only copy: the close dialog names it
+                        "outbox_files": transfer.outbox_files(host) if rd.open else []},
             # set, and not used: the download and the version checks go out directly (online.Net), as the online
             # tests do, and the page says so before either, as it does for those (review of 2026-10-17)
             "proxy_vars": proxy_vars(host.environ),

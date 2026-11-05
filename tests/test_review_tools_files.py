@@ -392,6 +392,31 @@ def test_closing_the_disk_stops_the_tempoutbox_after_the_file_under_way(host, ou
     assert (box / "b.jpg").exists() and (box / "c.jpg").exists()
 
 
+def test_closing_names_what_the_tempoutbox_holds_that_may_be_the_only_copy(cat, host, outbox):
+    """Close and Quit deleted the TempOutbox's Originals and Not cleaned without naming them, though an original moved
+    in may be the user's only copy (turning the TempOutbox off refuses for that reason). The close dialog lists them,
+    counted, from the browser panel and from Before you travel."""
+    box, run, _ = outbox
+    for n in ("a.jpg", "b.jpg", "notes.xyz"):
+        (box / n).write_bytes(b"x+gps")
+        old(box / n)
+    run()
+    run()
+    (box / "c.jpg").write_bytes(b"x+gps")                   # just arrived: waiting to be cleaned
+    (box / "d.jpg.part").write_bytes(b"x")                  # a copy under way: what it copies is still where it was
+    kept = [{"folder": "Outbox for Tor Browser", "files": 1, "waiting": True},
+            {"folder": "Outbox for Tor Browser/Originals", "files": 2},
+            {"folder": "Outbox for Tor Browser/Not cleaned", "files": 1}]
+    assert T.outbox_files(host) == kept
+    c = app_for(cat, host)
+    assert c.get("/api/tools/browser", headers=H).json()["ramdisk"]["outbox_files"] == kept
+    disks = c.get("/api/tools/travel", headers=H).json()["ramdisks"]
+    assert [d["outbox_files"] for d in disks] == [[], kept]          # ~/RAMDisk has none
+    for p in (box / "Originals").iterdir():
+        p.unlink()
+    assert T.outbox_files(host) == kept[::2]                         # an empty one isn't listed
+
+
 def test_the_page_shows_partial_copies_apart():
     import inspect as _inspect
     from daprivacyscanner.tools import browser as B

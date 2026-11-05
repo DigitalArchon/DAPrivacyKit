@@ -80,7 +80,10 @@ let browserJob = null, browserStarted = null, browserStartError = null, browserD
 const browserState = () => ({ platform: "linux-x86_64", min_mb: 1024, can_pick: true, picker: "zenity", admin_active: true, job: browserJob,
   left_open: browserLeftOpen,
   proxy_vars: browserProxy, kept: { folder: "~/.cache/daprivacyscanner/browsers", copies: browserKept },
-  ramdisk: { ...ramdisk(), noexec: !ramOpen ? true : toolBodies.open?.noexec !== false }, mat2: true,
+  ramdisk: { ...ramdisk(), noexec: !ramOpen ? true : toolBodies.open?.noexec !== false,
+             outbox_files: ramOpen ? [{ folder: "Outbox for Tor Browser/Originals", files: 3 },
+                                      { folder: "Outbox for Tor Browser/Not cleaned", files: 1 },
+                                      { folder: "Outbox for Tor Browser", files: 1, waiting: true }] : [] }, mat2: true,
   sandbox: { available: !sandboxDown, why: sandboxDown ? "bubblewrap can't set up a sandbox here (setting up uid map: Permission denied)." : "",
              apparmor: sandboxDown, landlock: false, display: kdeWayland ? "wayland" : "x11",
              wayland_context: kdeWayland, wayland_risky: waylandUnasked ? null : kdeWayland ? [{ global: "ext_data_control_manager_v1",
@@ -1315,6 +1318,18 @@ delete toolBodies.swap;
 check(text(".modal .browser-tool").includes("Outbox: ~/TempBrowser/Outbox for Tor Browser")
       && text(".modal .browser-tool").includes("IMG_1.jpg → To upload") && text(".modal .browser-tool").includes("In Not cleaned: notes.xyz")
       && text(".modal .browser-tool").includes("1 file waiting"), "the TempOutbox shows what it did and what waits");
+check(text(".modal .browser-tool").includes("Closing ~/TempBrowser, or quitting the app, deletes all of it, Originals and Not "
+        + "cleaned included: copy out what you need first")
+      && text(".modal .browser-tool").includes("1 file in Originals and 1 file in Not cleaned: closing ~/TempBrowser, or quitting "
+        + "the app, deletes them."), "the Outbox says plainly that closing or quitting deletes Originals and Not cleaned");
+$$(".modal .browser-tool button").find(b => b.textContent === "Close and overwrite…").click(); await tick();
+{ const m = $$(".modal").at(-1);
+  const listed = [...m.querySelectorAll(".outbox-files li")].map(li => li.textContent);
+  check(m.textContent.includes("The Outbox may hold your only copy of a file") && JSON.stringify(listed) === JSON.stringify([
+          "Outbox for Tor Browser/Originals: 3 files", "Outbox for Tor Browser/Not cleaned: 1 file",
+          "Outbox for Tor Browser: 1 file waiting to be cleaned"]),
+        "closing ~/TempBrowser lists, as a warning, the Outbox's files that may be the only copy: " + JSON.stringify(listed));
+  [...m.querySelectorAll(".buttons button")].find(b => b.textContent === "Keep it open").click(); await tick(); }
 $$(".modal .browser-tool button").find(b => b.textContent === "Turn it off").click(); await tick(); await tick();
 check(toolBodies.outbox?.on === false && $$(".modal .browser-tool button").some(b => b.textContent === "Turn on the Outbox for Tor Browser"),
       "it can be turned off, and on again");
