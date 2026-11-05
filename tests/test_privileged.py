@@ -175,7 +175,7 @@ SURFACES = {4: "afe8f5a5be1c5b48", 5: "87c08bf809a1a000", 6: "f74cc3bd8d4bdd5f",
             27: "2df0660e730b9b6a",                             # 27: install_self installs the code read at start; ramdisk_open's answer
             28: "eeefe6d32bd215ed",                             # 28: set_service takes units together and records a partial failure; reverts say what they put back; the SecureBoot variable's right GUID; clear_journal_files; SafeBrowsingProtectionLevel
             29: "eeefe6d32bd215ed",                             # 29: the watch: a bounded queue, renames, mounts in the home and during it, its folders removed however it ends; the RAM disks' mount unit out of the journal, a restart's record kept
-            30: "eeefe6d32bd215ed"}                             # 30: the watch's child runs the code read at start, its folders its own; deleted folders named only when the caller could have opened them; set_service's unit names checked as text
+            30: "eeefe6d32bd215ed"}                             # 30: the watch's child runs the code read at start, its folders its own, its words numbered, network shares not watched, its tallies bounded; deleted folders named only when the caller could have opened them, btrfs entries older than their folder left out, a crafted journal map refused; mount points' escapes all undone; the traffic monitor writes to a file; snapper/Timeshift limits only lowered; set_service's unit names checked as text
 
 
 def test_changing_what_the_helper_does_bumps_its_protocol():
