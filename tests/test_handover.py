@@ -151,3 +151,20 @@ def test_endpoints(cat, host):
     r = c.post("/api/tools/handover/clean", headers=H, json={"plan_id": p["plan_id"], "confirm": True}).json()
     assert r["deleted"] == 16
     assert c.post("/api/tools/handover/clean", headers=H, json={"plan_id": p["plan_id"], "confirm": True}).status_code == 400
+
+
+def test_an_emptied_trash_folder_is_named_as_such(host):
+    """A trash folder whose trashed files were deleted before (by emptying the trash) is removed, and said so: not
+    "Delete 0 files (0 bytes)" (seen on the lab with a USB stick, 2026-11-05)."""
+    top = host.root / STICK.lstrip("/")
+    for sub in ("files", "info"):
+        for f in (top / ".Trash-1000" / sub).iterdir():
+            f.unlink()
+    p = HO.plan(host, STICK)
+    own = next(g for g in p.groups if g.id == "own_trash")
+    steps = [a.describe() for a in own.actions if ".Trash-1000" in a.display_root]
+    assert steps == [f"Remove {STICK}/.Trash-1000 (your trash on this drive), which holds no files: only empty folders "
+                     "or links"]
+    done = HO.clean(host, p)
+    assert f"Removed {STICK}/.Trash-1000 (your trash on this drive), which held no files" in done.lines
+    assert not (top / ".Trash-1000").exists()

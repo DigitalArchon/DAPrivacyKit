@@ -1402,6 +1402,8 @@ class DeleteFiles(Action):
         if through_link(self.root, Path(os.path.expanduser("~"))):    # apply deletes nothing then: said beforehand
             return (f"Delete nothing of {self.label} in {self.display_root}: it is reached through a link, and nothing "
                     "is deleted through one")
+        if not n and self.remove_root:  # a folder emptied before (a drive's trash): not "Delete 0 files (0 bytes)"
+            return f"Remove {self.display_root} ({self.label}), which holds no files: only empty folders or links"
         return f"Delete {n} {what} ({human_size(self.size)}) of {self.label} in {self.display_root}"
 
     LISTED = 25                         # files named one by one up to this many; beyond it, their folders
@@ -1524,6 +1526,11 @@ class DeleteFiles(Action):
                 except OSError:
                     break
                 d = d.parent
+        if not self.files and self.remove_root:
+            text = (f"Removed {self.display_root} ({self.label}), which held no files" if not os.path.lexists(root)
+                    else f"{self.display_root} ({self.label}) holds no files, but something was added to it: it was left")
+            return {"kind": self.kind, "label": self.label, "root": self.display_root, "deleted": 0, "skipped": skipped,
+                    "text": text}
         return {"kind": self.kind, "label": self.label, "root": self.display_root, "deleted": deleted, "skipped": skipped,
                 "text": f"Deleted {deleted} {'item' if self.whole else 'file'}{'s' if deleted != 1 else ''} of {self.label} in {self.display_root}"
                         + (f" ({skipped} skipped)" if skipped else "")}
