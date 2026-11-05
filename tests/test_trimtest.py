@@ -954,6 +954,35 @@ def test_names_when_the_home_is_a_subvolume_of_the_system_disk(root, monkeypatch
     assert call("names_result")["folders"] == [{"path": "Documents", "names": ["old-diary.txt"]}]
 
 
+def test_names_on_btrfs_say_which_of_its_records_stopped_them(root, monkeypatch):
+    """"the btrfs filesystem's own records couldn't be read" stood for three causes: each is said apart."""
+    dev = make_storage(root, fstype="btrfs")
+    home_folders(root)
+    monkeypatch.setattr(helper, "BTRFS_TREE_ID", lambda fd: 5)
+    monkeypatch.setattr(helper, "GENERATION", lambda fd: 5)
+
+    def superblock(nodesize):
+        sb = bytearray(4096)
+        sb[0x20:0x30], sb[0x40:0x48] = FSID, b"_BHRfS_M"
+        sb[0x90:0x94], sb[0x94:0x98] = (4096).to_bytes(4, "little"), nodesize.to_bytes(4, "little")
+        with open(dev, "r+b") as f:
+            f.seek(helper.BTRFS_SUPER)
+            f.write(sb)
+    with pytest.raises(helper.Refused, match=r"^the btrfs filesystem's superblock \(the record of where everything on "
+                       r"it is\) couldn't be read$"):
+        call("names_begin", mount="/")                            # nothing where its superblock goes
+    superblock(131072)
+    with pytest.raises(helper.Refused, match="^the btrfs filesystem uses a node size of 131072 bytes, which the tool "
+                       "doesn't read$"):
+        call("names_begin", mount="/")
+    superblock(16384)
+    monkeypatch.setattr(helper, "CALLER", (ME[0] + 1, ME[1], "/home/alice"))   # the home isn't this caller's
+    with pytest.raises(helper.Refused, match="^none of the btrfs filesystem's folders is yours to list$"):
+        call("names_begin", mount="/")
+    monkeypatch.setattr(helper, "CALLER", (*ME, "/home/alice"))
+    assert call("names_begin", mount="/")["unit"] == "bytes"
+
+
 # ------------------------------------------------------------------ other disks: a second SSD, an external one
 
 def add_data_disk(root, target="/mnt/data", fstype="ext4", writable=True):

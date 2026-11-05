@@ -4015,8 +4015,15 @@ def names_begin(args: dict) -> dict:
         finally:
             buf.close()
             os.close(fd)
-        if fs is None or not state["trees"] or not 4096 <= fs["nodesize"] <= 65536:
-            raise Refused("the btrfs filesystem's own records couldn't be read")
+        # each cause said apart (the page shows it after "The helper refused: "), never one message for three
+        if fs is None:
+            raise Refused("the btrfs filesystem's superblock (the record of where everything on it is) couldn't "
+                          "be read")
+        if not 4096 <= fs["nodesize"] <= 65536:
+            raise Refused(f"the btrfs filesystem uses a node size of {fs['nodesize']} bytes, which the tool doesn't "
+                          "read")
+        if not state["trees"]:
+            raise Refused("none of the btrfs filesystem's folders is yours to list")
         state.update(fs=fs, total=state["size"])
     _NAMES.update(state)
     return {"fstype": f[2], "folders": len(dirs), "total": state["total"], "unit": "folders" if ext4 else "bytes",
