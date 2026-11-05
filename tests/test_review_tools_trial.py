@@ -134,8 +134,12 @@ def test_ending_a_trial_lets_its_program_end_cleanly(tmp_path):
 
 
 def test_the_commands_exit_status_is_passed_on_and_stop_reaches_the_command():
+    import resource
+    # with a core size limit of 1, as the app runs its own commands: the shell's SIGSEGV below left a real crash dump
+    # in /var/lib/systemd/coredump at every run of the suite
+    no_dump = lambda: resource.setrlimit(resource.RLIMIT_CORE, (1, 1))  # noqa: E731
     run = lambda *argv: subprocess.run([sys.executable, "-I", "-c", trial.TETHER, str(os.getpid()), *argv],   # noqa: E731
-                                       timeout=20).returncode
+                                       timeout=20, preexec_fn=no_dump).returncode
     assert run("/bin/sh", "-c", "exit 3") == 3
     assert run("/bin/sh", "-c", "kill -SEGV $$") == 128 + signal.SIGSEGV
     assert trial.ended_by_signal(128 + signal.SIGSEGV) == "SIGSEGV"
