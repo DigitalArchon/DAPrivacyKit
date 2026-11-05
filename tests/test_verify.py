@@ -6,6 +6,7 @@ from __future__ import annotations
 import copy
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -200,6 +201,52 @@ def test_a_signed_list_from_linux_mint_is_verified(tmp_path):
     v = V.verify(real_host(tmp_path), d / "sha256sum.txt")
     assert v.level == "verified" and "Linux Mint" in v.title
     assert v.signatures[0].fingerprint == "27DEB15644C6B3CF3BD7D291300F846BA25BAE09"
+
+
+@pytest.fixture
+def far_east(monkeypatch):
+    """Local time 14 hours ahead of UTC, where a signature made in the afternoon (UTC) is dated the next day."""
+    monkeypatch.setenv("TZ", "XYZ-14")
+    time.tzset()
+    yield
+    monkeypatch.undo()
+    time.tzset()
+
+
+@needs_gpgv
+def test_a_good_signature_says_when_it_was_made_in_local_time(tmp_path, far_east, monkeypatch, capsys):
+    """An older release renamed as a newer one still matches its own signature: only the date it was signed gives it
+    away. Mint's list was signed at 13:29 UTC on 11 January 2026, the 12th 14 hours ahead."""
+    from daprivacyscanner import app
+    d = put(tmp_path, sha256sum__txt=SAMPLES / "mint-22.3-sha256sum.txt",
+            sha256sum__txt__gpg=SAMPLES / "mint-22.3-sha256sum.txt.gpg")
+    v = V.verify(real_host(tmp_path), d / "sha256sum.txt")
+    assert v.level == "verified" and v.signed_at == 1768138182 and v.to_dict()["signed_at"] == 1768138182
+    first = v.text_report().splitlines()[1]
+    assert first == (f"  {v.text} Signed on 12 January 2026: releases are signed as they come out, so if the one you "
+                     "wanted came out well after that, this is an older one.")
+    # --verify prints it (a home of the test's own: never the developer's keyring)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    monkeypatch.delenv("GNUPGHOME", raising=False)
+    assert app.verify_cli(str(d / "sha256sum.txt"), [], "") == 0
+    assert first in capsys.readouterr().out.splitlines()
+
+
+def test_a_signature_by_a_key_the_app_doesnt_list_says_when_too(tmp_path, far_east):
+    made = 1793736000                                    # 20:00 UTC on 3 November 2026
+    s = V.Signature(tmp_path / "f.iso.asc", tmp_path / "f.iso", "openpgp", "good", "AB" * 20, key_name="Someone",
+                    source="keyring", signed_at=made)
+    v = V.decide(tmp_path / "f.iso", 1, {"sha256": "ab" * 32}, [s], [], None, [])
+    assert v.level == "signed" and v.signed_at == made and "Signed on 4 November 2026: " in v.text_report()
+    # an SSH signature carries no date, and a checksum alone no signature: neither says one
+    s = V.Signature(tmp_path / "f.iso.sig", tmp_path / "f.iso", "ssh", "good", "SHA256:x", key_name="ED25519 SSH key",
+                    source="signature")
+    v = V.decide(tmp_path / "f.iso", 1, {"sha256": "ab" * 32}, [s], [], None, [])
+    assert v.level == "signed" and v.signed_at is None and "Signed on" not in v.text_report()
+    v = V.decide(tmp_path / "f.iso", 1, {"sha256": "ab" * 32}, [], [], {"digest": "ab" * 32, "algo": "sha256",
+                 "algo_title": "SHA-256", "matches": True, "said": "you pasted"}, [])
+    assert v.level == "intact" and v.to_dict()["signed_at"] is None and "Signed on" not in v.text_report()
 
 
 @needs_gpgv

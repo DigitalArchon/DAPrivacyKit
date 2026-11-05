@@ -19,6 +19,7 @@ import os
 import re
 import struct
 import tempfile
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -653,11 +654,12 @@ class Verdict:
     steps: list[str] = field(default_factory=list)              # what to do next
     notes: list[str] = field(default_factory=list)
     project_hint: K.Project | None = None
+    signed_at: int | None = None                 # when the good signature it rests on was made (verified, signed)
 
     def to_dict(self, home: Path | None = None) -> dict:
         return {
             "path": _show(self.path, home), "name": self.path.name, "size": self.size, "level": self.level,
-            "title": self.title, "text": self.text, "hashes": self.hashes,
+            "title": self.title, "text": self.text, "signed_at": self.signed_at, "hashes": self.hashes,
             "signatures": [s.to_dict(home) for s in self.signatures],
             "lists": [{"path": _show(l.path, home), "name": l.path.name, "clearsigned": l.clearsigned,
                        "signature": l.signature.to_dict(home) if l.signature else None,
@@ -669,7 +671,8 @@ class Verdict:
         }
 
     def text_report(self) -> str:
-        lines = [f"{self.path.name}: {self.title}", f"  {self.text}"]
+        lines = [f"{self.path.name}: {self.title}",
+                 f"  {self.text}" + (f" {signed_on(self.signed_at)}" if self.signed_at else "")]
         for a in ("sha256", "sha512"):
             if a in self.hashes:
                 lines.append(f"  {ALGO_TITLE[a]}: {self.hashes[a]}")
@@ -683,6 +686,15 @@ class Verdict:
         lines += [f"  - {s}" for s in self.steps]
         lines += [f"  Note: {n}" for n in self.notes]
         return "\n".join(lines)
+
+
+def signed_on(t: int) -> str:
+    """When a good signature was made, as a date in local time, for the terminal's report (the page words the same
+    from the verdict's signed_at): an older release renamed as a newer one still matches its own signature, and only
+    the date gives it away."""
+    tm = time.localtime(t)
+    return (f"Signed on {tm.tm_mday} {time.strftime('%B %Y', tm)}: releases are signed as they come out, so if the "
+            "one you wanted came out well after that, this is an older one.")
 
 
 def _show(p: Path, home: Path | None) -> str:
@@ -836,6 +848,7 @@ def decide(path: Path, size: int, hashes: dict, signatures: list[Signature], lis
         v.text = (f"It is signed{via} by {s.project.name}'s release key ({s.key_name}), whose fingerprint the app "
                   f"checked on {s.project.name}'s own site on {s.project.checked.isoformat()}. "
                   "It is the file they published, unchanged.")
+        v.signed_at = s.signed_at
         if s.expired:
             v.notes.append("The key has expired since. A signature made while it was valid still counts; if the "
                            "file is new, ask why it was signed with an expired key.")
@@ -862,6 +875,7 @@ def decide(path: Path, size: int, hashes: dict, signatures: list[Signature], lis
                   + f", fingerprint {K.group(s.fingerprint) if re.fullmatch(r'[0-9A-F]{40}', s.fingerprint) else s.fingerprint}. "
                   "That proves it is unchanged since that key signed it; whether that key is the project's is "
                   "for you to check.")
+        v.signed_at = s.signed_at
         v.steps = ["Compare that fingerprint, every character, with the one on the project's own website (over "
                    "https), ideally in more than one place (its site, its source repository, a release "
                    "announcement)."]

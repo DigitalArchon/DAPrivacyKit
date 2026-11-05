@@ -1944,6 +1944,11 @@ async function openVerify(data, path = "") {
   if (path) run();
 }
 
+// when the good signature a verdict rests on was made, in local time (the terminal's report says the same,
+// verify.signed_on): an older release renamed as a newer one still matches its own signature, and only the date shows it
+const signedOn = (t) => `Signed on ${fmtDay(t)}: releases are signed as they come out, so if the one you wanted came out `
+  + "well after that, this is an older one.";
+
 function verdictBox(v) {
   const sigLine = (s) => h("li", {},
     h("span", { class: `badge sig-${s.status}` }, s.status === "good" ? "good signature" : s.status.replace("_", " ")),
@@ -1955,7 +1960,7 @@ function verdictBox(v) {
   const sigs = [...v.signatures, ...v.lists.filter(l => l.signature).map(l => l.signature)];
   return h("div", { class: `verdict ${VERDICT_CLASS[v.level] || "warn"}` },
     h("div", { class: "vtitle" }, v.title),
-    h("p", {}, v.text),
+    h("p", {}, v.text, v.signed_at ? ` ${signedOn(v.signed_at)}` : null),
     v.steps.length ? h("ul", { class: "small" }, v.steps.map(x => h("li", {}, x))) : null,
     v.notes.map(n => h("div", { class: "notebox info small" }, n)),
     h("div", { class: "vdetails" },

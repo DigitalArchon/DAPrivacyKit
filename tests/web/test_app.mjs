@@ -160,7 +160,7 @@ Object.assign(routes, {
   "POST /api/tools/pick": (body) => ({ paths: [body?.folder ? "/home/a/Documents" : "/home/a/Downloads/photo.jpg"] }),
   "POST /api/tools/verify": (body) => { toolBodies.verify = body; return { verdict: { path: body.path, name: "linuxmint-22.3-cinnamon-64bit.iso",
     size: 3e9, level: "verified", title: "Verified: made by Linux Mint", text: "It is signed through the checksum list sha256sum.txt.",
-    hashes: { sha256: "ab".repeat(32) }, signatures: [], lists: [{ path: "~/Downloads/sha256sum.txt", name: "sha256sum.txt", clearsigned: false,
+    signed_at: 1793793600, hashes: { sha256: "ab".repeat(32) }, signatures: [], lists: [{ path: "~/Downloads/sha256sum.txt", name: "sha256sum.txt", clearsigned: false,
       signature: { path: "/home/a/Downloads/sha256sum.txt.gpg", over: "x", kind: "openpgp", status: "good",
         fingerprint: "27DEB15644C6B3CF3BD7D291300F846BA25BAE09", fingerprint_grouped: "27DE B156 44C6 B3CF 3BD7  D291 300F 846B A25B AE09",
         issuer: "", project: "Linux Mint", project_signs: "ISOs", key_name: "Linux Mint ISO Signing Key", source: "list",
@@ -939,6 +939,17 @@ check(toolBodies.verify?.path === "/home/a/Downloads/linuxmint-22.3-cinnamon-64b
       "choosing a recent download verifies it");
 check(text(".modal .verdict.ok .vtitle") === "Verified: made by Linux Mint", "the verdict is shown, marked verified");
 check(text(".modal .verdict .fpr").includes("27DE B156"), "with the signer's fingerprint grouped for comparing");
+// an older release renamed as a newer one matches its own signature: only the date gives it away
+check(text(".modal .verdict p").startsWith("It is signed through the checksum list sha256sum.txt. Signed on "
+        + new Date(1793793600e3).toLocaleDateString([], { day: "numeric", month: "short", year: "numeric" })
+        + ": releases are signed as they come out"),
+      "a good signature says when it was made, as a date in local time, after the verdict's text");
+{ const r = routes["POST /api/tools/verify"];
+  routes["POST /api/tools/verify"] = (body) => { const a = r(body); a.verdict = { ...a.verdict, signed_at: null }; return a; };
+  $$(".modal .recent button").at(0).click(); await tick(); await tick();
+  check(text(".modal .verdict p") === "It is signed through the checksum list sha256sum.txt.",
+        "a verdict that rests on no signature's date (a published checksum, an SSH signature) gives none");
+  routes["POST /api/tools/verify"] = r; }
 while ($$(".modal").length) { $$(".modal .buttons button").at(-1).click(); await tick(); }
 
 // Remove metadata: what a file carries, then a clean copy beside it
