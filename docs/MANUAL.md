@@ -372,8 +372,9 @@ is left on your disk afterwards.
    - **Keep the download for next time** (off unless you tick it): once its signature is verified, the
      archive and its signature stay in `~/.cache/daprivacyscanner/browsers`, on the disk. Next time,
      **Set up from the kept copy…** uses it without downloading: it still asks the project's server whether
-     it is the latest version (and isn't used if a newer one is out: download that instead) and checks the
-     signature again. Kept on the disk, they tell anyone who looks at this computer that the browser was set
+     it is the latest version (and isn't used if a newer one is out: download that instead, with **Keep the
+     download** ticked so that it replaces the old copy, or delete the old one with **Delete the old copy…**) and
+     checks the signature again. Kept on the disk, they tell anyone who looks at this computer that the browser was set
      up here (nothing of your browsing is in them), and deleting them (**Delete…** in the panel's list of
      kept downloads) doesn't erase them from the disk. One copy is kept per browser: a newer one replaces it.
 4. Choose the options:

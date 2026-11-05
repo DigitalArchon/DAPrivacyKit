@@ -3747,17 +3747,23 @@ function browserKept(data, reload) {
   return h("div", { class: "notebox small browser-kept" }, h("b", {}, "Kept downloads, on the disk "),
     `(${data.kept.folder}): they say that the browser was set up on this computer.`,
     h("ul", {}, copies.map(c => h("li", {}, `${c.name} ${c.version}, kept ${fmtDay(c.kept)} (${fmtSize(c.size)}) `,
-      h("button", { class: "small", onclick: () => modal({ title: `Delete the kept ${c.name}?`, body: [
-        h("p", {}, `${c.name} ${c.version} and its signature are deleted from ${data.kept.folder}; setting it up again then `
-          + "downloads it."),
-        h("p", { class: "small" }, "Deleting doesn't erase it from the disk: on an SSD, or a filesystem that keeps copies, "
-          + "what was deleted can stay readable until it is written over. Disk encryption is what protects it.")],
-        buttons: [{ label: "Cancel" }, { label: "Delete", kind: "danger", onclick: async (close, el) => {
-          el.disabled = true;
-          try { await api("POST", "/api/tools/browser/kept/delete", { browser: c.browser }); close(); toast("Deleted.", "ok"); }
-          catch (e) { close(); toast(e.message, "error", 10000); }
-          await reload();
-        } }] }) }, "Delete…")))));
+      h("button", { class: "small", onclick: () => deleteKept(c, data, reload) }, "Delete…")))));
+}
+
+// A kept copy deleted, once the dialog has said that deleting doesn't erase it (rule 8); then done(whether it was).
+function deleteKept(c, data, done) {
+  modal({ title: `Delete the kept ${c.name}?`, body: [
+    h("p", {}, `${c.name} ${c.version} and its signature are deleted from ${data.kept.folder}; setting it up again then `
+      + "downloads it."),
+    h("p", { class: "small" }, "Deleting doesn't erase it from the disk: on an SSD, or a filesystem that keeps copies, "
+      + "what was deleted can stay readable until it is written over. Disk encryption is what protects it.")],
+    buttons: [{ label: "Cancel" }, { label: "Delete", kind: "danger", onclick: async (close, el) => {
+      el.disabled = true;
+      let ok = false;
+      try { await api("POST", "/api/tools/browser/kept/delete", { browser: c.browser }); ok = true; close(); toast("Deleted.", "ok"); }
+      catch (e) { close(); toast(e.message, "error", 10000); }
+      await done(ok);
+    } }] });
 }
 
 // The download and the version checks go out directly, never through a proxy set in the environment (as the online
@@ -3769,9 +3775,26 @@ function proxyWarning(data, hosts) {
     + "the proxy's. If the proxy is what hides your address, don't go on from here.");
 }
 
-function browserDownload(b, data, reload) {
-  const keep = h("input", { type: "checkbox" });                // off by default: kept, it is on the disk
-  const kept = (data.kept?.copies || []).find(c => c.browser === b.id);
+// `old`: the kept copy a set-up from it refused as out of date. Kept, the new download takes its place, so the tick
+// starts ticked then; unticked, the old one would be offered, and refused, at every set-up: deleting it is offered.
+function browserDownload(b, data, reload, old = null) {
+  const keep = h("input", { type: "checkbox", checked: !!old });  // otherwise off by default: kept, it is on the disk
+  let kept = (data.kept?.copies || []).find(c => c.browser === b.id);
+  const where = h("div", { class: "small muted" }), oldLine = h("div", { class: "small kept-old" });
+  const draw = () => {
+    fill(where, keptMeaning(data, b.name) + " It is kept only once its signature is verified"
+      + (kept ? `, in place of the kept ${kept.version}.` : "."));
+    fill(oldLine, !old ? null : !kept ? `The kept ${old.version} has been deleted.`
+      : keep.checked ? `Ticked, since the kept ${old.version} is out of date: the new download takes its place once its `
+        + "signature is verified."
+      : [`Unticked, the kept ${old.version} stays, and every set-up from it is refused as out of date. `,
+        h("button", { class: "small", onclick: () => deleteKept(old, data, async (ok) => {
+          if (ok) { kept = null; draw(); }
+          await reload();
+        }) }, "Delete the old copy…")]);
+  };
+  keep.addEventListener("change", draw);
+  draw();
   modal({ title: `Download ${b.name}?`, body: [
     h("p", {}, `This contacts ${b.hosts.join(" and ")}, the project's own servers: to learn the latest version, then for `
       + "the archive (about 120–140 MB) and its signature. They see this computer's address, as with any download; "
@@ -3783,8 +3806,7 @@ function browserDownload(b, data, reload) {
       ? "It is set up for Mullvad VPN (the tick on its card): no page loads unless Mullvad VPN is connected."
       : "It isn't set up for Mullvad VPN (the tick on its card): it starts as the browser leaves it.") : null,
     h("label", { class: "check small keep-download" }, keep, "Keep the download for next time"),
-    h("div", { class: "small muted" }, keptMeaning(data, b.name) + " It is kept only once its signature is verified"
-      + (kept ? `, in place of the kept ${kept.version}.` : ".")),
+    where, old ? oldLine : null,
   ], buttons: [{ label: "Cancel" }, { label: "Download", kind: "primary", onclick: async (close, el) => {
     el.disabled = true;
     try { await api("POST", "/api/tools/browser/get", { browser: b.id, vpn: browserSetup.vpn, keep: keep.checked }); close(); await reload(); }
@@ -3814,11 +3836,15 @@ function browserJob(job, data, reload) {
       job.keep_error ? h("div", { class: "warnbox small" }, job.keep_error) : null,
       h("div", { class: "orow" }, dismiss));
   }
-  // the kept copy is older than the latest: it isn't used; the new one can be downloaded (and kept in its place)
+  // the kept copy is older than the latest: it isn't used; the new one can be downloaded (and kept in its place, the
+  // tick ticked), or the old one deleted, which every set-up from it would refuse again
   const b = job.newer ? (data.browsers || []).find(x => x.id === job.browser) : null;
+  const old = b && job.source === "kept" ? (data.kept?.copies || []).find(c => c.browser === b.id) : null;
   return h("div", { class: job.state === "failed" ? "warnbox" : "notebox info small" }, job.error || "Stopped.",
-    h("div", { class: "orow" }, b ? h("button", { class: "small primary", onclick: () => browserDownload(b, data, reload) },
-      `Download ${b.name} ${job.newer}…`) : null, dismiss));
+    h("div", { class: "orow" }, b ? h("button", { class: "small primary", onclick: () => browserDownload(b, data, reload, old) },
+      `Download ${b.name} ${job.newer}…`) : null,
+      old ? h("button", { class: "small", onclick: () => deleteKept(old, data, reload) }, "Delete the old copy…") : null,
+      dismiss));
 }
 
 function browserLimits(data) {

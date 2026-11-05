@@ -535,7 +535,9 @@ renames (the old folder aside, the new one in, the old removed: never an old arc
 kept copy per browser; a folder or a link in place of the app's folders is refused, and a keep that fails leaves
 the set-up done, with the reason on the job. *Set up from the kept copy (version X, kept on DATE)…* then goes the
 picked archive's way exactly: `copy_in`, `check_latest` (a newer version out: refused, `Outdated`, and the page offers
-the download of the new one, which can be kept in its place), the app's own keys, the version inside the archive,
+the download of the new one with *Keep the download* ticked, so it takes the old one's place, and *Delete the old
+copy…*, beside the refusal and in the dialog once unticked: unticked by default, the old copy stayed, and every
+later set-up offered it and refused it, after another request to the index), the app's own keys, the version inside the archive,
 and `accept_unchecked` within `RECENT_DAYS` where the index can't be reached. The dialog names the index host. The
 panel lists the kept copies whether or not `~/TempBrowser` is open, each with *Delete…* (refused while that browser is
 being set up, `owner.hold`). Kept copies aren't in History, reports or exports; `packaging/uninstall.sh` removes the

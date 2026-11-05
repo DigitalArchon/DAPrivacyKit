@@ -153,7 +153,8 @@ def test_a_kept_copy_older_than_the_latest_isnt_used(cat, host, x86, monkeypatch
     good(monkeypatch)
     disk = keep_one(cat, host)
     job = from_kept(cat, host, tor_net("15.0.25"))
-    assert job["state"] == "failed" and job["newer"] == "15.0.25"
+    # "source" tells the page it was the kept copy: the download it offers then has Keep ticked, to replace it
+    assert job["state"] == "failed" and job["newer"] == "15.0.25" and job["source"] == "kept"
     assert "The kept copy is Tor Browser 15.0.24, and 15.0.25 is out" in job["error"] and "isn't used" in job["error"]
     assert not (disk / "tor-browser").exists() and not list((disk / ".downloads").iterdir())
 

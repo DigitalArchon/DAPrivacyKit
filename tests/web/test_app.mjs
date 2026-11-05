@@ -1103,15 +1103,39 @@ await window.openBrowserTool(); await tick(); await tick();
   $$(".modal").at(-1).querySelectorAll(".buttons button")[1].click(); await tick(); await tick();
   check(toolBodies.browser?.kept === "tor", "and sets up from the kept copy: " + JSON.stringify(toolBodies.browser)); }
 while ($$(".modal").length) { $$(".modal .buttons button").at(-1).click(); await tick(); }
-browserJob = { state: "failed", browser: "tor", name: "Tor Browser", newer: "15.0.25", stopping: false,
-               error: "The kept copy is Tor Browser 15.0.24, and 15.0.25 is out: an old version has security holes the new one fixes, so the kept copy isn't used." };
+const refusedKept = { state: "failed", browser: "tor", name: "Tor Browser", newer: "15.0.25", stopping: false, source: "kept",
+  error: "The kept copy is Tor Browser 15.0.24, and 15.0.25 is out: an old version has security holes the new one fixes, so the kept copy isn't used." };
+browserJob = refusedKept;
 await window.openBrowserTool(); await tick(); await tick();
 { const btn = $$(".modal .browser-tool button").find(b => b.textContent === "Download Tor Browser 15.0.25…");
-  check(!!btn, "a kept copy older than the latest offers the download of the new one");
+  check(!!btn && $$(".modal .browser-tool button").some(b => b.textContent === "Delete the old copy…"),
+        "a kept copy older than the latest offers the download of the new one, and to delete the old one beside it");
   btn.click(); await tick();
-  check($$(".modal").at(-1).textContent.includes("in place of the kept 15.0.24"), "which, kept, replaces the old one");
-  $$(".modal").at(-1).querySelectorAll(".buttons button")[0].click(); await tick(); }
+  const dl = $$(".modal").at(-1);
+  check(dl.querySelector(".keep-download input").checked && dl.textContent.includes("in place of the kept 15.0.24")
+        && dl.querySelector(".kept-old")?.textContent.includes("Ticked, since the kept 15.0.24 is out of date: the new download takes its place"),
+        "the download that follows has Keep ticked, and says the new one takes the old one's place (else it is offered, and refused, again)");
+  [...dl.querySelectorAll(".buttons button")].find(b => b.textContent === "Download").click(); await tick(); await tick();
+  check(toolBodies.browser?.browser === "tor" && toolBodies.browser.keep === true, "the tick goes with the download: "
+        + JSON.stringify(toolBodies.browser)); }
 while ($$(".modal").length) { $$(".modal .buttons button").at(-1).click(); await tick(); }
+browserJob = refusedKept;
+await window.openBrowserTool(); await tick(); await tick();
+{ $$(".modal .browser-tool button").find(b => b.textContent === "Download Tor Browser 15.0.25…").click(); await tick();
+  const dl = $$(".modal").at(-1), box = dl.querySelector(".keep-download input");
+  box.checked = false; box.dispatchEvent(new window.Event("change")); await tick();
+  const del = [...dl.querySelectorAll(".kept-old button")].find(b => b.textContent === "Delete the old copy…");
+  check(!!del && dl.querySelector(".kept-old").textContent.includes("Unticked, the kept 15.0.24 stays, and every set-up from it is refused"),
+        "unticked, it says the old one stays and is refused at every set-up, and offers to delete it right there");
+  del.click(); await tick();
+  check($$(".modal").at(-1).textContent.includes("Deleting doesn't erase it from the disk"), "which says first that deleting doesn't erase it");
+  [...$$(".modal").at(-1).querySelectorAll(".buttons button")].find(b => b.textContent === "Delete").click(); await tick(); await tick(); await tick();
+  check(toolBodies.keptDelete?.browser === "tor" && $$(".modal").at(-1) === dl
+        && dl.querySelector(".kept-old").textContent.includes("The kept 15.0.24 has been deleted") && !dl.textContent.includes("in place of the kept"),
+        "the old copy is deleted, and the download dialog stays, saying so"); }
+while ($$(".modal").length) { $$(".modal .buttons button").at(-1).click(); await tick(); }
+delete toolBodies.keptDelete;
+browserKept = [{ browser: "tor", name: "Tor Browser", version: "15.0.24", kept: 1790800000, size: 140e6, file: "tor-browser-linux-x86_64-15.0.24.tar.xz" }];
 browserJob = null;
 await window.openBrowserTool(); await tick(); await tick();
 $$(".modal .browser-kept button").find(b => b.textContent === "Delete…").click(); await tick();
