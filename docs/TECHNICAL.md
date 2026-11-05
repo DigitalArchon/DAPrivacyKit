@@ -72,7 +72,9 @@ carried out.
    and Retire a drive gives, and never runs, the commands that overwrite a whole hard disk.
 9. **Exports.** A report can be exported as text or JSON, redacted for sharing. What the app keeps between runs
    is the least that does the job ([section 14](#14-what-the-app-stores)), and "Export everything" hands all of
-   it over.
+   it over. An export is a file readable by the user alone (0600), whether `--export` writes it or the window's
+   Save… does (the app writes it itself: a download the window's WebKitGTK writes has the umask's mode, 0664 on
+   Mint and Ubuntu, tested), never over a file there.
 10. **No network in a scan.** The app never phones home and a scan works offline. Online tests run only when the
     user starts them, after naming every host each one contacts; the same for the one tool that downloads
     ([section 6](#6-network-access)).
@@ -1357,7 +1359,9 @@ it, or a checksum list holding its hash, signed by a key the app lists).
 | `unchecked` | Nothing to check it against | No companion, or signatures that couldn't be checked (no key, no tool) |
 
 A project that signs nothing (`unsigned: true`: Garuda Linux, Bazzite) is *intact* at best, and the
-result says that is as far as a check can go. An expired key's signature still counts, with a note.
+result says that is as far as a check can go. An expired key's signature still counts, with a note. A *verified*
+or *signed* result says when the good signature it rests on was made ("Signed on 4 November 2026", local time):
+an older release renamed as a newer one still matches its own signature, and only its date gives it away.
 
 `daprivacyscanner --verify FILE [--key KEYFILE] [--checksum HEX]` prints the same report; exit status 0
 when verified, 1 for anything less, 2 when the file or a key couldn't be read.
@@ -1554,7 +1558,10 @@ drive they came from (its model, serial and size, `retire.identity`): another dr
   descriptor of the file the listing saw (its device and inode; a folder's opened without following a
   link: the browser can swap one in for a listed download, and mat2 followed it, its cleaned copy of
   whatever the link pointed to landing where the browser sees it), so mat2 cleans nothing else and never
-  writes into the user's folder; a file mat2 can't
+  writes into the user's folder. On `~/TempBrowser` (its own filesystem) those working copies and mat2's
+  temporary files go in a folder of the app's at the RAM disk's top, `.cleaning-<random>`, which no sandbox is
+  given, never beside the file or inside the cleaned folder, where the browser's sandbox can write and could swap
+  them for a link just before mat2 opens them (the owner's decision of 2026-11-05); a file mat2 can't
   clean gets no copy and is listed, and a folder with nothing cleaned is removed. A copy counts only when
   the run that made it exited 0: mat2 cleans each file of a run in a process of its own, and one that
   crashes leaves a copy that looks cleaned (a read-only MP3's with every tag, a binary PPM's empty) and
@@ -1602,7 +1609,11 @@ drive they came from (its model, serial and size, `retire.identity`): another dr
     doesn't erase it). The runtime folder isn't kept out of swap: where swap reaches a disk (any but zram without
     a writeback device) or the computer can hibernate, the page says so beside "In memory" and in the result, in
     place of saying nothing of the trial touches the disk (`status`'s `swap` and `hibernation`; found in the
-    2026-10-17 review). Quitting the app discards it (the window's Quit as well as `--browser` mode's); folders left
+    2026-10-17 review). A trial in memory has no size limit of its own, and the runtime folder is the whole session's:
+    while it runs, its free room is looked at every second (`trial.RoomWatch`), and below `ROOM_KEPT` the trial is
+    ended as End ends it, its result kept, saying that memory was nearly full (a browser's cache, or a program
+    writing on purpose, had filled it, and the session's programs couldn't write their runtime files); a start with
+    less room than that is refused. Quitting the app discards it (the window's Quit as well as `--browser` mode's); folders left
     by a copy of the app that has ended are removed at the next start. Each trial's folder is locked (`flock` on
     the folder) by the copy that made it, so another copy (a right-click entry's) never takes a running trial
     for a leftover.
@@ -1714,7 +1725,18 @@ drive they came from (its model, serial and size, `retire.identity`): another dr
   inputs. A program on trial that its Box already holds under the same name, as another copy (a newer release:
   `box.same_program` compares names, links and contents), replaces the one there with `CopyTree(replace=True)`,
   which moves the old copy into History's backups and puts it back on revert, and the guide says so (found in
-  the 2026-10-17 review: the newer copy was silently not kept). Its actions: `MakeDir` (0700), `CopyTree`, `WriteFile` for `box.json` and for a menu entry
+  the 2026-10-17 review: the newer copy was silently not kept). A Box is named after its program without what each
+  release adds to a file's name (`box.program_name`: the version, the architecture, the file type, words like
+  beta), so a newer release is the same Box, and the guide's "Keep it in" offers "Replace the program of Box X"
+  for one of the same program (its home, Exchange and settings kept); a folder that holds only a reverted Box's
+  home, Exchange and runs.json is taken up again by a new set-up of that name, which says so. The guide starts
+  at "Choose an app", blocked until one is chosen, and leaves the desktop's settings pages out of its list
+  (`menu.App.panel`). At a logout, when systemd sends every process of the session's unit SIGTERM at once, the
+  program gets the time to end as it chooses: its sandbox starts under TETHER's hold, SIGTERM and SIGHUP blocked,
+  which bubblewrap and pasta keep pending (bubblewrap has no handler, and pasta's ended it at once, taking the
+  sandbox with it), while STAY unblocks them and starts the program with every signal at its default; the
+  launcher's stop() ends what ignores it after a few seconds, and systemd's SIGKILL anything after its own
+  timeout. A Flatpak Box, with nothing of the app's inside its sandbox to pass the signal on, is as before. Its actions: `MakeDir` (0700), `CopyTree`, `WriteFile` for `box.json` and for a menu entry
   (`daprivacyscanner-box-<name>.desktop`) that runs `daprivacyscanner --box <name>` with this copy of the app.
   `--box` (`app.box_cli`, `box.run_to_end`) starts it as a trial is started (`box.as_trial`: no decoys, the
   sandbox's own files in the runtime folder and removed after the run), stays until its program has ended, and
@@ -1727,8 +1749,8 @@ drive they came from (its model, serial and size, `retire.identity`): another dr
   launcher is refused and a process number used again by something else can't pass for it. The Tools panel
   starts a Box by running that same
   command on its own, so a Box never depends on the window. Each run is watched only while it runs and kept as
-  numbers (`record_run`): when, how long, files written and deleted, hosts contacted, how many of those were
-  new, bytes sent; hosts as salted HMACs (64 bits, the salt in the same file), never names (a boxed browser's
+  numbers (`record_run`): when, how long, files written and deleted, files put in Exchange (a watch of their own:
+  the bound folder was an empty mount point to the home's), hosts contacted, how many of those were new, bytes sent; hosts as salted HMACs (64 bits, the salt in the same file), never names (a boxed browser's
   hosts would be a history), the last 30 runs. The HMACs let anyone who can read `runs.json` test a guess (was
   this site contacted?), and the panel and the guide say so (the owner's decision of 2026-10-17: they stay, to
   count new hosts, and the text no longer says that nothing about the sites is kept); the Box's home holds the
@@ -1828,7 +1850,9 @@ drive they came from (its model, serial and size, `retire.identity`): another dr
     own history. Other compressed and encrypted stores can't be read this way, and the result says so.
   - **Administrator access** is held from start to end, which the page says before it starts
     (`appwatch.WARNING`); it is dropped as soon as the watch ends, unless it was active before. Never always
-    on: one app, one session, started and ended by the user. The result lives in the app's memory until it is
+    on: one app, one session, started and ended by the user, or ending itself `KEEPS_LEFT` (180) seconds after the
+    app has ended (or was never seen running: it handed over to a copy already open) or its panel was closed,
+    with its result kept as End keeps it (the access was otherwise held until End, however long after). The result lives in the app's memory until it is
     dismissed or the app quits; nothing is saved, put in a report or exported.
   - Tried through the app's API with the real helper on Mint 22.3 (ext4 on LUKS, kernel 7.0) and CachyOS (btrfs
     with `/home` on a subvolume, kernel 7.2), with a scripted app and with Xed and KWrite.
