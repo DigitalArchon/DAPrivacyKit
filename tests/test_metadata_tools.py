@@ -101,6 +101,34 @@ def test_clean_writes_a_copy_beside_and_never_overwrites(tmp_path):
     assert r.remaining is not None and r.remaining.tool == "mat2"
 
 
+def test_files_on_the_browsers_ram_disk_are_cleaned_from_copies_out_of_its_reach(tmp_path):
+    """The owner's decision of 2026-11-05: in ~/TempBrowser's Downloads the browser's sandbox can write beside the
+    file and inside the cleaned folder, so it could swap the app's working copy, or a part mat2 unpacked, for a link
+    just before mat2 opened it. Those copies (and mat2's temporary files) now go in a folder of the app's at the RAM
+    disk's top, which no sandbox is given; files elsewhere are cleaned beside themselves, as before."""
+    host = make_host(tmp_path, home_files={"TempBrowser/tor-browser/Browser/Downloads/photo.jpg": "img",
+                                           "TempBrowser/tor-browser/Browser/Downloads/pics/a.jpg": "a",
+                                           "Pictures/b.jpg": "b"})
+    disk = host.home / "TempBrowser"
+    (host.root / "proc").mkdir(parents=True, exist_ok=True)
+    (host.root / "proc/mounts").write_text(f"tmpfs {disk} tmpfs rw,nosuid,nodev,size=1048576k,mode=700 0 0\n")
+    calls = []
+    host.runner.handlers["mat2"] = fake_mat2(calls=calls)
+    downloads = disk / "tor-browser/Browser/Downloads"
+    sel = M.collect([downloads / "photo.jpg", downloads / "pics", host.home / "Pictures/b.jpg"])
+    run = M.clean_many(host, sel.files, check_after=False)
+    assert all(r.ok for r in run.results)
+    given = [Path(a) for argv in calls if "--" in argv and argv[1] != "--show" for a in argv[argv.index("--") + 1:]]
+    staged = [p for p in given if any(a.parent == disk and a.name.startswith(".cleaning-") for a in p.parents)]
+    beside = [p for p in given if p not in staged]
+    assert sorted(p.name for p in staged) == ["a.jpg", "photo.jpg"]          # the browser's, at the disk's top
+    assert [p.parent.parent for p in beside] == [host.home / "Pictures"]     # elsewhere: beside it, as before
+    assert (downloads / "photo.cleaned.jpg").read_text() == "clean:img"
+    assert (downloads / "pics (cleaned)/a.jpg").read_text() == "clean:a"
+    assert not [p for p in disk.iterdir() if p.name.startswith(".cleaning-")]          # removed afterwards
+    assert not [p for p in (downloads / "pics (cleaned)").iterdir() if p.name.startswith(".")]
+
+
 def test_a_folder_is_walked_without_links_hidden_files_or_other_mounts(tmp_path, monkeypatch):
     d = tmp_path / "Holiday"
     for rel in ("b.jpg", "a.jpg", "Day 2/c.jpg", ".hidden.jpg", ".git/x", "film.mp4.part", "Day 2/Deeper/d.pdf"):

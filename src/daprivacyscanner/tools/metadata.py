@@ -702,6 +702,31 @@ def _working_copy(c: Chosen, folder: Path, follow: bool = False) -> Path:
     return copy
 
 
+def _on_browser_disk(host: Host, near: Path) -> bool:
+    """Whether a file or folder is on ~/TempBrowser, the browser's RAM disk, on its own filesystem: its working copies
+    and mat2's temporary files then go in a folder of the app's at the disk's top, which no sandbox is given
+    (_stage_for_browser; the owner's decision of 2026-11-05). Beside the file, or inside the cleaned folder, is where
+    the browser's sandbox can write (its Downloads, its profile): it could swap the app's copy, or a part mat2
+    unpacked, for a link just before mat2 opened it."""
+    from . import ramdisk
+    top = os.path.realpath(ramdisk.folder(host, ramdisk.BROWSER))
+    real = os.path.realpath(near)
+    if not real.startswith(top + "/") or not ramdisk.mounted(host, ramdisk.BROWSER):
+        return False
+    try:                                         # not another filesystem mounted inside it
+        return os.stat(real if os.path.isdir(real) else os.path.dirname(real)).st_dev == os.stat(top).st_dev
+    except OSError:
+        return False
+
+
+def _stage_for_browser(host: Host) -> Path:
+    """A new folder of the app's at ~/TempBrowser's top, opened without following links (transfer._stage)."""
+    from . import transfer
+    path, fd = transfer._stage(host, ".cleaning-")
+    os.close(fd)
+    return path
+
+
 def clean_many(host: Host, files: list[Chosen], lightweight: bool = False, progress=None, stop=None,
                check_after: bool = True) -> CleanRun:
     """Cleaned copies of `files`: beside each file chosen on its own (as `clean`), and for the files of
@@ -725,46 +750,16 @@ def clean_many(host: Host, files: list[Chosen], lightweight: bool = False, progr
             raise Stopped()
 
     singles = [c for c in files if c.root is None]
-    for i in range(0, len(singles), BATCH):
-        if stop is not None and stop():
-            raise _stopped(run)
-        batch, todo = singles[i:i + BATCH], []
-        for c in batch:
-            out = cleaned_name(c.path)
-            if out.exists() or out.is_symlink():
-                run.results.append(Cleaned(c, False, message=f"{out.name} is already there: rename or delete it "
-                                                             "first, so it isn't overwritten."))
-            elif not os.access(c.path.parent, os.W_OK | os.X_OK):     # its copy goes beside it
-                run.results.append(Cleaned(c, False, message=cant_write(host, c.path.parent)))
-            else:
-                todo.append(c)
-        # each cleaned from a copy in a hidden folder of the app's beside it (_working_copy), its cleaned copy then
-        # moved beside it
-        works, copies = [], []
-        try:
-            for c in todo:
-                try:
-                    works.append(Path(tempfile.mkdtemp(prefix=WORK_PREFIX, dir=c.path.parent)))
-                    copies.append((c, _working_copy(c, works[-1], follow=True), ""))
-                except Replaced as e:
-                    copies.append((c, None, str(e)))
-                except OSError as e:
-                    copies.append((c, None, f"It couldn't be read: {e.strerror or e}."))
-            made = [p for _, p, _ in copies if p is not None]
-            verdicts = _mat2_each(host, lightweight, made) if made else {}
-            for c, copy, err in copies:
-                out = cleaned_name(c.path)
-                ok, said = verdicts[copy] if copy is not None else (False, err)
-                if ok and (out.exists() or out.is_symlink()):            # made meanwhile: never overwritten
-                    ok, said = False, (f"{out.name} is already there: rename or delete it first, so it isn't "
-                                       "overwritten.")
-                if ok:
-                    os.rename(cleaned_name(copy), out)
-                run.results.append(Cleaned(c, True, out, said) if ok else Cleaned(c, False, message=said))
-        finally:
-            for w in works:
-                shutil.rmtree(w, ignore_errors=True)
-        tick(batch)
+    stage: list[Path] = []                     # the browser's RAM disk's staging folder, made at its first file there
+    try:
+        for i in range(0, len(singles), BATCH):
+            if stop is not None and stop():
+                raise _stopped(run)
+            _clean_singles(host, singles[i:i + BATCH], lightweight, run, stage)
+            tick(singles[i:i + BATCH])
+    finally:
+        for st in stage:
+            shutil.rmtree(st, ignore_errors=True)
 
     roots: dict[Path, list[Chosen]] = {}
     for c in files:
@@ -795,6 +790,51 @@ def _stopped(run: CleanRun) -> Stopped:
     return e
 
 
+def _clean_singles(host: Host, batch: list[Chosen], lightweight: bool, run: CleanRun, stage: list[Path]) -> None:
+    """A batch of files chosen on their own, each cleaned from a copy in a hidden folder of the app's (_working_copy)
+    beside it, or for one on ~/TempBrowser in `stage` (_stage_for_browser, made once, kept in the list for the caller
+    to remove), its cleaned copy then moved beside it."""
+    todo = []
+    for c in batch:
+        out = cleaned_name(c.path)
+        if out.exists() or out.is_symlink():
+            run.results.append(Cleaned(c, False, message=f"{out.name} is already there: rename or delete it "
+                                                         "first, so it isn't overwritten."))
+        elif not os.access(c.path.parent, os.W_OK | os.X_OK):     # its copy goes beside it
+            run.results.append(Cleaned(c, False, message=cant_write(host, c.path.parent)))
+        else:
+            todo.append(c)
+    works, copies = [], []
+    try:
+        for c in todo:
+            try:
+                where = c.path.parent
+                if _on_browser_disk(host, c.path):
+                    if not stage:
+                        stage.append(_stage_for_browser(host))
+                    where = stage[0]
+                works.append(Path(tempfile.mkdtemp(prefix=WORK_PREFIX, dir=where)))
+                copies.append((c, _working_copy(c, works[-1], follow=True), ""))
+            except Replaced as e:
+                copies.append((c, None, str(e)))
+            except OSError as e:
+                copies.append((c, None, f"It couldn't be read: {e.strerror or e}."))
+        made = [p for _, p, _ in copies if p is not None]
+        verdicts = _mat2_each(host, lightweight, made) if made else {}
+        for c, copy, err in copies:
+            out = cleaned_name(c.path)
+            ok, said = verdicts[copy] if copy is not None else (False, err)
+            if ok and (out.exists() or out.is_symlink()):            # made meanwhile: never overwritten
+                ok, said = False, (f"{out.name} is already there: rename or delete it first, so it isn't "
+                                   "overwritten.")
+            if ok:
+                os.rename(cleaned_name(copy), out)
+            run.results.append(Cleaned(c, True, out, said) if ok else Cleaned(c, False, message=said))
+    finally:
+        for w in works:
+            shutil.rmtree(w, ignore_errors=True)
+
+
 def _clean_folder(host: Host, root: Path, files: list[Chosen], lightweight: bool, run: CleanRun, tick, check) -> None:
     parent = root.parent
     if not os.access(parent, os.W_OK | os.X_OK):
@@ -806,7 +846,10 @@ def _clean_folder(host: Host, root: Path, files: list[Chosen], lightweight: bool
     out_root = output_folder(root)
     os.mkdir(out_root, 0o777)
     run.outputs[root] = out_root
-    work = out_root / f"{WORK_PREFIX}{os.urandom(6).hex()}"
+    # its working copies in a hidden folder inside the cleaned folder, or for one on ~/TempBrowser in a folder of the
+    # app's at its top (_on_browser_disk), out of the browser's reach
+    stage = _stage_for_browser(host) if _on_browser_disk(host, root) else None
+    work = (stage or out_root) / f"{WORK_PREFIX}{os.urandom(6).hex()}"
     os.mkdir(work, 0o700)
     try:
         for i in range(0, len(files), BATCH):
@@ -853,7 +896,7 @@ def _clean_folder(host: Host, root: Path, files: list[Chosen], lightweight: bool
                 shutil.rmtree(work / str(i + n), ignore_errors=True)
             tick(batch)
     finally:
-        shutil.rmtree(work, ignore_errors=True)
+        shutil.rmtree(stage or work, ignore_errors=True)
         try:
             next(out_root.iterdir())
         except StopIteration:
