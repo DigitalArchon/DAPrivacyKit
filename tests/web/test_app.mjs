@@ -665,6 +665,23 @@ if (unknownRow) { window.reveal(unknownRow); await tick(); check($(`#c-${unknown
 await window.openExport(); await tick();
 check(text(".modal .export pre").startsWith("DA Privacy Kit report"), "the export dialog shows the report text");
 check(calls.includes("GET /api/report"), "export fetched the report");
+{ // the file downloaded is named for the app, as its users know it
+  const named = [], click0 = window.HTMLAnchorElement.prototype.click;
+  window.HTMLAnchorElement.prototype.click = function () { named.push(this.download); };
+  const download = () => $$(".modal .buttons button").find(b => b.textContent === "Download").click();
+  download();
+  const [kind, fmt] = $$(".modal .export select");
+  fmt.value = "json"; fmt.dispatchEvent(new window.Event("change")); await tick();
+  download();
+  kind.value = "everything"; kind.dispatchEvent(new window.Event("change")); await tick();
+  download();
+  window.HTMLAnchorElement.prototype.click = click0;
+  const day = new window.Date().toISOString().slice(0, 10);
+  check(named.join() === [`DAPrivacyKit-report-${day}.txt`, `DAPrivacyKit-report-${day}.json`,
+                          `DAPrivacyKit-everything-${day}.json`].join(),
+        "a downloaded export is named DAPrivacyKit-report-<date> or DAPrivacyKit-everything-<date>: " + named.join(", "));
+  kind.value = "report"; kind.dispatchEvent(new window.Event("change"));
+  fmt.value = "text"; fmt.dispatchEvent(new window.Event("change")); await tick(); }
 $$(".modal .buttons button").at(-1).click();
 
 // export everything (from History, or picked in the dialog)

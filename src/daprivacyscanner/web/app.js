@@ -1661,7 +1661,8 @@ async function openExport(what = "report") {
     { label: "Download", onclick: () => {
       const blob = new Blob([pre.textContent], { type: fmt.value === "json" ? "application/json" : "text/plain" });
       const name = sel.value === "everything" ? "everything" : "report";
-      const a = h("a", { href: URL.createObjectURL(blob), download: `daprivacyscanner-${name}-${new Date().toISOString().slice(0, 10)}.${fmt.value === "json" ? "json" : "txt"}` });
+      // named for the app as users know it (its internal name, daprivacyscanner, is for the command and its folders)
+      const a = h("a", { href: URL.createObjectURL(blob), download: `DAPrivacyKit-${name}-${new Date().toISOString().slice(0, 10)}.${fmt.value === "json" ? "json" : "txt"}` });
       document.body.append(a); a.click(); a.remove();
     } },
     { label: "Close", kind: "primary" }] });
