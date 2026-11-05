@@ -365,14 +365,15 @@ def test_a_boxs_revert_takes_its_runs_and_the_exchange_mount_point(cat, tmp_path
     for ever, Exchange listed as "added since"."""
     from daprivacyscanner.tools import box as B
     from daprivacyscanner.tools import integration as I
-    from test_guides import apply, build, options, revert
+    from daprivacyscanner.runner import Runner
+    from test_guides import apply, options, revert
     exe = tmp_path / "bin/daprivacyscanner"
     exe.parent.mkdir(parents=True)
     exe.write_text("#!/bin/sh\n")
     exe.chmod(0o755)
     monkeypatch.setattr(I, "program", lambda environ: [str(exe)])
     host = box_host(tmp_path)
-    plan = options(build(cat, host, "app.boxes"))["Set up a Box for Chat App"]
+    plan = options(Runner(cat, host).plan_fix("app.boxes", {"source": "chat.desktop"})[1])["Set up a Box for Chat App"]
     log, res = apply(host, plan)
     f = host.home / "Boxes/chat-app"
     box = B.read(host, "chat-app")

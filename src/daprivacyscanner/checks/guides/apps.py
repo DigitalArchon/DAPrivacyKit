@@ -392,7 +392,8 @@ def boxes(check, scan, outcome):
     existing = {b.slug: b for b in B.every(host)}
     cur = trial.CURRENT
     from_trial = cur is not None and cur.kind not in ("installed", "flatpak") and bool(cur.argv) and cur.state in ("ready", "ended")
-    apps = {a.id: a for a in menu.apps(host) if not a.terminal and (
+    # the desktop's settings pages aren't apps to keep in a Box (on Cinnamon, 34 of them ran cinnamon-settings)
+    apps = {a.id: a for a in menu.apps(host) if not a.terminal and not a.panel and (
         (a.kind == "flatpak" and a.flatpak) or (a.kind == "native" and _program(host, a.argv[0])))
         and not a.id.startswith("daprivacyscanner-box-")}
     choices = ([("trial", f"The program on trial now: {cur.name}")] if from_trial else []) + \
@@ -429,7 +430,23 @@ def boxes(check, scan, outcome):
                           "prepare it, then come back here."))
         return Guide(check.id, "A Box for an app", "", steps)
     ids = tuple(c[0] for c in choices)
-    source = Input.read(params, "source", "choice", ids[0], choices=ids)
+    using = Step("Using it", "Start it from the menu, or from Tools, where each Box shows its last runs in numbers. To "
+                 "give it a file, put the file in its Exchange folder; inside, the app finds it in ~/Exchange. To remove a "
+                 "Box, revert it in History.")
+    intro = ("An app kept in a sandbox with a home folder of its own, for good."
+             + (f" Set up now: {', '.join(b.name for b in existing.values())}." if existing else ""))
+    # no app is chosen for the user: the first of the menu's entries was (on Cinnamon its Accessibility settings), a Box
+    # for it one click away. The program on trial is, when there is one: "Keep it in a Box…" in its panel opens this
+    first = "trial" if from_trial else ""
+    source = Input.read(params, "source", "choice", first, choices=ids)
+    if not source:
+        steps += [Step("Choose the app and what it gets", "The app to keep in a Box. An installed app stays installed as "
+                       "it is; only the copy started from the Box's menu entry is sandboxed.",
+                       inputs=[Input("source", "App", "choice", "", "", choices=[("", "Choose an app"), *choices])],
+                       options=[option(check, "Set up a Box", [], blockers=["Choose the app to keep in a Box first."],
+                                       recommended=True)]),
+                  using]
+        return Guide(check.id, "A Box for an app", intro, steps)
     target, into_input = None, None                     # the Box whose program a program on trial replaces
     if source == "trial":
         name, kind, argv, env, flat, host_opt = cur.name, cur.kind, list(cur.argv), dict(cur.env), None, False
@@ -546,7 +563,7 @@ def boxes(check, scan, outcome):
     steps.append(Step(
         "Choose the app and what it gets", "The app to keep in a Box. An installed app stays installed as it is; only "
         "the copy started from the Box's menu entry is sandboxed.",
-        inputs=[Input("source", "App", "choice", source, ids[0], choices=choices),
+        inputs=[Input("source", "App", "choice", source, first, choices=choices),
                 *([into_input] if into_input is not None else []),
                 Input("network", "Network", "choice", network, "off",
                       choices=[("off", "None")] + ([("on", "Its usual network")] if kind == "flatpak"
@@ -562,11 +579,8 @@ def boxes(check, scan, outcome):
         options=[option(check, f"Replace the program of Box {box.name}" if target is not None else
                         f"Set up a Box for {box.name}", acts, blockers=blockers, recommended=True, side_effects=effects)],
         done=not acts and not blockers))
-    steps.append(Step("Using it", "Start it from the menu, or from Tools, where each Box shows its last runs in numbers. "
-                      "To give it a file, put the file in its Exchange folder; inside, the app finds it in ~/Exchange. To "
-                      "remove a Box, revert it in History."))
-    return Guide(check.id, "A Box for an app", "An app kept in a sandbox with a home folder of its own, for good."
-                 + (f" Set up now: {', '.join(b.name for b in existing.values())}." if existing else ""), steps)
+    steps.append(using)
+    return Guide(check.id, "A Box for an app", intro, steps)
 
 
 @guide("app.cups_spool")

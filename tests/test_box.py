@@ -88,11 +88,14 @@ def test_a_name_becomes_a_folder_name():
 # ------------------------------------------------------------------ set up, used, reverted
 
 def test_a_box_for_an_installed_app_is_set_up_and_reverted(cat, host, program):
+    from daprivacyscanner.runner import Runner
     assert detect(cat, "app.boxes", make_scan(host)).status is Status.WARN
     g = build(cat, host, "app.boxes")
     step = g.steps[1]
     apps = dict(step.inputs[0].choices)
-    assert apps == {"chat.desktop": "Chat App", "org.x.Meet.desktop": "Meet (Flatpak)"}, "no terminal apps, no trial"
+    assert apps == {"": "Choose an app", "chat.desktop": "Chat App", "org.x.Meet.desktop": "Meet (Flatpak)"}, \
+        "no terminal apps, no trial"
+    g = Runner(cat, host).plan_fix("app.boxes", {"source": "chat.desktop"})[1]
     plan = options(g)["Set up a Box for Chat App"]
     assert [a.kind for a in plan.actions] == ["mkdir", "mkdir", "mkdir", "mkdir", "file", "file"]
     log, res = apply(host, plan)
@@ -105,7 +108,6 @@ def test_a_box_for_an_installed_app_is_set_up_and_reverted(cat, host, program):
     o = detect(cat, "app.boxes", make_scan(host))
     assert o.status is Status.PASS and "1 app is kept in a Box" in o.summary
     # set up, the same choice has nothing left to change; the Box's own menu entry isn't offered for a Box
-    from daprivacyscanner.runner import Runner
     again = Runner(cat, host).plan_fix("app.boxes", {"source": "chat.desktop"})[1]
     assert again.steps[1].done and "daprivacyscanner-box-chat-app.desktop" not in dict(again.steps[1].inputs[0].choices)
     # the app has run and left data: reverting takes the menu entry and settings, never the data
@@ -115,6 +117,57 @@ def test_a_box_for_an_installed_app_is_set_up_and_reverted(cat, host, program):
     assert not (f / "box.json").exists() and not (host.home / ".local/share/applications").exists()
     assert (f / "home/.config/chat.db").read_text() == "messages" and not (f / "Exchange").exists()
     assert detect(cat, "app.boxes", make_scan(host)).status is Status.WARN
+
+
+SETTINGS_PAGES = {   # as Mint 22.3 (Cinnamon), Ubuntu (GNOME) and Plasma 6 have them, the fields that tell
+    "cinnamon-settings-universal-access.desktop": ("Accessibility", "cinnamon-settings accessibility",
+                                                   "OnlyShowIn=X-Cinnamon;\nCategories=Settings;\n"),
+    "cinnamon-display-panel.desktop": ("Display", "cinnamon-settings display",
+                                       "Categories=GTK;Settings;HardwareSettings;X-Cinnamon-Settings-Panel;\n"
+                                       "OnlyShowIn=X-Cinnamon;\nX-Cinnamon-Settings-Panel=display\n"),
+    "cinnamon-settings.desktop": ("System Settings", "env WEBKIT_DISABLE_COMPOSITING_MODE=1 cinnamon-settings",
+                                  "Categories=Settings;\nOnlyShowIn=X-Cinnamon;\n"),
+    "gufw.desktop": ("Firewall Configuration", "gufw", "Categories=GNOME;GTK;Settings;Security;X-GNOME-Settings-Panel;\n"
+                     "X-GNOME-Settings-Panel=gufw\n"),
+    "gnome-wifi-panel.desktop": ("Wi-Fi", "gnome-control-center wifi",
+                                 "Categories=GTK;GNOME;Settings;X-GNOME-NetworkSettings;HardwareSettings;\n"),
+    "kcm_kscreen.desktop": ("Display Configuration", "systemsettings kcm_kscreen", "X-KDE-AliasFor=systemsettings\n"),
+}
+APPS_TOO = {         # in the Settings category, but apps of their own
+    "blueman-manager.desktop": ("Bluetooth Manager", "blueman-manager", "Categories=GTK;GNOME;Settings;HardwareSettings;\n"),
+    "mintbackup.desktop": ("Backup Tool", "mintbackup", "NotShowIn=KDE;\nCategories=Application;System;Settings\n"),
+}
+
+
+def test_no_app_is_chosen_for_the_user_and_the_desktops_settings_pages_arent_offered(cat, tmp_path, program, monkeypatch):
+    """Found in use: the guide chose the menu's first entry, on Cinnamon its Accessibility settings, one click from a Box
+    for it, and listed every page of the desktop's settings (34 on Mint 22.3) among the apps. Now nothing is chosen
+    until the user chooses (the option is blocked), but for the program on trial, and the settings pages are left
+    out."""
+    files = {"/usr/share/applications/chat.desktop": DESKTOP.format(name="Chat App", exec="chat", extra="")}
+    for desk, (name, exe, extra) in {**SETTINGS_PAGES, **APPS_TOO}.items():
+        files[f"/usr/share/applications/{desk}"] = DESKTOP.format(name=name, exec=exe, extra=extra)
+        files[f"/usr/bin/{exe.split()[-1] if exe.startswith('env') else exe.split()[0]}"] = ""
+    host = make_host(tmp_path, files={**files, "/usr/bin/chat": "", "/tmp/.X11-unix/X0": ""},
+                     env={"XDG_DATA_DIRS": "/usr/share", "XDG_RUNTIME_DIR": "/run/user/1000", "DISPLAY": ":0"})
+    from daprivacyscanner.runner import Runner
+    from daprivacyscanner.tools import menu
+    assert {a.id for a in menu.apps(host) if a.panel} == set(SETTINGS_PAGES)
+    monkeypatch.setattr(trial, "CURRENT", None)
+    g = build(cat, host, "app.boxes")
+    step = g.steps[1]
+    assert step.inputs[0].value == "" and step.inputs[0].choices[0] == ("", "Choose an app")
+    assert [c[1] for c in step.inputs[0].choices[1:]] == ["Backup Tool", "Bluetooth Manager", "Chat App"]
+    [opt] = step.options
+    assert opt.plan.blockers == ["Choose the app to keep in a Box first."] and not opt.plan.actions and not step.done
+    chosen = Runner(cat, host).plan_fix("app.boxes", {"source": "chat.desktop"})[1]
+    assert "Set up a Box for Chat App" in options(chosen)
+    assert Runner(cat, host).plan_fix("app.boxes", {"source": "cinnamon-settings-universal-access.desktop"})[1] \
+        .steps[1].inputs[0].value == "", "a settings page can't be chosen at all"
+    # the program on trial is what "Keep it in a Box…" opens the guide for: it is the one chosen
+    monkeypatch.setattr(trial, "CURRENT", SimpleNamespace(kind="appimage", argv=["/app/Tool.AppImage"], state="ready",
+                                                          name="Tool.AppImage", env={}, app=tmp_path))
+    assert build(cat, host, "app.boxes").steps[1].inputs[0].value == "trial"
 
 
 def test_the_guide_says_what_wayland_still_gives_a_boxed_app(cat, host, program):

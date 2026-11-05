@@ -13,6 +13,11 @@ from ..host import Host
 from .viewer import FIELD_DROP, FIELD_FILE, _data_dirs, desktop_entry
 
 APPS_MAX = 600
+# The desktops' own settings programs: a menu entry that runs one is a page of System Settings, not an app of its own
+# (Cinnamon's Accessibility is `cinnamon-settings accessibility`, and its 34 pages all run it, on Mint 22.3)
+SETTINGS_PROGRAMS = ("cinnamon-settings", "cinnamon-settings-users", "gnome-control-center", "systemsettings",
+                     "systemsettings5", "kcmshell5", "kcmshell6", "xfce4-settings-manager", "mate-control-center",
+                     "budgie-control-center", "unity-control-center")
 
 
 @dataclass
@@ -26,6 +31,7 @@ class App:
     snap: str | None = None                      # its Snap's name
     terminal: bool = False
     env: dict[str, str] = field(default_factory=dict)   # what its command set with `env NAME=value`
+    panel: bool = False                          # a page of the desktop's settings (settings_panel), not an app
 
     def to_dict(self) -> dict:
         return {"id": self.id, "name": self.name, "kind": self.kind, "comment": self.comment,
@@ -55,7 +61,21 @@ def _from(desktop_id: str, entry: dict[str, str]) -> App | None:
     kind = "flatpak" if flatpak else "snap" if snap or base == "snap" else "native"
     return App(desktop_id, entry.get("Name", desktop_id[:-8]), argv, kind, entry.get("Comment", ""),
                flatpak if kind == "flatpak" else None, snap if kind == "snap" else None,
-               entry.get("Terminal", "").lower() == "true", env)
+               entry.get("Terminal", "").lower() == "true", env, settings_panel(entry, argv))
+
+
+def settings_panel(entry: dict[str, str], argv: list[str]) -> bool:
+    """Whether a menu entry is one of the desktop's settings pages rather than an app: it runs the desktop's settings
+    program (SETTINGS_PROGRAMS), or it is in the Settings category and says it is a panel of a desktop's settings
+    (X-Cinnamon-Settings-Panel, X-GNOME-Settings-Panel, KDE's X-KDE-AliasFor=systemsettings) or is shown in one desktop's
+    menu only (OnlyShowIn: the 34 pages of Cinnamon's System Settings on Mint 22.3; Mint's Software Sources and Driver
+    Manager, the firewall's and the printers' settings, which are shown among GNOME's panels, go with them)."""
+    if os.path.basename(argv[0]) in SETTINGS_PROGRAMS or entry.get("X-KDE-AliasFor", "").startswith("systemsettings"):
+        return True
+    cats = [c.strip() for c in entry.get("Categories", "").split(";")]
+    return "Settings" in cats and (any(re.fullmatch(r"X-[\w-]+-Settings-Panel", c) for c in cats)
+                                   or any(re.fullmatch(r"X-[\w-]+-Settings-Panel", k) for k in entry)
+                                   or bool(entry.get("OnlyShowIn", "").strip(" ;")))
 
 
 def app(host: Host, desktop_id: str) -> App | None:
