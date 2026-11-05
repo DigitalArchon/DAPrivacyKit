@@ -1396,9 +1396,12 @@ class DeleteFiles(Action):
         return total
 
     def describe(self) -> str:
-        from .checks._util import human_size
+        from .checks._util import human_size, through_link
         n = len(self.files)
         what = ("item" if self.whole else "file") + ("s" if n != 1 else "")
+        if through_link(self.root, Path(os.path.expanduser("~"))):    # apply deletes nothing then: said beforehand
+            return (f"Delete nothing of {self.label} in {self.display_root}: it is reached through a link, and nothing "
+                    "is deleted through one")
         return f"Delete {n} {what} ({human_size(self.size)}) of {self.label} in {self.display_root}"
 
     LISTED = 25                         # files named one by one up to this many; beyond it, their folders

@@ -19,7 +19,7 @@ from ..host import Host, Unreadable, unescape_mount
 from ..model import Evidence, Note, Outcome, Status
 from ..privileged import HelperError
 from . import Check, Scan, register
-from ._util import (ON_ENCRYPTED_DISK, Tally, absent, children, failed, human_size, isdir, mounts, needs_root,
+from ._util import (ON_ENCRYPTED_DISK, Tally, absent, children, failed, human_size, isdir, link_note, mounts, needs_root,
                     on_encrypted_disk, own_dir, passed, read_json, read_text, sqlite_count, storage_mounts,
                     systemctl_state, tally, through_link, unknown, uri_path, warned)
 
@@ -1223,12 +1223,13 @@ class JournalPersistent(Check):
 
 # ------------------------------------------------------------------ trash
 
-def trash_dirs(scan: Scan) -> list[Path]:
+def trash_dirs(scan: Scan, passed_over: list[Path] | None = None) -> list[Path]:
     """The user's trash folders, each once: the home's, and .Trash-UID or .Trash/UID at the top of every other
     filesystem (the freedesktop Trash spec). Only a real folder of the user's counts, reached through no link, with
     real files and info folders in it, as GLib checks: whoever can write a drive's top (its maker, another account on
     a shared disk) could make .Trash-1000/files a link to ~/Documents, which emptying the trash would then delete. The
-    shared .Trash must be a folder with the sticky bit, not a link."""
+    shared .Trash must be a folder with the sticky bit, not a link. `passed_over` gets each one left out because it,
+    or its files or info folder, is reached through a link (so the check can say so)."""
     host, uid = scan.host, scan.host.uid
     dirs = [scan.paths.data_home / "Trash"]
     for m in storage_mounts(host):
@@ -1244,6 +1245,9 @@ def trash_dirs(scan: Scan) -> list[Path]:
     for d in dirs:
         if (not own_dir(host, d) or through_link(d, host.home) or d.resolve() in seen
                 or any(os.path.lexists(d / sub) and not own_dir(host, d / sub) for sub in ("files", "info"))):
+            linked = [x for x in (d, d / "files", d / "info") if os.path.islink(x)]
+            if passed_over is not None and (linked or (os.path.isdir(d) and through_link(d, host.home))):
+                passed_over.append(linked[0] if linked else d)
             continue
         seen.add(d.resolve())
         out.append(d)
@@ -1256,8 +1260,8 @@ class Trash(Check):
 
     def detect(self, scan: Scan) -> Outcome:
         host = scan.host
-        ev, total = [], 0
-        for d in trash_dirs(scan):
+        ev, total, linked = [], 0, []
+        for d in trash_dirs(scan, linked):
             files = d / "files"
             if not isdir(files):
                 continue
@@ -1266,7 +1270,7 @@ class Trash(Check):
                 t = tally(files)
                 total += items
                 ev.append(Evidence.val(host.display(d), f"{items} item{'s' if items > 1 else ''}, {human_size(t.bytes)}"))
-        notes = []
+        notes = [Note("info", "A trash folder reached through a link isn't looked in", link_note(host, d)) for d in linked]
         if scan.context.desktop.is_gnome and scan.gnome.gsettings("org.gnome.desktop.privacy", "remove-old-trash-files") is False:
             notes.append(Note("info", "GNOME can empty old trash for you",
                               "Settings → Privacy → File History & Trash → Automatically Delete Trash Content."))

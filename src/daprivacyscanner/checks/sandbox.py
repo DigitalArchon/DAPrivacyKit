@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import os
+
 from .. import ini
 from ..host import Host
 from ..model import Evidence, Note, Outcome
 from . import Check, Scan, register
-from ._util import Tally, absent, failed, human_size, own_dir, passed, read_text, tally, unknown, warned
+from ._util import Tally, absent, failed, human_size, link_note, own_dir, passed, read_text, tally, unknown, warned
 
 BROAD_FS = ("host", "host-os", "host-etc", "home")
 
@@ -88,23 +90,26 @@ class FlatpakCaches(Check):
         apps = scan.paths.flatpak_apps()
         if not apps:
             return absent("No Flatpak app data in ~/.var/app.")
-        sizes = []
+        sizes, linked = [], []
         for app in apps:
             cache = scan.paths.flatpak_root / app / "cache"
             if not own_dir(scan.host, cache):
                 # the app can write its own folder: a cache -> ~/Documents it made would be counted, and cleared, as
-                # its cache
+                # its cache. Said, so that one the user moved elsewhere with a link of their own isn't a puzzle
+                if os.path.islink(cache):
+                    linked.append(Note("info", "A cache reached through a link isn't counted",
+                                       link_note(scan.host, cache)))
                 continue
             t = tally(cache, limit=20_000)
             if t.files:
                 sizes.append((app, t))
         if not sizes:
-            return passed("Flatpak apps have no cached data.")
+            return passed("Flatpak apps have no cached data.", notes=linked)
         sizes.sort(key=lambda x: -x[1].bytes)
         total = sum(t.bytes for _, t in sizes)
         return failed(f"{len(sizes)} Flatpak app{'s keep' if len(sizes) > 1 else ' keeps'} {human_size(total)} of "
                       "caches under ~/.var/app, which cleaners that look only at ~/.cache miss.",
-                      *(Evidence.val(app, t.describe()) for app, t in sizes[:15]))
+                      *(Evidence.val(app, t.describe()) for app, t in sizes[:15]), notes=linked)
 
 
 @register

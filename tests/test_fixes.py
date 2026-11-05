@@ -211,6 +211,9 @@ def test_trash_on_a_drive_is_never_a_link_its_maker_planted(cat, tmp_path):
     (host.root / "proc/mounts").write_text(f"/dev/sdb1 {usb} ext4 rw 0 0\n/dev/sdc1 {disk} btrfs rw 0 0\n")
     o = detect(cat, "enc.trash", make_scan(host, desktop=("kde",)))
     assert o.status is Status.PASS and not o.evidence
+    # and said, so that a trash the user moved elsewhere with a link of their own isn't a puzzle
+    said = [n.text for n in o.notes if "reached through a link" in n.text]
+    assert any(f"{usb}/.Trash-1000/files" in t for t in said) and any(f"{disk}/.Trash-1000" in t for t in said)
     check = load_all()["enc.trash"](cat["enc.trash"])
     scan = make_scan(host, desktop=("kde",))
     assert not check.plan_fix(scan, o).actions
@@ -734,7 +737,28 @@ def test_a_flatpak_apps_cache_that_is_a_link_is_never_cleared(cat, tmp_path):
     plan, res, log = run_fix(cat, host, "sbx.flatpak_caches")
     assert res.ok and [a.display_root for a in plan.actions] == ["~/.var/app/org.gnome.Loupe/cache"]
     assert (host.home / "Documents/taxes.pdf").exists() and (host.home / "Documents/2025/report.odt").exists()
-    assert redetect(cat, host, "sbx.flatpak_caches").status is Status.PASS
+    o = redetect(cat, host, "sbx.flatpak_caches")
+    assert o.status is Status.PASS
+    assert any("~/.var/app/com.example.Evil/cache is reached through a link (to ~/Documents)" in n.text for n in o.notes)
+
+
+def test_a_plan_that_deletes_says_how_and_names_a_folder_it_leaves_for_a_link(cat, tmp_path):
+    """The owner's wish (2026-11-05): a plan says what deleting follows and never touches, and a folder of the user's
+    own that a link leads to (moved to another disk) is named, with why it is left, rather than silently skipped."""
+    from daprivacyscanner.runner import HOW_IT_DELETES, Runner
+    host = make_host(tmp_path, home_files={".local/share/Trash/files/old.pdf": "x",
+                                           ".local/share/Trash/info/old.pdf.trashinfo": "[Trash Info]",
+                                           "elsewhere/zeitgeist/activity.sqlite": "x"})
+    _, plan = Runner(cat, host).plan_fix("enc.trash")
+    assert HOW_IT_DELETES in plan.side_effects and "never what it points to" in HOW_IT_DELETES
+    # a folder a clean-up would empty, reached through a link: nothing in it is deleted, and the plan says why
+    from daprivacyscanner.checks import fixes as F
+    from daprivacyscanner.checks._util import collecting_skipped
+    (host.home / ".local/share/zeitgeist").symlink_to(host.home / "elsewhere/zeitgeist")
+    with collecting_skipped() as said:
+        assert F.delete(make_scan(host), host.home / ".local/share/zeitgeist", "Zeitgeist activity log") == []
+    assert said and "~/.local/share/zeitgeist is reached through a link (to ~/elsewhere/zeitgeist)" in said[0]
+    assert "clean it where it points" in said[0]
 
 
 def test_processes_are_read_once_per_plan(cat, tmp_path, monkeypatch):

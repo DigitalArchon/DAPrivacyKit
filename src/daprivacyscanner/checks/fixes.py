@@ -8,6 +8,7 @@ on demand (gvfsd-metadata, zeitgeist, kactivitymanagerd) are stopped as a listed
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,7 +21,7 @@ from ..fix import (ClearCommand, ClearInFile, Command, CopyQCommand, CopyQTabSet
 from ..model import Outcome
 from . import Check, No, Scan
 from ._util import (children, chromium_dirs, chromium_in_use, files_under, holders, isdir, isfile, own_dir, processes,
-                    read_jsonc, read_text, thumbnail_entries, uri_path)
+                    read_jsonc, read_text, skipped_link, through_link, thumbnail_entries, uri_path)
 
 
 @dataclass
@@ -71,7 +72,10 @@ def kscreenlocker_reload(scan: Scan) -> list[str] | None:
 
 
 def delete(scan: Scan, root: Path, label: str, pattern: re.Pattern | None = None) -> list[DeleteFiles]:
-    if not own_dir(scan.host, root):            # a link (walked, it lists what it points to) or another account's
+    if os.path.islink(root) or (os.path.isdir(root) and through_link(root, scan.host.home)):
+        skipped_link(scan.host, root)           # walked, it would list what the link points to: said in the plan
+        return []
+    if not own_dir(scan.host, root):            # another account's
         return []
     files, _ = files_under(root, pattern=pattern)
     return [DeleteFiles(root, files, label, scan.host.display(root))] if files else []

@@ -16,7 +16,7 @@ from .checks import Check, No, Scan, load_all
 from .checks._util import ENCRYPTED_DISK_NOTE, ON_ENCRYPTED_DISK, on_encrypted_disk
 from .context import Context, ContextValue, detect_context
 from .desktop import GNOME, KDE
-from .fix import FixPlan
+from .fix import DeleteFiles, FixPlan
 from .guide import Guide, name_checks
 from .host import FormatChanged, Host, Unreadable
 from .model import CheckResult, Evidence, Note, Outcome, Status
@@ -25,6 +25,12 @@ from .paths import PathResolver
 Progress = Callable[[str, int, int], None]      # (check id, done, total)
 # Checks are independent and spend their time waiting on subprocesses, so several run at once.
 WORKERS = 6
+# what a plan that deletes says about how it deletes (the owner's wish of 2026-11-05): what it follows and what it
+# never touches, so a folder of the user's reached through a link isn't a surprise when it is left as it is
+HOW_IT_DELETES = ("How it deletes: only what is listed, inside the folders named. A link among them is removed "
+                  "itself, never what it points to; nothing in another filesystem mounted inside one of them is "
+                  "touched; and a folder reached through a link isn't cleaned at all, since a link can point anywhere "
+                  "(a program or another account can make one to your own files).")
 
 
 @dataclass
@@ -149,6 +155,9 @@ class Runner:
             for p in plans:
                 if p.irreversible and note not in p.side_effects:
                     p.side_effects.append(note)
+        for p in plans:                         # and how it deletes, what it won't touch or follow
+            if any(isinstance(a, DeleteFiles) for a in p.actions) and HOW_IT_DELETES not in p.side_effects:
+                p.side_effects.append(HOW_IT_DELETES)
 
     def plan_easy(self, check_ids: Iterable[str] | None = None) -> list[tuple[CheckResult, list[FixPlan]]]:
         """The Easy fixes (the catalogue's `easy`) of the checks that fail or warn now: each check

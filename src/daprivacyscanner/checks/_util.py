@@ -3,6 +3,8 @@ processes, mounts, systemd state, and where browsers keep their profiles."""
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import json
 import os
 import re
@@ -187,6 +189,39 @@ def through_link(path: Path, home: Path) -> bool:
     if p == h or p.startswith(h.rstrip("/") + "/"):
         return os.path.realpath(p) != os.path.normpath(os.path.join(os.path.realpath(h), os.path.relpath(p, h)))
     return os.path.realpath(p) != p
+
+
+# folders a clean-up passed over because they are reached through a link, while one fix's plan or guide is built
+# (Check.plan_fix and plan_guide collect them for it): per thread, since checks run in a pool
+_SKIPPED: contextvars.ContextVar[list[str] | None] = contextvars.ContextVar("skipped_links", default=None)
+
+
+def link_note(host: Host, path: Path) -> str:
+    """Why a folder reached through a link is neither counted nor cleaned, in words."""
+    try:
+        target = host.display(Path(os.path.realpath(path)))
+    except (OSError, ValueError):
+        target = "somewhere else"
+    return (f"{host.display(path)} is reached through a link (to {target}), so nothing in it is counted or deleted: the "
+            "app never deletes through a link, which a program or another account can point at your own files. If it "
+            "is yours, clean it where it points.")
+
+
+def skipped_link(host: Host, path: Path) -> None:
+    """Says, in the fix being planned, that its clean-up passed over `path`: it is reached through a link."""
+    got = _SKIPPED.get()
+    if got is not None and (note := link_note(host, path)) not in got:
+        got.append(note)
+
+
+@contextlib.contextmanager
+def collecting_skipped():
+    """The notes skipped_link() gives while the plan is built (a list, filled as it goes)."""
+    token = _SKIPPED.set([])
+    try:
+        yield _SKIPPED.get()
+    finally:
+        _SKIPPED.reset(token)
 
 
 def read_text(host: Host, path: Path) -> str | None:

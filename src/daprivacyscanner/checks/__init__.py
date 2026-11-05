@@ -118,16 +118,27 @@ class Check:
         return True if r else r if isinstance(r, No) else No("")
 
     def plan_fix(self, scan: Scan, outcome: Outcome) -> "FixPlan":
-        """The dry run: what the fix would do on this machine now. Changes nothing."""
+        """The dry run: what the fix would do on this machine now. Changes nothing. A folder its clean-up passed over,
+        being reached through a link, is said among its notes (an empty plan's, the reason there is no fix)."""
+        from ._util import collecting_skipped
         from .fixes import FIXES
 
-        return FIXES[self.id].plan(self, scan, outcome)
+        with collecting_skipped() as skipped:
+            plan = FIXES[self.id].plan(self, scan, outcome)
+        plan.side_effects += [n for n in skipped if n not in plan.side_effects]
+        return plan
 
     def plan_guide(self, scan: Scan, outcome: Outcome) -> "Guide":
-        """The guided fix's steps on this machine now, each option with its dry run. Changes nothing."""
+        """The guided fix's steps on this machine now, each option with its dry run. Changes nothing. A folder a
+        clean-up passed over, being reached through a link, is said in its intro."""
+        from ._util import collecting_skipped
         from .guides import GUIDES
 
-        return GUIDES[self.id].plan(self, scan, outcome)
+        with collecting_skipped() as skipped:
+            guide = GUIDES[self.id].plan(self, scan, outcome)
+        if skipped:
+            guide.intro = " ".join(x for x in [guide.intro, *skipped] if x)
+        return guide
 
 
 REGISTRY: dict[str, type[Check]] = {}
