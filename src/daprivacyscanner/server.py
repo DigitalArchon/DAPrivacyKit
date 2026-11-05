@@ -190,12 +190,13 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
                pick: Callable[[str, bool, str], list[str] | None] | None = None,
                open_tool: dict | None = None, spawn_browser: Callable = subprocess.Popen,
                open_url: Callable[[str], None] | None = None, watch_outbox: bool = False,
-               spawn_app: Callable = subprocess.Popen) -> FastAPI:
+               spawn_app: Callable = subprocess.Popen, close_window: Callable[[], None] | None = None) -> FastAPI:
     """`token` is the session token (the X-Token header of every API call; the page gets it when the
     launch token is exchanged). `launch_token`, if given, is accepted once on GET /?t=... `allowed_hosts`: the Host
     header values served (None: any, for tests). `on_quit` ends the process (POST /api/quit): in
-    the browser, closing the tab doesn't. `start_helper` asks for administrator access (polkit)
-    and returns the privileged helper. `make_net` gives the network to the online tests and to the
+    the browser, closing the tab doesn't. `close_window` closes the app's window, which quits it (POST /api/quit in
+    the window: the page's Quit anyway, once it has asked, app.CloseGuard). `start_helper` asks for administrator
+    access (polkit) and returns the privileged helper. `make_net` gives the network to the online tests and to the
     browser download the user starts in the Tools panel; a scan never calls it (rule 10). `dev` shows detection hints, unverified notes and timings.
     `install_helper` installs this version's helper root-owned (or removes it), asking for access.
     `pick` is the app window's file dialog (in the browser, zenity or kdialog are used when installed).
@@ -219,6 +220,7 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
     app.state.keeps_job = None             # What does this app keep?: the watch, then its result (memory only)
     app.state.trial = None                 # Try an app: the one trial, its sandbox and its report (memory only)
     app.state.trial_cleaned = False        # trial folders left by a run of the app that was killed were looked for
+    app.state.left_open = None             # why the last quit left ~/TempBrowser open, for the panel (memory only)
     scan_lock = asyncio.Lock()
     plans: dict[str, tuple[FixPlan, Host]] = {}
     easy_ids: set[str] = set()             # plans built by Easy fixes: the only ones it applies
@@ -1283,6 +1285,9 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
                 except HelperError as e:
                     return JSONResponse({"error": f"It couldn't be closed: {e}", "wiped": wiped}, status_code=400)
                 owner.release(host, name)
+                if name == ramdisk.BROWSER:             # why a quit left it open, if it did: no longer so
+                    await asyncio.to_thread(B.forget_left_open, host)
+                    app.state.left_open = None
         finally:
             for fd in held:
                 owner.let_go(fd)
@@ -1368,6 +1373,18 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
             except OSError:
                 pass
 
+    def left_open_note(host: Host) -> dict | None:
+        """Why the last quit left ~/TempBrowser open (browser.close_disk's note in the runtime folder): taken by the
+        copy that owns the disk now, as its panel is shown, and kept in its memory until dismissed or the disk is
+        closed."""
+        from .tools import browser as B, owner, ramdisk
+        if not ramdisk.mounted(host, ramdisk.BROWSER):
+            B.forget_left_open(host)
+            app.state.left_open = None
+        elif owner.owns(host, ramdisk.BROWSER, ramdisk.folder(host, ramdisk.BROWSER)):
+            app.state.left_open = B.take_left_open(host) or app.state.left_open
+        return app.state.left_open
+
     @app.get("/api/tools/browser", dependencies=[Depends(auth)])
     async def tools_browser():
         from .tools import browser as B
@@ -1377,7 +1394,8 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
         await asyncio.to_thread(adopt_browser_disk, host)
         await asyncio.to_thread(B.tidy_leftovers, host)  # what a killed copy's set-up left: memory, until the next
         return {**await asyncio.to_thread(B.status, host), "job": browser_view(app.state.browser_job),
-                "can_pick": chooser is not None, "picker": chooser, "admin_active": admin.active()}
+                "can_pick": chooser is not None, "picker": chooser, "admin_active": admin.active(),
+                "left_open": await asyncio.to_thread(left_open_note, host)}
 
     @app.post("/api/tools/browser/get", dependencies=[Depends(auth)])
     async def tools_browser_get(request: Request):
@@ -1438,9 +1456,14 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
     @app.post("/api/tools/browser/dismiss", dependencies=[Depends(auth)])
     async def tools_browser_dismiss(request: Request):
         """The finished set-up job's result, put away; with {"browser"}, why that browser last stopped with an error
-        (kept until dismissed or started again: browser.launch_problem)."""
+        (kept until dismissed or started again: browser.launch_problem); with {"left_open": true}, why the last quit
+        left ~/TempBrowser open (left_open_note)."""
         from .tools import browser as B
-        b = browser_of(await body_of(request))
+        body = await body_of(request)
+        if body.get("left_open") is True:
+            app.state.left_open = None
+            return {"ok": True}
+        b = browser_of(body)
         if b is not None:
             B.forget_problem(b)
             return {"ok": True}
@@ -2536,6 +2559,23 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
 
     app.state.close_browser_disk = close_browser_disk
 
+    def left_open_at_quit() -> list[str]:
+        """What would keep ~/TempBrowser open if the app quit now, though quitting would close it (a viewer View
+        offline… opened, another program using a file in it: browser.left_open_by). The page asks before it quits
+        then, from its Quit and, in the window, as the window is closed (app.CloseGuard)."""
+        from .tools import browser
+        try:
+            return browser.left_open_by(make_host())
+        except Exception:  # noqa: BLE001 - can't tell: quitting goes on as before (the next start's panel says why)
+            return []
+
+    app.state.left_open_at_quit = left_open_at_quit
+
+    @app.get("/api/quit", dependencies=[Depends(auth)])
+    async def quit_check():
+        """{"left_open": [programs]}: what would keep ~/TempBrowser open if the app quit now (left_open_at_quit)."""
+        return {"left_open": await asyncio.to_thread(left_open_at_quit)}
+
     if watch_outbox:
         from .tools import transfer as _transfer
 
@@ -2580,6 +2620,13 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
             await asyncio.to_thread(admin.drop)
             await asyncio.to_thread(presentation.turn_off, make_host())     # it was for while the app runs
             asyncio.get_running_loop().call_later(0.3, on_quit)  # let this reply reach the page first
+            return {"ok": True}
+    elif close_window is not None:
+        @app.post("/api/quit", dependencies=[Depends(auth)])
+        async def quit_window():
+            """The window's Quit anyway, once the page has asked: the window closes, and the app quits as when it is
+            closed (app.main closes what it must then)."""
+            asyncio.get_running_loop().call_later(0.3, close_window)   # let this reply reach the page first
             return {"ok": True}
 
     return app

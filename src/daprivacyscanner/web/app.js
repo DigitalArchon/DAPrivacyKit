@@ -2854,7 +2854,8 @@ async function openBrowserTool(reloadTools) {
   const render = () => {
     S.adminActive = !!data.admin_active; renderTop();
     const job = data.job;
-    fill(body, browserIntro(data), browserRamdisk(data, reload), browserSandbox(data, opts), browserRisks(data, reload),
+    fill(body, browserIntro(data), browserLeftOpen(data, reload), browserRamdisk(data, reload), browserSandbox(data, opts),
+      browserRisks(data, reload),
       browserJob(job, data, reload),
       job?.state === "running" ? null : browserCards(data, reload, opts), browserKept(data, reload), browserLimits(data));
     follow();
@@ -2869,7 +2870,7 @@ const FOLLOW_AFTER = 20000;          // ms the panel keeps following after somet
 // swap in use): those would draw it again every few seconds.
 function browserShown(d) {
   const r = d.risks || {};
-  return JSON.stringify([d.ramdisk?.open, d.job?.state, (d.kept?.copies || []).map(c => [c.browser, c.version, c.kept]),
+  return JSON.stringify([d.ramdisk?.open, d.job?.state, d.left_open?.when, (d.kept?.copies || []).map(c => [c.browser, c.version, c.kept]),
     { ...r, memory: null, swap: r.swap && { ...r.swap, used_mb: null } },
     (d.browsers || []).map(b => [b.running, b.installed,
     b.start_error, b.connection, b.downloads, b.downloads_other, b.uploads,
@@ -2883,8 +2884,9 @@ function browserIntro(data) {
     + "everything it writes while it runs, stays in memory too: closing ~/TempBrowser overwrites and removes all of it."),
     h("p", { class: "small" }, "Quitting the browser doesn't close ~/TempBrowser: the browser and what you saved stay there, "
       + "ready to start again, until you close it here or quit this app. Quitting the app closes it (asking for your password "
-      + "if administrator access has ended), unless the browser is still running then: it stays open until you close it "
-      + "here or restart the computer. On KDE Plasma, logging out closes it too, with no password. On Cinnamon, quit the "
+      + "if administrator access has ended), unless the browser is still running then, or another program is using a file "
+      + "in it, such as a viewer View offline… opened: it stays open until you close it here or restart the computer (for "
+      + "another program, the app asks before it quits). On KDE Plasma, logging out closes it too, with no password. On Cinnamon, quit the "
       + "app before you log out: logging out ends it before it can overwrite anything."),
     h("p", { class: "small" }, h("b", {}, "It is for one session, or a few over a day. "),
       "Set it up, browse, then close ~/TempBrowser: don't leave it set up for days, which defeats the point (nothing "
@@ -2895,6 +2897,20 @@ function browserIntro(data) {
       + "~/TempBrowser and set it up again. If it can't tell (the server blocked where you are), it starts only while its "
       + "signature is less than 30 days old."),
     data.platform ? null : h("div", { class: "warnbox" }, "Neither browser is made for this computer's processor.")];
+}
+
+// Why the last quit left ~/TempBrowser open (a viewer still using it, say): said once, by the copy that owns it now,
+// until put away or the disk is closed (the server's left_open_note).
+function browserLeftOpen(data, reload) {
+  const lo = data.left_open;
+  if (!lo || !data.ramdisk?.open) return null;
+  return h("div", { class: "notebox risk small left-open" },
+    h("b", {}, `~/TempBrowser was left open when the app last quit (${fmtWhen(lo.when)}). `),
+    `${lo.why.charAt(0).toUpperCase()}${lo.why.slice(1)}. Close it here when you no longer need what is in it.`,
+    h("div", { class: "orow" }, h("button", { class: "small", onclick: async () => {
+      try { await api("POST", "/api/tools/browser/dismiss", { left_open: true }); } catch { /* it stays, for now */ }
+      await reload();
+    } }, "OK")));
 }
 
 function browserRamdisk(data, reload) {
@@ -5160,9 +5176,30 @@ async function dropAdmin() {
   setStatus("Administrator access dropped. The helper has exited.", "done");
 }
 
+// Quitting closes ~/TempBrowser, unless something keeps it open then. A program other than the browser (a viewer View
+// offline… opened, say) is asked about first: the app would quit and leave the disk open, its files in it, not
+// overwritten. The window's close comes here too (app.py's CloseGuard runs quit()), and quits through the same POST
+// /api/quit; asked again while the question is open (the window closed again), it quits.
+let quitQuestion = null;
 async function quit() {
+  if (quitQuestion) { quitQuestion.close(); return quitNow(); }
+  let left = [];
+  try { left = (await api("GET", "/api/quit")).left_open || []; } catch { /* can't tell: quit, as before */ }
+  if (!left.length) return quitNow();
+  quitQuestion = modal({ title: "Quit and leave ~/TempBrowser open?", onClose: () => { quitQuestion = null; }, body: [
+    h("p", {}, `${left.join(", ")} ${left.length === 1 ? "is" : "are"} using files in ~/TempBrowser, so quitting now `
+      + "leaves it open: what is in it stays there, in memory, not overwritten, until you close it in the browser panel "
+      + "or restart the computer."),
+    h("p", { class: "small" }, "To have quitting close it, close that first (a viewer View offline… opened: close its "
+      + "window), then quit."),
+    S.state.can_quit ? null : h("p", { class: "small muted" }, "Closing the window again quits all the same."),
+  ], buttons: [{ label: "Keep the app open" },
+    { label: "Quit anyway", kind: "danger", onclick: (close) => { close(); quitNow(); } }] });
+}
+
+async function quitNow() {
   try { await api("POST", "/api/quit"); } catch { /* already gone */ }
-  document.body.replaceChildren(h("div", { class: "quit-note" }, "DA Privacy Kit has quit. You can close this tab."));
+  if (S.state.can_quit) document.body.replaceChildren(h("div", { class: "quit-note" }, "DA Privacy Kit has quit. You can close this tab."));
 }
 
 /* Dark by default; "light" is the only other theme, kept in this browser's storage. */

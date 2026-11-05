@@ -1208,7 +1208,18 @@ ends with it.
 When the app quits with the browser still running, `~/TempBrowser` stays open until it is closed from the
 app later or the computer restarts. What quitting did is printed only to a terminal: it names programs ("Tor
 Browser still uses it"), and off a terminal stderr is a log on the disk (`~/.xsession-errors`, the journal; found in
-the review of 2026-10-17). When the app is told to end by a signal (SIGTERM or SIGHUP: logging out, shutting down;
+the review of 2026-10-17). Anything else using it keeps it open too, a viewer View offline… opened above all (quitting
+leaves the viewer open), and the window said nothing of it: so quitting asks first when something other than the
+browser would keep it open (`browser.left_open_by`, `GET /api/quit`), from the page's Quit in `--browser` mode and,
+in the window, as it is closed (`app.CloseGuard`, on pywebview's closing event). The close is put off only while
+`~/TempBrowser` is open and this copy's (the mount table, read in GTK's thread); what uses it is looked for in a
+thread, and the page asked with `run_js`, the script run as it is (`evaluate_js` wraps it in an `eval`, which the
+page's Content-Security-Policy refuses). Quit anyway closes the window through `POST /api/quit`; closing it again
+within 20 seconds, a page that can't ask, and a signal (a logout) close it as before. A quit that left it open
+(something using it or mounted inside it, the unmount's password declined) says why to the panel at the next start: a
+note in the runtime folder (`daprivacyscanner/tempbrowser-left-open.json`, 0600, in memory, gone at logout; none
+without a runtime folder), taken by the copy that owns the disk then as its browser panel is shown, shown there until
+OK, and removed once the disk is closed. When the app is told to end by a signal (SIGTERM or SIGHUP: logging out, shutting down;
 `--browser` mode handles them too, where Python would otherwise end without closing anything), it closes the RAM disk
 as on Quit, asking for the password if it has to (the owner's decision of 2026-10-17): the files are overwritten in a
 thread of their own while administrator access is asked for, never after the password, and it is unmounted once both

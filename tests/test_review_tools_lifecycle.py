@@ -544,3 +544,161 @@ def test_the_folder_a_logout_left_is_put_back_at_the_start(cat, host, monkeypatc
     while folder.exists() and time.monotonic() < deadline:
         time.sleep(0.02)
     assert not folder.exists()
+
+
+# ------------------------------------------------------------------ quitting while something else keeps it open
+
+VIEWER = "Document Viewer (opened by View offline…)"
+
+
+def viewer_holds(monkeypatch, browser: bool = False) -> dict:
+    """A viewer View offline… opened holding a file in ~/TempBrowser (and Tor Browser too, `browser`)."""
+    from daprivacyscanner.tools import viewer
+    held = {4242: "xreader", **({5151: "firefox.real"} if browser else {})}
+    monkeypatch.setattr(R, "holders_on_device", lambda host, path: dict(held))
+    monkeypatch.setattr(R, "users_of", lambda host, path: [])
+    monkeypatch.setattr(B, "_procs", lambda host: {4242: (1, "xreader"), 5151: (1, "firefox.real")})
+    monkeypatch.setattr(B, "running", lambda host, b: [p for p in held if p == 5151 and b.id == "tor"])
+    monkeypatch.setattr(viewer, "launched", lambda: {4242: "Document Viewer"})
+    return held
+
+
+def test_quitting_asks_first_when_a_viewer_would_keep_tempbrowser_open(cat, host, monkeypatch):  # noqa: F811
+    """Quit left ~/TempBrowser open and its files in it while a viewer View offline… opened still had one open, and
+    the window said nothing (the panel promised quitting closes it unless the browser still runs). What would keep it
+    open, the browser apart, is what the page asks about first (GET /api/quit: from Quit, and the window's close)."""
+    from fastapi.testclient import TestClient
+    disk = open_ramdisk(host)
+    assert owner.claim(host, "TempBrowser", disk)
+    held = viewer_holds(monkeypatch)
+    assert B.left_open_by(host) == [VIEWER]
+    c = TestClient(create_app("t0ken", cat, make_host=lambda: host))
+    assert c.get("/api/quit", headers=H).json() == {"left_open": [VIEWER]}
+    del held[4242]
+    held[5151] = "firefox.real"
+    assert B.left_open_by(host) == []                   # the browser alone: the panel says that it keeps it open
+    held[4242] = "xreader"
+    assert B.left_open_by(host) == ["Tor Browser", VIEWER]
+    owner.release(host, "TempBrowser")                  # another copy's to close: this one's quit leaves it alone
+    assert B.left_open_by(host) == [] and c.get("/api/quit", headers=H).json() == {"left_open": []}
+
+
+def runtime_folder(host) -> Path:
+    """The runtime folder, in the fixture's tree: where the note goes."""
+    runtime = host.root / "run/user/1000"
+    runtime.mkdir(mode=0o700, parents=True)
+    host.environ["XDG_RUNTIME_DIR"] = "/run/user/1000"
+    return runtime / "daprivacyscanner" / B.LEFT_OPEN
+
+
+def test_a_quit_that_left_tempbrowser_open_says_why_at_the_next_start(cat, host, monkeypatch):  # noqa: F811
+    """Said once, on the browser panel of the copy that owns it then, from a note in the runtime folder (memory, gone at
+    logout), never on the disk; kept on the panel until OK, and gone once the disk is closed."""
+    from fastapi.testclient import TestClient
+    note = runtime_folder(host)
+    disk = open_ramdisk(host)
+    assert owner.claim(host, "TempBrowser", disk)
+    (disk / "report.pdf").write_text("pdf")
+    viewer_holds(monkeypatch)
+    h = Helper()
+    assert "stays open" in B.close_disk(host, lambda: h) and not h.calls and (disk / "report.pdf").exists()
+    assert (note.stat().st_mode & 0o777) == 0o600
+    owner._drop(host, "TempBrowser")                    # that copy has ended, and the next one shows the panel
+    c = TestClient(create_app("t0ken", cat, make_host=lambda: host))
+    lo = c.get("/api/tools/browser", headers=H).json()["left_open"]
+    assert lo["why"] == f"{VIEWER} was still using it, so its files are still in it" and lo["when"] > 0
+    assert not note.exists()                            # taken as it is shown
+    assert c.get("/api/tools/browser", headers=H).json()["left_open"] == lo
+    assert c.post("/api/tools/browser/dismiss", headers=H, json={"left_open": True}).json() == {"ok": True}
+    assert c.get("/api/tools/browser", headers=H).json()["left_open"] is None
+    B.note_left_open(host, "x was still using it")      # left open again, then gone (a logout's unmount, here)
+    (host.root / "proc/self/mounts").write_text("/dev/sda2 / ext4 rw 0 0\n")
+    assert c.get("/api/tools/browser", headers=H).json()["left_open"] is None and not note.exists()
+
+
+def test_closing_tempbrowser_puts_away_why_a_quit_left_it_open(cat, host, monkeypatch):  # noqa: F811
+    from fastapi.testclient import TestClient
+    note = runtime_folder(host)
+    disk = open_ramdisk(host)
+    quiet(monkeypatch)
+    B.note_left_open(host, "x was still using it")
+
+    class Admin(Helper):
+        def alive(self):
+            return True
+
+        def close(self):
+            pass
+    c = TestClient(create_app("t0ken", cat, make_host=lambda: host, start_helper=Admin))
+    assert c.get("/api/tools/browser", headers=H).json()["left_open"]["why"] == "x was still using it"
+    assert c.post("/api/tools/ramdisk/close", headers=H, json={"disk": "browser"}).status_code == 200
+    assert c.get("/api/tools/browser", headers=H).json()["left_open"] is None
+    B.note_left_open(host, "x was still using it")      # and a quit that closes it
+    assert owner.claim(host, "TempBrowser", disk)
+    assert "was closed" in B.close_disk(host, lambda: Helper()) and not note.exists()
+
+
+def test_without_a_runtime_folder_nothing_is_kept_of_why(host):  # noqa: F811
+    """Never a file on the disk instead (what quitting did is said off a terminal nowhere, for that reason)."""
+    before = set(host.root.rglob("*"))
+    B.note_left_open(host, "x was still using it")
+    assert set(host.root.rglob("*")) == before and B.take_left_open(host) is None
+
+
+class Window:
+    """pywebview's window as CloseGuard uses it; run_js answers what the page's script would."""
+
+    def __init__(self, asks=True):
+        self.js, self.destroyed, self.asks = [], 0, asks
+
+    def run_js(self, script):
+        self.js.append(script)
+        return self.asks
+
+    def destroy(self):
+        self.destroyed += 1
+
+
+def settled(cond) -> bool:
+    deadline = time.monotonic() + 5
+    while not cond() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    return bool(cond())
+
+
+def test_closing_the_window_asks_the_page_first_when_quitting_would_leave_tempbrowser_open():
+    """Put off (pywebview's closing event) only when ~/TempBrowser is open and this copy's, and something other than
+    the browser keeps it open; closing again quits all the same, as a page that can't ask does, or a session ending."""
+    from daprivacyscanner.app import CloseGuard
+    left = [VIEWER]
+    w = Window()                                        # not open, or not this copy's: at once, nothing asked
+    assert CloseGuard(w, lambda: False, lambda: left).closing() is True and not w.js
+    w = Window()                                        # open, and nothing else keeps it: closed once that is known
+    g = CloseGuard(w, lambda: True, lambda: [])
+    assert g.closing() is False and settled(lambda: w.destroyed == 1) and not w.js
+    assert g.closing() is True                          # the close that follows goes through
+    w = Window()                                        # a viewer keeps it: put off, and the page asks
+    g = CloseGuard(w, lambda: True, lambda: left)
+    assert g.closing() is False and settled(lambda: w.js) and "quit()" in w.js[0] and not w.destroyed
+    assert g.closing() is True                          # closed again: it quits all the same
+    g.asked -= CloseGuard.AGAIN                         # a while later: asked again
+    assert g.closing() is False and settled(lambda: len(w.js) == 2) and not w.destroyed
+    g.go()                                              # the page's Quit anyway (POST /api/quit)
+    assert w.destroyed == 1 and g.closing() is True
+    w = Window(asks=False)                              # a page that can't ask: it quits, as before
+    assert CloseGuard(w, lambda: True, lambda: left).closing() is False and settled(lambda: w.destroyed == 1)
+    w = Window()                                        # the session ending (SIGTERM, SIGHUP): as it was
+    g = CloseGuard(w, lambda: True, lambda: left)
+    g.ending = True
+    assert g.closing() is True and not w.js
+    src = inspect.getsource(app_module.main)
+    assert "window.events.closing += guard.closing" in src and "guard.ending = True" in src
+
+
+def test_quit_anyway_in_the_window_closes_it(cat, host):  # noqa: F811
+    from fastapi.testclient import TestClient
+    closed = []
+    with TestClient(create_app("t0ken", cat, make_host=lambda: host, close_window=lambda: closed.append(1))) as c:
+        assert c.get("/api/state", headers=H).json()["can_quit"] is False         # no Quit button in the window
+        assert c.post("/api/quit", headers=H).json() == {"ok": True}
+        assert settled(lambda: closed == [1])

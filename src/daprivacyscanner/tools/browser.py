@@ -1822,6 +1822,98 @@ def disk_users(host: Host, path: Path) -> list[str]:
     return named + sorted({name for pid, name in held.items() if pid not in tree} | set(path_held))
 
 
+OUTBOX_WAIT = 5.0                       # seconds the question before quitting waits for the TempOutbox's file under way
+
+
+def closes_at_quit(host: Host) -> bool:
+    """Whether quitting this copy of the app closes ~/TempBrowser: it is open, and this copy's (owner.py). The mount
+    table and the disk's mark only: cheap enough to ask as the window is being closed."""
+    return ramdisk.mounted(host, DISK) and owner.owns(host, DISK, ramdisk.folder(host, DISK))
+
+
+def left_open_by(host: Host) -> list[str]:
+    """What would keep ~/TempBrowser open if this copy quit now, when quitting would close it otherwise: a viewer View
+    offline… opened, or another program of the user's using a file in it (disk_users' names, a browser still running
+    among them). [] when nothing would, and when only the browser would: the panel says that a browser still running
+    keeps it open. A display of its own the browser left isn't counted (quitting ends it, end_display), nor the
+    TempOutbox's own mat2 (the file under way is waited for, a few seconds at most, as closing waits for it)."""
+    if not closes_at_quit(host):
+        return []
+    waited = transfer.OUTBOX_LOCK.acquire(timeout=OUTBOX_WAIT)
+    try:
+        users = [u for u in disk_users(host, ramdisk.folder(host, DISK)) if u != DISPLAY_NAME]
+    finally:
+        if waited:
+            transfer.OUTBOX_LOCK.release()
+    browsers = {b.name for b in BROWSERS.values()}
+    return users if any(u not in browsers for u in users) else []
+
+
+# Why the last quit left ~/TempBrowser open, for the browser panel at the next start: a file in the runtime folder (in
+# memory, the user's own, gone at logout), never on the disk, taken by the copy that owns the disk then (and removed
+# as it is read), and removed once the disk is closed.
+LEFT_OPEN = "tempbrowser-left-open.json"
+
+
+def _left_open_file(host: Host) -> Path | None:
+    runtime = host.environ.get("XDG_RUNTIME_DIR") or ""
+    if not os.path.isabs(runtime) or not host.sys_path(runtime).is_dir():
+        return None
+    return host.sys_path(runtime) / "daprivacyscanner" / LEFT_OPEN
+
+
+def note_left_open(host: Host, why: str) -> None:
+    """Quitting left ~/TempBrowser open: `why`, kept for the panel at the next start. Not kept without a runtime folder
+    (a file on the disk would be the record the terminal-only message avoids)."""
+    path = _left_open_file(host)
+    if path is None:
+        return
+    try:
+        path.parent.mkdir(mode=0o700, exist_ok=True)
+        st = os.lstat(path.parent)
+        if not stat.S_ISDIR(st.st_mode) or st.st_uid != host.uid:
+            return
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            json.dump({"when": int(time.time()), "why": why}, f)
+    except OSError:
+        pass
+
+
+def take_left_open(host: Host) -> dict | None:
+    """What note_left_open kept, {"when", "why"}, or None; the file goes as it is read."""
+    path = _left_open_file(host)
+    if path is None:
+        return None
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK)
+    except OSError:
+        return None
+    try:
+        raw = os.read(fd, 4096)
+    except OSError:
+        raw = b""
+    finally:
+        os.close(fd)
+        forget_left_open(host)
+    try:
+        d = json.loads(raw)
+    except ValueError:
+        return None
+    if not (isinstance(d, dict) and isinstance(d.get("when"), int) and isinstance(d.get("why"), str)):
+        return None
+    return {"when": d["when"], "why": d["why"][:1000]}
+
+
+def forget_left_open(host: Host) -> None:
+    path = _left_open_file(host)
+    if path is not None:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
 def default_outbox(host: Host, b: Browser) -> bool:
     """The TempOutbox, made with the browser (on by default) where mat2 can clean and the permanent Outbox
     isn't set up (then the page says to use that one). Whether it was made."""
@@ -1906,7 +1998,7 @@ def close_disk(host: Host, helper: Callable[[], object]) -> str:
     """When the app quits, or the session ends: ~/TempBrowser closed like the RAM disk tool's (every file overwritten
     and deleted as the user, then the helper unmounts it, asking for administrator access if it has to: the overwrite
     runs while it asks), by the copy of the app that opened it or took it over (owner.py), never by another copy
-    quitting.
+    quitting. Left open, it says why to the panel at the next start too (note_left_open, in the runtime folder).
     Returns what happened, for the terminal: "" when it wasn't open or isn't this copy's."""
     rd = ramdisk.status(host, DISK)
     if not rd.open or not owner.owns(host, DISK, rd.path):
@@ -1917,6 +2009,8 @@ def close_disk(host: Host, helper: Callable[[], object]) -> str:
     try:
         inside = ramdisk.mounts_inside(host, rd.path)   # a vault, a share, a drive: never overwritten or deleted
         if inside:
+            note_left_open(host, f"{', '.join(inside)} {'was' if len(inside) == 1 else 'were'} mounted inside it, so "
+                                 "its files are still in it")
             return (f"~/{DISK} stays open: {', '.join(inside)} {'is' if len(inside) == 1 else 'are'} mounted inside it. "
                     f"Unmount {'it' if len(inside) == 1 else 'them'}, then close ~/{DISK} in the app's Tools panel, or "
                     "restart the computer.")
@@ -1924,6 +2018,8 @@ def close_disk(host: Host, helper: Callable[[], object]) -> str:
             end_display(host, rd.path)                  # the browser has quit, and its own display not yet
             users = disk_users(host, rd.path)
             if users:
+                note_left_open(host, f"{', '.join(users)} {'was' if len(users) == 1 else 'were'} still using it, so "
+                                     "its files are still in it")
                 return (f"~/{DISK} stays open: {', '.join(users)} still uses it. Close it in the app's "
                         "Tools panel later, or restart the computer.")
             # overwritten while administrator access is asked for, not after the password (the owner's decision of
@@ -1946,9 +2042,12 @@ def close_disk(host: Host, helper: Callable[[], object]) -> str:
             raise wiped["error"]
         w = wiped["w"]
         if h is None:
+            note_left_open(host, "its files were overwritten and deleted, but it couldn't be unmounted without "
+                                 "administrator access")
             return (f"~/{DISK}'s files were overwritten and deleted, but it couldn't be unmounted without administrator "
                     "access.")
         h.call("ramdisk_close", {"name": DISK})
+        forget_left_open(host)
         return f"~/{DISK} was closed: {w.files} file{'' if w.files == 1 else 's'} overwritten and deleted."
     finally:
         for fd in held:

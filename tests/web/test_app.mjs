@@ -76,8 +76,9 @@ const ramdisk = () => ({ path: "~/RAMDisk", full_path: "/home/a/RAMDisk", open: 
     open_exec: ["chmod 500 /home/a/RAMDisk", "mount -t tmpfs -o nosuid,nodev,size=1024M,mode=0700,uid=1000,gid=1000,noswap tmpfs /home/a/RAMDisk"],
     close: ["umount /home/a/RAMDisk"] } });
 let browserJob = null, browserStarted = null, browserStartError = null, browserDue = false, torProgress = 45, browserProxy = [], browserKept = [],
-    browserUnchecked = false, sandboxDown = false, kdeWayland = false, waylandUnasked = false, pastaFenced = false;
+    browserUnchecked = false, sandboxDown = false, kdeWayland = false, waylandUnasked = false, pastaFenced = false, browserLeftOpen = null;
 const browserState = () => ({ platform: "linux-x86_64", min_mb: 1024, can_pick: true, picker: "zenity", admin_active: true, job: browserJob,
+  left_open: browserLeftOpen,
   proxy_vars: browserProxy, kept: { folder: "~/.cache/daprivacyscanner/browsers", copies: browserKept },
   ramdisk: { ...ramdisk(), noexec: !ramOpen ? true : toolBodies.open?.noexec !== false }, mat2: true,
   sandbox: { available: !sandboxDown, why: sandboxDown ? "bubblewrap can't set up a sandbox here (setting up uid map: Permission denied)." : "",
@@ -134,6 +135,7 @@ Object.assign(routes, {
   "POST /api/tools/browser/outbox": (body) => { toolBodies.outbox = body; outboxOn = body.on; return browserState(); },
   "POST /api/tools/browser/kept/delete": (body) => { toolBodies.keptDelete = body; browserKept = []; return { ...browserState(), deleted: true }; },
   "POST /api/tools/browser/dismiss": (body) => { if (body?.browser) { toolBodies.dismissed = body; browserStartError = null; return { ok: true }; }
+                                                 if (body?.left_open) { toolBodies.dismissed = body; browserLeftOpen = null; return { ok: true }; }
                                                  browserJob = null; return { job: null }; },
   "GET /api/tools": () => ({ tools: [
       { id: "verify", group: "files", short: "s", title: "Verify a download", text: "t", button: "Verify a file…" },
@@ -1061,6 +1063,9 @@ check(text(".modal .browser-tool").includes("open the browser's RAM disk, ~/Temp
 check(text(".modal .browser-tool").includes("separate from the RAM disk tool's ~/RAMDisk")
       && text(".modal .browser-tool").includes("Quitting the browser doesn't close ~/TempBrowser"),
       "it says the browser's RAM disk is its own, and when it closes");
+check(text(".modal .browser-tool").includes("or another program is using a file in it, such as a viewer View offline… opened")
+      && text(".modal .browser-tool").includes("the app asks before it quits"),
+      "and that a viewer View offline… opened keeps it open at Quit too, which the app asks about first");
 check($$(".modal .browser-tool .toolcard button").every(b => b.disabled), "nothing can be downloaded before that");
 $$(".modal .browser-tool button").find(b => b.textContent === "Open the RAM disk").click(); await tick(); await tick(); await tick();
 check(toolBodies.open?.noexec === false && toolBodies.open.size_mb === 1536 && toolBodies.open.disk === "browser",
@@ -1111,6 +1116,17 @@ check($$(".modal").at(-1).textContent.includes("Deleting doesn't erase it from t
 $$(".modal").at(-1).querySelectorAll(".buttons button")[1].click(); await tick(); await tick(); await tick(); await tick();
 check(toolBodies.keptDelete?.browser === "tor", "Delete asks the server to delete it: " + JSON.stringify(toolBodies.keptDelete));
 check(!$(".modal .browser-kept"), "deleted, it is gone from the list");
+while ($$(".modal").length) { $$(".modal .buttons button").at(-1).click(); await tick(); }
+// the last quit left ~/TempBrowser open (a viewer still had a file in it): the next start's panel says so, and why
+browserLeftOpen = { when: 1790800000, why: "Document Viewer (opened by View offline…) was still using it, so its files are still in it" };
+await window.openBrowserTool(); await tick(); await tick();
+check(text(".modal .browser-tool .left-open").includes("~/TempBrowser was left open when the app last quit")
+      && text(".modal .browser-tool .left-open").includes("Document Viewer (opened by View offline…) was still using it, so its files are still in it.")
+      && text(".modal .browser-tool .left-open").includes("Close it here when you no longer need what is in it"),
+      "a quit that left ~/TempBrowser open says so on the panel at the next start, and why: " + text(".modal .browser-tool .left-open"));
+$$(".modal .browser-tool .left-open button").find(b => b.textContent === "OK").click(); await tick(); await tick();
+check(toolBodies.dismissed?.left_open === true && !$(".modal .browser-tool .left-open"), "OK puts it away: "
+      + JSON.stringify(toolBodies.dismissed));
 while ($$(".modal").length) { $$(".modal .buttons button").at(-1).click(); await tick(); }
 // Mullvad Browser's card offers to set it up for Mullvad VPN, on by default; the choice goes with the download
 browserJob = null;
@@ -2348,6 +2364,30 @@ while ($$(".modal").length) { $$(".modal .buttons button").at(-1).click(); await
         "Escape in a search box with text in it clears the box, and the dialog stays");
   esc(); await tick();
   check(!$$(".modal").length, "the next Escape closes the dialog"); }
+
+// Quitting while something other than the browser keeps ~/TempBrowser open (a viewer View offline… opened) asks
+// first: the app would quit and leave it open, its files in it. The window's close runs quit() too.
+{ let quitLeft = ["Document Viewer (opened by View offline…)"];
+  const posted = [];
+  routes["GET /api/quit"] = () => ({ left_open: quitLeft });
+  routes["POST /api/quit"] = () => { posted.push(1); return { ok: true }; };
+  await window.quit(); await tick();
+  const q = $$(".modal").at(-1);
+  check(q?.textContent.includes("Quit and leave ~/TempBrowser open?")
+        && q.textContent.includes("Document Viewer (opened by View offline…) is using files in ~/TempBrowser, so quitting now leaves it open")
+        && q.textContent.includes("not overwritten") && q.textContent.includes("Closing the window again quits all the same")
+        && !posted.length, "quitting while a viewer keeps ~/TempBrowser open asks first, naming it, and doesn't quit yet");
+  [...q.querySelectorAll(".buttons button")].find(b => b.textContent === "Keep the app open").click(); await tick();
+  check(!$$(".modal").length && !posted.length, "Keep the app open keeps it open");
+  await window.quit(); await tick();
+  [...$$(".modal").at(-1).querySelectorAll(".buttons button")].find(b => b.textContent === "Quit anyway").click(); await tick();
+  check(posted.length === 1 && !$$(".modal").length, "Quit anyway quits");
+  await window.quit(); await tick();
+  await window.quit(); await tick();                                    // the window closed again while it asks
+  check(posted.length === 2 && !$$(".modal").length, "asked again while the question is open (the window closed again), it quits");
+  quitLeft = [];
+  await window.quit(); await tick();
+  check(posted.length === 3 && !$$(".modal").length, "with nothing else keeping it open, it quits at once"); }
 
 if (failures) { console.error(`${failures} front-end checks failed`); process.exit(1); }
 console.log("front-end: all checks passed");

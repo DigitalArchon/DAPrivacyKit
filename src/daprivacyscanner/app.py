@@ -15,6 +15,7 @@ import threading
 import time
 
 from pathlib import Path
+from typing import Callable
 
 import uvicorn
 
@@ -531,6 +532,57 @@ def _presentation_off() -> None:
         print(f"Presentation mode couldn't be turned off: {e}", file=sys.stderr)
 
 
+class CloseGuard:
+    """Closing the window when that would leave ~/TempBrowser open, its files in it (a viewer View offline… opened, or
+    another program, is using a file in it: browser.left_open_by), puts the close off, and the page asks (quit() in
+    app.js, in a dialog of its own): Quit anyway closes the window through POST /api/quit (`go`). A browser still
+    running isn't asked about: the panel says that it keeps ~/TempBrowser open. Put off only while the disk is open and
+    this copy's (`closes_disk`: the mount table, cheap enough for GTK's thread); what keeps it open is looked for in a
+    thread (`left_open`: /proc). The window closes all the same when it is closed again within AGAIN seconds, when the
+    page can't ask, and when the session ends (SIGTERM, SIGHUP, Ctrl+C: `ending`, as it was)."""
+    AGAIN = 20.0
+    # the page's own function, run as it is (pywebview's evaluate_js would wrap it in an eval(), which the page's
+    # Content-Security-Policy refuses): true once it is asking
+    ASK = 'typeof quit === "function" && !!S.state ? (quit(), true) : false'
+
+    def __init__(self, window, closes_disk: Callable[[], bool], left_open: Callable[[], list[str]]):
+        self.window, self.closes_disk, self.left_open = window, closes_disk, left_open
+        self.ending = False             # told to end by a signal
+        self.going = False              # quitting: the page said so, or nothing keeps ~/TempBrowser open
+        self.asked: float | None = None
+
+    def closing(self) -> bool:
+        """pywebview's closing event, in GTK's thread: False puts the close off."""
+        now = time.monotonic()
+        if self.ending or self.going or (self.asked is not None and now - self.asked < self.AGAIN):
+            return True
+        try:
+            if not self.closes_disk():
+                return True
+        except Exception:  # noqa: BLE001 - never a reason the window can't close
+            return True
+        self.asked = now
+        threading.Thread(target=self._ask, name="quit-question", daemon=True).start()
+        return False
+
+    def _ask(self) -> None:
+        try:
+            left = self.left_open()
+        except Exception:  # noqa: BLE001
+            left = []
+        try:
+            asking = bool(left) and self.window.run_js(self.ASK)
+        except Exception:  # noqa: BLE001 - the page can't ask: quit, as before
+            asking = False
+        if asking is not True:
+            self.go()
+
+    def go(self) -> None:
+        """Quit: the window closes (the page's Quit anyway, or nothing keeps ~/TempBrowser open)."""
+        self.going = True
+        self.window.destroy()
+
+
 def desktop_id() -> str:
     """The name the window identifies itself by (X11 WM_CLASS, Wayland app_id). Desktops find the
     window's icon by matching it to an installed .desktop file: KWin on Wayland only by exact file
@@ -751,6 +803,7 @@ def main(argv: list[str] | None = None) -> None:
     launch = secrets.token_urlsafe(32)             # in the URL once; exchanged for the cookie, then forgotten
     port = args.port or _free_port()
     windows: list = []                         # the app window, once made: its file dialog serves the tools
+    guards: list[CloseGuard] = []              # and what its close asks first
 
     def window_pick(kind: str, multiple: bool, start: str):
         if not windows:
@@ -762,7 +815,8 @@ def main(argv: list[str] | None = None) -> None:
     app = create_app(token, cat, on_quit=(lambda: setattr(server, "should_exit", True)) if use_browser else None,
                      launch_token=launch, allowed_hosts={f"127.0.0.1:{port}", f"localhost:{port}"},
                      dev=args.dev or os.environ.get("DAPRIVACYSCANNER_DEV") == "1",
-                     pick=None if use_browser else window_pick, open_tool=open_tool, watch_outbox=True)
+                     pick=None if use_browser else window_pick, open_tool=open_tool, watch_outbox=True,
+                     close_window=None if use_browser else (lambda: guards and guards[0].go()))
     # no WebSockets: the page only makes plain requests, and uvicorn's auto-detection can pick
     # up an incompatible system copy of the websockets package
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning", ws="none"))
@@ -807,9 +861,16 @@ def main(argv: list[str] | None = None) -> None:
             webview.settings["ALLOW_DOWNLOADS"] = True       # the report export
             window = webview.create_window("DA Privacy Kit", url, width=1480, height=940, min_size=(900, 600))
             windows.append(window)
+            from .host import Host
+            from .tools import browser as _browser
+            guard = CloseGuard(window, lambda: _browser.closes_at_quit(Host.local()), app.state.left_open_at_quit)
+            guards.append(guard)
+            # closing it, when that would leave ~/TempBrowser open, asks first (in the page)
+            window.events.closing += guard.closing
 
             def on_started():
                 def close(sig=None):
+                    guard.ending = True                 # told to end (a logout, Ctrl+C): closed at once, as before
                     window.destroy()
                     return False
 

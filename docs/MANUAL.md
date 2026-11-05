@@ -433,7 +433,9 @@ hours after setting it up, it first checks for a newer version and won't start i
 you need, close `~/TempBrowser`, and set it up again.
 
 **Finishing:** quit the browser, then **Close and overwrite…** (or just quit the app, which closes
-`~/TempBrowser` too). Closing is refused while the browser runs. Only the window that opened `~/TempBrowser`
+`~/TempBrowser` too). Closing is refused while the browser runs. Quitting while another program still has a file in it
+open (a viewer **View offline…** opened, say) asks first: **Quit anyway** leaves `~/TempBrowser` open, with its files,
+and the panel says so, and why, the next time you open it. Only the window that opened `~/TempBrowser`
 closes it when you quit: a window the right-click entries opened (Verify download…, Remove metadata…) leaves it
 as it is. On KDE Plasma, logging out with the app open closes it too, with no password: Plasma closes the app's
 window, the app overwrites and deletes what is in it, and the computer unmounts it once you are logged out (the empty
