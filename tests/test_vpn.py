@@ -147,8 +147,8 @@ def test_vpn_provider_unrecognised_and_absent(cat, tmp_path):
 # ------------------------------------------------------------------ the rating
 
 @pytest.mark.parametrize("pid, label", [
-    ("mullvad", "Recommended"), ("ivpn", "Recommended"),
-    ("proton", "Good"), ("windscribe", "Good"), ("airvpn", "Good"),
+    ("mullvad", "Recommended"), ("ivpn", "Recommended"), ("windscribe", "Recommended"),
+    ("proton", "Good"), ("airvpn", "Good"),
     ("nordvpn", "Acceptable"),
     ("pia", "Ownership concerns: owned by Kape Technologies"),
     ("surfshark", "Closed client"), ("hotspotshield", "Closed client"),
@@ -210,7 +210,7 @@ def test_vpn_trust_lists_kape_and_the_closed_client(cat, tmp_path):
     assert "Crossrider" in notes["Its owner, Kape Technologies"] and "vpnMentor" in notes["Its owner, Kape Technologies"]
     # the providers to move to come from the data, never from a list written into the catalogue's text
     rated = notes["Providers rated Recommended or Good"]
-    assert rated.startswith("Recommended: IVPN, Mullvad VPN. Good: AirVPN, Proton VPN, Windscribe.")
+    assert rated.startswith("Recommended: IVPN, Mullvad VPN, Windscribe. Good: AirVPN, Proton VPN.")
     assert "Mullvad" not in cat["net.vpn_trust"].remedy and "Proton" not in cat["net.vpn_trust"].remedy
 
 

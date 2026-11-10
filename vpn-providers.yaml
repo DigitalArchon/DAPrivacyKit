@@ -276,6 +276,113 @@ providers:
       The interface and daemon names of IVPN's Linux app; api.ivpn.net's geo-lookup fields; whether
       its firewall stays on with normal (not inverse) split tunnelling on Linux.
 
+  - id: windscribe
+    name: Windscribe
+    rating:
+      tier: recommended
+      why: >-
+        Open source on every platform, its Linux app whole, an account that is only a hash, cash or Monero, and
+        audits of its apps and servers. Tested three times: servers seized in Ukraine and in the Netherlands held no
+        user data, and a Greek court case against its CEO was dismissed. Its servers run from memory alone. A step
+        behind Mullvad: cryptocurrency goes through a payment processor, its no-logs claim itself hasn't been audited,
+        and in 2021 the seized servers' disks held an unencrypted key.
+    facts:
+      - topic: owner
+        text: Run by Windscribe Limited, a Canadian company founded in 2016.
+        source: https://en.wikipedia.org/wiki/Windscribe
+        verified: 2026-11-10
+      - topic: account
+        text: An email address is optional; an anonymous account logs in with a 32-character hash alone.
+        source: https://windscribe.com/blog/hashed-login-anonymous-vpn-account/
+        verified: 2026-11-10
+      - topic: payment
+        text: Accepts cash sent by post, for a year of Pro at a time.
+        source: https://windscribe.com/knowledge-base/articles/can-i-pay-for-windscribe-with-cash
+        verified: 2026-11-10
+      - topic: payment
+        text: Accepts cryptocurrency, Monero included.
+        source: https://windscribe.com/finance/crypto-trading
+        verified: 2026-11-10
+      - topic: payment
+        text: Cryptocurrency is paid to CoinPayments, a payment processor, not to Windscribe itself.
+        source: https://windscribe.com/knowledge-base/articles/who-is-coinpayments-and-why-am-i-sending-my-crypto-to-them-and-not-you
+        verified: 2026-11-10
+      - topic: client
+        text: >-
+          Its desktop app for Windows, macOS and Linux is open source (GPL-2.0); on Linux all of it is: the window,
+          the helper that runs as administrator and the command line.
+        source: https://github.com/Windscribe/Desktop-App
+        verified: 2026-11-10
+        supports: [open_client]
+      - topic: client
+        text: Its Android (GPL-2.0) and iOS (GPL-3.0) apps are open source too.
+        source: https://github.com/Windscribe
+        verified: 2026-11-10
+      - topic: client
+        text: >-
+          Its Linux app has split tunnelling (by app since version 2.9, January 2024), and its firewall stays on with
+          it, letting only the excluded apps and addresses go around the tunnel.
+        source: https://github.com/Windscribe/Desktop-App/blob/master/src/helper/linux/firewallcontroller.cpp
+        verified: 2026-11-10
+      - topic: client
+        text: >-
+          In December 2025 a flaw in its Linux app was published that let members of the windscribe group run
+          commands as administrator (CVE-2025-65199); version 2.18.8 fixed it.
+        source: https://nvd.nist.gov/vuln/detail/CVE-2025-65199
+        verified: 2026-11-10
+      - topic: features
+        text: Since 2022 every one of its VPN servers runs entirely from memory, with nothing kept on a disk.
+        source: https://windscribe.com/blog/nodeos-booting-from-ram/
+        verified: 2026-11-10
+      - topic: audit
+        text: >-
+          Leviathan Security Group reviewed its desktop app's source code in September 2021, before its Linux app
+          was released.
+        source: https://github.com/Windscribe/Desktop-App/files/11266277/Windscribe.Limited.-.Client.Application.Code.Review.Final.Report.pdf
+        verified: 2026-11-10
+      - topic: audit
+        text: Cure53 audited the system its servers run from memory in 2022.
+        source: https://windscribe.com/blog/content/files/2024/07/2022-12-11---Windscribe---Cure53.pdf
+        verified: 2026-11-10
+      - topic: audit
+        text: Packetlabs tested its new server software and infrastructure in June 2024.
+        source: https://windscribe.com/knowledge-base/articles/has-windscribe-been-audited
+        verified: 2026-11-10
+      - topic: legal
+        text: >-
+          In June 2021 Ukrainian authorities seized two of its servers. It doesn't log VPN traffic, so they held no
+          customer data.
+        source: https://windscribe.com/blog/openvpn-security-improvements-and-changes-7b04ea49222/
+        verified: 2026-11-10
+      - topic: legal
+        text: >-
+          The disks of those two servers weren't encrypted and held an OpenVPN server key, with which someone who
+          also controlled a user's network could have posed as a Windscribe server. It replaced its certificates
+          and now keeps keys in memory only.
+        source: https://windscribe.com/blog/openvpn-security-improvements-and-changes-7b04ea49222/
+        verified: 2026-11-10
+      - topic: legal
+        text: >-
+          Greek prosecutors charged its CEO in 2023 over something a user did through one of its servers. It had no
+          logs to hand over, and the case was dismissed in April 2025.
+        source: https://windscribe.com/blog/windscribe-greek-court-case/
+        verified: 2026-11-10
+      - topic: legal
+        text: >-
+          In February 2026 Dutch authorities took one of its servers. It runs from memory alone, and Windscribe says
+          it held no user data.
+        source: https://www.tomsguide.com/computing/vpns/authorities-have-seized-one-of-windscribes-servers-but-heres-why-your-data-is-safe
+        verified: 2026-11-10
+    detect:
+      # from its source (Desktop-App, November 2026): the WireGuard and AmneziaWG tunnel is utun420 (OpenVPN's is the
+      # kernel's tunN, which says nothing); the window and engine run as Windscribe, the helper starts the
+      # windscribe* programs; windscribe and WindscribeEngine are from its earlier Linux app
+      interfaces: [utun420]
+      processes: [Windscribe, windscribeopenvpn, windscribewstunnel, windscribeamneziawg, windscribectrld, windscribe,
+                  WindscribeEngine]
+    verify: >-
+      Its Linux app's interface and process names were read from its source, not seen on a running system.
+
   - id: proton
     name: Proton VPN
     rating:
@@ -323,44 +430,6 @@ providers:
       resolvers: [10.2.0.1]
     exit_networks: ["Proton AG", "PROTON"]
     verify: The network names of Proton-owned exits in RIPEstat.
-
-  - id: windscribe
-    name: Windscribe
-    rating:
-      tier: good
-      why: >-
-        Open source, an account without email (even a bare hash), and tested twice: a court accepted that
-        it keeps no logs, and a seized server held nothing. No independent audit is on record here, and
-        nothing like DAITA.
-    facts:
-      - topic: owner
-        text: Run by Windscribe Limited, a Canadian company founded in 2016.
-        source: https://en.wikipedia.org/wiki/Windscribe
-        verified: 2026-10-03
-      - topic: account
-        text: An email address is optional; an anonymous account logs in with a 32-character hash alone.
-        source: https://windscribe.com/blog/hashed-login-anonymous-vpn-account/
-        verified: 2026-10-04
-      - topic: client
-        text: Its desktop app for Windows, macOS and Linux is open source (GPL-2.0).
-        source: https://github.com/Windscribe/Desktop-App
-        verified: 2026-10-04
-        supports: [open_client]
-      - topic: legal
-        text: >-
-          Greek prosecutors charged its CEO in 2023 over something a user did through one of its
-          servers; the case was dismissed in April 2025, and the court accepted that it keeps no logs.
-        source: https://cyberinsider.com/windscribe-vpn-acquitted-in-legal-case-affirming-no-logs-policy/
-        verified: 2026-10-03
-      - topic: legal
-        text: >-
-          In February 2026 Dutch authorities took one of its servers; it runs from memory alone, so it held
-          no user data.
-        source: https://www.tomsguide.com/computing/vpns/authorities-have-seized-one-of-windscribes-servers-but-heres-why-your-data-is-safe
-        verified: 2026-10-04
-    detect:
-      processes: [windscribe, WindscribeEngine]
-    verify: Daemon and interface names of Windscribe's Linux app.
 
   - id: airvpn
     name: AirVPN
