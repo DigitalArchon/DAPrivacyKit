@@ -1187,9 +1187,11 @@ def _sha(data: bytes | None) -> str | None:
 
 
 def _read_bytes(p: Path) -> bytes | None:
+    """A file's bytes, or None when there is no file there: missing, or a folder (one the plan deletes first, to put
+    a file in its place: br.shader_cache's block, where Mesa's cache folder was)."""
     try:
         return p.read_bytes()
-    except FileNotFoundError:
+    except (FileNotFoundError, IsADirectoryError):
         return None
 
 

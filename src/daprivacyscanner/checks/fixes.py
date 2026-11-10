@@ -517,36 +517,90 @@ def crashpad(check, scan, outcome):
 
 @fix("br.shader_cache")
 def shader_cache(check, scan, outcome):
-    """The two variables where sessions read them, environment.d for systemd's (Plasma 6, GNOME) and a block in
-    ~/.profile for the X11 session script (Cinnamon on Mint reads no environment.d: tested); then the old caches in the
-    browsers' own folders, while the browser is closed."""
-    from .browser import (SHADER_BROWSERS, SHADER_ENV_FILE, SHADER_ENV_TEXT, SHADER_OFF, _cache_off, installed_browsers,
-                          shader_copies, shader_leftovers, shader_pending, with_shader_block)
+    """For each Tor Browser and Mullvad Browser whose cache is in a folder of its own: Mesa's cache folders deleted and a
+    file put in each one's place, so Mesa keeps no cache for that browser alone (every other program keeps its own).
+    A browser whose cache is the one every program shares can't be blocked alone: the plan says why."""
+    from .browser import (MESA_CACHE, MESA_CACHE_DIRS, SHADER_BLOCK_TEXT, SHADER_BROWSERS, _cache_off, installed_browsers,
+                          mesa_blocked, mesa_installed, mesa_old_caches, shader_copies)
     host = scan.host
-    a, effects, skipped = [], [], []
-    if not all(_cache_off(host.environ, k) for k in SHADER_OFF) and shader_pending(scan) != set(SHADER_OFF):
-        env_file = scan.paths.config_home / "environment.d" / SHADER_ENV_FILE
-        a.append(WriteFile(env_file, lambda old: SHADER_ENV_TEXT,
-                           "Turn the graphics drivers' shader caches off for sessions started by systemd (KDE Plasma, "
-                           "GNOME)", host.display(env_file)))
-        profile = host.home / ".profile"
-        a.append(WriteFile(profile, with_shader_block,
-                           "Turn them off for the X11 session script (Cinnamon, Xfce, MATE) and login shells",
-                           host.display(profile)))
-        effects += ["From your next login: programs started before then still keep a cache, so log out and in again "
-                    "before you next use Tor Browser or Mullvad Browser. Reverting it from History also takes effect "
-                    "from your next login.",
-                    "Games and other 3D programs then work out their graphics again each time they start: they can take "
-                    "longer to load and stutter at first."]
     found = [f for f in installed_browsers(scan) if f.key in SHADER_BROWSERS]
-    for c, root, _ in shader_leftovers(scan, shader_copies(scan, found)):
-        if holders(scan, c.own):
+    copies = shader_copies(scan, found)
+    a, skipped, why = [], [], []
+    mesa_on = mesa_installed(host) and not _cache_off(host.environ, MESA_CACHE)
+    for c in copies:
+        if c.launcher is not None:
+            why.append(f"{c.name} is started without its own start script, so its cache is the one every program shares: "
+                       "fix br.start_script first, then this.")
+            continue
+        busy = bool(holders(scan, c.own))
+        olds = dict(mesa_old_caches(c))
+        if busy and olds:
             skipped.append(f"Close {c.name} first.")
             continue
-        a += delete(scan, root, f"{c.name}'s old shader cache")
-    return FixPlan(check.id, "Turn off the graphics drivers' shader caches", a,
-                   blockers=list(dict.fromkeys(skipped)) if not a else [],
-                   side_effects=effects + ([f"Skipped: {s}" for s in dict.fromkeys(skipped)] if a and skipped else []))
+        for root, t in olds.items():
+            files, _ = files_under(root)
+            a.append(DeleteFiles(root, files, f"{c.name}'s shader cache", host.display(root), remove_root=True))
+        if not mesa_on:
+            continue
+        if c.cache is None:
+            why.append(f"Your session sets XDG_CACHE_HOME, so {c.name}'s cache is the one every program shares: the "
+                       "app can't block it for the browser alone (the check's note says what can).")
+            continue
+        if mesa_blocked(c):
+            continue
+        for d in MESA_CACHE_DIRS:
+            target = c.cache / d
+            if os.path.islink(target) or (not isdir(target) and os.path.lexists(target)):
+                continue                          # something not a folder already: Mesa can't use it
+            w = WriteFile(target, lambda old: SHADER_BLOCK_TEXT,
+                          f"Keep Mesa from caching {c.name}'s shaders: a file where its cache folder would be",
+                          host.display(target))
+            w.phase = 4                           # after the old folder is deleted
+            a.append(w)
+    effects = ["It applies from the browser's next start, and to the browser alone: every other program keeps its "
+               "shader cache."] if any(isinstance(x, WriteFile) for x in a) else []
+    skipped = list(dict.fromkeys(skipped))
+    return FixPlan(check.id, "Keep the graphics drivers from caching the browsers' shaders", a,
+                   blockers=skipped if not a else [],
+                   side_effects=effects + ([f"Skipped: {s}" for s in skipped] if a and skipped else [])
+                   + (list(dict.fromkeys(why)) if not a else [f"Not covered: {w}" for w in dict.fromkeys(why)]))
+
+
+@fix("br.start_script")
+def start_script(check, scan, outcome):
+    """A menu entry of the account's own, with the package's id, that starts the browser through its start script
+    (with the profile it used), which a package's own program skipped; and the browser's cache that program left in the
+    one every program shares, deleted while the browser is closed."""
+    from .browser import SHADER_BROWSERS, installed_browsers, real_path, skipped_scripts, started_by_script
+    host = scan.host
+    found = [f for f in installed_browsers(scan) if f.key in SHADER_BROWSERS]
+    a, effects, skipped = [], [], []
+    for s in skipped_scripts(scan, found):
+        target = scan.paths.data_home / "applications" / s.entry.name
+        text = started_by_script(read_text(host, s.source) or "", real_path(host, s.script), s.profile)
+        what = (f"Start {s.name} from your menu through its own start script ({host.display(s.script)})"
+                + (f", with the profile it used ({host.display(s.profile)})" if s.profile else ""))
+        a.append(WriteFile(target, lambda old, t=text: t, what, host.display(target)))
+        if s.stale:
+            continue
+        if s.old_cache is not None:
+            if holders(scan, s.old_cache) or holders(scan, s.profile or s.old_cache):
+                skipped.append(f"Close {s.name} first.")
+            else:
+                files, _ = files_under(s.old_cache)
+                a.append(DeleteFiles(s.old_cache, files, f"{s.name}'s cache in yours", host.display(s.old_cache),
+                                     remove_root=True))
+        home = "~/.tor-browser" if s.name == "Tor Browser" else "~/.mullvad-browser"
+        effects += [f"{s.name} then keeps the files it makes in a home folder of its own, {home}, and saves downloads to "
+                    f"{home}/Downloads unless you choose a folder in its settings, as with its makers' own package. Its "
+                    f"Save and Open dialogs start there too: your own folders are under Other Locations.",
+                    f"Started from the menu, links and the desktop's default browser only: typed in a terminal, the "
+                    f"package's {s.launcher.name} still starts it without its script.",
+                    "It applies from the browser's next start."]
+    skipped = list(dict.fromkeys(skipped))
+    return FixPlan(check.id, "Start the browser through its own start script", a,
+                   side_effects=list(dict.fromkeys(effects)) + [f"Skipped: {x} (its old cache stays until then)"
+                                                                for x in skipped], also=["br.shader_cache"])
 
 
 # ------------------------------------------------------------------ desktop

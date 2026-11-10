@@ -727,7 +727,17 @@ start now sets both, sandboxed or not; without the sandbox a cache folder of the
 (`__GL_SHADER_DISK_CACHE_PATH`, `MESA_SHADER_CACHE_DIR`, `MESA_GLSL_CACHE_DIR`), outside the RAM disk, isn't passed
 on (`SHADER_CACHE_PATHS`). Tested on the lab (Quadro P620 with NVIDIA 580, Mesa 25): with the card given, the
 page ran on it and no cache was written anywhere (session folder, browser folder, `~/.cache`, `~/.nv`); without
-it, none either. `br.shader_cache` covers the user's own Tor Browser and Mullvad Browser.
+it, none either.
+
+For the user's own Tor Browser and Mullvad Browser, `br.shader_cache` blocks Mesa's cache for each browser alone:
+the start script gives the browser a home folder of its own, and a file where each of Mesa's cache folders would be
+in its `.cache` (`mesa_shader_cache`, `mesa_shader_cache_db`) makes Mesa run without one ("not a directory---
+disabling"; on the lab the same shader took 1417 and 1383 ms in two sessions, against 1450 and 67 ms). Games and
+other programs keep their caches: no variable is set for the session. A copy started without its start script keeps
+its cache with every other program's: `br.start_script` finds one (a package's own program that runs the browser's
+program from a folder holding the start script: the AUR's `mullvad-browser-bin`, whose `/usr/bin/mullvad-browser`
+also leaves GTK's recent-files list and dconf open, tested) and gives it a menu entry of the account's own, under the
+package's id, that runs the start script with `--profile` and the profile it used.
 
 **Before bubblewrap: crash dumps and the kernel keyring.** Every start (sandboxed or not, Xephyr, and View
 offline…) is wrapped by `sandbox.fresh_keyring`, which runs the host's `/usr/bin/python3 -I -c KEYRING`

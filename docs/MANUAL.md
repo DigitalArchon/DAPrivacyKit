@@ -394,8 +394,10 @@ lower it with the shield button in the browser's toolbar. Mullvad Browser starts
 
 Either way the graphics drivers keep no cache of what pages draw with WebGL: a website could time such a cache
 to tell it had been on this computer before, under another site or after New Identity. For Tor Browser or
-Mullvad Browser you installed yourself, the scan checks the same thing, and its **Easy fix** turns the caches off
-for your account.
+Mullvad Browser you installed yourself, the scan checks the same thing, and its **Easy fix** keeps the graphics
+driver from caching that browser's shaders, for it alone: games and other programs keep their caches. A browser whose
+package starts it without its own start script (the AUR's `mullvad-browser-bin`) is found too: **Fix…** gives it a menu
+entry of your own that starts it through that script, with the profile it uses now.
 
 **Files in and out.** The browser sees only its own folders:
 

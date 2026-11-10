@@ -795,7 +795,9 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
                     return JSONResponse({"error": problem, "declined": True}, status_code=403)
             log = undo_log(host)
             res = await asyncio.to_thread(apply_plan, plan, host, log, bool(body.get("confirm_irreversible")))
-            again = await asyncio.to_thread(refresh, host, plan.check_id)
+            # with the checks the plan deals with too (br.start_script's makes br.shader_cache's fix possible), as a
+            # revert and the Easy fixes do
+            again = await asyncio.to_thread(refresh, host, plan.check_id, tuple(plan.also))
             if res.ok and res.entry_id:               # what the check said right after: undone later if it comes back
                 await asyncio.to_thread(log.set_outcome, res.entry_id, again.get("result"))
             undone = await asyncio.to_thread(recheck_undone, host)

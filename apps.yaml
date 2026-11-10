@@ -1134,12 +1134,14 @@ apps:
     checked: "16.0.1"
     basis: current
     checked_on: 2026-11-10
-    checks: [br.shader_cache]
+    checks: [br.shader_cache, br.start_script]
     relies_on: >-
       start-mullvad-browser: HOME moved into the browser's folder (~/.mullvad-browser beside is-packaged-app), and
       `export __GL_SHADER_DISK_CACHE=0`; Mullvad's package: /usr/bin/mullvad-browser a link to
       /usr/lib/mullvad-browser/start-mullvad-browser (read from the 16.0.1 .deb); the Flatpak's
-      lib/mullvad-browser/start-mullvad-browser and its own cache folder (15.0.24's start script tested on the lab)
+      lib/mullvad-browser/start-mullvad-browser and its own cache folder (15.0.24's start script tested on the lab);
+      application.ini's Vendor and Name (~/.mullvad/mullvadbrowser, ~/.cache/mullvad/mullvadbrowser) and profiles.ini;
+      the AUR's mullvad-browser-bin running /opt/mullvad-browser/mullvadbrowser without the script (15.0.26, 16.0.1)
     upstream:
       repology: mullvad-browser
       notes: https://github.com/mullvad/mullvad-browser/releases

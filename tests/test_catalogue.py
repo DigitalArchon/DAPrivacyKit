@@ -18,7 +18,7 @@ def test_real_catalogue_loads(cat):
 
 
 # what full-disk encryption protects while the computer is off: one lower when it is on an encrypted disk
-ENCRYPTED_AT_REST = {"desk.thumbnails", "desk.clipboard_history", "desk.zeitgeist", "enc.snapshots_retain_deleted",
+ENCRYPTED_AT_REST = {"br.start_script", "desk.thumbnails", "desk.clipboard_history", "desk.zeitgeist", "enc.snapshots_retain_deleted",
                      "app.cups_spool", "auth.ssh_known_hosts_plain", "sbx.leftover_data", "enc.tmp_on_disk",
                      "auth.keyring_blank", "auth.chromium_basic_store", "auth.ssh_key_no_passphrase",
                      "auth.plaintext_credentials", "auth.shell_history_secrets", "auth.firefox_no_primary_password",

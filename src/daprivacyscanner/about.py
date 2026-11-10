@@ -119,14 +119,16 @@ READS: list[dict] = [
      "how": "The thumbnail cache (each PNG's embedded path, to see which drive it came from), recently-used.xbel, "
      "kactivitymanagerd's database (counts), clipboard managers' folders (sizes), screenshots (counts and age), "
      "and this app's own rules and mount units that expire or keep them in memory."},
-    {"what": "Browsers", "why": "Which browsers are installed, which is the default, whether it blocks ads, and whether "
-     "the graphics drivers keep a cache sites can time for Tor Browser and Mullvad Browser.",
+    {"what": "Browsers", "why": "Which browsers are installed, which is the default, whether it blocks ads, whether "
+     "Tor Browser and Mullvad Browser start through their own start scripts, and whether the graphics drivers keep a "
+     "cache sites can time for them.",
      "how": "Menu entries in the application folders (packages, Flatpak, Snap and your own), AppImages in the usual "
      "folders and on the desktop, apps pinned to panels and docks, xdg-settings and mimeapps.list for the default, "
-     "and the list of extensions in each profile (names and ids only). For Tor Browser and Mullvad Browser: their "
-     "start scripts (whether they turn NVIDIA's shader cache off), which graphics drivers are installed, the two "
-     "environment variables that turn the caches off, and the file count and size of the caches in the browsers' "
-     "own folders."},
+     "and the list of extensions in each profile (names and ids only). For Tor Browser and Mullvad Browser: the "
+     "program each menu entry runs and the browser's start script (whether it is skipped, whether it turns NVIDIA's "
+     "shader cache off), the browser's application.ini and profiles.ini (which profile it uses), which graphics "
+     "drivers are installed, the two environment variables that turn their caches off, and the file count and size "
+     "of the caches in the browsers' own folders."},
     {"what": "Apps' data folders", "why": "Caches, histories and backups that outlive the files they came from.",
      "how": "Sizes and counts under ~/.config, ~/.local/share, ~/.cache, ~/.var/app and ~/snap; LibreOffice, "
      "media players, PDF readers, editors, messengers and mail clients; GIMP's settings (whether it copies a photo's "

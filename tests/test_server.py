@@ -828,3 +828,19 @@ def test_a_backup_kept_for_a_while_can_be_deleted_from_history(cat, tmp_path):
     assert r["dropped"] == 1 and not backup.exists()
     assert r["entry"]["steps"][0]["backup_dropped"] and not r["entry"]["steps"][0]["reversible"]
     assert not r["entry"]["can_revert"]
+
+
+def test_applying_a_fix_checks_again_the_checks_its_plan_deals_with(cat, tmp_path):
+    """br.start_script's fix makes br.shader_cache's possible: both are checked again right after it is applied, as
+    after a revert, so the page doesn't keep saying the second can't be fixed until the next scan."""
+    from test_shader_cache import AUR_FILES, AUR_HOME, MESA
+    host = make_host(tmp_path, files={**MESA, **AUR_FILES}, home_files=AUR_HOME)
+    c = TestClient(create_app(TOKEN, cat, make_host=lambda: host))
+    h = {"X-Token": TOKEN}
+    before = c.post("/api/scan", headers=h).json()["results"]
+    assert before["br.start_script"]["status"] == "fail" and not before["br.shader_cache"]["fixable"]
+    plan = c.post("/api/fix/br.start_script/plan", headers=h).json()["plan"]
+    applied = c.post("/api/fix/apply", headers=h, json={"plan_id": plan["id"], "confirm_irreversible": True}).json()
+    assert applied["ok"] and applied["result"]["status"] == "pass"
+    shader = applied["rechecked"]["br.shader_cache"]
+    assert shader["status"] == "warn" and shader["fixable"] and not shader.get("no_fix")

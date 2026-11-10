@@ -2167,9 +2167,7 @@ checks:
     scope: user
     tier: auto
     easy:
-      cost: >-
-        From your next login. Games and other 3D programs then work out their graphics again each time they start, so
-        they can take longer to load and stutter at first.
+      cost: ""
     why: >
       Tor Browser and Mullvad Browser keep nothing between sessions and make everyone look alike, but the graphics
       driver keeps a cache on the disk of the shaders (small drawing programs) that pages hand it through WebGL, out of
@@ -2179,40 +2177,86 @@ checks:
       NVIDIA's cache off, but not Mesa's (Intel and AMD graphics, and drawing without the graphics card), which they
       keep in the browser's own folder.
     detect:
-      - 'Tor Browser and Mullvad Browser installed: menu entries (browsers.yaml, as br.default_browser finds them), the
-        copies they start (a start-tor-browser or start-mullvad-browser in the entry''s command, or the program it
-        links to: /usr/bin/mullvad-browser), torbrowser-launcher''s folders (native and Flatpak), Mullvad''s package
-        (/usr/lib/mullvad-browser) and its Flatpak. Not the app''s own copies in ~/TempBrowser, started with both
-        caches off'
-      - 'Mesa: its GL libraries (GLVND''s EGL vendor file, libGLX_mesa, libEGL_mesa); its cache is off when
-        MESA_SHADER_CACHE_DISABLE (MESA_GLSL_CACHE_DISABLE before Mesa 20) is true. No start script turns it off
-        (Tor Browser 15.0.24, Mullvad Browser 16.0.1); with HOME moved into the browser''s folder it writes
-        <HOME>/.cache/mesa_shader_cache, or $XDG_CACHE_HOME/mesa_shader_cache when the session sets that (tested on
-        the lab: Mesa 25, iris and llvmpipe, which NVIDIA computers draw WebGL with on Wayland)'
-      - 'NVIDIA: /proc/driver/nvidia/version or /sys/module/nvidia; its cache is off when __GL_SHADER_DISK_CACHE is 0
-        or false, which the start scripts export since December 2023 (tor-browser-build#41017): off for each copy
-        whose script does it, still on for a copy started any other way'
-      - 'The session''s environment is the app''s own (started from the menu, the browser gets the same); the app''s
-        own two files (~/.config/environment.d/60-daprivacyscanner-shader-cache.conf and its block in ~/.profile)
-        count as off from the next login'
-      - 'An old cache: mesa_shader_cache, mesa_shader_cache_db or nvidia in the cache folder of the HOME the start
-        script gives the browser (a tarball''s Browser folder; ~/.tor-browser or ~/.mullvad-browser when the copy has
-        is-packaged-app) or in a Flatpak''s own ~/.var/app/ID/cache. One in the session''s own cache folder, shared
-        with every program, can''t be told apart and isn''t counted'
+      - 'Tor Browser and Mullvad Browser installed: menu entries (browsers.yaml, as br.default_browser finds them; the
+        account''s own over the system''s, by id), the copies they start (a start-tor-browser or start-mullvad-browser
+        in the entry''s command, the program it links to: /usr/bin/mullvad-browser in Mullvad''s package, or a package''s
+        own program that runs the browser without it: br.start_script), torbrowser-launcher''s folders (native and
+        Flatpak), tor-browser-bin''s ~/.local/opt/tor-browser, Mullvad''s package (/usr/lib/mullvad-browser) and its
+        Flatpak. Not the app''s own copies in ~/TempBrowser, started with both caches off'
+      - 'Mesa: its GL libraries (GLVND''s EGL vendor file, libGLX_mesa, libEGL_mesa). It follows XDG_CACHE_HOME, else
+        HOME: with HOME moved into the browser''s folder by the start script, its cache is <HOME>/.cache/mesa_shader_cache,
+        the browser''s alone (a Flatpak''s is ~/.var/app/ID/cache); otherwise the one every program shares. Blocked for a
+        copy when a file (anything but a folder) is where each of its cache folders would be (mesa_shader_cache,
+        mesa_shader_cache_db): Mesa then logs "not a directory---disabling" and keeps none (tested on the lab with Mesa
+        25.2 and 26.2: the same shader 1417 and 1383 ms in two sessions, against 1450 and 67 ms with the folder).
+        MESA_SHADER_CACHE_DISABLE=true in the session turns it off for every program'
+      - 'NVIDIA: /proc/driver/nvidia/version or /sys/module/nvidia; off for a copy whose start script, or the package''s
+        program that starts it, exports __GL_SHADER_DISK_CACHE=0 (the scripts since December 2023,
+        tor-browser-build#41017), or for every program when the session sets it'
+      - 'An old cache: Mesa''s cache folders in a copy''s own cache folder once caching is off. One in the cache every
+        program shares can''t be told apart and isn''t counted'
     fix: >
-      Writes __GL_SHADER_DISK_CACHE=0 and MESA_SHADER_CACHE_DISABLE=true where sessions read them: a file of the app's
-      own in ~/.config/environment.d (the systemd user manager: KDE Plasma 6, GNOME) and a marked block in ~/.profile
-      (the X11 session script of LightDM, SDDM and GDM: Cinnamon, Xfce and MATE, and login shells; environment.d doesn't
-      reach Cinnamon on Mint, tested: /etc/environment.d's GSK_RENDERER wasn't in its environment), both reverted
-      from History. Deletes the old caches in the browsers' own folders while the browser is closed.
+      For each copy whose cache is a folder of its own: Mesa's cache folders there deleted (the browser closed) and a
+      file put in each one's place (WriteFile after the deletion, reverted from History; the deletion can't be).
+      Nothing changes for any other program. A copy started without its start script is left to br.start_script,
+      after which its cache is its own; with XDG_CACHE_HOME set in the session, the check's note gives the variables
+      that turn the cache off for every program, and their cost.
     remedy: >
       Websites could recognise Tor Browser or Mullvad Browser on this computer across sites, sessions and New Identity,
-      by timing the graphics driver's cache. Fix… turns the graphics drivers' shader caches off for your account, from
-      your next login, and deletes the old cache the browsers kept.
+      by timing the graphics driver's cache. Fix… keeps the driver from caching the browsers' shaders, and deletes the
+      old cache, for these browsers alone: games and other programs keep theirs.
+    related: [br.start_script]
     verify: >
       NVIDIA's cache with a WebGL page in the browser itself (a test program's small shader wasn't cached on the lab;
-      Firefox's are, per tor-browser-build#41017); that a Flatpak browser gets the session's variables (flatpak run
-      passes the caller's environment on); the cache of Mullvad Browser's Flatpak in ~/.var/app/ID/cache.
+      Firefox's are, per tor-browser-build#41017); the block in Mullvad Browser's Flatpak (~/.var/app/ID/cache) and in
+      torbrowser-launcher's.
+
+  - id: br.start_script
+    title: Tor Browser or Mullvad Browser started without its own start script
+    category: browser
+    severity: 6
+    modifiers:
+      - when: "data_on_encrypted_disk"
+        severity: 5
+    scope: user
+    tier: auto
+    why: >
+      Tor Browser and Mullvad Browser start through a script of their own, which keeps what the desktop's libraries
+      write away from your files: it gives the browser a home folder of its own, so the caches it makes stay in it;
+      makes GTK's list of recent files impossible to write; keeps GTK's settings in memory; turns NVIDIA's shader cache
+      off; sends the browser's messages nowhere; and refuses to run as administrator. Some packages start the
+      browser's program directly and go without all of it: every file you save or upload through the browser's
+      dialog is then listed, by name, in your desktop's recent files, its settings go into yours, and the graphics
+      driver's shader cache is the one every program shares, which websites can time to link visits.
+    detect:
+      - 'The menu entry each Tor Browser and Mullvad Browser menu id resolves to (the account''s own over the system''s):
+        its program (past env), when it is a script of a package''s own (#!, at most 64 KB) that runs the browser''s
+        program (mullvadbrowser, firefox, firefox.real) from a folder holding the browser''s start script, and names
+        no start script: the AUR''s mullvad-browser-bin (15.0.26 to 16.0.1: /usr/bin/mullvad-browser runs
+        /opt/mullvad-browser/mullvadbrowser; tested on the lab: GTK''s Save As listed the saved page in
+        ~/.local/share/recently-used.xbel, wrote 12 file chooser keys to dconf, and Mesa''s cache went to ~/.cache,
+        where the same shader took 67 ms on another site against 817)'
+      - 'The local cache it kept in the account''s own: ~/.cache/<vendor>/<name> from the browser''s application.ini
+        (~/.cache/mullvad/mullvadbrowser); its profile: profiles.ini in ~/.<vendor>/<name>, this install''s default'
+      - 'The app''s own entry (marked at its top) compared with what the package''s entry would make now: out of date
+        when they differ'
+    fix: >
+      Writes a menu entry of the account's own with the package's id (~/.local/share/applications/<id>), the package's
+      with each command run through the browser's start script and --profile <the profile it used> (the start script
+      passes it on; tested on the lab: the existing profile opened, no new one made, everything else under
+      ~/.mullvad-browser, nothing in the recent list or dconf); reverted from History. Deletes the local cache it kept
+      in ~/.cache while the browser is closed. The terminal command stays the package's.
+    remedy: >
+      Files you save or upload through this browser are listed in your desktop's recent files, its settings go into
+      yours, and the shader cache websites can time is shared with every program, because its package starts it
+      without the browser's own start script. Fix… gives it a menu entry of your own that starts it through that
+      script, with the profile it uses now. Downloads then go to the browser's own folder unless you choose one in its
+      settings, as with its makers' own package.
+    related: [br.shader_cache, desk.recent_files]
+    verify: >
+      Other packages that start the browser without its script (the check names only what it reads: a script that
+      runs the browser's program); that KDE, Cinnamon and GNOME pick up the account's own entry under the same id at
+      once (ksycoca, the menu cache).
 
   - id: br.webrtc
     title: WebRTC IP exposure
