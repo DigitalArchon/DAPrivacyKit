@@ -174,14 +174,12 @@ couldn't show. Grouped by what each needs.
 - In the GPU runs, Tor Browser in Xephyr sometimes took 2 to 3 minutes to finish the fingerprint page against 35
   seconds (2 of 4 runs, 2026-10-09); every run fetched httpbin.org through Tor, so probably that request,
   unconfirmed.
-- Shader caches (br.shader_cache, NO_SHADER_CACHE; 2026-11-10). Tried on the P330 (Mint 22.3, Cinnamon X11, Quadro
-  P620 with NVIDIA 580, Mesa 25): stock Mullvad Browser 15.0.24 on Mesa kept a WebGL page's shaders in its folder
-  (1450 ms the first time, 67 ms in each later session, 1383 ms with MESA_SHADER_CACHE_DISABLE); the app's sandbox
-  writes none with the card or without; the Easy fix through the API, a new login (both variables in Cinnamon's
-  session and systemd's), the browser started with that session's environment, and the revert. Still to try: KDE
-  Plasma 6 (environment.d, from a new login: the browser started from the menu, and Mullvad Browser's Flatpak, which
-  should get the session's variables through flatpak run); Tor Browser itself, which only differs by its script;
-  NVIDIA's cache with the browser started through a launcher that skips the start script, if one exists.
+- Shader caches and start scripts (br.shader_cache, br.start_script, NO_SHADER_CACHE; 2026-11-10). Tried on the P330
+  (Mint 22.3, NVIDIA 580, Mesa 25) and the CachyOS VM (Plasma 6.7, Mesa 26, the AUR's mullvad-browser-bin), both
+  fixes through the API and reverted. Still to try: Cinnamon's menu taking the account's own entry for a package's id
+  (GIO does; the menu itself not tried); Mullvad Browser's Flatpak and torbrowser-launcher with the per-browser block;
+  Tor Browser itself (only its script differs); an AUR update of mullvad-browser-bin that changes its menu entry (the
+  check should say the app's entry is out of date).
 
 ### Mullvad VPN connected
 

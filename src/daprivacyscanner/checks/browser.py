@@ -1548,9 +1548,9 @@ class StartScript(Check):
 # ------------------------------------------------------------------ the graphics drivers' shader caches
 
 # what turns each driver's disk cache off for the whole session, and the values it reads as that: NVIDIA's
-# __GL_SHADER_DISK_CACHE is a boolean (0 off); Mesa's MESA_SHADER_CACHE_DISABLE (MESA_GLSL_CACHE_DISABLE before
-# Mesa 20) is true to turn it off. The fix doesn't set them (it would cost every game and 3D program its cache): it
-# blocks the cache of each browser alone
+# __GL_SHADER_DISK_CACHE is a boolean (0 off); Mesa's MESA_SHADER_CACHE_DISABLE (MESA_GLSL_CACHE_DISABLE, its older
+# name, which Mesa 25 still reads) is true to turn it off. The fix doesn't set them (it would cost every game and 3D
+# program its cache): it blocks the cache of each browser alone
 NVIDIA_CACHE, MESA_CACHE = "__GL_SHADER_DISK_CACHE", "MESA_SHADER_CACHE_DISABLE"
 # Mesa's cache folders in $XDG_CACHE_HOME or $HOME/.cache (the single-file database's too): a file in a folder's
 # place and Mesa runs without one ("Cannot use … for shader cache (not a directory)---disabling", Mesa 25 and 26)
