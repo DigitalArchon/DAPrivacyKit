@@ -295,6 +295,33 @@ def test_opengl_draws_with_mesa_s_software_renderer(host):
     assert e["__GLX_VENDOR_LIBRARY_NAME"] == "mesa" and e["__EGL_VENDOR_LIBRARY_FILENAMES"].endswith("/50_mesa.json")
 
 
+def test_the_graphics_drivers_keep_no_shader_cache_for_the_browser(host):
+    """A cache a site can time links its visits (tor-browser#40054): both drivers' caches are off in every start,
+    with the graphics card or without it, in Tor Browser's inner sandbox, and without the sandbox, where a place the
+    user chose for them (outside the RAM disk) isn't passed on."""
+    off = {"__GL_SHADER_DISK_CACHE": "0", "MESA_SHADER_CACHE_DISABLE": "true"}
+    assert S.NO_SHADER_CACHE == off
+    installed(host, "mullvad")
+    bwrap_ok(host)
+    wayland(host)
+    identity_etc(host)
+    lay, private = layout(host, B.BROWSERS["mullvad"])
+    disp = S.display(host, private, landlock=False)
+    etc = S.identity_files(private / "etc", None)
+    for gpu in ((), ("/dev/nvidia0",)):
+        e = env_of(S.browser_argv(host, lay, disp, False, False, etc, None, gpu=gpu))
+        assert {k: e[k] for k in off} == off
+    installed(host, "tor")
+    lay, private = layout(host, B.BROWSERS["tor"])
+    (private / "tor").mkdir(exist_ok=True)
+    inner = json.loads(S.tor_argv(host, lay, private / "tor", disp, False, False, etc, "GATE", gpu=("/dev/nvidia0",))[-1])["inner"]
+    assert {k: env_of(inner)[k] for k in off} == off
+    host.environ.update({"__GL_SHADER_DISK_CACHE": "1", "__GL_SHADER_DISK_CACHE_PATH": "/home/alice/.nvcache",
+                         "MESA_SHADER_CACHE_DIR": "/home/alice/.mesa", "MESA_GLSL_CACHE_DIR": "/home/alice/.glsl"})
+    plain = B.environment(host, B.BROWSERS["mullvad"], private.parent / ".session")
+    assert {k: plain[k] for k in off} == off and not any(k in plain for k in S.SHADER_CACHE_PATHS)
+
+
 def gpu_devices(host):
     for d in ("dev/dri/by-path", "dev"):
         (host.root / d).mkdir(parents=True, exist_ok=True)

@@ -1066,6 +1066,16 @@ def software_gl(host: Host) -> dict[str, str]:
     return env
 
 
+# The graphics drivers keep no shader cache for the browser, sandboxed or not (tor-browser#40054). A website can time
+# how fast a shader of its own compiles: one from the cache is much faster, so a second site, or the same one after New
+# Identity, can tell this computer has drawn it before. The start scripts turn NVIDIA's off (tor-browser-build#41017),
+# not Mesa's (Intel, AMD, and llvmpipe, what software_gl draws with), which went to $XDG_CACHE_HOME/mesa_shader_cache:
+# the session folder, on the RAM disk, for as long as the browser ran. Tested on the lab with Mesa 25 (iris on a UHD 630,
+# llvmpipe) and NVIDIA 580: each variable stops its driver writing one. Set last, over the start scripts' own.
+NO_SHADER_CACHE = {"__GL_SHADER_DISK_CACHE": "0", "MESA_SHADER_CACHE_DISABLE": "true"}
+# the user's own places for those caches, which a start without the sandbox would otherwise pass on
+SHADER_CACHE_PATHS = ("__GL_SHADER_DISK_CACHE_PATH", "MESA_SHADER_CACHE_DIR", "MESA_GLSL_CACHE_DIR")
+
 NVIDIA_DEVICE = re.compile(r"nvidia(ctl|\d+)")
 
 
@@ -1093,7 +1103,7 @@ def _env(host: Host, disp: Display, with_sound: bool, extra: dict[str, str] | No
            "XDG_RUNTIME_DIR": RUNTIME_IN, **({} if gpu else software_gl(host)),
            **{k: host.environ[k] for k in PASSED_ENV if host.environ.get(k)}, "TZ": "UTC",
            **{k: f"{SESSION_IN}/{v}" for k, v in SESSION_DIRS.items()},
-           **disp.env, **(extra or {})}
+           **disp.env, **(extra or {}), **NO_SHADER_CACHE}
     if with_sound:
         env["PULSE_SERVER"] = f"unix:{RUNTIME_IN}/pulse/native"
     out: list[str] = []

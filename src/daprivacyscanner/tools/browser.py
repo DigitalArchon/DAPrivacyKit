@@ -8,7 +8,8 @@ signing-keys.yaml (both browsers are signed by it), refusing anything that isn't
 into ~/TempBrowser/<folder> (regular files and folders only, nothing outside that folder); and starts it
 with its caches and settings pointed into the RAM disk too (XDG_CONFIG_HOME, XDG_CACHE_HOME,
 XDG_DATA_HOME, XDG_STATE_HOME and TMPDIR: the browser's start script moves HOME into its own folder,
-but GTK, fontconfig and Mesa follow those variables when the session sets them). Closing the RAM disk
+but GTK, fontconfig and Mesa follow those variables when the session sets them), and with the graphics
+drivers' shader caches off (sandbox.NO_SHADER_CACHE: a cache sites can time links them). Closing the RAM disk
 (tools/ramdisk.py) overwrites and removes all of it; it is refused while the browser runs.
 
 The RAM disk must be open with programs allowed (noexec off) for the browser to start from it.
@@ -1246,9 +1247,13 @@ def prepare(host: Host, b: Browser) -> tuple[Path, Path, Path]:
 
 def environment(host: Host, b: Browser, session: Path) -> dict[str, str]:
     """The environment without the sandbox: the host's (no AppImage variables), with every folder a
-    desktop library writes to pointed inside the RAM disk."""
-    return host_env(host.environ, **{k: str(session / v) for k, v in sandbox.SESSION_DIRS.items()},
-                    **browser_env(host, b))
+    desktop library writes to pointed inside the RAM disk, and the graphics drivers' shader caches off
+    (sandbox.NO_SHADER_CACHE; a place of the user's own for them, which would be outside it, dropped)."""
+    env = host_env(host.environ, **{k: str(session / v) for k, v in sandbox.SESSION_DIRS.items()},
+                   **browser_env(host, b), **sandbox.NO_SHADER_CACHE)
+    for k in sandbox.SHADER_CACHE_PATHS:
+        env.pop(k, None)
+    return env
 
 
 def sandboxed_before(host: Host, b: Browser) -> bool:

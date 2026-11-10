@@ -3014,7 +3014,9 @@ function browserSandbox(data, opts) {
         + "below, it has no graphics card: pages draw with the processor (WebGL and video work, more slowly and with more of the processor), which "
         + "keeps the graphics drivers, a large part of the kernel, out of its reach. A website can see one detail of that: "
         + "WebGL answers as drawing in software does, which differs in one value from what the graphics card would give "
-        + "the browser outside the sandbox (with Intel graphics, or NVIDIA's driver on X11)."),
+        + "the browser outside the sandbox (with Intel graphics, or NVIDIA's driver on X11). With the card or without it, "
+        + "the graphics drivers keep no cache of the shaders pages make them compile, so a website can't time one to tell "
+        + "it has been here before, under another site or after New Identity."),
       h("div", { class: "orow" }, h("label", {}, sandbox, " Run it in a sandbox"),
         h("label", { title: sb.sound ? "" : "No sound server was found" }, sound, " Allow sound (it gives away more than sound: read why)"),
         h("label", { title: sb.gpu ? "" : "No graphics card's device files were found" }, gpu,
