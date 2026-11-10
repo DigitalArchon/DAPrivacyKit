@@ -1127,6 +1127,41 @@ apps:
       notes: https://github.com/mullvad/mullvadvpn-app/releases
       source: https://github.com/mullvad/mullvadvpn-app
 
+  - id: mullvad-browser
+    name: "Mullvad Browser"
+    packages: [mullvad-browser, mullvad-browser-bin]
+    flatpak: [net.mullvad.MullvadBrowser]
+    checked: "16.0.1"
+    basis: current
+    checked_on: 2026-11-10
+    checks: [br.shader_cache]
+    relies_on: >-
+      start-mullvad-browser: HOME moved into the browser's folder (~/.mullvad-browser beside is-packaged-app), and
+      `export __GL_SHADER_DISK_CACHE=0`; Mullvad's package: /usr/bin/mullvad-browser a link to
+      /usr/lib/mullvad-browser/start-mullvad-browser (read from the 16.0.1 .deb); the Flatpak's
+      lib/mullvad-browser/start-mullvad-browser and its own cache folder (15.0.24's start script tested on the lab)
+    upstream:
+      repology: mullvad-browser
+      notes: https://github.com/mullvad/mullvad-browser/releases
+      source: https://gitlab.torproject.org/tpo/applications/mullvad-browser
+
+  - id: torbrowser-launcher
+    name: "Tor Browser Launcher"
+    packages: [torbrowser-launcher]
+    flatpak: [org.torproject.torbrowser-launcher, com.github.micahflee.torbrowser-launcher]
+    checked: "0.3.9"
+    basis: current
+    checked_on: 2026-11-10
+    major_parts: 2
+    checks: [br.shader_cache]
+    relies_on: >-
+      where it keeps Tor Browser: $XDG_DATA_HOME/torbrowser/tbb/<architecture>/tor-browser (the Flatpak's own data
+      folder for its copy), with Browser/start-tor-browser in it (common.py's paths)
+    upstream:
+      repology: torbrowser-launcher
+      notes: https://github.com/torproject/torbrowser-launcher/blob/main/CHANGELOG.md
+      source: https://github.com/torproject/torbrowser-launcher
+
   - id: gnome
     name: "GNOME"
     packages: [gnome-shell]

@@ -515,6 +515,40 @@ def crashpad(check, scan, outcome):
                    side_effects=[f"Skipped: {b}" for b in blockers] if a and blockers else [])
 
 
+@fix("br.shader_cache")
+def shader_cache(check, scan, outcome):
+    """The two variables where sessions read them, environment.d for systemd's (Plasma 6, GNOME) and a block in
+    ~/.profile for the X11 session script (Cinnamon on Mint reads no environment.d: tested); then the old caches in the
+    browsers' own folders, while the browser is closed."""
+    from .browser import (SHADER_BROWSERS, SHADER_ENV_FILE, SHADER_ENV_TEXT, SHADER_OFF, _cache_off, installed_browsers,
+                          shader_copies, shader_leftovers, shader_pending, with_shader_block)
+    host = scan.host
+    a, effects, skipped = [], [], []
+    if not all(_cache_off(host.environ, k) for k in SHADER_OFF) and shader_pending(scan) != set(SHADER_OFF):
+        env_file = scan.paths.config_home / "environment.d" / SHADER_ENV_FILE
+        a.append(WriteFile(env_file, lambda old: SHADER_ENV_TEXT,
+                           "Turn the graphics drivers' shader caches off for sessions started by systemd (KDE Plasma, "
+                           "GNOME)", host.display(env_file)))
+        profile = host.home / ".profile"
+        a.append(WriteFile(profile, with_shader_block,
+                           "Turn them off for the X11 session script (Cinnamon, Xfce, MATE) and login shells",
+                           host.display(profile)))
+        effects += ["From your next login: programs started before then still keep a cache, so log out and in again "
+                    "before you next use Tor Browser or Mullvad Browser. Reverting it from History also takes effect "
+                    "from your next login.",
+                    "Games and other 3D programs then work out their graphics again each time they start: they can take "
+                    "longer to load and stutter at first."]
+    found = [f for f in installed_browsers(scan) if f.key in SHADER_BROWSERS]
+    for c, root, _ in shader_leftovers(scan, shader_copies(scan, found)):
+        if holders(scan, c.own):
+            skipped.append(f"Close {c.name} first.")
+            continue
+        a += delete(scan, root, f"{c.name}'s old shader cache")
+    return FixPlan(check.id, "Turn off the graphics drivers' shader caches", a,
+                   blockers=list(dict.fromkeys(skipped)) if not a else [],
+                   side_effects=effects + ([f"Skipped: {s}" for s in dict.fromkeys(skipped)] if a and skipped else []))
+
+
 # ------------------------------------------------------------------ desktop
 
 def thumbnail_deletions(scan: Scan, everything: bool = False, only: Path | None = None) -> list[DeleteFiles]:

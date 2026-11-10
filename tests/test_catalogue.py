@@ -47,7 +47,8 @@ def test_every_modifier_uses_context_keys_or_the_checks_own_findings(cat):
                                                      "agent_keys_unlimited"},
                         "auth.ssh_authorized_keys": {"sshd_reachable", "weak_authorized_keys"},
                         "auth.gpg_keys": {"gpg_weak_key"},
-                        "br.site_permissions": {"site_default_allow"}}
+                        "br.site_permissions": {"site_default_allow"},
+                        "br.shader_cache": {"old_shader_cache_only"}}
     # each is named in words, for the reason a severity was chosen
     assert set().union(*findings.values(), {"data_on_encrypted_disk"}) <= set(catalogue.CONTEXT_LABEL)
 

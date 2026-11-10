@@ -1196,3 +1196,236 @@ class ContentBlocking(Check):
                       notes=[Note("info", "Not used yet", f"{', '.join(dict.fromkeys(unused))}: no profile yet, so "
                                   "there is nothing to check there; add uBlock Origin when you first open it.")]
                       if unused else [])
+
+
+# ------------------------------------------------------------------ the graphics drivers' shader caches
+
+SHADER_BROWSERS = {"tor_browser": "Tor Browser", "mullvad_browser": "Mullvad Browser"}
+# what turns each driver's disk cache off, and the values it reads as that: NVIDIA's __GL_SHADER_DISK_CACHE is a
+# boolean (0 off); Mesa's MESA_SHADER_CACHE_DISABLE (MESA_GLSL_CACHE_DISABLE before Mesa 20) is true to turn it off
+NVIDIA_CACHE, MESA_CACHE = "__GL_SHADER_DISK_CACHE", "MESA_SHADER_CACHE_DISABLE"
+SHADER_OFF = {NVIDIA_CACHE: "0", MESA_CACHE: "true"}
+SHADER_ENV_FILE = "60-daprivacyscanner-shader-cache.conf"          # in ~/.config/environment.d
+SHADER_ENV_TEXT = ("# DA Privacy Kit: the graphics drivers keep no shader cache, which websites could time to "
+                   "recognise Tor Browser and Mullvad Browser\n" + "".join(f"{k}={v}\n" for k, v in SHADER_OFF.items()))
+SHADER_MARK = "# DA Privacy Kit: the graphics drivers keep no shader cache (Tor Browser, Mullvad Browser)"
+SHADER_LINE = "export " + " ".join(f"{k}={v}" for k, v in SHADER_OFF.items())
+# what the drivers call their cache folders, in $XDG_CACHE_HOME or $HOME/.cache (Mesa's single-file one too)
+SHADER_CACHE_DIRS = ("mesa_shader_cache", "mesa_shader_cache_db", "nvidia")
+MESA_LIBS = ("libGLX_mesa.so.0", "libEGL_mesa.so.0")
+LIB_DIRS = ("/usr/lib/x86_64-linux-gnu", "/usr/lib64", "/usr/lib", "/usr/lib/aarch64-linux-gnu")
+EGL_VENDORS = "/usr/share/glvnd/egl_vendor.d"
+START_SCRIPT = re.compile(r"""(?:"(/[^"]+/start-(?:tor|mullvad)-browser)"|(/[^\s"']+/start-(?:tor|mullvad)-browser))(?=[\s"']|$)""")
+SCRIPT_TURNS_OFF_NVIDIA = re.compile(r"^\s*export\s+__GL_SHADER_DISK_CACHE=0\s*$", re.M)
+# where torbrowser-launcher keeps Tor Browser (in its data folder; tbb/<architecture>/tor-browser), natively and as a
+# Flatpak (its id since 2023, and the earlier one); where Mullvad's package and Flatpak keep Mullvad Browser
+LAUNCHER_FLATPAKS = ("org.torproject.torbrowser-launcher", "com.github.micahflee.torbrowser-launcher")
+MULLVAD_PACKAGE = "/usr/lib/mullvad-browser/start-mullvad-browser"
+MULLVAD_FLATPAK = "net.mullvad.MullvadBrowser"
+FLATPAK_FILES = "current/active/files/lib/mullvad-browser/start-mullvad-browser"
+
+
+@dataclass
+class BrowserCopy:
+    """A Tor Browser or Mullvad Browser on this computer, as its start script runs it."""
+    name: str                   # Tor Browser, Mullvad Browser
+    script: Path | None         # start-tor-browser, start-mullvad-browser (None: a Flatpak whose files weren't found)
+    cache: Path | None          # where the drivers keep its cache: the HOME the script gives it, its .cache, or a
+                                # Flatpak's own cache folder; None when it is the session's own, shared with everything
+    own: Path                   # its folder (the profile is there): a program with a file open in it is the browser
+
+    def turns_off_nvidia(self, host) -> bool:
+        return self.script is not None and bool(SCRIPT_TURNS_OFF_NVIDIA.search(read_text(host, self.script) or ""))
+
+
+def _cache_off(env: dict[str, str], var: str) -> bool:
+    v = env.get(var, "").strip().lower()
+    if var == NVIDIA_CACHE:
+        return v in ("0", "false", "no", "off")
+    return v in ("1", "true", "yes", "y") or (var == MESA_CACHE and _cache_off(env, "MESA_GLSL_CACHE_DISABLE"))
+
+
+def nvidia_loaded(host) -> bool:
+    return host.sys_path("/proc/driver/nvidia/version").exists() or isdir(host.sys_path("/sys/module/nvidia"))
+
+
+def mesa_installed(host) -> bool:
+    if any("mesa" in p.name and p.suffix == ".json" for p in children(host.sys_path(EGL_VENDORS))):
+        return True
+    return any(host.sys_path(f"{d}/{lib}").exists() for d in LIB_DIRS for lib in MESA_LIBS)
+
+
+def _copy_from_script(scan: Scan, script: Path, name: str, flatpak: str | None = None) -> BrowserCopy:
+    host = scan.host
+    xdg = host.environ.get("XDG_CACHE_HOME")
+    if flatpak:                                   # a Flatpak's XDG_CACHE_HOME is its own, whatever the session's
+        own = host.home / ".var/app" / flatpak
+        return BrowserCopy(name, script, own / "cache", own)
+    if (script.parent / "is-packaged-app").exists():   # the script keeps its profile in the home folder then
+        home = host.home / (".tor-browser" if name == "Tor Browser" else ".mullvad-browser")
+    else:
+        home = script.parent
+    return BrowserCopy(name, script, None if xdg else home / ".cache", home)
+
+
+def _linked_script(scan: Scan, exec_line: str) -> Path | None:
+    """The start script a menu entry's program is a link to (/usr/bin/mullvad-browser), on the scanned system."""
+    prog = (exec_line.split() or [""])[0].strip("\"'")
+    if not prog.startswith("/"):
+        prog = f"/usr/bin/{prog}" if prog and "/" not in prog else ""
+    if not prog:
+        return None
+    try:
+        target = os.readlink(scan.host.sys_path(prog))
+    except OSError:
+        return None
+    real = os.path.normpath(os.path.join(os.path.dirname(prog), target))
+    return scan.host.sys_path(real) if re.search(r"/start-(tor|mullvad)-browser$", real) else None
+
+
+def shader_copies(scan: Scan, found: list[FoundBrowser]) -> list[BrowserCopy]:
+    """Every copy of Tor Browser and Mullvad Browser the app can find: those the menu entries start, torbrowser-
+    launcher's, Mullvad's package and its Flatpak. Not the app's own in ~/TempBrowser (they start with the caches off)."""
+    from .. import browsers
+    host, out, seen = scan.host, [], set()
+
+    def add(script: Path, name: str, flatpak: str | None = None):
+        if script in seen or not isfile(script) or script.is_relative_to(host.home / "TempBrowser"):
+            return
+        seen.add(script)
+        out.append(_copy_from_script(scan, script, name, flatpak))
+
+    for f in found:
+        name = SHADER_BROWSERS.get(f.key)
+        for path in f.paths if name else ():
+            text = read_text(host, path) if path.suffix == ".desktop" else None
+            e = browsers.read_desktop_entry(path, text) if text else None
+            if e is None:
+                continue
+            for m in START_SCRIPT.finditer(e.exec):
+                add(Path(m.group(1) or m.group(2)), name)
+            linked = _linked_script(scan, e.exec)
+            if linked is not None:
+                add(linked, name)
+    for base, flatpak in [(scan.paths.data_home / "torbrowser", None)] + [
+            (host.home / ".var/app" / i / "data/torbrowser", i) for i in LAUNCHER_FLATPAKS]:
+        for arch in children(base / "tbb"):
+            add(arch / "tor-browser/Browser/start-tor-browser", "Tor Browser", flatpak)
+    add(host.sys_path(MULLVAD_PACKAGE), "Mullvad Browser")
+    for apps in (host.sys_path("/var/lib/flatpak/app"), scan.paths.data_home / "flatpak/app"):
+        add(apps / MULLVAD_FLATPAK / FLATPAK_FILES, "Mullvad Browser", MULLVAD_FLATPAK)
+    return out
+
+
+def _env_file_sets(host, path: Path) -> set[str]:
+    """Which of the variables a file of environment settings turns off as SHADER_OFF does."""
+    text = read_text(host, path) or ""
+    return {k for k, v in SHADER_OFF.items() if re.search(rf"^\s*(?:export\s+)?{k}={v}\s*$", text, re.M)}
+
+
+def shader_pending(scan: Scan) -> set[str]:
+    """The variables the app's own two files turn off, which the session gets at the next login: ~/.config/
+    environment.d's (systemd's sessions: Plasma, GNOME) and the block in ~/.profile (the X11 session script)."""
+    env_d = _env_file_sets(scan.host, scan.paths.config_home / "environment.d" / SHADER_ENV_FILE)
+    profile = read_text(scan.host, scan.host.home / ".profile") or ""
+    block = f"{SHADER_MARK}\n{SHADER_LINE}\n" in profile
+    return env_d if block else set()
+
+
+def with_shader_block(old: str | None) -> str:
+    """~/.profile with the app's block at its end (replacing an earlier one of its own)."""
+    kept = re.sub(rf"\n*{re.escape(SHADER_MARK)}\n[^\n]*\n?", "\n", old or "").rstrip("\n")
+    return (kept + "\n\n" if kept else "") + f"{SHADER_MARK}\n{SHADER_LINE}\n"
+
+
+def shader_leftovers(scan: Scan, copies: list[BrowserCopy]) -> list[tuple[BrowserCopy, Path, Tally]]:
+    """The drivers' caches already in a copy's own cache folder."""
+    out = []
+    for c in copies:
+        bases = [c.cache] if c.cache else []
+        if not c.cache and c.script is not None and c.own != scan.host.home:
+            bases.append(c.own / ".cache")        # from before the session set XDG_CACHE_HOME, or a start without it
+        for base in bases:
+            for d in SHADER_CACHE_DIRS:
+                root = base / d
+                if isdir(root) and not root.is_symlink():
+                    t = tally(root, limit=20_000)
+                    if t.files:
+                        out.append((c, root, t))
+    return out
+
+
+@register
+class ShaderCache(Check):
+    id = "br.shader_cache"
+
+    def detect(self, scan: Scan) -> Outcome:
+        from ..vpn import DataError
+        host = scan.host
+        try:
+            found = [f for f in installed_browsers(scan) if f.key in SHADER_BROWSERS]
+        except DataError as e:
+            return unknown(f"The app's list of browsers couldn't be read: {e}")
+        copies = shader_copies(scan, found)
+        names = list(dict.fromkeys([SHADER_BROWSERS[f.key] for f in found] + [c.name for c in copies]))
+        if not names:
+            return absent("Neither Tor Browser nor Mullvad Browser is installed (Tor or Mullvad Browser in memory, "
+                          "in the Tools, keeps no shader cache).")
+        ev = [Evidence.val(f.name, f.describe()) for f in found]
+        ev += [Evidence.path(f"{c.name}'s start script", host.display(c.script)) for c in copies if c.script]
+        pending, on, later = shader_pending(scan), [], []
+        drivers = []
+        if mesa_installed(host):
+            drivers.append(("Mesa", MESA_CACHE, "Mesa's shader cache (Intel and AMD graphics, and drawing in software)"))
+        if nvidia_loaded(host):
+            drivers.append(("NVIDIA", NVIDIA_CACHE, "NVIDIA's shader cache"))
+        for driver, var, label in drivers:
+            if _cache_off(host.environ, var):
+                ev.append(Evidence.val(label, f"off ({var}={host.environ[var]})"))
+                continue
+            if var in pending:
+                ev.append(Evidence.val(label, "off from your next login"))
+                later.append(driver)
+                continue
+            # NVIDIA's: the start scripts turn it off since December 2023, for a browser all of whose copies the app
+            # found and read; one it didn't find (a menu entry whose command doesn't show it) counts as on
+            covered = [n for n in names if var == NVIDIA_CACHE and any(c.name == n for c in copies)
+                       and all(c.turns_off_nvidia(host) for c in copies if c.name == n)]
+            if covered and len(covered) == len(names):
+                ev.append(Evidence.val(label, f"on, but {' and '.join(covered)} turn{'s' if len(covered) == 1 else ''} "
+                                              "it off in the start script"))
+                continue
+            ev.append(Evidence.val(label, "on" + (f" (the start script turns it off for {' and '.join(covered)})"
+                                                  if covered else "")))
+            on.append(driver)
+        old = shader_leftovers(scan, copies)
+        for c, root, t in old:
+            ev.append(Evidence.val(f"{c.name}'s old shader cache ({host.display(root)})", t.describe()))
+        notes = [Note("info", "How a cache links visits",
+                      "A website can have the graphics driver compile a shader of its own and time it: one from the "
+                      "cache is ready much sooner, which tells a second site, or the same one after New Identity or a "
+                      "restart, that this computer has drawn it before. Tor Browser's and Mullvad Browser's start "
+                      "scripts turn NVIDIA's cache off, not Mesa's. At Tor Browser's Safest level JavaScript, and "
+                      "with it WebGL, is off. Tor or Mullvad Browser in memory, in the Tools, starts them with both "
+                      "caches off.")]
+        if later:
+            notes.append(Note("info", "From your next login",
+                              "Programs started before you log in again still keep a cache: log out and in again "
+                              "before you next use Tor Browser or Mullvad Browser."))
+        if host.environ.get("XDG_CACHE_HOME") and "Mesa" in on:
+            notes.append(Note("limitation", "Its cache is shared with your other programs",
+                              "Your session sets XDG_CACHE_HOME, so Mesa keeps the browsers' shaders in "
+                              f"{host.display(Path(host.environ['XDG_CACHE_HOME']))}/mesa_shader_cache with every other "
+                              "program's: the app can't tell them apart, and doesn't delete it."))
+        findings = {"old_shader_cache_only": not on and bool(old)}
+        who = " and ".join(names)
+        if on:
+            drv = " and ".join(on)
+            return warned(f"Websites could link your visits in {who}: the graphics driver ({drv}) keeps the shaders "
+                          "pages hand it in a cache on the disk.", *ev, notes=notes, findings=findings)
+        if old:
+            return warned(f"The graphics drivers' shader caches are off, but the old one is still on the disk: "
+                          f"{', '.join(dict.fromkeys(c.name for c, _, _ in old))}.", *ev, notes=notes, findings=findings)
+        if not drivers:
+            return passed("No graphics driver with a shader cache was found.", *ev, notes=notes, findings=findings)
+        return passed(f"The graphics drivers keep no shader cache for {who}.", *ev, notes=notes, findings=findings)

@@ -90,7 +90,7 @@
 #   and chrome_or_edge_default; br.default_browser sets default_closed_ui;
 #   auth.ssh_client_settings sets agent_forwarded_everywhere, host_keys_unchecked and agent_keys_unlimited;
 #   auth.ssh_authorized_keys sets sshd_reachable and weak_authorized_keys; auth.gpg_keys sets gpg_weak_key;
-#   br.site_permissions sets site_default_allow).
+#   br.site_permissions sets site_default_allow; br.shader_cache sets old_shader_cache_only).
 #   data_on_encrypted_disk is set by the runner, for every check whose modifiers use it: whether what the
 #   check found is on encrypted storage (Check.stored_at says where: the user's folders unless the check says
 #   otherwise; a check may set it itself, as enc.snapshots_retain_deleted does). Disk encryption keeps it safe
@@ -2154,6 +2154,65 @@ checks:
     remedy: >
       Guide… keeps the browser's cache in memory instead of on disk, and deletes the one already there. The list of open
       tabs is still saved in the profile: clearing history when the browser closes, or private windows, keeps that short.
+
+  - id: br.shader_cache
+    title: Tor Browser and Mullvad Browser visits can be linked through the graphics driver's cache
+    category: browser
+    # only ever a risk (warn_lower below these): 7; 2 when the caches are off and only an old one is left
+    severity: 9
+    warn_lower: 2
+    modifiers:
+      - when: "old_shader_cache_only"
+        severity: 4
+    scope: user
+    tier: auto
+    easy:
+      cost: >-
+        From your next login. Games and other 3D programs then work out their graphics again each time they start, so
+        they can take longer to load and stutter at first.
+    why: >
+      Tor Browser and Mullvad Browser keep nothing between sessions and make everyone look alike, but the graphics
+      driver keeps a cache on the disk of the shaders (small drawing programs) that pages hand it through WebGL, out of
+      the browser's reach. A website can give it a shader of its own and time it: one that comes from the cache is
+      ready much sooner. A second site, or the same one after New Identity or a restart, that times the same shader
+      learns that this computer has drawn it before, and can link the visits. The browsers' own start scripts turn
+      NVIDIA's cache off, but not Mesa's (Intel and AMD graphics, and drawing without the graphics card), which they
+      keep in the browser's own folder.
+    detect:
+      - 'Tor Browser and Mullvad Browser installed: menu entries (browsers.yaml, as br.default_browser finds them), the
+        copies they start (a start-tor-browser or start-mullvad-browser in the entry''s command, or the program it
+        links to: /usr/bin/mullvad-browser), torbrowser-launcher''s folders (native and Flatpak), Mullvad''s package
+        (/usr/lib/mullvad-browser) and its Flatpak. Not the app''s own copies in ~/TempBrowser, started with both
+        caches off'
+      - 'Mesa: its GL libraries (GLVND''s EGL vendor file, libGLX_mesa, libEGL_mesa); its cache is off when
+        MESA_SHADER_CACHE_DISABLE (MESA_GLSL_CACHE_DISABLE before Mesa 20) is true. No start script turns it off
+        (Tor Browser 15.0.24, Mullvad Browser 16.0.1); with HOME moved into the browser''s folder it writes
+        <HOME>/.cache/mesa_shader_cache, or $XDG_CACHE_HOME/mesa_shader_cache when the session sets that (tested on
+        the lab: Mesa 25, iris and llvmpipe, which NVIDIA computers draw WebGL with on Wayland)'
+      - 'NVIDIA: /proc/driver/nvidia/version or /sys/module/nvidia; its cache is off when __GL_SHADER_DISK_CACHE is 0
+        or false, which the start scripts export since December 2023 (tor-browser-build#41017): off for each copy
+        whose script does it, still on for a copy started any other way'
+      - 'The session''s environment is the app''s own (started from the menu, the browser gets the same); the app''s
+        own two files (~/.config/environment.d/60-daprivacyscanner-shader-cache.conf and its block in ~/.profile)
+        count as off from the next login'
+      - 'An old cache: mesa_shader_cache, mesa_shader_cache_db or nvidia in the cache folder of the HOME the start
+        script gives the browser (a tarball''s Browser folder; ~/.tor-browser or ~/.mullvad-browser when the copy has
+        is-packaged-app) or in a Flatpak''s own ~/.var/app/ID/cache. One in the session''s own cache folder, shared
+        with every program, can''t be told apart and isn''t counted'
+    fix: >
+      Writes __GL_SHADER_DISK_CACHE=0 and MESA_SHADER_CACHE_DISABLE=true where sessions read them: a file of the app's
+      own in ~/.config/environment.d (the systemd user manager: KDE Plasma 6, GNOME) and a marked block in ~/.profile
+      (the X11 session script of LightDM, SDDM and GDM: Cinnamon, Xfce and MATE, and login shells; environment.d doesn't
+      reach Cinnamon on Mint, tested: /etc/environment.d's GSK_RENDERER wasn't in its environment), both reverted
+      from History. Deletes the old caches in the browsers' own folders while the browser is closed.
+    remedy: >
+      Websites could recognise Tor Browser or Mullvad Browser on this computer across sites, sessions and New Identity,
+      by timing the graphics driver's cache. Fix… turns the graphics drivers' shader caches off for your account, from
+      your next login, and deletes the old cache the browsers kept.
+    verify: >
+      NVIDIA's cache with a WebGL page in the browser itself (a test program's small shader wasn't cached on the lab;
+      Firefox's are, per tor-browser-build#41017); that a Flatpak browser gets the session's variables (flatpak run
+      passes the caller's environment on); the cache of Mullvad Browser's Flatpak in ~/.var/app/ID/cache.
 
   - id: br.webrtc
     title: WebRTC IP exposure

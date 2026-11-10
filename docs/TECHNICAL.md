@@ -709,10 +709,25 @@ XDG_CONFIG_HOME, XDG_CACHE_HOME, XDG_DATA_HOME, XDG_STATE_HOME, TMPDIR → /home
 LANG, LANGUAGE, LC_CTYPE, LC_MESSAGES (from the host: the user's language; not the regional formats,
   LC_TIME, LC_NUMERIC and the rest, nor LC_ALL: they say the country where the language doesn't)
 the display's variables (section 7.10); PULSE_SERVER when sound is allowed (section 7.11)
+__GL_SHADER_DISK_CACHE=0  MESA_SHADER_CACHE_DISABLE=true   (NO_SHADER_CACHE, last, over anything else)
 ```
 
 The start script moves `HOME` into its own folder, but GTK, fontconfig and Mesa follow the XDG variables:
 pointing them into the session folder keeps their state in memory too.
+
+**No shader cache** (`sandbox.NO_SHADER_CACHE`; tor-browser#40054). The graphics drivers keep the shaders pages
+compile through WebGL in a cache on the disk, and a page can time one of its own: from the cache it was ready
+in 67 ms against 1450 ms (40 programs, stock Mullvad Browser 15.0.24 on Mesa's llvmpipe, on the lab), in the
+session after a restart and every one after it. A second site, or the same one after New Identity, can tell the
+computer drew it before. The start scripts turn NVIDIA's cache off (`export __GL_SHADER_DISK_CACHE=0`,
+tor-browser-build#41017, since December 2023), never Mesa's, which follows `XDG_CACHE_HOME` (else `HOME`): stock,
+it lands in the browser's own folder (`Browser/.cache/mesa_shader_cache`, kept between sessions); in the app's
+sandbox, before this, in the session folder for the length of a run (107 files, with the card not given). Every
+start now sets both, sandboxed or not; without the sandbox a cache folder of the user's own
+(`__GL_SHADER_DISK_CACHE_PATH`, `MESA_SHADER_CACHE_DIR`, `MESA_GLSL_CACHE_DIR`), outside the RAM disk, isn't passed
+on (`SHADER_CACHE_PATHS`). Tested on the lab (Quadro P620 with NVIDIA 580, Mesa 25): with the card given, the
+page ran on it and no cache was written anywhere (session folder, browser folder, `~/.cache`, `~/.nv`); without
+it, none either. `br.shader_cache` covers the user's own Tor Browser and Mullvad Browser.
 
 **Before bubblewrap: crash dumps and the kernel keyring.** Every start (sandboxed or not, Xephyr, and View
 offline…) is wrapped by `sandbox.fresh_keyring`, which runs the host's `/usr/bin/python3 -I -c KEYRING`

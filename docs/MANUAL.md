@@ -392,6 +392,11 @@ is left on your disk afterwards.
 Tor Browser starts at the **Safest** security level (JavaScript off on most sites). If a site needs more,
 lower it with the shield button in the browser's toolbar. Mullvad Browser starts at **Standard**.
 
+Either way the graphics drivers keep no cache of what pages draw with WebGL: a website could time such a cache
+to tell it had been on this computer before, under another site or after New Identity. For Tor Browser or
+Mullvad Browser you installed yourself, the scan checks the same thing, and its **Easy fix** turns the caches off
+for your account.
+
 **Files in and out.** The browser sees only its own folders:
 
 - **The Outbox** (`~/TempBrowser/Outbox for Tor Browser`, or for Mullvad Browser): copy files into it with

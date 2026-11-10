@@ -70,6 +70,7 @@ CONTEXT_LABEL = {
     "weak_authorized_keys": "a weak key can log in as you",
     "gpg_weak_key": "one of your GnuPG keys is weak",
     "site_default_allow": "a browser lets every website use the camera, microphone or location",
+    "old_shader_cache_only": "the shader caches are off, and only an old one is left",
 }
 
 CATEGORY_PREFIX = {
