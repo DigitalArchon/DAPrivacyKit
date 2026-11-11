@@ -1129,7 +1129,7 @@ apps:
 
   - id: mullvad-browser
     name: "Mullvad Browser"
-    packages: [mullvad-browser, mullvad-browser-bin]
+    packages: [mullvad-browser, mullvad-browser-bin, mullvad-browser-latest-bin]
     flatpak: [net.mullvad.MullvadBrowser]
     checked: "16.0.1"
     basis: current
@@ -1141,11 +1141,31 @@ apps:
       /usr/lib/mullvad-browser/start-mullvad-browser (read from the 16.0.1 .deb); the Flatpak's
       lib/mullvad-browser/start-mullvad-browser and its own cache folder (15.0.24's start script tested on the lab);
       application.ini's Vendor and Name (~/.mullvad/mullvadbrowser, ~/.cache/mullvad/mullvadbrowser) and profiles.ini;
-      the AUR's mullvad-browser-bin running /opt/mullvad-browser/mullvadbrowser without the script (15.0.26, 16.0.1)
+      the AUR's mullvad-browser-bin running /opt/mullvad-browser/mullvadbrowser without the script (15.0.26, 16.0.1;
+      CachyOS builds the same into its own repository), and mullvad-browser-latest-bin the same without is-packaged-app
+      (16.0.1: the script would make root's /opt/mullvad-browser the browser's home, so it isn't used there)
     upstream:
       repology: mullvad-browser
       notes: https://github.com/mullvad/mullvad-browser/releases
       source: https://gitlab.torproject.org/tpo/applications/mullvad-browser
+
+  - id: tor-browser-aur
+    name: "Tor Browser (the AUR's tor-browser-bin)"
+    packages: [tor-browser-bin, tor-browser-alpha-bin]
+    checked: "16.0.1"
+    basis: tested
+    checked_on: 2026-11-11
+    checks: [br.shader_cache]
+    relies_on: >-
+      /usr/bin/tor-browser (tor-browser-bin 16.0.1-1, tor-browser-alpha-bin 16.0a13-1): the package's name in
+      _TB_PKGNAME_ or _TA_PKGNAME_, the browser unpacked into ~/.local/opt/<package>/app, emptied first (rm -rf app/*),
+      whenever VERSION there differs from the package's, then app/Browser/start-tor-browser run with the arguments; menu
+      entries tor-browser.desktop and tor-browser-alpha-bin.desktop with Exec=tor-browser %u (tested on the CachyOS VM:
+      the update removed the block, the menu entry kept the cache off)
+    upstream:
+      repology: tor-browser
+      notes: https://aur.archlinux.org/packages/tor-browser-bin
+      source: https://aur.archlinux.org/cgit/aur.git/tree/?h=tor-browser-bin
 
   - id: torbrowser-launcher
     name: "Tor Browser Launcher"

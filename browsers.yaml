@@ -483,8 +483,9 @@ browsers:
     class: privacy
     blocking: none_allowed
     detect:
+      # the AUR's tor-browser-bin and tor-browser-alpha-bin: tor-browser.desktop and tor-browser-alpha-bin.desktop
       desktop: [torbrowser.desktop, start-tor-browser.desktop, org.torproject.torbrowser-launcher.desktop,
-                com.github.micahflee.torbrowser-launcher.desktop]
+                com.github.micahflee.torbrowser-launcher.desktop, tor-browser.desktop, tor-browser-alpha-bin.desktop]
     why: >-
       The most private browser there is. With a VPN on this computer too, your internet provider can't see
       you use Tor (that can matter in some countries), and if Tor ever failed to protect your address, sites

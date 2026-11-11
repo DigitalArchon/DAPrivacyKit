@@ -519,19 +519,35 @@ def crashpad(check, scan, outcome):
 def shader_cache(check, scan, outcome):
     """For each Tor Browser and Mullvad Browser whose cache is in a folder of its own: Mesa's cache folders deleted and a
     file put in each one's place, so Mesa keeps no cache for that browser alone (every other program keeps its own).
-    A browser whose cache is the one every program shares can't be blocked alone: the plan says why."""
-    from .browser import (MESA_CACHE, MESA_CACHE_DIRS, SHADER_BLOCK_TEXT, SHADER_BROWSERS, _cache_off, installed_browsers,
-                          mesa_blocked, mesa_installed, mesa_old_caches, shader_copies)
+    A copy its package unpacks again at each update, emptying its folder (the AUR's tor-browser-bin), also gets a menu
+    entry of the account's own, the package's id, that starts it with both drivers' caches off, which lasts. A browser
+    whose cache is the one every program shares can't be blocked alone: the plan says why."""
+    from .browser import (MESA_CACHE, MESA_CACHE_DIRS, NVIDIA_CACHE, SHADER_BLOCK_TEXT, SHADER_BROWSERS, _cache_off,
+                          installed_browsers, mesa_blocked, mesa_installed, mesa_old_caches, no_shader_cache_entry,
+                          nvidia_loaded, script_unusable, shader_copies)
     host = scan.host
     found = [f for f in installed_browsers(scan) if f.key in SHADER_BROWSERS]
     copies = shader_copies(scan, found)
-    a, skipped, why = [], [], []
+    a, skipped, why, terminal = [], [], [], []
     mesa_on = mesa_installed(host) and not _cache_off(host.environ, MESA_CACHE)
+    drivers_on = mesa_on or (nvidia_loaded(host) and not _cache_off(host.environ, NVIDIA_CACHE))
     for c in copies:
         if c.launcher is not None:
             why.append(f"{c.name} is started without its own start script, so its cache is the one every program shares: "
-                       "fix br.start_script first, then this.")
+                       + ("it can't be started through it here (br.start_script says why)." if script_unusable(host, c.script)
+                          else "fix br.start_script first, then this."))
             continue
+        source = read_text(host, c.source) if c.source is not None else None
+        if c.unpacked_by is not None and drivers_on and not c.menu_entry_current(host) and source \
+                and "[Desktop Entry]" in source:
+            target = scan.paths.data_home / "applications" / c.entry.name
+            a.append(WriteFile(target, lambda old, s=source: no_shader_cache_entry(s),
+                               f"Start {c.name} from your menu with the graphics drivers' shader caches off, which "
+                               f"{host.display(c.unpacked_by)} can't undo when it unpacks the browser again at an update",
+                               host.display(target)))
+            terminal.append(c)
+        if c.unpacked_by is not None and not isfile(c.script):
+            continue                              # not unpacked yet: its first start empties the folder anyway
         busy = bool(holders(scan, c.own))
         olds = dict(mesa_old_caches(c))
         if busy and olds:
@@ -543,8 +559,9 @@ def shader_cache(check, scan, outcome):
         if not mesa_on:
             continue
         if c.cache is None:
-            why.append(f"Your session sets XDG_CACHE_HOME, so {c.name}'s cache is the one every program shares: the "
-                       "app can't block it for the browser alone (the check's note says what can).")
+            if c.unpacked_by is None:
+                why.append(f"Your session sets XDG_CACHE_HOME, so {c.name}'s cache is the one every program shares: the "
+                           "app can't block it for the browser alone (the check's note says what can).")
             continue
         if mesa_blocked(c):
             continue
@@ -559,6 +576,12 @@ def shader_cache(check, scan, outcome):
             a.append(w)
     effects = ["It applies from the browser's next start, and to the browser alone: every other program keeps its "
                "shader cache."] if any(isinstance(x, WriteFile) for x in a) else []
+    effects += [f"{c.name}'s menu entry: started from the menu, a link or as your default browser. Typed in a terminal, "
+                f"{c.unpacked_by.name} starts it as before, "
+                + ("blocked in its folder only until the next update unpacks it again"
+                   if isfile(c.script) else "with Mesa's cache on (the block goes in once it is unpacked)")
+                + f"; `MESA_SHADER_CACHE_DISABLE=true {c.unpacked_by.name}` keeps the cache off there too."
+                for c in terminal]
     skipped = list(dict.fromkeys(skipped))
     return FixPlan(check.id, "Keep the graphics drivers from caching the browsers' shaders", a,
                    blockers=skipped if not a else [],
@@ -571,11 +594,17 @@ def start_script(check, scan, outcome):
     """A menu entry of the account's own, with the package's id, that starts the browser through its start script
     (with the profile it used), which a package's own program skipped; and the browser's cache that program left in the
     one every program shares, deleted while the browser is closed."""
-    from .browser import SHADER_BROWSERS, installed_browsers, real_path, skipped_scripts, started_by_script
+    from .browser import (SHADER_BROWSERS, installed_browsers, real_path, script_unusable, skipped_scripts,
+                          started_by_script)
     host = scan.host
     found = [f for f in installed_browsers(scan) if f.key in SHADER_BROWSERS]
-    a, effects, skipped = [], [], []
+    a, effects, skipped, why = [], [], [], []
     for s in skipped_scripts(scan, found):
+        unusable = script_unusable(host, s.script)
+        if unusable:
+            why.append(f"{s.name} can't be started through its start script here: {unusable}. Ask the package's "
+                       "maintainer to add it, as Mullvad's own package and the AUR's mullvad-browser-bin do.")
+            continue
         target = scan.paths.data_home / "applications" / s.entry.name
         text = started_by_script(read_text(host, s.source) or "", real_path(host, s.script), s.profile)
         what = (f"Start {s.name} from your menu through its own start script ({host.display(s.script)})"
@@ -598,9 +627,11 @@ def start_script(check, scan, outcome):
                     f"package's {s.launcher.name} still starts it without its script.",
                     "It applies from the browser's next start."]
     skipped = list(dict.fromkeys(skipped))
+    why = list(dict.fromkeys(why))
     return FixPlan(check.id, "Start the browser through its own start script", a,
                    side_effects=list(dict.fromkeys(effects)) + [f"Skipped: {x} (its old cache stays until then)"
-                                                                for x in skipped], also=["br.shader_cache"])
+                                                                for x in skipped]
+                   + (why if not a else [f"Not covered: {w}" for w in why]), also=["br.shader_cache"])
 
 
 # ------------------------------------------------------------------ desktop

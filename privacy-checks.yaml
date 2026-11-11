@@ -2159,12 +2159,15 @@ checks:
   - id: br.shader_cache
     title: Tor Browser and Mullvad Browser visits can be linked through the graphics driver's cache
     category: browser
-    # only ever a risk (warn_lower below these): 7; 2 when the caches are off and only an old one is left
+    # only ever a risk (warn_lower below these): 7; 4 when blocked only until the package unpacks the browser again (the
+    # AUR's tor-browser-bin); 2 when the caches are off and only an old one is left
     severity: 9
     warn_lower: 2
     modifiers:
       - when: "old_shader_cache_only"
         severity: 4
+      - when: "blocked_until_update"
+        severity: 6
     scope: user
     tier: auto
     easy:
@@ -2182,8 +2185,11 @@ checks:
         account''s own over the system''s, by id), the copies they start (a start-tor-browser or start-mullvad-browser
         in the entry''s command, the program it links to: /usr/bin/mullvad-browser in Mullvad''s package, or a package''s
         own program that runs the browser without it: br.start_script), torbrowser-launcher''s folders (native and
-        Flatpak), tor-browser-bin''s ~/.local/opt/tor-browser, Mullvad''s package (/usr/lib/mullvad-browser) and its
-        Flatpak. Not the app''s own copies in ~/TempBrowser, started with both caches off'
+        Flatpak), the copy the AUR''s tor-browser-bin and tor-browser-alpha-bin unpack (their /usr/bin/tor-browser names
+        the package, _TB_PKGNAME_ or _TA_PKGNAME_, and unpacks it into ~/.local/opt/<package>/app, emptying that folder
+        first, whenever the package''s version changes; found through the menu entry even before its first start, else
+        in ~/.local/opt), Mullvad''s package (/usr/lib/mullvad-browser) and its Flatpak. Not the app''s own copies in
+        ~/TempBrowser, started with both caches off'
       - 'Mesa: its GL libraries (GLVND''s EGL vendor file, libGLX_mesa, libEGL_mesa). It follows XDG_CACHE_HOME, else
         HOME: with HOME moved into the browser''s folder by the start script, its cache is <HOME>/.cache/mesa_shader_cache,
         the browser''s alone (a Flatpak''s is ~/.var/app/ID/cache); otherwise the one every program shares. Blocked for a
@@ -2196,16 +2202,24 @@ checks:
         tor-browser-build#41017), or for every program when the session sets it'
       - 'An old cache: Mesa''s cache folders in a copy''s own cache folder once caching is off. One in the cache every
         program shares can''t be told apart and isn''t counted'
+      - 'A copy its package unpacks again (tor-browser-bin): blocked in its folder only until the next update (4), unless
+        the menu entry the desktop uses is the app''s own, made from the package''s as it is now, which starts it with
+        both caches off (a pass, with a note on starting it from a terminal)'
     fix: >
       For each copy whose cache is a folder of its own: Mesa's cache folders there deleted (the browser closed) and a
       file put in each one's place (WriteFile after the deletion, reverted from History; the deletion can't be).
-      Nothing changes for any other program. A copy started without its start script is left to br.start_script,
-      after which its cache is its own; with XDG_CACHE_HOME set in the session, the check's note gives the variables
-      that turn the cache off for every program, and their cost.
+      Nothing changes for any other program. A copy its package unpacks again at each update also gets a menu entry of
+      the account's own under the package's id, its commands run through env with MESA_SHADER_CACHE_DISABLE=true and
+      __GL_SHADER_DISK_CACHE=0 (sandbox.NO_SHADER_CACHE), marked at its top and redone when the package's changes,
+      which no update removes. A copy started without its start script is left to br.start_script, after which its
+      cache is its own; with XDG_CACHE_HOME set in the session, the check's note gives the variables that turn the
+      cache off for every program, and their cost.
     remedy: >
       Websites could recognise Tor Browser or Mullvad Browser on this computer across sites, sessions and New Identity,
       by timing the graphics driver's cache. Fix… keeps the driver from caching the browsers' shaders, and deletes the
-      old cache, for these browsers alone: games and other programs keep theirs.
+      old cache, for these browsers alone: games and other programs keep theirs. Where the browser's package unpacks it
+      again at each update (Tor Browser from the AUR), the fix also starts it from your menu with the cache off, so
+      updates don't undo it.
     related: [br.start_script]
     verify: >
       NVIDIA's cache with a WebGL page in the browser itself (a test program's small shader wasn't cached on the lab;

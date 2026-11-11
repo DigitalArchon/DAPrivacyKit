@@ -114,7 +114,7 @@ def test_not_applicable_without_either_browser(cat, tmp_path):
 def test_mesa_s_cache_is_a_risk_of_seven_and_nvidia_s_is_turned_off_by_the_start_script(cat, tmp_path):
     host = host_with(tmp_path, tor_tarball(), files={**MESA, **NVIDIA})
     o = detect(cat, "br.shader_cache", make_scan(host))
-    assert o.status is Status.WARN and o.findings == {"old_shader_cache_only": False}
+    assert o.status is Status.WARN and o.findings == {"old_shader_cache_only": False, "blocked_until_update": False}
     assert o.summary.startswith("Websites could link your visits in Tor Browser: the graphics driver (Mesa)")
     e = ev(o)
     assert e["Tor Browser (~/tor-browser/Browser/start-tor-browser)"] == \
@@ -167,7 +167,7 @@ def test_off_in_the_session_passes_and_an_old_cache_left_is_a_small_risk(cat, tm
                                                             "(MESA_SHADER_CACHE_DISABLE=true)"
     host = host_with(tmp_path / "b", tor_tarball(), files=MESA, env={"MESA_SHADER_CACHE_DISABLE": "1"})
     o = detect(cat, "br.shader_cache", make_scan(host))
-    assert o.status is Status.WARN and o.findings == {"old_shader_cache_only": True}
+    assert o.status is Status.WARN and o.findings == {"old_shader_cache_only": True, "blocked_until_update": False}
     assert o.summary.endswith("the old one is still on the disk: Tor Browser.")
     spec = cat["br.shader_cache"]
     assert as_warning(spec, effective_severity(spec, o.findings)).value == 2
@@ -337,3 +337,189 @@ def test_mesa_blocked_needs_a_file_where_each_folder_would_be(tmp_path):
     (tmp_path / "mesa_shader_cache_db").rmdir()
     (tmp_path / "mesa_shader_cache_db").symlink_to("/dev/null")
     assert mesa_blocked(c)
+
+
+# ------------------------------------------------------------------ the AUR's tor-browser-bin, unpacked again at updates
+
+from pathlib import Path  # noqa: E402
+
+from daprivacyscanner.checks.browser import SHADER_ENTRY_MARK, installed_browsers, no_shader_cache_entry  # noqa: E402
+
+TOR_BIN = (Path(__file__).parent / "samples/aur/tor-browser-bin-16.0.1-1.sh").read_text()
+# tor-browser-alpha-bin 16.0a13-1's: the same script, its variables renamed and its own package name
+TOR_ALPHA = TOR_BIN.replace("_TB_", "_TA_").replace("_TA_PKGNAME_='tor-browser'", "_TA_PKGNAME_='tor-browser-alpha-bin'")
+TOR_BIN_ENTRY = ("[Desktop Entry]\nVersion=1.0\nType=Application\nName=Tor Browser\nExec=tor-browser %u\nIcon=tor-browser\n"
+                 "Categories=Network;WebBrowser;Security;\nStartupWMClass=tor-browser\n")
+TOR_BIN_FILES = {"/usr/bin/tor-browser": TOR_BIN, "/usr/share/applications/tor-browser.desktop": TOR_BIN_ENTRY,
+                 "/opt/tor-browser/tor-browser-linux-x86_64-16.0.1.tar.xz": "x"}
+APP = ".local/opt/tor-browser/app"
+
+
+def unpacked(cache_files=2, name="tor-browser"):
+    """What tor-browser.in leaves in the home folder after a start: VERSION, LOG and the browser in app/."""
+    files = {f".local/opt/{name}/VERSION": "16.0.1\n", f".local/opt/{name}/LOG": "",
+             f".local/opt/{name}/app/Browser/start-tor-browser": TOR_SCRIPT}
+    for i in range(cache_files):
+        files[f".local/opt/{name}/app/Browser/.cache/mesa_shader_cache/a{i}/{i:040x}"] = "shader"
+    return files
+
+
+def update(host, name="tor-browser"):
+    """What tor-browser.in does at the first start after an update: app/ emptied (rm -rf app/*), the new version
+    unpacked into it."""
+    import shutil
+    app = host.home / f".local/opt/{name}/app"
+    for p in app.iterdir():
+        shutil.rmtree(p) if p.is_dir() and not p.is_symlink() else p.unlink()
+    (app / "Browser").mkdir()
+    (app / "Browser/start-tor-browser").write_text(TOR_SCRIPT)
+
+
+def test_tor_browser_bin_is_tor_browser_and_its_copy_is_the_one_it_unpacks(cat, tmp_path):
+    host = make_host(tmp_path, files={**MESA, **NVIDIA, **TOR_BIN_FILES}, home_files=unpacked())
+    scan = make_scan(host)
+    found = [f for f in installed_browsers(scan) if f.name == "Tor Browser"]
+    assert [f.key for f in found] == ["tor_browser"]                     # not a browser the app doesn't know
+    [c] = shader_copies(scan, found)
+    assert (c.script, c.cache) == (host.home / APP / "Browser/start-tor-browser", host.home / APP / "Browser/.cache")
+    assert c.unpacked_by == host.root / "usr/bin/tor-browser" and c.entry.name == "tor-browser.desktop"
+    o = detect(cat, "br.shader_cache", scan)
+    assert o.status is Status.WARN and o.findings == {"old_shader_cache_only": False, "blocked_until_update": False}
+    assert ev(o)[f"Tor Browser (~/{APP}/Browser/start-tor-browser)"] == \
+        "Mesa's cache on, in its own folder; NVIDIA's cache off in its start script"
+    assert detect(cat, "br.start_script", scan).status is Status.PASS     # it runs its start script
+
+
+def test_its_fix_adds_a_menu_entry_its_updates_can_t_undo_then_reverts(cat, tmp_path):
+    host = make_host(tmp_path, files={**MESA, **TOR_BIN_FILES}, home_files=unpacked())
+    plan, res, log = apply(cat, host, "br.shader_cache")
+    assert [a.kind for a in plan.actions] == ["file", "delete", "file", "file"]
+    assert any("Typed in a terminal, tor-browser starts it as before" in s for s in plan.side_effects)
+    mine = host.home / ".local/share/applications/tor-browser.desktop"
+    text = mine.read_text()
+    assert text.startswith(SHADER_ENTRY_MARK + "\n[Desktop Entry]\n")
+    assert "\nExec=env MESA_SHADER_CACHE_DISABLE=true __GL_SHADER_DISK_CACHE=0 tor-browser %u\n" in text
+    assert "\nName=Tor Browser\n" in text and "\nIcon=tor-browser\n" in text
+    o = redetect(cat, host, "br.shader_cache")
+    assert o.status is Status.PASS and "Typed in a terminal" in {n.title for n in o.notes}
+    assert ev(o)[f"Tor Browser (~/{APP}/Browser/start-tor-browser)"] == \
+        "Mesa's cache off when started from the menu, also after its package unpacks it again; blocked in its folder too"
+    # the package's next update empties app/, the block with it: started from the menu the cache stays off
+    update(host)
+    assert not (host.home / APP / "Browser/.cache").exists()
+    o = redetect(cat, host, "br.shader_cache")
+    assert o.status is Status.PASS and ev(o)[f"Tor Browser (~/{APP}/Browser/start-tor-browser)"] == \
+        "Mesa's cache off when started from the menu, also after its package unpacks it again"
+    # started from a terminal since, Mesa made a cache there: an old one, and the fix blocks it again
+    (host.home / APP / "Browser/.cache/mesa_shader_cache/a0").mkdir(parents=True)
+    (host.home / APP / "Browser/.cache/mesa_shader_cache/a0/f").write_text("shader")
+    o = redetect(cat, host, "br.shader_cache")
+    assert o.status is Status.WARN and o.findings == {"old_shader_cache_only": True, "blocked_until_update": False}
+    assert as_warning(cat["br.shader_cache"], effective_severity(cat["br.shader_cache"], o.findings)).value == 2
+    assert all(r.ok for r in revert(host, log, res))
+    assert not mine.exists() and redetect(cat, host, "br.shader_cache").status is Status.WARN
+
+
+def test_a_block_alone_lasts_until_the_next_update_and_the_fix_adds_the_entry(cat, tmp_path):
+    """As 0.1.0b7's fix left it: the block in app/, no menu entry of the app's."""
+    home = {**unpacked(cache_files=0), f"{APP}/Browser/.cache/mesa_shader_cache": SHADER_BLOCK_TEXT,
+            f"{APP}/Browser/.cache/mesa_shader_cache_db": SHADER_BLOCK_TEXT}
+    host = make_host(tmp_path, files={**MESA, **TOR_BIN_FILES}, home_files=home)
+    o = detect(cat, "br.shader_cache", make_scan(host))
+    assert o.status is Status.WARN and o.findings == {"old_shader_cache_only": False, "blocked_until_update": True}
+    assert o.summary == ("Mesa's cache is blocked for Tor Browser only until its package's next update, which unpacks "
+                         "the browser again and removes the block.")
+    spec = cat["br.shader_cache"]
+    assert as_warning(spec, effective_severity(spec, o.findings)).value == 4
+    plan, _, _ = apply(cat, host, "br.shader_cache")
+    assert [a.kind for a in plan.actions] == ["file"]                     # the entry: the block is there already
+    assert redetect(cat, host, "br.shader_cache").status is Status.PASS
+
+
+def test_one_not_started_yet_gets_the_entry_before_its_first_start(cat, tmp_path):
+    host = make_host(tmp_path, files={**MESA, **NVIDIA, **TOR_BIN_FILES})
+    o = detect(cat, "br.shader_cache", make_scan(host))
+    assert o.status is Status.WARN and ev(o)[f"Tor Browser (~/{APP}/Browser/start-tor-browser)"] == (
+        "Mesa's cache on from its first start, in its own folder (not started yet); NVIDIA's cache: its start script "
+        "decides, from its first start (not started yet)")
+    plan, _, _ = apply(cat, host, "br.shader_cache")
+    assert [a.kind for a in plan.actions] == ["file"] and not (host.home / ".local/opt").exists()
+    o = redetect(cat, host, "br.shader_cache")
+    assert o.status is Status.PASS and ev(o)[f"Tor Browser (~/{APP}/Browser/start-tor-browser)"] == (
+        "Mesa's cache off when started from the menu, also after its package unpacks it again; NVIDIA's cache off when "
+        "started from the menu")
+
+
+def test_the_alpha_package_s_copy(cat, tmp_path):
+    entry = TOR_BIN_ENTRY.replace("Name=Tor Browser", "Name=Tor Browser Alpha")
+    host = make_host(tmp_path, files={**MESA, "/usr/bin/tor-browser": TOR_ALPHA,
+                                      "/usr/share/applications/tor-browser-alpha-bin.desktop": entry},
+                     home_files=unpacked(name="tor-browser-alpha-bin"))
+    [c] = shader_copies(make_scan(host), [f for f in installed_browsers(make_scan(host)) if f.key == "tor_browser"])
+    assert c.script == host.home / ".local/opt/tor-browser-alpha-bin/app/Browser/start-tor-browser"
+    plan, _, _ = apply(cat, host, "br.shader_cache")
+    assert (host.home / ".local/share/applications/tor-browser-alpha-bin.desktop").read_text().startswith(SHADER_ENTRY_MARK)
+    assert redetect(cat, host, "br.shader_cache").status is Status.PASS
+
+
+def test_the_app_s_entry_is_redone_when_the_package_s_changes_and_a_copy_without_one_is_still_found(cat, tmp_path):
+    host = make_host(tmp_path, files={**MESA, **TOR_BIN_FILES}, home_files=unpacked())
+    apply(cat, host, "br.shader_cache")
+    system = host.root / "usr/share/applications/tor-browser.desktop"
+    system.write_text(system.read_text().replace("Icon=tor-browser", "Icon=tor-browser-2"))
+    o = detect(cat, "br.shader_cache", make_scan(host))
+    assert o.status is Status.WARN and o.findings["blocked_until_update"]  # out of date: the block alone lasts
+    plan, _, _ = apply(cat, host, "br.shader_cache")
+    assert [a.kind for a in plan.actions] == ["file"]
+    assert "Icon=tor-browser-2" in (host.home / ".local/share/applications/tor-browser.desktop").read_text()
+    assert redetect(cat, host, "br.shader_cache").status is Status.PASS
+    # no menu entry: the copy in ~/.local/opt is still found, and blocked in its folder only
+    bare = make_host(tmp_path / "b", files=MESA, home_files=unpacked())
+    [c] = shader_copies(make_scan(bare), [])
+    assert c.unpacked_by is None and c.script == bare.home / APP / "Browser/start-tor-browser"
+
+
+def test_tor_browser_bin_doesn_t_share_mullvad_browser_s_cache(cat, tmp_path):
+    host = make_host(tmp_path, files={**MESA, **AUR_FILES, **TOR_BIN_FILES}, home_files={**AUR_HOME, **unpacked()})
+    o = detect(cat, "br.start_script", make_scan(host))
+    assert o.status is Status.FAIL and o.findings == {"shares_cache_with_browser": False}
+
+
+def test_mullvad_browser_latest_bin_skips_the_script_and_leaves_nvidia_s_cache_on(cat, tmp_path):
+    """The AUR's mullvad-browser-latest-bin 16.0.1-1: its program runs the browser's own, without the start script,
+    and doesn't turn NVIDIA's cache off either."""
+    wrapper = ('#!/bin/sh\n\nXDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"\n\n'
+               'USER_FLAGS_FILE="$XDG_CONFIG_HOME/mullvad-browser-flags.conf"\n\n'
+               'exec /opt/mullvad-browser/mullvadbrowser "$@" $USER_FLAGS\n')
+    files = {**MESA, **NVIDIA, **AUR_FILES, "/usr/bin/mullvad-browser": wrapper}
+    files.pop("/opt/mullvad-browser/is-packaged-app")
+    host = make_host(tmp_path, files={**files, "/opt/mullvad-browser/system-install": ""}, home_files=AUR_HOME)
+    o = detect(cat, "br.start_script", make_scan(host))
+    assert o.status is Status.FAIL and ev(o)["Mullvad Browser is started by"] == \
+        "/usr/bin/mullvad-browser, which skips /opt/mullvad-browser/start-mullvad-browser"
+    s = detect(cat, "br.shader_cache", make_scan(host))
+    assert ev(s)["Mullvad Browser (/opt/mullvad-browser/start-mullvad-browser)"].endswith("NVIDIA's cache on")
+    # without is-packaged-app the script makes /opt/mullvad-browser, root's, the browser's home: no fix through it
+    folder = host.root / "opt/mullvad-browser"
+    folder.chmod(0o555)
+    try:
+        for cid, said in (("br.start_script", "without is-packaged-app"), ("br.shader_cache", "can't be started through")):
+            c, scan = check(cat, cid), make_scan(host)
+            plan = c.plan_fix(scan, c.detect(scan))
+            assert plan.actions == [] and said in " ".join(plan.side_effects), (cid, plan.side_effects)
+    finally:
+        folder.chmod(0o755)
+    # a copy of the user's own there (the folder theirs to write to): through the script, which turns NVIDIA's off
+    plan, _, _ = apply(cat, host, "br.start_script")
+    assert "start-mullvad-browser --profile" in (host.home / ".local/share/applications/mullvad-browser.desktop").read_text()
+    assert ev(redetect(cat, host, "br.shader_cache"))["Mullvad Browser (/opt/mullvad-browser/start-mullvad-browser)"] \
+        .endswith("NVIDIA's cache off in its start script")
+
+
+def test_no_shader_cache_entry_runs_each_command_through_env_once():
+    text = "[Desktop Entry]\nName=X\nTryExec=tor-browser\nExec=tor-browser %u\n\n[Desktop Action w]\nExec=env A=1 x -w\n"
+    out = no_shader_cache_entry(text)
+    pre = "env MESA_SHADER_CACHE_DISABLE=true __GL_SHADER_DISK_CACHE=0 "
+    assert out == (f"{SHADER_ENTRY_MARK}\n[Desktop Entry]\nName=X\nTryExec=tor-browser\nExec={pre}tor-browser %u\n\n"
+                   f"[Desktop Action w]\nExec={pre}env A=1 x -w\n")
+    assert no_shader_cache_entry(out) == out

@@ -1207,10 +1207,14 @@ SCRIPT_TURNS_OFF_NVIDIA = re.compile(r"^\s*export\s+__GL_SHADER_DISK_CACHE=0\s*$
 # the browser's own program, which the start script runs from the folder it is in
 BROWSER_PROGRAM = re.compile(r"""(/[^\s"';|&]+)/(?:mullvadbrowser|firefox(?:\.real)?)(?=[\s"';|&]|$)""")
 # where torbrowser-launcher keeps Tor Browser (in its data folder; tbb/<architecture>/tor-browser), natively and as a
-# Flatpak (its id since 2023, and the earlier one); the AUR's tor-browser-bin's copy, which it starts through its
-# script; where Mullvad's package and Flatpak keep Mullvad Browser
+# Flatpak (its id since 2023, and the earlier one); where Mullvad's package and Flatpak keep Mullvad Browser
 LAUNCHER_FLATPAKS = ("org.torproject.torbrowser-launcher", "com.github.micahflee.torbrowser-launcher")
-TOR_BROWSER_BIN = ".local/opt/tor-browser/app/Browser/start-tor-browser"
+# the AUR's tor-browser-bin and tor-browser-alpha-bin: their /usr/bin/tor-browser unpacks the browser into
+# ~/.local/opt/<package>/app whenever the package's version changes, emptying that folder first (rm -rf app/*), then
+# runs its start script there (16.0.1-1 and 16.0a13-1). What the app puts in that folder lasts until the next update
+LOCAL_OPT = ".local/opt"
+UNPACKED_SCRIPT = "app/Browser/start-tor-browser"
+UNPACKER_NAME = re.compile(r"^_T[AB]_PKGNAME_='([A-Za-z0-9._+-]{1,60})'\s*$", re.M)
 MULLVAD_PACKAGE = "/usr/lib/mullvad-browser/start-mullvad-browser"
 MULLVAD_FLATPAK = "net.mullvad.MullvadBrowser"
 FLATPAK_FILES = "current/active/files/lib/mullvad-browser/start-mullvad-browser"
@@ -1228,6 +1232,8 @@ SCRIPT_PROTECTIONS = (
     "refusing to run as administrator",
 )
 SCRIPT_MARK = "# DA Privacy Kit: starts the browser through its own start script, which keeps its files out of yours"
+SHADER_ENTRY_MARK = ("# DA Privacy Kit: starts the browser with the graphics drivers' shader caches off, which its "
+                     "package's updates can't undo")
 
 
 @dataclass
@@ -1239,11 +1245,24 @@ class BrowserCopy:
                                 # gives it, or a Flatpak's own; None when it is the one every program shares
     own: Path                   # its folder, where its profile is: a program with a file open there is the browser
     launcher: Path | None = None    # a program that starts it without its script (the AUR's /usr/bin/mullvad-browser)
-    entry: Path | None = None       # the menu entry that runs that program
+    entry: Path | None = None       # the menu entry that runs that program, or `unpacked_by`
+    unpacked_by: Path | None = None  # a package's program that unpacks it again at each update, emptying its folder
+                                    # (the AUR's tor-browser-bin's /usr/bin/tor-browser): a block there lasts until then
+    source: Path | None = None      # the menu entry the app's own is made from (the package's)
 
     def turns_off_nvidia(self, host) -> bool:
+        if self.unpacked_by is not None and self.menu_entry_current(host):
+            return True
         what = self.launcher or self.script
         return what is not None and bool(SCRIPT_TURNS_OFF_NVIDIA.search(read_text(host, what) or ""))
+
+    def menu_entry_current(self, host) -> bool:
+        """Whether the menu entry the desktop uses is the app's own, starting the browser with the drivers' caches off,
+        and made from the package's entry as it is now."""
+        if self.entry is None or self.source is None:
+            return False
+        text = read_text(host, self.entry) or ""
+        return text.startswith(SHADER_ENTRY_MARK) and text == no_shader_cache_entry(read_text(host, self.source) or "")
 
 
 def on_host(host, path: str | Path) -> Path:
@@ -1306,6 +1325,44 @@ def _linked_script(scan: Scan, prog: str | None) -> Path | None:
     return on_host(scan.host, real) if re.search(r"/start-(tor|mullvad)-browser$", real) else None
 
 
+def _unpacker(scan: Scan, prog: str | None) -> tuple[Path, Path] | None:
+    """(the program, the start script of the copy it unpacks) when `prog` is a package's script that unpacks Tor
+    Browser into ~/.local/opt/<package>/app at each update, emptying that folder first, and starts it through its start
+    script there (the AUR's tor-browser-bin and tor-browser-alpha-bin)."""
+    if not prog:
+        return None
+    p = on_host(scan.host, prog)
+    try:
+        if p.is_symlink() or p.stat().st_size > 65536:
+            return None
+    except OSError:
+        return None
+    text = read_text(scan.host, p) or ""
+    name = UNPACKER_NAME.search(text)
+    if not text.startswith("#!") or name is None or not all(s in text for s in (".local/opt/", "/Browser/start-tor-browser",
+                                                                                "tar -x")):
+        return None
+    return p, scan.host.home / LOCAL_OPT / name.group(1) / UNPACKED_SCRIPT
+
+
+def no_shader_cache_entry(text: str) -> str:
+    """A menu entry with each command run with Mesa's and NVIDIA's shader caches off (env and the two variables before
+    it: what Tor or Mullvad Browser in memory sets, `sandbox.NO_SHADER_CACHE`), every other key kept; marked as the
+    app's at its top. Applied to its own output, it gives the same."""
+    from ..tools.sandbox import NO_SHADER_CACHE
+    prefix = "env " + " ".join(f"{k}={v}" for k, v in sorted(NO_SHADER_CACHE.items())) + " "
+    out = [SHADER_ENTRY_MARK]
+    for line in text.splitlines():
+        if line.startswith(SHADER_ENTRY_MARK):
+            continue
+        m = re.match(r"^Exec\s*=\s*(.*)$", line)
+        if m:
+            value = m.group(1)
+            line = "Exec=" + (value if value.startswith(prefix) else prefix + value)
+        out.append(line)
+    return "\n".join(out) + "\n"
+
+
 def _skipped_script(scan: Scan, prog: str | None) -> tuple[Path, Path, str] | None:
     """(the program, the start script it skips, the browser) when `prog` is a script of a package's own that runs the
     browser's program itself, from a folder that has the browser's start script (the AUR's mullvad-browser-bin)."""
@@ -1356,20 +1413,25 @@ def _entry_exec(scan: Scan, path: Path) -> str:
 def shader_copies(scan: Scan, found: list[FoundBrowser]) -> list[BrowserCopy]:
     """Every copy of Tor Browser and Mullvad Browser the app can find, as it is started: through its start script (a
     menu entry's command, or the program it links to), started by a package's program that skips it (`launcher`),
-    torbrowser-launcher's and tor-browser-bin's copies, Mullvad's package and its Flatpak. Not the app's own in
+    torbrowser-launcher's copies, the copy the AUR's tor-browser-bin unpacks (`unpacked_by`, found through its menu
+    entry even before its first start, else in ~/.local/opt), Mullvad's package and its Flatpak. Not the app's own in
     ~/TempBrowser (they start with the caches off)."""
     host, out, seen = scan.host, [], set()
 
-    def add(script: Path, name: str, flatpak: str | None = None, skipped: tuple | None = None, entry: Path | None = None):
-        if script in seen or not isfile(script) or script.is_relative_to(host.home / "TempBrowser"):
+    def add(script: Path, name: str, flatpak: str | None = None, skipped: tuple | None = None, entry: Path | None = None,
+            unpacked: tuple[Path, Path] | None = None):
+        if script in seen or not (isfile(script) or unpacked) or script.is_relative_to(host.home / "TempBrowser"):
             return
         seen.add(script)
         if skipped:                               # the real home folder, its cache the one every program shares
             out.append(BrowserCopy(name, script, None, profile_root(host, script.parent) or host.home, skipped[0], entry))
         else:
-            out.append(_copy_from_script(scan, script, name, flatpak))
+            c = _copy_from_script(scan, script, name, flatpak)
+            if unpacked:
+                c.unpacked_by, c.entry, c.source = unpacked[0], entry, unpacked[1]
+            out.append(c)
 
-    for name, entry, _ in effective_entries(scan, found):
+    for name, entry, below in effective_entries(scan, found):
         exec_line = _entry_exec(scan, entry)
         for m in START_SCRIPT.finditer(exec_line):
             add(on_host(host, m.group(1) or m.group(2)), name)
@@ -1380,11 +1442,16 @@ def shader_copies(scan: Scan, found: list[FoundBrowser]) -> list[BrowserCopy]:
         skipped = _skipped_script(scan, prog)
         if skipped is not None:
             add(skipped[1], skipped[2], skipped=skipped, entry=entry)
+        unpacker = _unpacker(scan, prog)
+        if unpacker is not None:
+            mine = (read_text(host, entry) or "").startswith(SHADER_ENTRY_MARK) and below is not None
+            add(unpacker[1], name, entry=entry, unpacked=(unpacker[0], below if mine else entry))
     for base, flatpak in [(scan.paths.data_home / "torbrowser", None)] + [
             (host.home / ".var/app" / i / "data/torbrowser", i) for i in LAUNCHER_FLATPAKS]:
         for arch in children(base / "tbb"):
             add(arch / "tor-browser/Browser/start-tor-browser", "Tor Browser", flatpak)
-    add(host.home / TOR_BROWSER_BIN, "Tor Browser")
+    for d in children(host.home / LOCAL_OPT):     # one whose menu entry the app didn't find: its block lasts until an update
+        add(d / UNPACKED_SCRIPT, "Tor Browser")
     add(host.sys_path(MULLVAD_PACKAGE), "Mullvad Browser")
     for apps in (host.sys_path("/var/lib/flatpak/app"), scan.paths.data_home / "flatpak/app"):
         add(apps / MULLVAD_FLATPAK / FLATPAK_FILES, "Mullvad Browser", MULLVAD_FLATPAK)
@@ -1473,6 +1540,18 @@ class SkippedScript:
     @property
     def stale(self) -> bool:
         return self.launcher is None
+
+
+def script_unusable(host, script: Path) -> str | None:
+    """Why the start script can't start this copy as it is installed, or None: without is-packaged-app beside it, the
+    script makes the browser's own folder its home, which must then be the user's to write to (the AUR's
+    mullvad-browser-latest-bin 16.0.1-1 puts it in /opt with system-install alone)."""
+    folder = script.parent
+    if (folder / "is-packaged-app").exists() or os.access(folder, os.W_OK):
+        return None
+    return (f"its package puts it in {real_path(host, folder)} without is-packaged-app (an empty file) beside its start "
+            "script, which then makes that folder, which isn't yours to write to, the browser's home: started through "
+            "it, the browser couldn't save downloads or settings")
 
 
 def skipped_scripts(scan: Scan, found: list[FoundBrowser]) -> list[SkippedScript]:
@@ -1657,6 +1736,8 @@ class ShaderCache(Check):
         on: list[str] = []                        # the browsers whose cache a driver keeps
         drivers_on: set[str] = set()
         old: list[tuple[BrowserCopy, Path, Tally]] = []
+        lapsing: list[BrowserCopy] = []           # blocked only until the package unpacks the browser again
+        lasting: list[BrowserCopy] = []           # started from the menu with the caches off, whatever the package does
         mesa, nvidia = mesa_installed(host), nvidia_loaded(host)
         mesa_off, nvidia_off = _cache_off(host.environ, MESA_CACHE), _cache_off(host.environ, NVIDIA_CACHE)
         if mesa:
@@ -1670,13 +1751,26 @@ class ShaderCache(Check):
             where = host.display(c.script) if c.script else c.name
             states = []
             caches = mesa_old_caches(c)
+            entry_on = c.unpacked_by is not None and c.menu_entry_current(host)
+            if entry_on:
+                lasting.append(c)
             if mesa and not mesa_off:
                 if c.launcher is not None:
                     states.append("Mesa's cache on, the one every program shares (started without its start script)")
+                elif entry_on:
+                    states.append("Mesa's cache off when started from the menu, also after its package unpacks it again"
+                                  + ("; blocked in its folder too" if mesa_blocked(c) else ""))
+                    old += [(c, r, t) for r, t in caches]
                 elif c.cache is None:
                     states.append("Mesa's cache on, the one every program shares (your session sets XDG_CACHE_HOME)")
                 elif mesa_blocked(c):
-                    states.append("Mesa's cache blocked for it")
+                    if c.unpacked_by is not None:
+                        states.append("Mesa's cache blocked for it until its package unpacks it again, at its next update")
+                        lapsing.append(c)
+                    else:
+                        states.append("Mesa's cache blocked for it")
+                elif not isfile(c.script):
+                    states.append("Mesa's cache on from its first start, in its own folder (not started yet)")
                 else:
                     states.append("Mesa's cache on, in its own folder")
                 if states[-1].startswith("Mesa's cache on"):
@@ -1685,8 +1779,12 @@ class ShaderCache(Check):
             elif caches:
                 old += [(c, r, t) for r, t in caches]
             if nvidia and not nvidia_off:
-                if c.turns_off_nvidia(host):
+                if entry_on:
+                    states.append("NVIDIA's cache off when started from the menu")
+                elif c.turns_off_nvidia(host):
                     states.append("NVIDIA's cache off in its " + ("start script" if c.launcher is None else "package's program"))
+                elif c.unpacked_by is not None and not isfile(c.script):
+                    states.append("NVIDIA's cache: its start script decides, from its first start (not started yet)")
                 else:
                     states.append("NVIDIA's cache on")
                     on.append(c.name)
@@ -1711,8 +1809,8 @@ class ShaderCache(Check):
             notes.append(Note("risk", "Started without its start script",
                               "A browser started without its own start script keeps Mesa's cache with every other "
                               "program's, your other browsers included, where a website can link your visits across "
-                              "them and where it can't be blocked for the browser alone. Fix that first: then this "
-                              "check's fix blocks it in the browser's own folder.", ("br.start_script",)))
+                              "them and where it can't be blocked for the browser alone. Fix that first, where it can "
+                              "be: then this check's fix blocks it in the browser's own folder.", ("br.start_script",)))
         if host.environ.get("XDG_CACHE_HOME") and mesa and not mesa_off and any(c.cache is None and c.launcher is None
                                                                               for c in copies):
             notes.append(Note("limitation", "Its cache is shared with your other programs",
@@ -1723,12 +1821,25 @@ class ShaderCache(Check):
                               "GNOME) and `export MESA_SHADER_CACHE_DISABLE=true` in ~/.profile (Cinnamon), from your "
                               "next login; games and other 3D programs then work out their graphics again each time "
                               "they start."))
+        for c in lasting:
+            notes.append(Note("limitation", "Typed in a terminal",
+                              f"{host.display(c.unpacked_by)} unpacks {c.name} again whenever its package is updated, "
+                              "emptying its folder, and any block the app put there with it. Started from the menu, a "
+                              "link or as your default browser, the app's menu entry keeps the drivers' caches off "
+                              f"every time; typed in a terminal, {c.unpacked_by.name} starts it without that entry, and "
+                              "from the next update on Mesa keeps a cache for it there. "
+                              f"`MESA_SHADER_CACHE_DISABLE=true {c.unpacked_by.name}` keeps it off in a terminal too."))
         on = list(dict.fromkeys(on))
-        findings = {"old_shader_cache_only": not on and bool(old)}
+        findings = {"old_shader_cache_only": not on and not lapsing and bool(old),
+                    "blocked_until_update": not on and bool(lapsing)}
         if on:
             drivers = " and ".join(d for d in ("Mesa", "NVIDIA") if d in drivers_on)
             return warned(f"Websites could link your visits in {' and '.join(on)}: the graphics driver ({drivers}) "
                           "keeps the shaders pages hand it in a cache on the disk.", *ev, notes=notes, findings=findings)
+        if lapsing:
+            what = " and ".join(dict.fromkeys(c.name for c in lapsing))
+            return warned(f"Mesa's cache is blocked for {what} only until its package's next update, which unpacks the "
+                          "browser again and removes the block.", *ev, notes=notes, findings=findings)
         if old:
             return warned(f"The graphics drivers' shader caches are off, but the old one is still on the disk: "
                           f"{', '.join(dict.fromkeys(c.name for c, _, _ in old))}.", *ev, notes=notes, findings=findings)
