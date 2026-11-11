@@ -176,12 +176,18 @@ couldn't show. Grouped by what each needs.
   unconfirmed.
 - Shader caches and start scripts (br.shader_cache, br.start_script, NO_SHADER_CACHE; 2026-11-10). Tried on the P330
   (Mint 22.3, NVIDIA 580, Mesa 25) and the CachyOS VM (Plasma 6.7, Mesa 26, the AUR's mullvad-browser-bin), both
-  fixes through the API and reverted. Still to try: Cinnamon's menu taking the account's own entry for a package's id
-  (GIO does; the menu itself not tried); Mullvad Browser's Flatpak and torbrowser-launcher with the per-browser block;
-  Tor Browser itself (only its script differs); an AUR update of mullvad-browser-bin that changes its menu entry (the
+  fixes through the API and reverted. Tor Browser tried too (2026-11-11, the AUR's tor-browser-bin 16.0.1 on the CachyOS
+  VM, its menu entry started by gtk-launch, a simulated update; through the API and reverted). Still to try: Cinnamon's
+  menu taking the account's own entry for a package's id (GIO does; the menu itself not tried); Mullvad Browser's
+  Flatpak and torbrowser-launcher with the per-browser block; a real tor-browser-bin update through pacman (simulated
+  by its VERSION file); KDE's launcher (kstart) with tor-browser-bin's entry; an AUR update of mullvad-browser-bin that changes its menu entry (the
   check should say the app's entry is out of date); browsers built on Firefox ESR (LibreWolf follows the release,
   Waterfox and Floorp ESR-based builds may link as ESR did) and Chromium sharing the cache with a Mullvad Browser started
   without its script (not measured: Chromium wasn't installed on the VM).
+- A menu entry with the shader caches off (`no_shader_cache_entry`, made for tor-browser-bin) could also cover what the
+  block can't: a copy whose package skips its start script and can't be started through it (mullvad-browser-latest-bin),
+  and sessions that set XDG_CACHE_HOME (now advice to turn the cache off for every program). Started from the menu only,
+  and one more entry shadowing the package's: worth it only if those cases turn up.
 
 ### Mullvad VPN connected
 

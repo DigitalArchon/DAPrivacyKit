@@ -399,7 +399,11 @@ driver from caching that browser's shaders, for it alone: games and other progra
 package starts it without its own start script (the AUR's `mullvad-browser-bin`) is found too. Started that way it shares
 the graphics cache with your other browsers, so a website could link your private visits in it to your everyday ones
 in, say, Firefox: the scan names those browsers. **Fix…** gives it a menu entry of your own that starts it through that
-script, with the profile it uses now.
+script, with the profile it uses now. (`mullvad-browser-latest-bin` puts the browser where its script can't use it as it
+is: the scan says so, and what to ask its maintainer.) Tor Browser from the AUR (`tor-browser-bin`) starts through its
+script, but its package unpacks it again at every update, which removes the block: the Easy fix also gives it a menu
+entry of your own that starts it with the cache off, so updates don't undo it. Typed in a terminal, `tor-browser`
+starts it without that entry.
 
 **Files in and out.** The browser sees only its own folders:
 

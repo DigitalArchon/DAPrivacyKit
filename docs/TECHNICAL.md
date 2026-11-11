@@ -744,7 +744,21 @@ instead of about 830 in that Mullvad Browser 15, and the other way round, in all
 (Mozilla's build and CachyOS's package) once in 12 (133 ms; another run 425 ms). Which builds link depends on how each
 hands Mesa its shaders, so the check
 names every other browser installed natively (Flatpaks and Snaps keep caches of their own) and rates 8 when there is
-one, 7 when there isn't; never lower on an encrypted disk, which does nothing against a website timing a cache.
+one, 7 when there isn't; never lower on an encrypted disk, which does nothing against a website timing a cache. Without
+`is-packaged-app` beside it the start script makes the browser's own folder its home: the AUR's
+`mullvad-browser-latest-bin` puts that folder in `/opt` with `system-install` alone, so the fix isn't offered there and
+says why (`script_unusable`), rather than start the browser in a home it can't write to.
+
+The AUR's `tor-browser-bin` and `tor-browser-alpha-bin` start the browser through its script, from a copy their
+`/usr/bin/tor-browser` unpacks into `~/.local/opt/<package>/app`, but empty that folder first (`rm -rf app/*`) whenever
+the package's version changes: the block lasts until the next update. So their copy (`unpacked_by`, found through the
+menu entry, `tor-browser.desktop` or `tor-browser-alpha-bin.desktop`, even before its first start) also gets a menu
+entry of the account's own under the package's id, its commands run through `env` with both of `NO_SHADER_CACHE`'s
+variables, marked at its top and made again when the package's entry changes. Tested on the CachyOS VM with
+tor-browser-bin 16.0.1: before, the same shader took 1033 ms, then 67 ms in the next session; with the fix, 1033 ms
+in both; after a simulated update (its `VERSION` changed, so the next start unpacks it again, removing the block),
+1017 ms in two sessions from the menu with nothing cached, while a start typed in a terminal cached 132 files (the check's
+note says so). A copy blocked but without the entry (0.1.0b7's fix) is a risk of 4, blocked until the next update.
 
 **Before bubblewrap: crash dumps and the kernel keyring.** Every start (sandboxed or not, Xephyr, and View
 offline…) is wrapped by `sandbox.fresh_keyring`, which runs the host's `/usr/bin/python3 -I -c KEYRING`
