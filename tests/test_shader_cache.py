@@ -230,8 +230,9 @@ def test_the_aur_package_skips_the_start_script(cat, tmp_path):
     e = ev(o)
     assert e["Mullvad Browser is started by"] == "/usr/bin/mullvad-browser, which skips /opt/mullvad-browser/start-mullvad-browser"
     assert e["Mullvad Browser's cache in yours (~/.cache/mullvad/mullvadbrowser)"].startswith("1 file")
+    assert o.findings == {"shares_cache_with_browser": False}
     spec = cat["br.start_script"]
-    assert effective_severity(spec, {"data_on_encrypted_disk": False}).value == 6
+    assert effective_severity(spec, o.findings).value == 7
     # its shader cache is the shared one: nothing to block for it alone until it starts through its script
     s = detect(cat, "br.shader_cache", make_scan(host))
     assert s.status is Status.WARN and ev(s)["Mullvad Browser (/opt/mullvad-browser/start-mullvad-browser)"] == \
@@ -240,6 +241,27 @@ def test_the_aur_package_skips_the_start_script(cat, tmp_path):
     c, scan = check(cat), make_scan(host)
     plan = c.plan_fix(scan, s)
     assert plan.actions == [] and "br.start_script" in " ".join(plan.side_effects)
+
+
+FIREFOX_ENTRY = "[Desktop Entry]\nType=Application\nName=Firefox\nExec=firefox %u\nCategories=Network;WebBrowser;\n"
+
+
+def test_another_browser_sharing_the_cache_is_named_and_raises_it_to_eight(cat, tmp_path):
+    """Firefox installed as a package keeps its graphics cache where the AUR's Mullvad Browser does: a website can link
+    visits across the two (measured on the lab); a Flatpak keeps its own, and doesn't count."""
+    host = make_host(tmp_path, files={**MESA, **AUR_FILES, "/usr/share/applications/firefox.desktop": FIREFOX_ENTRY},
+                     home_files=AUR_HOME)
+    o = detect(cat, "br.start_script", make_scan(host))
+    assert o.status is Status.FAIL and o.findings == {"shares_cache_with_browser": True}
+    assert o.summary.startswith("Mullvad Browser is started without its own start script: websites can link your "
+                                "visits in it to your visits in Firefox through the graphics cache they share")
+    assert ev(o)["Shares the graphics cache with"] == "Firefox"
+    assert o.notes[0].title == "Linked with your other browsers" and o.notes[0].kind == "risk"
+    assert effective_severity(cat["br.start_script"], o.findings).value == 8
+    flat = make_host(tmp_path / "f", files={**MESA, **AUR_FILES}, home_files={
+        **AUR_HOME, ".local/share/flatpak/exports/share/applications/org.mozilla.firefox.desktop": FIREFOX_ENTRY})
+    o = detect(cat, "br.start_script", make_scan(flat))
+    assert o.findings == {"shares_cache_with_browser": False} and "Shares the graphics cache with" not in ev(o)
 
 
 def test_the_menu_entry_fix_starts_it_through_its_script_with_its_profile_then_reverts(cat, tmp_path):

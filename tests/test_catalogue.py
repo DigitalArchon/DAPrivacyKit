@@ -18,7 +18,7 @@ def test_real_catalogue_loads(cat):
 
 
 # what full-disk encryption protects while the computer is off: one lower when it is on an encrypted disk
-ENCRYPTED_AT_REST = {"br.start_script", "desk.thumbnails", "desk.clipboard_history", "desk.zeitgeist", "enc.snapshots_retain_deleted",
+ENCRYPTED_AT_REST = {"desk.thumbnails", "desk.clipboard_history", "desk.zeitgeist", "enc.snapshots_retain_deleted",
                      "app.cups_spool", "auth.ssh_known_hosts_plain", "sbx.leftover_data", "enc.tmp_on_disk",
                      "auth.keyring_blank", "auth.chromium_basic_store", "auth.ssh_key_no_passphrase",
                      "auth.plaintext_credentials", "auth.shell_history_secrets", "auth.firefox_no_primary_password",
@@ -48,7 +48,8 @@ def test_every_modifier_uses_context_keys_or_the_checks_own_findings(cat):
                         "auth.ssh_authorized_keys": {"sshd_reachable", "weak_authorized_keys"},
                         "auth.gpg_keys": {"gpg_weak_key"},
                         "br.site_permissions": {"site_default_allow"},
-                        "br.shader_cache": {"old_shader_cache_only"}}
+                        "br.shader_cache": {"old_shader_cache_only"},
+                        "br.start_script": {"shares_cache_with_browser"}}
     # each is named in words, for the reason a severity was chosen
     assert set().union(*findings.values(), {"data_on_encrypted_disk"}) <= set(catalogue.CONTEXT_LABEL)
 

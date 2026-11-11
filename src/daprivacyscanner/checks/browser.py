@@ -1503,6 +1503,20 @@ def skipped_scripts(scan: Scan, found: list[FoundBrowser]) -> list[SkippedScript
     return out
 
 
+# where a browser keeps the graphics driver's cache itself: a Flatpak's and a Snap's in folders of their own; any other
+# install (a package, an AppImage, one in the account) in the one every program shares
+OWN_CACHE_INSTALLS = frozenset({"Flatpak", "Snap"})
+
+
+def cache_sharing_browsers(everything: list[FoundBrowser]) -> list[str]:
+    """The browsers here, other than Tor Browser and Mullvad Browser, installed so that they keep the graphics driver's
+    shader cache in the folder every program shares: a website can have a shader compiled in one and time it in a
+    Tor Browser or Mullvad Browser started without its script (tested on the lab against Mullvad Browser 15: Firefox ESR
+    153 linked in all 6 runs, both ways; the regular Firefox 159 once in 12, Mozilla's build and CachyOS's package;
+    which builds link depends on how each hands Mesa its shaders)."""
+    return [f.name for f in everything if f.key not in SHADER_BROWSERS and set(f.installs) - OWN_CACHE_INSTALLS]
+
+
 @register
 class StartScript(Check):
     id = "br.start_script"
@@ -1511,9 +1525,10 @@ class StartScript(Check):
         from ..vpn import DataError
         host = scan.host
         try:
-            found = [f for f in installed_browsers(scan) if f.key in SHADER_BROWSERS]
+            everything = installed_browsers(scan)
         except DataError as e:
             return unknown(f"The app's list of browsers couldn't be read: {e}")
+        found = [f for f in everything if f.key in SHADER_BROWSERS]
         if not found:
             return absent("Neither Tor Browser nor Mullvad Browser is installed.")
         skipped = skipped_scripts(scan, found)
@@ -1534,15 +1549,37 @@ class StartScript(Check):
                       "Tor Browser and Mullvad Browser start through a script of their own, which gives the browser "
                       + "; ".join(SCRIPT_PROTECTIONS) + ".", ("br.shader_cache", "desk.recent_files"))]
         bypass = [s for s in skipped if not s.stale]
+        others = cache_sharing_browsers(everything) if bypass else []
+        findings = {"shares_cache_with_browser": bool(others)}
         if bypass:
             names = " and ".join(dict.fromkeys(s.name for s in bypass))
-            return failed(f"{names} {'is' if len(bypass) == 1 else 'are'} started without {'its' if len(bypass) == 1 else 'their'} "
-                          "own start script: files you save or upload through it are listed in your desktop's recent "
-                          "files, and its shader cache is the one every program shares.", *ev, notes=notes)
+            one = len(dict.fromkeys(s.name for s in bypass)) == 1
+            if others:
+                listed = ", ".join(others[:-1]) + (" and " if len(others) > 1 else "") + others[-1]
+                ev.append(Evidence.val("Shares the graphics cache with", listed))
+                notes.insert(0, Note("risk", "Linked with your other browsers",
+                                     f"Started this way, {names} keeps the graphics driver's shader cache in the same "
+                                     f"folder as {listed}. A website can have a shader of its own compiled in one "
+                                     "browser and time the same shader in the other: ready much sooner, it shows the "
+                                     "same computer, and links your private visits to your everyday ones. In the "
+                                     "app's tests, between Mullvad Browser and Firefox ESR, a site found its shader "
+                                     "ready in about 115 ms instead of 830, every time and both ways; with the "
+                                     "regular Firefox release, now and then. Whether two browsers link depends on how "
+                                     "each is built, so every browser that shares the cache counts."))
+                return failed(f"{names} {'is' if one else 'are'} started without {'its' if one else 'their'} own start "
+                              f"script: websites can link your visits in {'it' if one else 'them'} to your visits in "
+                              f"{listed} through the graphics cache they share, and files you save or upload through "
+                              f"{'it' if one else 'them'} are listed in your desktop's recent files.", *ev, notes=notes,
+                              findings=findings)
+            return failed(f"{names} {'is' if one else 'are'} started without {'its' if one else 'their'} own start "
+                          "script: its shader cache is the one every program shares, where another browser could later "
+                          "link your visits, and files you save or upload through it are listed in your desktop's "
+                          "recent files.", *ev, notes=notes, findings=findings)
         if skipped:
             return failed(f"The menu entry the app made for {' and '.join(dict.fromkeys(s.name for s in skipped))} is "
-                          "out of date: the package's own has changed since.", *ev, notes=notes)
-        return passed("Tor Browser and Mullvad Browser start through their own start scripts.", *ev, notes=notes)
+                          "out of date: the package's own has changed since.", *ev, notes=notes, findings=findings)
+        return passed("Tor Browser and Mullvad Browser start through their own start scripts.", *ev, notes=notes,
+                      findings=findings)
 
 
 # ------------------------------------------------------------------ the graphics drivers' shader caches
@@ -1673,7 +1710,8 @@ class ShaderCache(Check):
         if any(c.launcher is not None for c in copies) and mesa and not mesa_off:
             notes.append(Note("risk", "Started without its start script",
                               "A browser started without its own start script keeps Mesa's cache with every other "
-                              "program's, where it can't be blocked for the browser alone. Fix that first: then this "
+                              "program's, your other browsers included, where a website can link your visits across "
+                              "them and where it can't be blocked for the browser alone. Fix that first: then this "
                               "check's fix blocks it in the browser's own folder.", ("br.start_script",)))
         if host.environ.get("XDG_CACHE_HOME") and mesa and not mesa_off and any(c.cache is None and c.launcher is None
                                                                               for c in copies):

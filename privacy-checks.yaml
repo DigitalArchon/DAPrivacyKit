@@ -90,7 +90,8 @@
 #   and chrome_or_edge_default; br.default_browser sets default_closed_ui;
 #   auth.ssh_client_settings sets agent_forwarded_everywhere, host_keys_unchecked and agent_keys_unlimited;
 #   auth.ssh_authorized_keys sets sshd_reachable and weak_authorized_keys; auth.gpg_keys sets gpg_weak_key;
-#   br.site_permissions sets site_default_allow; br.shader_cache sets old_shader_cache_only).
+#   br.site_permissions sets site_default_allow; br.shader_cache sets old_shader_cache_only; br.start_script sets
+#   shares_cache_with_browser).
 #   data_on_encrypted_disk is set by the runner, for every check whose modifiers use it: whether what the
 #   check found is on encrypted storage (Check.stored_at says where: the user's folders unless the check says
 #   otherwise; a check may set it itself, as enc.snapshots_retain_deleted does). Disk encryption keeps it safe
@@ -2214,10 +2215,12 @@ checks:
   - id: br.start_script
     title: Tor Browser or Mullvad Browser started without its own start script
     category: browser
-    severity: 6
+    # not lowered on an encrypted disk: what matters most here is websites linking visits through the shared cache,
+    # which disk encryption does nothing against
+    severity: 7
     modifiers:
-      - when: "data_on_encrypted_disk"
-        severity: 5
+      - when: "shares_cache_with_browser"
+        severity: 8
     scope: user
     tier: auto
     why: >
@@ -2225,9 +2228,11 @@ checks:
       write away from your files: it gives the browser a home folder of its own, so the caches it makes stay in it;
       makes GTK's list of recent files impossible to write; keeps GTK's settings in memory; turns NVIDIA's shader cache
       off; sends the browser's messages nowhere; and refuses to run as administrator. Some packages start the
-      browser's program directly and go without all of it: every file you save or upload through the browser's
-      dialog is then listed, by name, in your desktop's recent files, its settings go into yours, and the graphics
-      driver's shader cache is the one every program shares, which websites can time to link visits.
+      browser's program directly and go without all of it. The graphics driver's shader cache is then the one every
+      program shares, your other browsers included: a website can have a shader compiled in your everyday browser and
+      time the same shader in this one (or the other way round), and so link your private visits to your everyday ones.
+      Every file you save or upload through the browser's dialog is also listed, by name, in your desktop's recent
+      files, and its settings go into yours.
     detect:
       - 'The menu entry each Tor Browser and Mullvad Browser menu id resolves to (the account''s own over the system''s):
         its program (past env), when it is a script of a package''s own (#!, at most 64 KB) that runs the browser''s
@@ -2247,11 +2252,11 @@ checks:
       ~/.mullvad-browser, nothing in the recent list or dconf); reverted from History. Deletes the local cache it kept
       in ~/.cache while the browser is closed. The terminal command stays the package's.
     remedy: >
-      Files you save or upload through this browser are listed in your desktop's recent files, its settings go into
-      yours, and the shader cache websites can time is shared with every program, because its package starts it
-      without the browser's own start script. Fix… gives it a menu entry of your own that starts it through that
-      script, with the profile it uses now. Downloads then go to the browser's own folder unless you choose one in its
-      settings, as with its makers' own package.
+      This browser shares the graphics cache with your other browsers, so a website could link your private visits in
+      it to your everyday ones, and files you save or upload through it are listed in your desktop's recent files,
+      because its package starts it without the browser's own start script. Fix… gives it a menu entry of your own
+      that starts it through that script, with the profile it uses now. Downloads then go to the browser's own folder
+      unless you choose one in its settings, as with its makers' own package.
     related: [br.shader_cache, desk.recent_files]
     verify: >
       Other packages that start the browser without its script (the check names only what it reads: a script that

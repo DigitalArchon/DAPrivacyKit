@@ -396,8 +396,10 @@ Either way the graphics drivers keep no cache of what pages draw with WebGL: a w
 to tell it had been on this computer before, under another site or after New Identity. For Tor Browser or
 Mullvad Browser you installed yourself, the scan checks the same thing, and its **Easy fix** keeps the graphics
 driver from caching that browser's shaders, for it alone: games and other programs keep their caches. A browser whose
-package starts it without its own start script (the AUR's `mullvad-browser-bin`) is found too: **Fix…** gives it a menu
-entry of your own that starts it through that script, with the profile it uses now.
+package starts it without its own start script (the AUR's `mullvad-browser-bin`) is found too. Started that way it shares
+the graphics cache with your other browsers, so a website could link your private visits in it to your everyday ones
+in, say, Firefox: the scan names those browsers. **Fix…** gives it a menu entry of your own that starts it through that
+script, with the profile it uses now.
 
 **Files in and out.** The browser sees only its own folders:
 

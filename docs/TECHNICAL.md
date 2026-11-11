@@ -737,7 +737,14 @@ other programs keep their caches: no variable is set for the session. A copy sta
 its cache with every other program's: `br.start_script` finds one (a package's own program that runs the browser's
 program from a folder holding the start script: the AUR's `mullvad-browser-bin`, whose `/usr/bin/mullvad-browser`
 also leaves GTK's recent-files list and dconf open, tested) and gives it a menu entry of the account's own, under the
-package's id, that runs the start script with `--profile` and the profile it used.
+package's id, that runs the start script with `--profile` and the profile it used. Its cache is then the one every native program
+writes, other browsers included, and a site can link visits across browsers through it. On the CachyOS VM, with fresh
+profiles, two sites and the browsers ended between runs, a shader compiled in Firefox ESR 153 was ready in 111-129 ms
+instead of about 830 in that Mullvad Browser 15, and the other way round, in all 6 runs; with the regular Firefox 159
+(Mozilla's build and CachyOS's package) once in 12 (133 ms; another run 425 ms). Which builds link depends on how each
+hands Mesa its shaders, so the check
+names every other browser installed natively (Flatpaks and Snaps keep caches of their own) and rates 8 when there is
+one, 7 when there isn't; never lower on an encrypted disk, which does nothing against a website timing a cache.
 
 **Before bubblewrap: crash dumps and the kernel keyring.** Every start (sandboxed or not, Xephyr, and View
 offline…) is wrapped by `sandbox.fresh_keyring`, which runs the host's `/usr/bin/python3 -I -c KEYRING`

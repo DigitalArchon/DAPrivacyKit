@@ -179,7 +179,9 @@ couldn't show. Grouped by what each needs.
   fixes through the API and reverted. Still to try: Cinnamon's menu taking the account's own entry for a package's id
   (GIO does; the menu itself not tried); Mullvad Browser's Flatpak and torbrowser-launcher with the per-browser block;
   Tor Browser itself (only its script differs); an AUR update of mullvad-browser-bin that changes its menu entry (the
-  check should say the app's entry is out of date).
+  check should say the app's entry is out of date); browsers built on Firefox ESR (LibreWolf follows the release,
+  Waterfox and Floorp ESR-based builds may link as ESR did) and Chromium sharing the cache with a Mullvad Browser started
+  without its script (not measured: Chromium wasn't installed on the VM).
 
 ### Mullvad VPN connected
 
