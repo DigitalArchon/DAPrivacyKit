@@ -943,15 +943,15 @@ function checkRow(spec, v) {
         onclick: (e) => { e.stopPropagation(); hasGuide(spec) ? openGuide(spec) : openFix(spec); } },
         spec.tier === "feature" ? "Set up…" : spec.tier === "guided" ? "Guide…" : (spec.kind === "hygiene" ? "Clean…" : "Fix…")) : null,
       v.result?.how_to ? h("button", { class: "small", title: "What to do, step by step, for this machine: the app doesn't make this change itself",
-        onclick: (e) => { e.stopPropagation(); openGuide(spec); } }, "How to…") : null,
+        onclick: (e) => { e.stopPropagation(); void openGuide(spec); } }, "How to…") : null,
       // what it costs, read out with it (and in its details, under An Easy fix): a tooltip alone reached neither the
       // keyboard nor a screen reader
       isEasy(v) ? h("button", { class: "badge easy", title: "An Easy fix: " + (spec.easy.cost || "it costs you nothing worth mentioning")
         + " Easy fixes… applies it with the others.", "aria-label": "Easy fix: " + (spec.easy.cost || "it costs you nothing "
-        + "worth mentioning") + " Opens Easy fixes.", onclick: (e) => { e.stopPropagation(); openEasy(); } }, "easy") : null,
+        + "worth mentioning") + " Opens Easy fixes.", onclick: (e) => { e.stopPropagation(); void openEasy(); } }, "easy") : null,
       isAccepted(v) ? [h("span", { class: "badge accepted", title: acceptedRecord(spec.id)?.note || "You accepted this risk" }, "accepted"),
         h("button", { class: "small ghost unaccept", title: "Show it and count it as a finding again",
-          onclick: (e) => { e.stopPropagation(); setAccepted(spec, false); } }, "Un-accept")] : null,
+          onclick: (e) => { e.stopPropagation(); void setAccepted(spec, false); } }, "Un-accept")] : null,
       v.found && v.resurfaced ? h("span", { class: "badge resurfaced", title: whyShownAgain(acceptedRecord(spec.id), v.result) },
         "shown again") : null,
       (S.report?.undone || []).some(u => u.check_id === spec.id)
@@ -1030,7 +1030,7 @@ function acceptRow(spec, v) {
       h("button", { class: "small primary", onclick: (e) => {
         const typed = e.currentTarget.closest(".accept-row")?.querySelector("input")?.value ?? S.accepting[id] ?? "";
         delete S.accepting[id];
-        setAccepted(spec, true, typed);
+        void setAccepted(spec, true, typed);
       } }, "Accept this risk"),
       h("button", { class: "small ghost", onclick: () => {
         delete S.accepting[id];
@@ -1101,7 +1101,7 @@ function toggle(id) {
 
 function reveal(id) {
   const spec = S.state.catalogue.find(s => s.id === id);
-  if (spec && isFeature(spec)) { openTools(); return; }
+  if (spec && isFeature(spec)) { void openTools(); return; }
   S.open.add(id);
   const v = view(spec);
   if (v.status === "not_applicable") $("#show-na").checked = true;
@@ -1360,7 +1360,7 @@ function doneDialog(entries, failed = null) {
         en.state === "failed" && !failed ? h("div", { class: "small errmsg" }, `Failed: ${en.error}`
           + (en.failed_step ? ` (at: ${en.failed_step})` : "") + ". What had run was put back, as listed.") : null,
         entrySteps(en, true)))].flat(3),
-    buttons: [{ label: "Open History", onclick: (close) => { close(); openHistory(); } }, { label: "Close", kind: "primary" }] });
+    buttons: [{ label: "Open History", onclick: (close) => { close(); void openHistory(); } }, { label: "Close", kind: "primary" }] });
 }
 
 const ROOT_NOTE = "Asks for administrator access (your password) when applied, unless it is already granted.";
@@ -2074,7 +2074,7 @@ async function openHistory() {
       { label: "Forget reverted and old entries", onclick: (close) => forget(false) },
       { label: "Forget everything", kind: "danger", onclick: (close) => {
         modal({ title: "Forget all history?", body: h("p", {}, "The changes stay as they are; they just can't be reverted from here any more, and the backups of the files they changed are deleted. The saved results of the last scan are deleted too."),
-          buttons: [{ label: "Keep it" }, { label: "Forget everything", kind: "danger", onclick: (c2) => { c2(); forget(true); } }] });
+          buttons: [{ label: "Keep it" }, { label: "Forget everything", kind: "danger", onclick: (c2) => { c2(); void forget(true); } }] });
       } },
       { label: "Close", kind: "primary" }] });
 }
@@ -2194,7 +2194,7 @@ async function openExport(what = "report") {
   redact.addEventListener("change", load);
   fmt.addEventListener("change", load);
   // each kind with its own default: the report is for sharing, redacted; everything is for the user's backups, whole
-  sel.addEventListener("change", () => { redact.checked = sel.value !== "everything"; load(); });
+  sel.addEventListener("change", () => { redact.checked = sel.value !== "everything"; void load(); });
   await load();
   const body = h("div", { class: "export" },
     h("div", { class: "orow" }, sel, h("span", { class: "spacer" }), fmt),
@@ -2205,7 +2205,7 @@ async function openExport(what = "report") {
     pre);
   modal({ title: everything ? "Export everything" : "Export the report", wide: true, body, buttons: [
     { label: "Copy", ref: (el) => { copyBtn = el; }, disabled: pre.getAttribute("aria-busy") === "true",
-      onclick: (close, el) => { if (pre.getAttribute("aria-busy") !== "true") copyText(pre.textContent, el); } },
+      onclick: (close, el) => { if (pre.getAttribute("aria-busy") !== "true") void copyText(pre.textContent, el); } },
     { label: "Save…", ref: (el) => { saveBtn = el; },
       onclick: (close, el) => saveExport({ what: sel.value, format: fmt.value, redact: redact.checked }, el) },
     { label: "Close", kind: "primary" }] });
@@ -2553,7 +2553,7 @@ async function openVerify(data, path = "") {
   btn.addEventListener("click", run);
   const recent = data.downloads.length ? h("div", { class: "recent" }, h("span", { class: "small muted" }, `Newest in ${data.downloads_dir}:`),
     data.downloads.slice(0, 8).map(d => h("button", { class: "small ghost", title: `${fmtSize(d.size)}`,
-      onclick: () => { file.input.value = d.path; run(); } }, nameText(d.name)))) : null;
+      onclick: () => { file.input.value = d.path; void run(); } }, nameText(d.name)))) : null;
   const body = h("div", { class: "verify" },
     h("p", { class: "small" }, "Checks that a file is the one its makers published. Put the signature (.asc, .sig, .gpg, "
       + ".sign) or the signed checksum list (SHA256SUMS and SHA256SUMS.gpg, sha256sum.txt and .gpg, CHECKSUM…) from the "
@@ -2573,7 +2573,7 @@ async function openVerify(data, path = "") {
     h("div", { class: "gactions" }, btn),
     out);
   modal({ title: "Verify a download", wide: true, body, buttons: [{ label: "Close", kind: "primary" }] });
-  if (path) run();
+  if (path) void run();
 }
 
 // when the good signature a verdict rests on was made, in local time (the terminal's report says the same,
@@ -2668,7 +2668,7 @@ function metaRow(f, { path = f.path, tick = null, open = false } = {}) {
   det.addEventListener("toggle", () => {
     if (!det.open || loaded) return;
     loaded = true;
-    if (open) full(); else samples();
+    if (open) void full(); else samples();
   });
   if (open && f.count) det.open = true;
   return h("div", { class: "meta-row" }, tick, det);
@@ -2759,7 +2759,7 @@ async function openMetadata(data, paths = []) {
     busy(true);
     try {
       const r = await api("POST", `/api/tools/metadata/${kind}`, { paths: chosen, hidden: hidden.checked, ...extra });
-      follow(r.job);
+      void follow(r.job);
     } catch (e) { busy(false); fill(out, h("div", { class: "warnbox bad" }, e.message)); }
   };
 
@@ -2851,7 +2851,7 @@ async function openMetadata(data, paths = []) {
   showBtn.addEventListener("click", () => start("read"));
   cleanBtn.addEventListener("click", async () => {
     if (read && !ticked.size) { toast("Tick at least one file to clean.", "info"); return; }
-    start("clean", { files: read ? [...ticked] : null, lightweight: light.checked });
+    void start("clean", { files: read ? [...ticked] : null, lightweight: light.checked });
   });
   hidden.addEventListener("change", () => { if (read) changed(); });
 
@@ -2891,10 +2891,10 @@ async function openMetadata(data, paths = []) {
   modal({ title: "Remove metadata", wide: true, body, buttons: [{ label: "Close", kind: "primary" }] });
   renderChosen();
   if (resume) {
-    if (last.state === "running") follow(last);
+    if (last.state === "running") void follow(last);
     else if (last.kind === "read") takeRead(last);
     else showCleaned(last);
-  } else if (paths.length) start("read");
+  } else if (paths.length) void start("read");
 }
 
 function metaFile(f) {
@@ -3085,7 +3085,6 @@ async function openHandover() {
 
 function handoverPlan(p, back, closeAll) {
   const confirm = h("input", { type: "checkbox" });
-  const gone = h("ul", { class: "small" });                // what the chosen fixes delete, each named
   const go = h("button", { class: "danger", disabled: true }, `Delete ${plural(p.files, "file")}`);
   const out = h("div", {});
   confirm.addEventListener("change", () => { go.disabled = !confirm.checked; });
@@ -3387,8 +3386,6 @@ async function presentationOff(reload) {
 // ------------------------------------------------------------------ camera and microphone
 // A live view: asked again every few seconds while it is open. Only looks; never touches the programs.
 
-const INUSE_WHAT = { camera: "Camera", microphone: "Microphone", screen: "Screen", playback: "What the computer plays",
-                     video: "Video", audio: "Sound" };
 
 async function openInuse() {
   const body = h("div", { class: "inuse" });
@@ -5372,7 +5369,7 @@ function trimStart(data, job, start) {
       + "them, trims the disk (as the weekly fstrim timer does), and reads the whole disk again to see whether any of them "
       + "can still be read back. It also counts whether its deleted files' names stay on the disk."),
     h("div", { class: "small" }, "To see which names of your own deleted files the disk holds, and clear them, use ",
-      h("a", { href: "#", onclick: (e) => { e.preventDefault(); openNames(); } }, "Deleted file names"), "."),
+      h("a", { href: "#", onclick: (e) => { e.preventDefault(); void openNames(); } }, "Deleted file names"), "."),
     h("div", { class: "small" }, h("b", {}, "What a pass means: "), "nobody can read deleted data back by plugging the "
       + "drive in, even with your encryption key, because the drive's controller has dropped it. It doesn't protect "
       + "against someone examining the flash chips themselves, if they also have your key, or at all if the disk isn't "
@@ -5512,7 +5509,7 @@ async function openNames(mount = null) {
   const start = async (trimFirst = false) => {
     try { await api("POST", "/api/tools/names/start", { mount: chosen, trim_first: trimFirst }); }
     catch (e) { toast(e.message, "error"); return false; }
-    poll();
+    void poll();
     return true;
   };
   // a listing that ended without its list says why, above the start, so it can be started again
@@ -5832,12 +5829,11 @@ async function openNamesPlan(mount, folders, relist, rebuild = [], clearJournal 
     try {
       // the badge follows what each answer says (X-Admin-Active): access may still be being asked for here
       await api("POST", "/api/tools/names/clean", { mount, folders: ok.map(f => f.rel), rebuild, not_synced: true });
-      follow();
+      void follow();
     } catch (e) { toast(e.message, "error", 10000); el.disabled = false; el.textContent = `Clean ${plural(ok.length, "folder")}`; }
   }
 }
 
-const CLEAN_CLASS = { done: "ok", partly: "warn", failed: "bad", skipped: "" };
 
 function cleanResult(res, folders, mount, relist, close, clearJournal = null) {
   const out = h("div", { class: "trim" });
@@ -5848,7 +5844,7 @@ function cleanResult(res, folders, mount, relist, close, clearJournal = null) {
       h("b", {}, nameText(f.path)), " ", f.text,
       f.commands?.length ? commandBlock(f.commands) : null,
       f.rebuild_offer ? h("div", { class: "orow" }, h("button", { class: "small", onclick: () => { close();
-        openNamesPlan(mount, [f.rel], relist, [f.rel], clearJournal); } }, "Rebuild instead…")) : null,
+        void openNamesPlan(mount, [f.rel], relist, [f.rel], clearJournal); } }, "Rebuild instead…")) : null,
       f.left?.length ? h("details", {}, h("summary", {}, "Which names"), h("ul", {}, f.left.map(n => h("li", {}, nameText(n))))) : null))),
     r.explanation.map(x => h("p", { class: "small" }, x)),
     h("p", { class: "muted small" }, "Nothing of this is kept: it is gone when you close this window."),
@@ -6005,7 +6001,7 @@ async function openOnline() {
       const ids = [...boxes].filter(([, b]) => b.checked).map(([id]) => id);
       if (!ids.length) { toast("Choose at least one test.", "error"); return; }
       close();
-      runOnline(ids, +secs.value, admin.checked && !data.admin_active);
+      void runOnline(ids, +secs.value, admin.checked && !data.admin_active);
     } },
   ] });
 }
@@ -6015,7 +6011,7 @@ async function runOnline(ids, seconds, askAdmin) {
     const r = await api("POST", "/api/online/run", { ids, observe_seconds: seconds, admin: askAdmin });
     S.jobHidden = false;
     onJob(r.job);
-    pollJob();
+    void pollJob();
   } catch (e) {
     toast(e.message, "error");
   }
@@ -6193,7 +6189,7 @@ async function quit() {
       + "window), then quit."),
     S.state.can_quit ? null : h("p", { class: "small muted" }, "Closing the window again quits all the same."),
   ], buttons: [{ label: "Keep the app open" },
-    { label: "Quit anyway", kind: "danger", onclick: (close) => { close(); quitNow(); } }] });
+    { label: "Quit anyway", kind: "danger", onclick: (close) => { close(); void quitNow(); } }] });
 }
 
 async function quitNow() {
@@ -6304,14 +6300,14 @@ async function init() {
   renderMessagesButton();
   renderAll();
   const ot = S.state.open_tool;                 // started from a file manager's right-click entry (--tool)
-  if (ot?.tool === "verify") openVerify(null, ot.paths[0] || "");
-  else if (ot?.tool === "metadata") openMetadata(null, ot.paths);
+  if (ot?.tool === "verify") void openVerify(null, ot.paths[0] || "");
+  else if (ot?.tool === "metadata") void openMetadata(null, ot.paths);
   if (S.state.welcome?.show) openWelcome();           // last, so it is on top of anything opened
   try {                                         // online tests still running from before a reload
     const r = await api("GET", "/api/online/status");
     if (r.job) { S.jobHidden = !["starting", "asking", "running"].includes(r.job.state); onJob(r.job); }
-    if (jobBusy()) pollJob();
+    if (jobBusy()) void pollJob();
   } catch { /* none */ }
 }
 
-init();
+void init();

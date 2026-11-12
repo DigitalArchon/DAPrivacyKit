@@ -1,9 +1,10 @@
 {
   "name": "daprivacyscanner-web-tests",
   "private": true,
-  "description": "The front-end test's one dependency (tests/test_web.py runs tests/web/test_app.mjs): npm ci --prefix tests/web installs exactly what package-lock.json holds, integrity-checked.",
+  "description": "The front-end test's dependencies (tests/test_web.py runs tests/web/test_app.mjs under jsdom; packaging/check.sh's web step runs ESLint on the page's script with tests/web/eslint.config.mjs): npm ci --prefix tests/web installs exactly what package-lock.json holds, integrity-checked.",
   "license": "GPL-3.0-or-later",
   "devDependencies": {
+    "eslint": "10.13.0",
     "jsdom": "30.1.1"
   }
 }

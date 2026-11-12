@@ -6,7 +6,7 @@
 #   packaging/check.sh --quick          lint, types, shell scripts, and the suite on the dev venv (make quick)
 #   packaging/check.sh --release        everything, on a clean tree, then the AppImage built twice and compared, and
 #                                       smoke-tested extracted and mounted (make release-check)
-#   packaging/check.sh STEP...          only those steps: lint types shell web dev py3.11 py3.12 py3.13 py3.14
+#   packaging/check.sh STEP...          only those steps: lint types shell web webkit dev py3.11 py3.12 py3.13 py3.14
 #   packaging/check.sh --rebaseline     rewrite the lint and type baselines from what is found now (review the diff)
 #   packaging/check.sh --lock           re-resolve packaging/ci/requirements.lock and tests/web/package-lock.json
 #   -j N                                the test suites run N at a time (default 2)
@@ -15,8 +15,12 @@
 #   lint     ruff (ruff.toml) and packaging/ci/check_timeouts.py, each against its baseline in packaging/ci/
 #   types    mypy (pyproject.toml's [tool.mypy]) against packaging/ci/mypy-baseline.txt
 #   shell    shellcheck on packaging/*.sh, packaging/appimage/*.sh and AppRun
-#   web      jsdom installed as tests/web/package-lock.json pins it (npm ci); the front-end test then runs in every
-#            suite below and fails, never skips, when it can't
+#   web      jsdom and ESLint installed as tests/web/package-lock.json pins them (npm ci), and ESLint on the page's
+#            script (tests/web/eslint.config.mjs); the front-end test then runs in every suite below and fails, never
+#            skips, when it can't
+#   webkit   the page in a real WebKitGTK window on a private Xvfb display, with real keys and clicks
+#            (tests/test_webkit_smoke.py), on the dev venv; skipped, and said, without Xvfb and xdotool.
+#            Screenshots in .ci/webkit-shots/
 #   dev      the suite on the dev venv (.venv: the system's Python and PyGObject, the versions pip gave)
 #   py3.X    the suite on Python 3.11, 3.12, 3.13 and 3.14 (uv's), with exactly the packages the AppImage ships
 #            (packaging/appimage/requirements.lock) and the test tools (packaging/ci/requirements.lock): the helper,
@@ -43,7 +47,7 @@ while [ $# -gt 0 ]; do
         -j) jobs="$2"; shift ;;
         -j*) jobs="${1#-j}" ;;
         -h|--help) usage ;;
-        lint|types|shell|web|dev|py3.1[1-4]) steps+=("$1") ;;
+        lint|types|shell|web|webkit|dev|py3.1[1-4]) steps+=("$1") ;;
         *) echo "unknown step or option: $1" >&2; usage 2 >&2 ;;
     esac
     shift
@@ -51,8 +55,8 @@ done
 [[ "$jobs" =~ ^[1-9][0-9]*$ ]] || { echo "-j takes a number" >&2; exit 2; }
 if [ ${#steps[@]} -eq 0 ]; then
     case "$mode" in
-        quick) steps=(lint types shell web dev) ;;
-        *) steps=(lint types shell web dev "${PYTHONS[@]/#/py}") ;;
+        quick) steps=(lint types shell web webkit dev) ;;
+        *) steps=(lint types shell web webkit dev "${PYTHONS[@]/#/py}") ;;
     esac
 fi
 
@@ -149,7 +153,21 @@ run_step() {  # step: its log in .ci/logs, its result in RESULT
             "$TOOLS/shellcheck" -x -P packaging/appimage -f gcc packaging/*.sh packaging/appimage/*.sh \
                 packaging/appimage/AppRun > "$log" 2>&1 || rc=1 ;;
         web)
-            web_deps > "$log" 2>&1 || rc=1 ;;
+            { web_deps && tests/web/node_modules/.bin/eslint -c tests/web/eslint.config.mjs src/daprivacyscanner/web/app.js
+            } > "$log" 2>&1 || rc=1 ;;
+        webkit)
+            local py
+            if ! command -v Xvfb >/dev/null || ! command -v xdotool >/dev/null; then
+                echo "skipped: the page in a real WebKitGTK window needs Xvfb and xdotool" > "$log"
+            elif py="$(dev_python)"; then
+                rm -rf "$CI/webkit-shots"
+                DAPRIVACYSCANNER_WEBKIT_SMOKE=1 DAPRIVACYSCANNER_WEBKIT_SHOTS="$CI/webkit-shots" PYTHONPATH="$ROOT/src" \
+                    PYTHONDONTWRITEBYTECODE=1 "$py" -m pytest -q -p no:cacheprovider -rs -s tests/test_webkit_smoke.py \
+                    > "$log" 2>&1 || rc=1
+            else
+                echo "no dev venv: python3 -m venv --system-site-packages .venv && .venv/bin/pip install -e '.[dev]'" \
+                    "(or DEV_PYTHON=path)" > "$log"; rc=1
+            fi ;;
         dev)
             local py
             if py="$(dev_python)"; then
@@ -204,7 +222,10 @@ suites=()
 for s in "${steps[@]}"; do
     case "$s" in
         dev|py3.*) suites+=("$s") ;;
-        *) printf '%-8s ' "$s"; run_step "$s"; [ "${RESULT[$s]}" = 0 ] && echo ok || echo "FAILED (.ci/logs/$s.log)" ;;
+        *) printf '%-8s ' "$s"; run_step "$s"
+           if [ "${RESULT[$s]}" != 0 ]; then echo "FAILED (.ci/logs/$s.log)"
+           elif grep -q '^skipped' "$CI/logs/$s.log" 2>/dev/null; then head -1 "$CI/logs/$s.log"
+           else echo ok; fi ;;
     esac
 done
 if [ ${#suites[@]} -gt 0 ]; then
