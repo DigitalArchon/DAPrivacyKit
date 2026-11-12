@@ -4715,7 +4715,7 @@ def names_begin(args: dict) -> dict:
     _NAMES.clear()
     groups = _caller_groups(uid, gid)
     dirs, blocks, full, gens = _walk_folders(root, uid, groups, own_only, ext4)
-    state = {"uid": uid, "home": root, "scope": "home" if own_only else "mount", "fstype": f[2], "device": real,
+    state = {"uid": uid, "gid": gid, "home": root, "scope": "home" if own_only else "mount", "fstype": f[2], "device": real,
              "rdev": st.st_rdev, "ino": st.st_ino, "size": _device_size(real), "dirs": dirs, "blocks": blocks,
              "done": 0, "found": {}, "full": full, "trees": {k[0] for k in dirs}, "unreadable": 0, "mount": f[1],
              "own_only": own_only, "groups": groups}
@@ -5011,8 +5011,11 @@ def _open_kept(s: dict, rel: str, mounts: set[str] | None = None) -> int:
     """The folder at `rel` under the listing's top, opened as the listing reached it: one name at a
     time, never through a link, never into another mount or filesystem, each folder one the
     listing may cover, and opened with the caller's own file access (_as_caller)."""
-    uid, gid, _ = _caller()
-    groups = _caller_groups(uid, gid)
+    if s.get("gid") is not None and s.get("groups") is not None:     # the listing's own, looked up once
+        uid, gid, groups = s["uid"], s["gid"], s["groups"]
+    else:
+        uid, gid, _ = _caller()
+        groups = _caller_groups(uid, gid)
     if mounts is None:
         mounts = {_unescape(f[1]) for f in _proc_mounts()}
     with _as_caller(uid, gid, groups):
