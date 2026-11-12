@@ -2283,7 +2283,8 @@ while ($$(".modal").length) { $$(".modal .buttons button").at(-1).click(); await
   check(!$("#checks-list .notebox.danger"), "acknowledged, it goes for this page");
   S.state.in_browser = false; S.browserNoted = false; window.renderChecks(); await tick(); }
 
-// the app never looks for updates: a copy built more than a few months ago says so at the top, with where the latest is
+// the app never looks for updates by itself: a copy built more than a few months ago says so at the top, with where the
+// latest is and the button that asks
 { const S = window.eval("S");
   const note = () => [...window.document.querySelectorAll("#checks-list .notebox")].find(n => n.textContent.includes("getting old"));
   window.renderChecks(); await tick();
@@ -2292,9 +2293,103 @@ while ($$(".modal").length) { $$(".modal .buttons button").at(-1).click(); await
   check(note() && note().textContent.includes("built on 12 October 2026, about 4 months ago")
         && note().textContent.includes("never looks for updates by itself") && note().querySelector('a.extlink[href$="/releases"]'),
         "an old copy says when it was built and where the latest is: " + note()?.textContent);
-  note().querySelector("button").click(); await tick();
+  check([...note().querySelectorAll("button")].some(b => b.textContent === "Check for updates…"),
+        "the note offers Check for updates…");
+  [...note().querySelectorAll("button")].find(b => b.textContent === "Not now").click(); await tick();
   check(!note(), "Not now puts it away for this page");
   S.state.app = { ...S.state.app, days: 0, old: false }; S.oldCopyNoted = false; window.renderChecks(); await tick(); }
+
+// Check for updates…: opened from the welcome warning (and the old-copy note); nothing is asked until Check now, whose
+// host is named first; a newer release is downloaded and verified, then put in place only once confirmed, the exact
+// paths and the commands that do the same shown; Restart now starts the new copy and quits through Quit. Not an
+// AppImage: how to update instead, nothing contacted. Closing with a verified download not put in place deletes it.
+{ const S = window.eval("S");
+  const calls_ = [], saved = { get: routes["GET /api/quit"], post: routes["POST /api/quit"] };
+  const appimage = "/home/a/Applications/DAPrivacyKit-0.1.0b9-x86_64.AppImage";
+  const base = { mode: "appimage", version: "0.1.0b9", path: appimage, problem: "", how: [], commands: [],
+    hosts: { check: ["api.github.com"], download: ["github.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com"] },
+    releases: "https://github.com/DigitalArchon/DAPrivacyKit/releases", proxy_vars: [], release: null, compare: null, job: null,
+    plan: null, replaced: null, updated: null, in_browser: false };
+  const rel = { version: "0.1.0b10", tag: "v0.1.0b10", published: "2026-12-01", name: "DAPrivacyKit-0.1.0b10-x86_64.AppImage",
+    size: 41e6, page: "https://github.com/DigitalArchon/DAPrivacyKit/releases/tag/v0.1.0b10" };
+  const keep = "/home/a/Applications/.DAPrivacyKit-0.1.0b9-x86_64.AppImage.0.1.0b9.old";
+  const staged = "/home/a/Applications/.DAPrivacyKit-update-0123456789abcdef/DAPrivacyKit-0.1.0b10-x86_64.AppImage";
+  const plan = { version: "0.1.0b10", from: "0.1.0b9", path: appimage, keep, staged, mode: "0755",
+    verdict: { title: "Verified: made by Digital Archon", signer: "Digital Archon", key_name: "Digital Archon Release Signing",
+      fingerprint: "3AA5C06133BBC05A4151EA415B5948EB785ED3AF", fingerprint_grouped: "3AA5 C061 33BB C05A 4151  EA41 5B59 48EB 785E D3AF",
+      signed_at: 1795000000, notes: [] },
+    commands: [`chmod 0755 ${staged}`, `ln ${appimage} ${keep}`, `mv -f ${staged} ${appimage}`],
+    check: [`gpg --verify ${staged}.asc ${staged}`, `${staged} --version`], back: [`mv -f ${keep} ${appimage}`] };
+  let upd = { ...base }, polls = 0;
+  routes["GET /api/update"] = () => { calls_.push("get");
+    if (upd.job?.state === "running" && ++polls > 1) upd = { ...upd, job: { ...upd.job, state: "done" }, plan };
+    return upd; };
+  routes["POST /api/update/check"] = () => { calls_.push("check"); upd = { ...upd, release: rel, compare: "newer" }; return upd; };
+  routes["POST /api/update/download"] = () => { calls_.push("download"); polls = 0;
+    upd = { ...upd, job: { state: "running", version: "0.1.0b10", phase: "Downloading the AppImage from github.com", done: 20e6,
+                           total: 41e6, stopping: false } }; return upd; };
+  routes["POST /api/update/replace"] = (body) => { calls_.push("replace:" + body.confirm);
+    upd = { ...upd, plan: null, replaced: { path: appimage, keep, from: "0.1.0b9", to: "0.1.0b10", mode: "0755",
+                                            back: plan.back, note: "" } }; return upd; };
+  routes["POST /api/update/restart"] = () => { calls_.push("restart"); return { started: true }; };
+  routes["POST /api/update/discard"] = () => { calls_.push("discard"); upd = { ...upd, plan: null, job: null }; return upd; };
+  routes["POST /api/update/stop"] = () => { calls_.push("stop"); return upd; };
+  routes["GET /api/quit"] = () => { calls_.push("quit?"); return { left_open: [] }; };
+  routes["POST /api/quit"] = () => { calls_.push("quit"); return { ok: true }; };
+  const top = () => $$("#modal-root .modal").at(-1);
+  const btn = (label) => [...(top()?.querySelectorAll("button") || [])].find(b => b.textContent === label);
+  const wait = () => new Promise(r => setTimeout(r, 800));
+  S.state.can_quit = false;
+  window.openWelcome(); await tick();
+  const fromWelcome = [...$(".modal.welcome").querySelectorAll("button")].find(b => b.textContent === "Check for updates…");
+  check(!!fromWelcome, "the welcome warning, beside the version, offers Check for updates…");
+  fromWelcome.click(); await tick(); await tick();
+  check(top()?.querySelector("h2")?.textContent === "Check for updates" && top().getAttribute("role") === "dialog",
+        "it opens a dialog of its own, on top");
+  check(top().textContent.includes("api.github.com") && top().textContent.includes("never asks by itself")
+        && top().textContent.includes(appimage) && calls_.join() === "get", "it names the host before asking anything: " + calls_);
+  btn("Check now").click(); await tick(); await tick();
+  check(calls_.includes("check") && top().textContent.includes("DA Privacy Kit 0.1.0b10 is out")
+        && top().textContent.includes("release-assets.githubusercontent.com") && top().textContent.includes("41.0 MB")
+        && !!btn("Download and verify"), "a newer release: what the download contacts, before it starts");
+  btn("Download and verify").click(); await tick(); await tick();
+  check(top().textContent.includes("Downloading the AppImage from github.com") && !!btn("Stop") && top().querySelector(".obar"),
+        "the download's progress, with Stop");
+  await wait(); await wait();
+  check(top().textContent.includes("Verified: made by Digital Archon") && top().textContent.includes("3AA5 C061 33BB C05A 4151")
+        && top().textContent.includes("The file itself says it is version 0.1.0b10"), "the verdict, with the key and the version inside");
+  check(top().textContent.includes("Replace this copy?") && top().textContent.includes(keep) && top().textContent.includes(staged)
+        && [...top().querySelectorAll(".cmds code")].map(c => c.textContent).join("\n").includes(`mv -f ${staged} ${appimage}`)
+        && [...top().querySelectorAll(".cmds code")].some(c => c.textContent === `mv -f ${keep} ${appimage}`),
+        "the confirm step shows the exact paths, the commands that do the same, and the way back");
+  check(!calls_.some(c => c.startsWith("replace")), "nothing is replaced before the user says so");
+  btn("Replace this copy").click(); await tick(); await tick();
+  check(calls_.includes("replace:true") && top().textContent.includes(`Done: ${appimage} is version 0.1.0b10 now`)
+        && !!btn("Restart now") && !!btn("Later"), "replaced: Restart now or Later");
+  btn("Restart now").click(); await tick(); await tick(); await tick();
+  check(calls_.includes("restart") && calls_.indexOf("quit") > calls_.indexOf("restart"),
+        "Restart now starts the new copy, then quits this one through Quit: " + calls_);
+  check(!calls_.includes("discard") && !$$(".modal").some(m => m.querySelector("h2")?.textContent === "Check for updates"),
+        "the dialog closed, and nothing was discarded after the replacement");
+  while ($$(".modal").length) { $$(".modal").at(-1).querySelector(".buttons button:last-child").click(); await tick(); }
+  // a verified download, its dialog closed without replacing: deleted
+  upd = { ...base, release: rel, compare: "newer", plan }; calls_.length = 0;
+  window.openUpdate(); await tick(); await tick();
+  check(!!btn("Discard the download") && !!btn("Replace this copy"), "a verified download waits for the user's choice");
+  top().querySelector(".buttons button").click(); await tick();
+  check(calls_.includes("discard"), "closing the dialog deletes a download not put in place");
+  // not an AppImage: how to update it instead, and nothing to click that would go online
+  upd = { ...base, mode: "source", path: null, how: ["It runs from a source tree, /src: update it with git there."],
+          commands: ["git -C /src pull --ff-only"] }; calls_.length = 0;
+  S.state.app = { ...S.state.app, days: 130, old: true }; S.oldCopyNoted = false; window.renderChecks(); await tick();
+  [...$$("#checks-list .notebox button")].find(b => b.textContent === "Check for updates…").click(); await tick(); await tick();
+  check(top().textContent.includes("update it with git there") && top().textContent.includes("git -C /src pull --ff-only")
+        && top().textContent.includes("Nothing was contacted") && !btn("Check now") && calls_.join() === "get",
+        "a source tree says how to update it, and nothing is asked: " + calls_);
+  top().querySelector(".buttons button").click(); await tick();
+  check(!calls_.includes("discard") && !calls_.includes("stop"), "closing it tells the server nothing");
+  S.state.app = { ...S.state.app, days: 0, old: false }; S.oldCopyNoted = false; window.renderChecks(); await tick();
+  routes["GET /api/quit"] = saved.get; routes["POST /api/quit"] = saved.post; }
 
 // dialogs for the keyboard and a screen reader: announced as dialogs, the focus inside and kept there, Escape closes
 // the one on top (not a sticky one), and the focus goes back to where it was

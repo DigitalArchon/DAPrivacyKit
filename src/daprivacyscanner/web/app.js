@@ -397,14 +397,17 @@ function browserBanner() {
     h("div", { class: "orow" }, h("button", { class: "small", onclick: () => { S.browserNoted = true; renderChecks(); } }, "I understand")));
 }
 
-// The app never looks for a newer version of itself: once its own copy is a few months old it says so here.
+// The app never looks for a newer version of itself by itself: once its own copy is a few months old it says so here,
+// and Check for updates… asks when clicked.
 function oldCopyBanner(app) {
   const url = S.state?.welcome?.links?.releases || "";
   return h("div", { class: "notebox" }, h("b", {}, "This copy of the app is getting old"),
     `It was built on ${app.built_text}, about ${Math.floor(app.days / 30)} months ago. A newer one probably fixes bugs and `
-    + "knows newer versions of your apps. The app never looks for updates by itself: the latest is on its releases page, ",
+    + "knows newer versions of your apps. The app never looks for updates by itself: Check for updates… asks when you "
+    + "click it, and the latest is on its releases page, ",
     welcomeLink("releases"), url ? "." : "",
-    h("div", { class: "orow" }, h("button", { class: "small", onclick: () => { S.oldCopyNoted = true; renderChecks(); } }, "Not now")));
+    h("div", { class: "orow" }, h("button", { class: "small primary", onclick: openUpdate }, "Check for updates…"),
+      h("button", { class: "small", onclick: () => { S.oldCopyNoted = true; renderChecks(); } }, "Not now")));
 }
 
 function undoneBanner(items) {
@@ -1558,7 +1561,8 @@ function openWelcome() {
         + "wrong, and what can be done about it.")),
     h("p", { class: "muted small" }, "You can read this again at any time: click DA Privacy Kit at the top left."),
     h("p", { class: "muted small" }, `Version ${S.state?.app?.version || S.state?.version || "?"}`
-      + (S.state?.app?.built_text ? `, built ${S.state.app.built_text}.` : " (run from source).")));
+      + (S.state?.app?.built_text ? `, built ${S.state.app.built_text}. ` : " (run from source). "),
+      h("button", { class: "small", onclick: openUpdate }, "Check for updates…")));
   modal({ title: "Important privacy warning", wide: true, cls: "welcome", sticky: true, body,
     foot: h("label", { class: "check" }, again, "Don't show this again"),
     buttons: [{ label: "I understand", kind: "primary", onclick: async (close) => {
@@ -1566,6 +1570,133 @@ function openWelcome() {
       try { S.state.welcome = { ...S.state.welcome, ...(await api("POST", "/api/welcome", { hide: again.checked })) }; }
       catch { /* shown again next time */ }
     } }] });
+}
+
+// ------------------------------------------------------------------ Check for updates…
+// The one way the app looks for a newer version of itself, and only when clicked: each step's hosts are named before it
+// runs (GET /api/update says them, and contacts nothing). The download goes beside this copy and is verified with the
+// release key this copy carries; it replaces this copy only once the user has seen the exact paths and the commands
+// that do the same, and confirmed. Closing the dialog stops a download, or deletes one not put in place.
+
+async function openUpdate() {
+  let data;
+  try { data = await api("GET", "/api/update"); } catch (e) { toast(e.message, "error"); return; }
+  const body = h("div", { class: "update" });
+  let timer = null, shown = true;
+  const dlg = modal({ title: "Check for updates", wide: true, body, buttons: [{ label: "Close" }], onClose: () => {
+    shown = false;
+    clearTimeout(timer);
+    if (data.job?.state === "running") api("POST", "/api/update/stop").catch(() => {});
+    else if (data.plan && !data.replaced) api("POST", "/api/update/discard").catch(() => {});
+  } });
+  const act = async (method, path, payload, btn) => {
+    if (btn) btn.disabled = true;
+    try { data = await api(method, path, payload); draw(); return true; }
+    catch (e) { if (btn) btn.disabled = false; draw(e.message); return false; }
+  };
+  const button = (label, kind, onclick) => h("button", { class: `small${kind ? " " + kind : ""}`, onclick: (e) => onclick(e.target) }, label);
+  const hostsWords = (list) => list.length > 1 ? `${list.slice(0, -1).join(", ")} and ${list.at(-1)}` : list[0];
+
+  function draw(error = "") {
+    clearTimeout(timer);
+    const job = data.job, rel = data.release, plan = data.plan, done = data.replaced;
+    const parts = [h("p", {}, `This copy is DA Privacy Kit ${data.version}`, data.path ? [", ", h("code", {}, data.path)] : null, ".")];
+    if (data.updated) parts.push(h("div", { class: "notebox info small" }, `This copy was put in place by an update from `
+      + `${data.updated.from}. ` + (data.updated.removed ? `The old copy it kept, ${data.updated.kept}, has been removed.`
+      : `${data.updated.kept} isn't the file the update kept, so it was left alone.`)));
+    if (error) parts.push(h("div", { class: "warnbox", role: "alert" }, error));
+    if (data.mode !== "appimage") {
+      parts.push(h("div", { class: "notebox" }, data.how.map(x => h("p", {}, x))),
+        data.commands?.length ? commandBlock(data.commands) : null,
+        h("p", { class: "small muted" }, "Nothing was contacted. Releases are on ", welcomeLink("releases"), "."));
+      return fill(body, parts);
+    }
+    if (done) {
+      parts.push(h("div", { class: "notebox info" }, h("b", {}, `Done: ${done.path} is version ${done.to} now. `),
+          `This window is still the old copy (${done.from}): restart to use the new one. The old copy is kept as `,
+          h("code", {}, done.keep), " until the new one has started, which then removes it."),
+        done.note ? h("div", { class: "warnbox small" }, done.note) : null,
+        h("div", { class: "muted small" }, "To go back by hand, before the new one has started:"), commandBlock(done.back),
+        h("p", { class: "small muted" }, "If the administrator helper is installed, the new copy may say it is out of date "
+          + "and offer to install its own."),
+        h("div", { class: "orow" }, button("Restart now", "primary", async (btn) => {
+          btn.disabled = true;
+          try { await api("POST", "/api/update/restart"); }
+          catch (e) { btn.disabled = false; draw(e.message); return; }
+          toast("The new copy is starting. This one quits now.", "info");
+          dlg.close();
+          await quit();
+        }), button("Later", "", () => dlg.close())));
+      return fill(body, parts);
+    }
+    if (job?.state === "running") {
+      const frac = job.total ? Math.min(1, job.done / job.total) : null;
+      parts.push(h("div", { class: "trim-progress" },
+        h("div", { class: "orow" }, h("b", {}, `DA Privacy Kit ${job.version}`), h("span", { class: "small" }, job.phase || "…"),
+          job.total ? h("span", { class: "small muted" }, `${fmtSize(job.done)} of ${fmtSize(job.total)}`) : null),
+        frac != null ? h("div", { class: "obar" }, h("div", { style: `width: ${Math.round(frac * 100)}%` })) : null,
+        h("div", { class: "orow" }, button(job.stopping ? "Stopping…" : "Stop", "", (btn) => act("POST", "/api/update/stop", undefined, btn)))));
+      fill(body, parts);
+      timer = setTimeout(() => { if (shown) act("GET", "/api/update"); }, 700);
+      return body;
+    }
+    if (plan) {
+      const v = plan.verdict;
+      parts.push(h("div", { class: "notebox info" }, h("b", {}, `${v.title}. `),
+          `Signed by ${v.signer}'s release key (${v.key_name}), fingerprint ${v.fingerprint_grouped}`
+          + (v.signed_at ? `, on ${fmtDay(v.signed_at)}` : "") + `. The file itself says it is version ${plan.version}.`),
+        (v.notes || []).length ? h("ul", { class: "small" }, v.notes.map(n => h("li", {}, n))) : null,
+        h("h3", {}, "Replace this copy?"),
+        h("ul", { class: "small" },
+          h("li", {}, "This copy, ", h("code", {}, plan.path), ` (${plan.from}), is kept as `, h("code", {}, plan.keep),
+            " until the new one has started; the new one then removes it."),
+          h("li", {}, "The new one, ", h("code", {}, plan.staged), ", goes in its place, with the same name and permissions "
+            + `(${plan.mode}): scheduled scans, the Outbox, the right-click entries and Boxes start the app by that path, so `
+            + "they get the new version. The name keeps the old version number."),
+          h("li", {}, "What the app keeps (History, accepted findings, settings) carries on.")),
+        h("div", { class: "muted small" }, "The same, by hand:"), commandBlock(plan.commands),
+        h("div", { class: "muted small" }, "To check it yourself first (gpg needs the release key imported):"), commandBlock(plan.check),
+        h("div", { class: "muted small" }, "To go back, until the new one has started:"), commandBlock(plan.back),
+        h("p", { class: "small muted" }, "Discarding, or closing this dialog, deletes the download."),
+        h("div", { class: "orow" }, button("Discard the download", "", (btn) => act("POST", "/api/update/discard", undefined, btn)),
+          button("Replace this copy", "primary", (btn) => act("POST", "/api/update/replace", { confirm: true }, btn))));
+      return fill(body, parts);
+    }
+    if (job && job.state !== "running" && job.error) parts.push(h("div", { class: "warnbox" }, job.error));
+    if (!rel) {
+      parts.push(h("p", {}, `This asks GitHub (${hostsWords(data.hosts.check)}) which release of DA Privacy Kit is the `
+          + "latest. GitHub sees this computer's address and that it asked, as when you open the releases page in a "
+          + "browser; nothing else is sent. The app never asks by itself: only when you click here."),
+        proxyWarning(data, data.hosts.check),
+        h("div", { class: "orow" }, button("Check now", "primary", (btn) => act("POST", "/api/update/check", undefined, btn))));
+      return fill(body, parts);
+    }
+    if (data.compare !== "newer") {
+      parts.push(h("div", { class: "notebox info" }, data.compare === "same"
+        ? `This copy is the latest release (${rel.version}${rel.published ? `, published ${rel.published}` : ""}).`
+        : `This copy (${data.version}) is newer than the latest release (${rel.version}).`),
+        h("div", { class: "orow" }, button("Check again", "", (btn) => act("POST", "/api/update/check", undefined, btn))));
+      return fill(body, parts);
+    }
+    const [site, ...files] = data.hosts.download;
+    parts.push(h("div", { class: "notebox info" }, h("b", {}, `DA Privacy Kit ${rel.version} is out`),
+      rel.published ? ` (published ${rel.published}). ` : ". ", "Its release page, with what changed: ", h("code", {}, rel.page)));
+    if (data.problem) {
+      parts.push(h("div", { class: "warnbox" }, data.problem),
+        h("p", { class: "small muted" }, "The new one is on ", welcomeLink("releases"), "."));
+      return fill(body, parts);
+    }
+    parts.push(h("p", {}, `Downloading gets the AppImage (${fmtSize(rel.size)}) and its signature from ${site}, which `
+        + `hands them over from its file servers (${hostsWords(files)}). GitHub sees this computer's address and counts the `
+        + "download, as for any download from the releases page."),
+      proxyWarning(data, data.hosts.download),
+      h("p", { class: "small muted" }, "They go into a hidden folder beside this copy. The signature is checked against "
+        + "Digital Archon's release key, which this copy carries, and the new copy is asked its version: anything not "
+        + "verified, or not the release's newer version, is deleted at once. Nothing is replaced until you say so."),
+      h("div", { class: "orow" }, button("Download and verify", "primary", (btn) => act("POST", "/api/update/download", undefined, btn))));
+    return fill(body, parts);
+  }
+  draw();
 }
 
 // ------------------------------------------------------------------ history
