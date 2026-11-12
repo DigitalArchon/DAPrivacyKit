@@ -6,7 +6,7 @@ The keeper runs on the computer, outside any sandbox, and starts three sandboxes
 tor's, on the computer's network; the gate's, with no network; the browser's, with no network. They meet only
 through the Unix sockets in the app's tor folder: tor's SOCKS and control ports, and the gate's filtered control
 port, which is all the browser's sandbox gets of them. Side by side, not one inside another, because each must be
-the first bubblewrap: under Ubuntu's AppArmor profile for bubblewrap (bwrap-userns-restrict, on in 24.10 and later)
+the first bubblewrap: under Ubuntu's AppArmor profile for bubblewrap (bwrap-userns-restrict, on in Ubuntu 26.04)
 whatever a bubblewrap starts runs in its unpriv_bwrap profile, without capabilities even in a namespace of its own,
 so a bubblewrap started inside one can't make its namespaces ("No permissions to create a new namespace", the
 kernel's apparmor="DENIED" operation="capable" profile="unpriv_bwrap" capname="sys_admin": Tor Browser's sandbox
