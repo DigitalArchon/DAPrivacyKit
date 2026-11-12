@@ -1049,10 +1049,20 @@ def resolved_links(host: Host) -> dict[str, dict]:
         m = re.search(r"([+-])DNSOverTLS", line)
         if m:
             s["dot"] = "yes" if m.group(1) == "+" else "no"
-        m = re.search(r"DNSOverTLS=(\w+)", line)
+        m = re.search(r"DNSOverTLS=(\w+)", line) or re.search(r"DNSOverTLS setting:\s*(\w+)", line)
         if m:
             s["dot"] = m.group(1)
     return out
+
+
+def resolved_destinations(links: dict[str, dict]) -> list[str]:
+    """The links (and "Global") systemd-resolved sends a lookup to: those with a "~." routing domain, which keeps the
+    others out, else every link with DefaultRoute and the global servers (systemd-resolved(8)); only those with
+    servers."""
+    captured = [n for n, s in links.items() if s["route_all"] and s["servers"]]
+    if captured:
+        return captured
+    return [n for n, s in links.items() if s["servers"] and (s["default_route"] or n == "Global")]
 
 
 def resolved_announces(links: dict[str, dict], proto: str) -> bool:
@@ -1101,6 +1111,46 @@ def _protection_notes(host: Host, prov) -> list[Note]:
     return notes
 
 
+# IPsec has no tunnel interface: the kernel's policies carry the traffic (strongSwan's charon, Libreswan's pluto)
+IPSEC_DAEMONS = ("charon", "charon-nm", "charon-systemd", "pluto", "iked", "racoon")
+
+
+def ipsec_signs(host: Host) -> list[str]:
+    """What shows an IPsec VPN may be up, which vpn_links can't see: its daemon running, the routes strongSwan
+    installs in table 220 (`ip route show table 220`, readable without root)."""
+    procs = processes(host)
+    out = [f"{p} running" for p in IPSEC_DAEMONS if p in procs]
+    r = host.run("ip", "route", "show", "table", "220")
+    if r.ok and r.stdout.strip():
+        out.append("routes in strongSwan's table 220")
+    return out
+
+
+def ipv6_around(host: Host, vpns: list[str]) -> list[str]:
+    """The interfaces this computer's IPv6 internet traffic leaves by, outside the VPN, while the VPN carries its
+    IPv4 (a tunnel set up for IPv4 alone, AllowedIPs = 0.0.0.0/0, on a network with IPv6): only one with a global IPv6
+    address of its own. A route lookup sends nothing."""
+    v4, v6 = net.internet_route(host, 4), net.internet_route(host, 6)
+    if not v6 or v6 & set(vpns) or not v4 & set(vpns):
+        return []
+    have = net.global_ipv6(host)
+    return sorted(i for i in v6 if i in have)
+
+
+def tunnel_dns_outside(host: Host, tunnels: list[str], vpns: list[str]) -> list[str]:
+    """The DNS servers set on a VPN's own link (systemd-resolved) that are reached outside every tunnel, "server
+    (through link)": a WireGuard file's DNS = 192.168.1.1, or a custom DNS server on the local network in a VPN app,
+    is asked by the LAN, not through the tunnel."""
+    from ..vpn import tunnel_resolvers
+    out = []
+    for link, servers in tunnel_resolvers(host, tunnels).items():
+        for a in servers:
+            via = route_link(host, a.split("%")[0])
+            if via is not None and via not in vpns and via != "lo":
+                out.append(f"{a} (through {via})")
+    return out
+
+
 @register
 class VpnLeaks(Check):
     id = "net.vpn_leaks"
@@ -1119,6 +1169,12 @@ class VpnLeaks(Check):
                      "configuration. Check your VPN client's kill switch setting.")
         notes = _protection_notes(host, prov) if prov else [limit]
         if not vpns:
+            ipsec = ipsec_signs(host)
+            if ipsec:
+                return unknown("An IPsec VPN may be connected (" + ", ".join(ipsec) + "): it has no tunnel interface "
+                               "of its own, so where its traffic and lookups go can't be read from this computer's "
+                               "routes. The online tests (DNS leak, where traffic leaves) show what it does.",
+                               Evidence.val("IPsec", ", ".join(ipsec)), notes=notes)
             return absent("No VPN is connected now. Connect it and scan again to check for DNS leaks.", notes=notes)
         full = carrying_vpn_links(host, vpns)
         ev = [Evidence.val("VPN interfaces", ", ".join(vpns)), Evidence.val("Carrying all traffic", ", ".join(full) or "none")]
@@ -1128,21 +1184,46 @@ class VpnLeaks(Check):
         mine = prov is not None and any(prov.matches_interface(t) for t in full)
         if mine:
             ev.append(Evidence.val("VPN app", prov.name))
+        around = ipv6_around(host, vpns)
+        if around:
+            ev.append(Evidence.val("IPv6 internet traffic leaves by", ", ".join(around)))
         leaking = self._leaking(host, vpns, full, ev)
+        outside = tunnel_dns_outside(host, full, vpns) if resolved_answers(host) is not False else []
+        if outside:
+            ev.append(Evidence.val("The VPN's own DNS servers, reached outside it", ", ".join(outside)))
         if leaking is None and not mine:
             return unknown("Couldn't tell where DNS lookups go: neither systemd-resolved's settings nor the servers in "
                            "/etc/resolv.conf could be read.", *ev, notes=notes)
         if mine:
-            # its daemon's firewall rejects every lookup but to the servers it set, whatever the resolver would ask
-            if leaking:
+            # its daemon's firewall rejects every lookup but to the servers it set, and all traffic outside the tunnel;
+            # a server it was set to on the local network (a custom DNS server) is asked outside the tunnel, as chosen
+            chosen = outside + ([] if resolved_answers(host) is not False else leaking or [])
+            if around:
+                notes.insert(1, Note("info", f"{prov.name} blocks IPv6 outside the tunnel",
+                                     f"This computer's IPv6 route leaves by {', '.join(around)}, outside the tunnel: "
+                                     f"{prov.name}'s app blocks traffic outside it while it is connected. The online "
+                                     "test of IPv6 confirms it."))
+            if leaking and resolved_answers(host) is not False:
                 notes.insert(1, Note("info", f"{prov.name} rejects lookups that would leave outside it",
                                      f"Left to itself, this computer's resolver would also ask {', '.join(leaking)}: "
                                      f"{prov.name}'s app rejects those lookups while it is connected, so they never "
                                      "leave. The online DNS leak test confirms it."))
+            if chosen:
+                return warned(f"{prov.name} is connected, but its DNS server is on your local network "
+                              f"({', '.join(chosen)}): lookups go there outside the tunnel, as its settings ask, and "
+                              "whatever that server sends them on to sees them unless it uses a VPN or encryption of "
+                              "its own.", *ev, notes=notes)
             return passed(f"{prov.name} is connected, and its app keeps DNS lookups inside the tunnel.", *ev, notes=notes)
-        if leaking:
-            return failed(f"DNS queries can go out via {', '.join(leaking)} instead of the VPN.", *ev, notes=notes)
-        return passed("DNS queries go through the VPN.", *ev, notes=notes)
+        problems = []
+        if leaking or outside:
+            problems.append(f"DNS queries can go out via {', '.join([*(leaking or []), *outside])} instead of the VPN")
+        if around:
+            problems.append(f"IPv6 traffic leaves by {', '.join(around)}, around the VPN, which carries IPv4 only: sites "
+                            "reachable over IPv6 see your real address")
+        if problems:
+            text = "; ".join(problems)
+            return failed(text + ".", *ev, notes=notes)
+        return passed("DNS queries go through the VPN, and no IPv6 traffic goes around it.", *ev, notes=notes)
 
     @staticmethod
     def _leaking(host: Host, vpns: list[str], full: list[str], ev: list) -> list[str] | None:
@@ -1179,10 +1260,53 @@ class VpnLeaks(Check):
         return leaking
 
 
-# local resolvers that always encrypt what they send out, and ones that may not (unbound resolves
-# recursively in plain DNS by default; the others forward to whatever upstream they are given)
+# local resolvers that always encrypt what they send out (cloudflared only as a DNS proxy: `cloudflared proxy-dns`; its
+# usual job is a tunnel, which answers no lookups), and ones that may not (unbound resolves recursively in plain DNS by
+# default; the others forward to whatever upstream they are given)
 ENCRYPTING_RESOLVERS = {"dnscrypt-proxy", "stubby", "cloudflared"}
 LOCAL_RESOLVERS = ENCRYPTING_RESOLVERS | {"unbound", "AdGuardHome", "dnsproxy", "blocky", "kresd"}
+# other programs that answer DNS on this computer: one of them may be the one at 127.0.0.1, whatever else runs
+OTHER_DNS_SERVERS = {"dnsmasq", "named", "pdns_recursor", "pihole-FTL", "coredns", "docker-proxy", "systemd-resolve",
+                     "unbound", "AdGuardHome", "dnsproxy", "blocky", "kresd", "rootlesskit", "pasta"}
+
+
+def command_lines(host: Host, name: str) -> list[list[str]]:
+    """The command lines of the processes called `name` (/proc/PID/cmdline)."""
+    out = []
+    for p in children(host.sys_path("/proc")):
+        if not p.name.isdigit():
+            continue
+        try:
+            if (p / "comm").read_text().strip() != name:
+                continue
+            out.append([a for a in (p / "cmdline").read_bytes().decode(errors="replace").split("\0") if a])
+        except OSError:
+            continue
+    return out
+
+
+def local_dns_answerer(scan: Scan, servers: list[str]) -> tuple[str | None, str]:
+    """Which program answers the loopback DNS servers resolv.conf names: (its name, how that was told), or (None,
+    why not). By the socket listening on port 53 there when ss names its program (it names only the user's own,
+    without root); else the only DNS server running here, when it is an encrypting resolver and nothing else that
+    answers DNS runs (dnsmasq, a container's proxy, Pi-hole...)."""
+    wanted = {s.split("%")[0].strip("[]") for s in servers}
+    named = {s.process for s in scan.context.listeners or [] if s.port == 53 and s.process and
+             (s.ip in wanted or s.wildcard)}
+    if len(named) == 1:
+        return named.pop(), "the program listening there"
+    if len(named) > 1:
+        return None, f"several programs listen on port 53 ({', '.join(sorted(named))})"
+    procs = processes(scan.host)
+    encrypting = {p for p in procs & ENCRYPTING_RESOLVERS if p != "cloudflared"}
+    if "cloudflared" in procs and any("proxy-dns" in argv for argv in command_lines(scan.host, "cloudflared")):
+        encrypting.add("cloudflared")
+    others = (procs & OTHER_DNS_SERVERS) - encrypting
+    if len(encrypting) == 1 and not others:
+        return next(iter(encrypting)), "the only DNS server running here"
+    if encrypting or others:
+        return None, "which of " + ", ".join(sorted(encrypting | others)) + " answers there couldn't be seen"
+    return None, "no program the app recognises answers there"
 
 
 def cite(f) -> str:
@@ -1340,17 +1464,35 @@ def dns_in_tunnel(host: Host) -> list[str]:
         through = [route_link(host, a.split("%")[0]) for a in servers]
         return sorted(set(through)) if servers and all(t in vpns for t in through) else []
     links = resolved_links(host)
-    if not links or VpnLeaks._leaking(host, vpns, full, []) != []:
+    if not links or VpnLeaks._leaking(host, vpns, full, []) != [] or tunnel_dns_outside(host, full, vpns):
         return []
     return [n for n in full if links.get(n, {}).get("servers")]
 
 
+def dns_outside_tunnel(host: Host) -> list[str] | None:
+    """Where this computer's lookups leave outside a VPN that carries its traffic, as net.vpn_leaks judges it (other
+    links answering, nameservers or the VPN's own servers reached outside it), "server (through link)" or a link;
+    [] when every lookup goes into the tunnel; None without a full tunnel, or when it can't be told."""
+    vpns = vpn_links(host)
+    full = carrying_vpn_links(host, vpns) if vpns else []
+    if not full:
+        return None
+    leaking = VpnLeaks._leaking(host, vpns, full, [])
+    if leaking is None:
+        return None
+    return leaking + (tunnel_dns_outside(host, full, vpns) if resolved_answers(host) is not False else [])
+
+
 def firefox_doh(scan: Scan) -> tuple[int, list[str]]:
-    """Firefox-family profiles (Firefox, LibreWolf), and those that encrypt their own lookups with DNS over HTTPS
-    (network.trr.mode 2, falling back to the system's DNS, or 3, only): (profiles, those using it, by label)."""
+    """Firefox-family profiles (every one browsers.yaml lists), and those that encrypt their own lookups with DNS over
+    HTTPS (network.trr.mode 2, falling back to the system's DNS, or 3, only; Waterfox ships with 2): (profiles, those
+    using it, by label)."""
+    from ..browsers import family_names
     from ._util import firefox_prefs, mozilla_profiles
-    profiles = mozilla_profiles(scan.host, scan.paths, ("Firefox", "LibreWolf"))
-    return len(profiles), [p.label for p in profiles if firefox_prefs(scan.host, p.path).get("network.trr.mode") in (2, 3)]
+    from .browser import ff_value
+    profiles = mozilla_profiles(scan.host, scan.paths, family_names("mozilla"))
+    return len(profiles), [p.label for p in profiles
+                           if ff_value(p, firefox_prefs(scan.host, p.path), "network.trr.mode") in (2, 3)]
 
 
 @register
@@ -1392,24 +1534,41 @@ class DnsUnencrypted(Check):
         # "a local resolver the app doesn't recognise")
         if resolved_answers(host):
             links = resolved_links(host)
-            dot = [s["dot"] for s in links.values() if s["dot"]]
-            ev.append(Evidence.val("systemd-resolved DNSOverTLS", ", ".join(sorted(set(dot))) or "unknown"))
-            if any(d == "yes" for d in dot):
-                return passed("DNS is encrypted (DNS over TLS).", *ev, notes=notes)
-            if any(d == "opportunistic" for d in dot):
-                return unencrypted("DNS over TLS is opportunistic: it falls back to plain DNS without telling you.",
-                                   warn=True)
             if not links:
                 return unknown("Couldn't read systemd-resolved's settings.", *ev, notes=notes)
-            return unencrypted("DNS queries are sent unencrypted.")
-        local = processes(host) & LOCAL_RESOLVERS
-        if servers and all(s.startswith(("127.", "::1")) for s in servers) and local & ENCRYPTING_RESOLVERS:
-            return passed(f"DNS goes through a local encrypting resolver ({', '.join(sorted(local))}).", *ev, notes=notes)
-        if servers and all(s.startswith(("127.", "::1")) for s in servers) and local:
-            return unknown(f"DNS goes through a local resolver ({', '.join(sorted(local))}), which encrypts only if it "
-                           "is set to: check that its upstream servers use DNS over TLS or HTTPS.", *ev, notes=notes)
-        if servers and all(s.startswith(("127.", "::1")) for s in servers):
-            return unknown("DNS goes through a local resolver the app doesn't recognise.", *ev, notes=notes)
+            # judged on the links lookups go to (a "~." routing domain's, else those with DefaultRoute, and the global
+            # servers), not any link: DNS over TLS on a VPN's link left the Wi-Fi's lookups unencrypted, and passed
+            dest = resolved_destinations(links)
+            dot = {n: links[n]["dot"] for n in dest}
+            ev.append(Evidence.val("systemd-resolved DNSOverTLS", "; ".join(
+                f"{'global settings' if n == 'Global' else n}: {d or 'unknown'}" for n, d in dot.items()) or "unknown"))
+            if not dest:
+                return unknown("Couldn't tell which DNS servers systemd-resolved asks: no link with servers takes the "
+                               "lookups.", *ev, notes=notes)
+            values = set(dot.values())
+            if values == {"yes"}:
+                return passed("DNS is encrypted (DNS over TLS) on every link lookups go to.", *ev, notes=notes)
+            if "no" in values or values - {"yes", "opportunistic", None}:
+                return unencrypted("DNS queries are sent unencrypted.")
+            if "opportunistic" in values:
+                return unencrypted("DNS over TLS is opportunistic: it falls back to plain DNS without telling you.",
+                                   warn=True)
+            if tunnel:
+                return unencrypted("")
+            return unknown("Couldn't tell whether DNS over TLS is on for every link lookups go to.", *ev, notes=notes)
+        loopback = bool(servers) and all(s.startswith(("127.", "::1")) for s in servers)
+        if loopback:
+            who, how = local_dns_answerer(scan, servers)
+            ev.append(Evidence.val("Answering at " + ", ".join(servers[:2]), who or "couldn't be told"))
+            if who in ENCRYPTING_RESOLVERS:
+                return passed(f"DNS goes through a local encrypting resolver ({who}: {how}).", *ev, notes=notes)
+            if who in LOCAL_RESOLVERS:
+                return unknown(f"DNS goes through a local resolver ({who}), which encrypts only if it is set to: check "
+                               "that its upstream servers use DNS over TLS or HTTPS.", *ev, notes=notes)
+            if who:
+                return unknown(f"DNS goes through a local resolver the app doesn't recognise ({who}).", *ev, notes=notes)
+            return unknown(f"DNS goes through a local resolver at {', '.join(servers[:2])}: {how}, so whether it "
+                           "encrypts what it sends on isn't known.", *ev, notes=notes)
         return unencrypted("DNS queries are sent unencrypted.")
 
 

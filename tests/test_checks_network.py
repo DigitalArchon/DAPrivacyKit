@@ -363,7 +363,10 @@ def test_no_vpn(cat, tmp_path):
 @pytest.mark.parametrize("resolvconf, resolvectl, procs, status", [
     ("nameserver 127.0.0.53\n", RESOLVECTL_LEAK, {}, Status.FAIL),
     ("nameserver 127.0.0.53\n", RESOLVECTL_LEAK.replace("-DNSOverTLS", "+DNSOverTLS"), {}, Status.PASS),
-    ("nameserver 127.0.0.53\n", "Global\n  Protocols: DNSOverTLS=opportunistic\n", {}, Status.WARN),
+    ("nameserver 127.0.0.53\n", "Global\n  Protocols: DNSOverTLS=opportunistic\n  DNS Servers: 9.9.9.9\n", {},
+     Status.WARN),
+    # no server anywhere: nothing to judge
+    ("nameserver 127.0.0.53\n", "Global\n  Protocols: DNSOverTLS=opportunistic\n", {}, Status.UNKNOWN),
     # systemd-resolved's other stub: judged by resolved's settings as the first one is, not "a local resolver the app
     # doesn't recognise"
     ("nameserver 127.0.0.54\n", RESOLVECTL_LEAK.replace("-DNSOverTLS", "+DNSOverTLS"), {}, Status.PASS),

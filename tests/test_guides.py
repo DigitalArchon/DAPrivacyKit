@@ -817,7 +817,8 @@ def test_cups_keeps_nothing(cat, tmp_path, system, monkeypatch):
 
 def test_dns_over_tls(cat, tmp_path, system, monkeypatch):
     host = rooted(make_host(tmp_path, files={"/etc/resolv.conf": "nameserver 127.0.0.53\n"}), system, monkeypatch)
-    host.runner.handlers["resolvectl"] = lambda argv: CommandResult(argv, 0, "Global\n  Protocols: -DNSOverTLS\n")
+    host.runner.handlers["resolvectl"] = lambda argv: CommandResult(argv, 0, "Global\n  Protocols: -DNSOverTLS\n"
+                                                                                 "  DNS Servers: 192.168.1.1\n")
     g = build(cat, host, "net.dns_unencrypted")
     plan = options(g)["Encrypt DNS, using Quad9"]
     log, res = apply(host, plan)
