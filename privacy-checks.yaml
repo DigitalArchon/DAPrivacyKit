@@ -3501,9 +3501,9 @@ checks:
       - 'apt: keys in /etc/apt/trusted.gpg.d that aren''t the distribution''s (owned by its keyring package,
         dpkg-query -S, or named after its os-release ID or ID_LIKE: Mint''s installer leaves an unowned
         linuxmint.key.asc), trusted for every repository too; seen on Mint 22: none flagged'
-      - 'dnf/yum: gpgcheck (or pkg_gpgcheck) 0/false/no/off in an enabled section of /etc/yum.repos.d/*.repo, or in [main] of /etc/dnf/dnf.conf or /etc/yum.conf'
+      - 'dnf/yum (DNF4): gpgcheck (or pkg_gpgcheck) 0/false/no/off in an enabled section of /etc/yum.repos.d/*.repo, or in [main] of /etc/dnf/dnf.conf or /etc/yum.conf. DNF5 (Fedora 41+, dnf a link to dnf5): [main] from /usr/share/dnf5/libdnf.conf.d and /etc/dnf/libdnf5.conf.d (one in /etc hiding the same name), then /etc/dnf/dnf.conf; repositories from /etc/yum.repos.d, /etc/distro.repos.d and /usr/share/dnf5/repos.d; then /usr/share/dnf5/repos.override.d and /etc/dnf/repos.override.d (sections are ids or globs; dnf config-manager setopt writes 99-config_manager.repo there), the last value winning'
       - 'zypper: gpgcheck / pkg_gpgcheck off in /etc/zypp/repos.d/*.repo (enabled ones) or /etc/zypp/zypp.conf [main]'
-      - 'pacman: SigLevel containing Never, PackageNever, Optional or PackageOptional in /etc/pacman.conf [options] or a repository section (LocalFileSigLevel is left alone: files you install by hand)'
+      - 'pacman: SigLevel containing Never, PackageNever, Optional or PackageOptional in /etc/pacman.conf [options] or a repository section, Include files (globs too) read in place in the section they are in (LocalFileSigLevel is left alone: files you install by hand)'
       - 'Flatpak: gpg-verify=false in a [remote "..."] section of /var/lib/flatpak/repo/config or ~/.local/share/flatpak/repo/config'
       - 'Plain HTTP: the same entry, section or stanza has an http:// URI, baseurl, Server or url'
     fix: >

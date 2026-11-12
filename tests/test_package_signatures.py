@@ -79,6 +79,45 @@ def test_zypper_and_pacman(cat, tmp_path):
     assert o.status is Status.FAIL and o.findings["unsigned_over_http"] is True
 
 
+def _dnf5(cat, tmp_path, files):
+    import os
+    host = make_host(tmp_path, installed=["dnf5"], files={"/usr/bin/dnf5": "", **files})
+    os.symlink("dnf5", host.sys_path("/usr/bin/dnf"))
+    return detect(cat, CHECK, make_scan(host))
+
+
+FEDORA = {"/etc/yum.repos.d/fedora.repo": "[fedora]\nmetalink=https://m/\ngpgcheck=1\n",
+          "/etc/yum.repos.d/updates.repo": "[updates]\nmetalink=https://m/\ngpgcheck=1\n"}
+
+
+def test_dnf5_overrides_and_drop_ins_are_read(cat, tmp_path):
+    """Fedora 41+: `dnf config-manager setopt fedora.gpgcheck=0` writes /etc/dnf/repos.override.d, which DNF4's files
+    don't show: the check passed."""
+    assert _dnf5(cat, tmp_path / "a", FEDORA).status is Status.PASS
+    o = _dnf5(cat, tmp_path / "b", {**FEDORA, "/etc/dnf/repos.override.d/99-config_manager.repo": "[fedora]\ngpgcheck=0\n"})
+    assert o.status is Status.FAIL and ev(o) == {"/etc/dnf/repos.override.d/99-config_manager.repo (fedora)": "gpgcheck=0"}
+    # a glob section, and a later override putting one back
+    o = _dnf5(cat, tmp_path / "c", {**FEDORA, "/etc/dnf/repos.override.d/50-x.repo": "[*]\npkg_gpgcheck=0\n",
+                               "/etc/dnf/repos.override.d/60-y.repo": "[updates]\npkg_gpgcheck=1\n"})
+    assert o.status is Status.FAIL and [k for k in ev(o)] == ["/etc/dnf/repos.override.d/50-x.repo (fedora)"]
+    # [main] in a drop-in, for the repositories that don't set it; dnf.conf comes last and wins
+    plain = {"/etc/yum.repos.d/x.repo": "[x]\nbaseurl=https://x/\n"}
+    o = _dnf5(cat, tmp_path / "d", {**plain, "/etc/dnf/libdnf5.conf.d/20-x.conf": "[main]\ngpgcheck=0\n"})
+    assert o.status is Status.FAIL and "every repository" in list(ev(o).values())[0]
+    o = _dnf5(cat, tmp_path / "e", {**plain, "/etc/dnf/libdnf5.conf.d/20-x.conf": "[main]\ngpgcheck=0\n",
+                               "/etc/dnf/dnf.conf": "[main]\ngpgcheck=1\n"})
+    assert o.status is Status.PASS
+
+
+def test_pacman_follows_includes(cat, tmp_path):
+    conf = "[options]\nSigLevel = Required DatabaseOptional\n[core]\nInclude = /etc/pacman.d/mirrorlist\n" \
+           "[extra]\nInclude = /etc/pacman.d/extra.d/*.conf\n"
+    o = run(cat, tmp_path, {"/etc/pacman.conf": conf, "/etc/pacman.d/mirrorlist": "Server = https://m/$repo\n",
+                            "/etc/pacman.d/extra.d/10-x.conf": "SigLevel = Never\nServer = http://x/$repo\n"})
+    assert o.status is Status.FAIL and o.findings["unsigned_over_http"] is True
+    assert ev(o) == {"/etc/pacman.d/extra.d/10-x.conf (extra)": "SigLevel = Never, over plain HTTP"}
+
+
 def test_flatpak_remotes(cat, tmp_path):
     o = run(cat, tmp_path, {"/var/lib/flatpak/repo/config": '[core]\nmode=bare-user-only\n\n[remote "flathub"]\n'
                             "url=https://dl.flathub.org/repo/\ngpg-verify=true\n"},

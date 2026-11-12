@@ -1285,17 +1285,129 @@ def _rpm_repos(scan: Scan, folder: str, main_files: tuple[str, ...], manager: st
     return out, unreadable
 
 
-def pacman_unsigned(scan: Scan) -> tuple[list[Unsigned], bool]:
-    text, bad = _sys_text(scan, "/etc/pacman.conf")
+# DNF5 (dnf5.conf(5)): [main] from the drop-ins of both folders (one in /etc hides the same name in /usr/share), in
+# name order, then /etc/dnf/dnf.conf last; repositories from these folders; then repos.override.d of both folders the
+# same way, whose sections are repository ids or globs of them (`dnf config-manager setopt repo.gpgcheck=0` writes
+# /etc/dnf/repos.override.d/99-config_manager.repo), the last value winning
+DNF5_MAIN_DROPINS = ("/usr/share/dnf5/libdnf.conf.d", "/etc/dnf/libdnf5.conf.d")
+DNF5_REPOS_DIRS = ("/etc/yum.repos.d", "/etc/distro.repos.d", "/usr/share/dnf5/repos.d")
+DNF5_OVERRIDES = ("/usr/share/dnf5/repos.override.d", "/etc/dnf/repos.override.d")
+_CHECK_KEYS = ("gpgcheck", "pkg_gpgcheck")
+
+
+def _masked(scan: Scan, folders: tuple[str, ...], suffix: str) -> list[str]:
+    """The files of these folders in name order, one of a name in a later folder hiding the earlier's."""
+    by_name: dict[str, str] = {}
+    for folder in folders:
+        for path in _sys_files(scan, folder, (suffix,)):
+            by_name[path.rsplit("/", 1)[1]] = path
+    return [by_name[n] for n in sorted(by_name)]
+
+
+def dnf5_unsigned(scan: Scan) -> tuple[list[Unsigned], bool]:
+    """DNF5's effective gpgcheck (pkg_gpgcheck, its new name) for every enabled repository: [main] as its drop-ins and
+    dnf.conf leave it, then the repository's own file, then every override that matches its id. Fedora 41 and later:
+    `dnf config-manager setopt fedora.gpgcheck=0` changed nothing DNF4's files show."""
+    import fnmatch
+    unreadable = False
+    main_val, main_at = None, ""
+    for path in _masked(scan, DNF5_MAIN_DROPINS, ".conf") + ["/etc/dnf/dnf.conf"]:
+        text, bad = _sys_text(scan, path)
+        unreadable |= bad
+        keys = ini.parse(text or "").get(("main",), {})
+        for k in _CHECK_KEYS:
+            if k in keys:
+                main_val, main_at = (f"{k} = {keys[k].strip()}", path)
+    repos: dict[str, dict] = {}                      # id -> {"keys": {...}, "check": (what, path), ...}
+    for folder in DNF5_REPOS_DIRS:
+        for path in _sys_files(scan, folder, (".repo",)):
+            text, bad = _sys_text(scan, path)
+            unreadable |= bad
+            for group, keys in ini.parse(text or "").items():
+                if not group:
+                    continue
+                r = repos.setdefault(group[0], {"enabled": "1", "check": None, "url": ""})
+                r["enabled"] = keys.get("enabled", r["enabled"])
+                r["url"] = keys.get("baseurl", "") or keys.get("mirrorlist", "") or keys.get("metalink", "") or r["url"]
+                for k in _CHECK_KEYS:
+                    if k in keys:
+                        r["check"] = (f"{k}={keys[k].strip()}", path)
+    for path in _masked(scan, DNF5_OVERRIDES, ".repo"):
+        text, bad = _sys_text(scan, path)
+        unreadable |= bad
+        for group, keys in ini.parse(text or "").items():
+            for repo_id, r in repos.items():
+                if not group or not fnmatch.fnmatchcase(repo_id, group[0]):
+                    continue
+                r["enabled"] = keys.get("enabled", r["enabled"])
+                for k in _CHECK_KEYS:
+                    if k in keys:
+                        r["check"] = (f"{k}={keys[k].strip()}", path)
     out = []
-    for group, keys in ini.parse(text or "").items():
-        level = keys.get("SigLevel")
-        if not group or level is None:
+    for repo_id, r in repos.items():
+        if ini.truthy(r["enabled"]) is False:
             continue
-        words = set(level.split())
-        if words & {"Never", "PackageNever", "Optional", "PackageOptional"}:
-            out.append(Unsigned("/etc/pacman.conf", f"SigLevel = {level}", "" if group[0] == "options" else group[0],
-                                keys.get("Server", "").startswith("http://"), "pacman"))
+        what, path = r["check"] or (main_val, main_at)
+        if what and what.replace(" ", "").split("=", 1)[1].lower() in _FALSE:
+            out.append(Unsigned(path, what + ("" if r["check"] else " (for every repository that doesn't set it)"),
+                                repo_id, r["url"].strip().startswith("http://"), "dnf"))
+    return out, unreadable
+
+
+def pacman_sections(scan: Scan, path: str = "/etc/pacman.conf") -> tuple[list[tuple[str, str, str, str]], bool]:
+    """pacman.conf as pacman reads it: (section, key, value, file) for every setting, an Include's file(s) (a glob)
+    read in place, in the section it is in (a mirror list may carry a SigLevel of its own); at most 8 deep. With
+    whether a file couldn't be read."""
+    import fnmatch
+    out, unreadable = [], False
+
+    def read(p: str, section: str, depth: int) -> str:
+        nonlocal unreadable
+        text, bad = _sys_text(scan, p)
+        unreadable |= bad
+        for line in (text or "").splitlines():
+            line = line.split("#", 1)[0].strip()
+            if not line:
+                continue
+            if line.startswith("[") and line.endswith("]"):
+                section = line[1:-1].strip()
+                continue
+            key, _, value = (x.strip() for x in line.partition("="))
+            if key == "Include" and depth < 8 and value.startswith("/"):
+                folder, pattern = value.rsplit("/", 1)
+                folder = folder or "/"
+                if any(c in pattern for c in "*?["):
+                    try:
+                        names = [f"{folder}/{f.name}" for f in sys_children(scan.host, folder)
+                                 if fnmatch.fnmatchcase(f.name, pattern)]
+                    except Unreadable:
+                        unreadable, names = True, []
+                else:
+                    names = [value]
+                for n in names:
+                    section = read(n, section, depth + 1)
+                continue
+            out.append((section, key, value, p))
+        return section
+
+    read(path, "", 0)
+    return out, unreadable
+
+
+def pacman_unsigned(scan: Scan) -> tuple[list[Unsigned], bool]:
+    settings, bad = pacman_sections(scan)
+    out = []
+    levels: dict[str, tuple[str, str]] = {}           # section -> (its last SigLevel, the file it is in)
+    servers: dict[str, str] = {}
+    for section, key, value, path in settings:
+        if key == "SigLevel" and section:
+            levels[section] = (value, path)
+        elif key == "Server" and section not in servers:
+            servers[section] = value
+    for section, (level, path) in levels.items():
+        if set(level.split()) & {"Never", "PackageNever", "Optional", "PackageOptional"}:
+            out.append(Unsigned(path, f"SigLevel = {level}", "" if section == "options" else section,
+                                servers.get(section, "").startswith("http://"), "pacman"))
     return out, bad
 
 
@@ -1315,7 +1427,10 @@ def unsigned_repositories(scan: Scan) -> tuple[list[Unsigned], bool, bool, bool]
     """(where checks are off, the legacy apt keyring holds keys, a file couldn't be read, any package
     manager was found)."""
     apt, legacy, bad1 = apt_unsigned(scan)
-    dnf, bad2 = _rpm_repos(scan, "/etc/yum.repos.d", ("/etc/dnf/dnf.conf", "/etc/yum.conf"), "dnf")
+    if is_dnf5(scan.host):
+        dnf, bad2 = dnf5_unsigned(scan)
+    else:
+        dnf, bad2 = _rpm_repos(scan, "/etc/yum.repos.d", ("/etc/dnf/dnf.conf", "/etc/yum.conf"), "dnf")
     zyp, bad3 = _rpm_repos(scan, "/etc/zypp/repos.d", ("/etc/zypp/zypp.conf",), "zypper")
     pac, bad4 = pacman_unsigned(scan)
     found = any(scan.host.sys_path(p).exists() for p in ("/etc/apt", "/etc/yum.repos.d", "/etc/zypp", "/etc/pacman.conf",
