@@ -36,11 +36,25 @@ def built() -> dt.date | None:
         return None
 
 
+def version() -> str:
+    """This copy's version as it was built: a dev build's says so (+dev.<commit>, written by the AppImage build into
+    _built.py), a release's and a source tree's are the package's own."""
+    try:
+        from ._built import VERSION
+        return VERSION if isinstance(VERSION, str) and VERSION.startswith(__version__) else __version__
+    except (ImportError, AttributeError):
+        return __version__
+
+
+def dev_build() -> bool:
+    return "+dev" in version()
+
+
 def age(today: dt.date | None = None, built_on: dt.date | None = None) -> dict:
     """What the page and the report say about this copy: its version, when it was built, and, once it is more than
     OLD_AFTER_DAYS old, that a newer one is probably out. A clock set before the build date says nothing."""
     built_on = built_on or built()
-    out = {"version": __version__, "built": None, "days": None, "old": False, "text": ""}
+    out = {"version": version(), "built": None, "days": None, "old": False, "text": ""}
     if built_on is None:
         return out
     days = ((today or dt.date.today()) - built_on).days

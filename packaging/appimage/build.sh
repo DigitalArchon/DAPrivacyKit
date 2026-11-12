@@ -111,8 +111,9 @@ cp "$W/src/signing-keys.yaml" "$W/src/src/daprivacyscanner/signing-keys.yaml"
 cp "$W/src/apps.yaml" "$W/src/src/daprivacyscanner/apps.yaml"
 # when this copy was made, for the app's own "this copy is getting old" note (about.built): the commit's date, so
 # the same commit gives the same file
-printf '"""Written by the AppImage build: the date of the commit this copy was built from."""\n\nBUILT = "%s"\n' \
-    "$(date -u -d "@$SOURCE_DATE_EPOCH" +%F)" > "$W/src/src/daprivacyscanner/_built.py"
+# and the name it was built under (a dev build's carries +dev.<commit>, so the copy says it isn't a release)
+printf '"""Written by the AppImage build: the date of the commit this copy was built from, and its version."""\n\nBUILT = "%s"\nVERSION = "%s"\n' \
+    "$(date -u -d "@$SOURCE_DATE_EPOCH" +%F)" "$VERSION" > "$W/src/src/daprivacyscanner/_built.py"
 "$V/pip" wheel -q --no-build-isolation --no-deps -w "$W/wheels" "$W/src"     # DA Privacy Kit itself
 # the rest of the runtime lock: wheels only
 "$W/buildpy/bin/python3" - "$P/requirements.lock" "$W/binary.lock" $SDIST_ONLY <<'PY'
