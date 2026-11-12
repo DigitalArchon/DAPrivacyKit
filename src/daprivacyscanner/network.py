@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import os
 import re
 from dataclasses import dataclass
@@ -48,9 +49,27 @@ class Listener:
     def wildcard(self) -> bool:
         return self.host_part in WILDCARDS and self.interface in (None, "")
 
+    @property
+    def ip(self) -> str:
+        """The address alone: [2001:db8::5] -> 2001:db8::5, 192.168.1.5 -> 192.168.1.5."""
+        return self.host_part.strip("[]")
+
+    @property
+    def loopback(self) -> bool:
+        """Bound to this computer alone: a loopback address, or the loopback interface."""
+        if self.interface == "lo":
+            return True
+        try:
+            a = ipaddress.ip_address(self.ip)
+        except ValueError:
+            return False
+        return a.is_loopback or (isinstance(a, ipaddress.IPv6Address) and a.ipv4_mapped is not None
+                                 and a.ipv4_mapped.is_loopback)
+
     def label(self) -> str:
         parts = [p for p in (PORT_NAMES.get(self.port), self.process) if p]
-        return f"{self.port}/{self.proto}" + (f" ({', '.join(parts)})" if parts else "")
+        where = "" if self.wildcard else f" on {self.ip}" + (f" ({self.interface})" if self.interface else "")
+        return f"{self.port}/{self.proto}" + (f" ({', '.join(parts)})" if parts else "") + where
 
 
 def parse_ss(text: str) -> list[Listener]:
@@ -77,15 +96,64 @@ def ephemeral_range(host: Host) -> tuple[int, int]:
         return DEFAULT_EPHEMERAL
 
 
-def exposed(listeners: list[Listener], ephemeral: tuple[int, int] = DEFAULT_EPHEMERAL) -> list[Listener]:
-    """Services reachable from other machines: bound to all interfaces, except the expected
-    UDP listeners and UDP sockets on ephemeral ports (clients, such as browsers and DNS
-    lookups, which ss -u lists alongside servers). The same port on IPv4 and IPv6 counts once."""
+# interfaces that reach only this computer's own containers and virtual machines (Docker's, Podman's, libvirt's, LXC's
+# bridges and the virtual cables to them): a service bound to their address isn't offered to other machines
+HOST_ONLY_IFACES = re.compile(r"^(docker\d*|br-[0-9a-f]{12}|virbr\d+|lxcbr\d+|lxdbr\d+|podman\d+|cni-?\w*|veth\w*|vnet\d+|"
+                              r"incusbr\d+)$")
+# servers in the ephemeral range that answer nobody who doesn't hold a peer's key: WireGuard's port and Tailscale's.
+# Reachable, but silent to everyone else; listed, never counted as an exposed service
+SILENT_UDP = {51820: "WireGuard", 41641: "Tailscale"}
+SILENT_PROCESSES = {"tailscaled": "Tailscale", "wireguard-go": "WireGuard", "boringtun": "WireGuard"}
+
+
+def address_interfaces(host: Host) -> dict[str, str] | None:
+    """{address: interface} of this computer's own addresses (`ip -o addr show`, which needs no root), or None
+    without `ip`."""
+    r = host.run("ip", "-o", "addr", "show")
+    if not r.ok:
+        return None
+    out = {}
+    for line in r.stdout.splitlines():
+        m = re.match(r"^\d+:\s+(\S+?)(?:@\S+)?\s+inet6?\s+([0-9a-fA-F:.]+)/", line)
+        if m:
+            out[m.group(2).lower()] = m.group(1)
+    return out
+
+
+def silent(s: Listener) -> str | None:
+    """What a listener is when it is one of the servers that answer only their peers (WireGuard, Tailscale)."""
+    if s.proto != "udp":
+        return None
+    return SILENT_PROCESSES.get(s.process or "") or (SILENT_UDP.get(s.port) if s.process in (None, "") else None)
+
+
+def _bound_to_others(s: Listener, addresses: dict[str, str] | None) -> bool:
+    """Whether other machines can reach a listener's address: every interface, or an address of a network interface
+    other than loopback and the host-only bridges of containers and virtual machines (a LAN address, a public IPv6
+    one, a link-local one). Without the list of addresses, any address but loopback counts."""
+    if s.loopback:
+        return False
+    if s.wildcard:
+        return True
+    iface = s.interface or (addresses or {}).get(s.ip.split("%")[0].lower())
+    return not (iface and (iface == "lo" or HOST_ONLY_IFACES.match(iface)))
+
+
+def exposed(listeners: list[Listener], ephemeral: tuple[int, int] = DEFAULT_EPHEMERAL,
+            addresses: dict[str, str] | None = None, with_silent: bool = False) -> list[Listener]:
+    """Services reachable from other machines: bound to all interfaces, or to an address other machines can reach
+    (a LAN or public address: Samba, CUPS or sshd bound to one), except the expected UDP listeners and UDP sockets
+    on ephemeral ports (clients, such as browsers and DNS lookups, which ss -u lists alongside servers). WireGuard's
+    and Tailscale's ports answer only their peers: left out, or with `with_silent` included. The same port on IPv4
+    and IPv6 counts once."""
     out, seen = [], set()
     for s in listeners:
-        if not s.wildcard:
+        if not _bound_to_others(s, addresses):
             continue
-        if s.proto == "udp" and (s.port in EXPECTED_UDP or ephemeral[0] <= s.port <= ephemeral[1]):
+        quiet = silent(s)
+        if quiet and not with_silent:
+            continue
+        if s.proto == "udp" and not quiet and (s.port in EXPECTED_UDP or ephemeral[0] <= s.port <= ephemeral[1]):
             continue
         if (s.proto, s.port) in seen:
             continue
@@ -132,20 +200,29 @@ UFW_PROFILES = {"openssh": "22/tcp", "ssh": "22/tcp", "cups": "631", "samba": "1
                 "kde connect": "1714:1764", "gsconnect": "1714:1764"}
 
 
+_UFW_RULE = re.compile(r"^(.+?)\s+(ALLOW|LIMIT|DENY|REJECT)(?:\s+(IN|OUT|FWD))?(?:\s+|$)")
+# the application profile ufw prints after a rule's ports, "(KDE Connect)" or "(KDE Connect (v6))", and "(v6)" alone
+_UFW_TAIL = re.compile(r"\s*\((?:[^()]|\([^()]*\))*\)$")
+
+
 def parse_ufw_status(text: str) -> FirewallRules | None:
-    """`ufw status verbose`, or None when ufw is inactive."""
+    """`ufw status verbose`, or None when ufw is inactive. The columns are padded to a width, and a To column wider
+    than it is followed by one space: CachyOS's "1714:1764/udp (KDE Connect) ALLOW IN    Anywhere"."""
     if not re.search(r"^Status: active", text, re.M):
         return None
     m = re.search(r"^Default: (\w+) \(incoming\)", text, re.M)
     rules = FirewallRules("ufw", None if not m else m.group(1) == "allow", [])
     body = text.split("----", 1)[1] if "----" in text else ""
     for line in body.splitlines():
-        m = re.match(r"^(.+?)\s{2,}(ALLOW|LIMIT)(?: IN)?\s{2,}", line)
-        if not m:
+        m = _UFW_RULE.match(line)
+        if not m or m.group(2) not in ("ALLOW", "LIMIT") or m.group(3) in ("OUT", "FWD"):
             continue
-        to = re.sub(r"\s*\(v6\)$", "", m.group(1).strip())
+        to = m.group(1).strip()
+        profile = UFW_PROFILES.get(re.sub(r"\s*\(v6\)$", "", to).lower())
+        while profile is None and _UFW_TAIL.search(to):
+            to = _UFW_TAIL.sub("", to)
         to = re.sub(r"\s+on\s+\S+$", "", to)            # "22/tcp on eth0"
-        to = UFW_PROFILES.get(to.lower(), to)
+        to = profile or UFW_PROFILES.get(to.lower(), to)
         if to.lower() == "anywhere":
             rules.open_ports.append((0, 65535, None))
             continue

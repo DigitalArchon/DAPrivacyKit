@@ -248,9 +248,20 @@ class ExposedServices(Check):
         if c.value is None:
             return unknown(f"Couldn't list listening services: {c.note}")
         ev, notes = list(c.evidence), list(c.notes)
-        exposed = net.exposed(scan.context.listeners or [], net.ephemeral_range(scan.host))
+        listeners, eph = scan.context.listeners or [], net.ephemeral_range(scan.host)
+        addresses = net.address_interfaces(scan.host)
+        exposed = net.exposed(listeners, eph, addresses)
+        quiet = [s for s in net.exposed(listeners, eph, addresses, with_silent=True) if net.silent(s)]
+        if quiet:
+            ev.append(Evidence.val("Answering only their peers", ", ".join(f"{s.label()}: {net.silent(s)}" for s in quiet)))
+            notes.append(Note("info", "VPN ports that answer only their peers",
+                              f"{', '.join(dict.fromkeys(net.silent(s) for s in quiet))} listen{'s' if len(quiet) == 1 else ''} "
+                              "for other machines, but answer only a peer holding one of its keys and stay silent to "
+                              "everyone else: not counted here."))
         findings: dict[str, bool | None] = {self.FINDING: False}
         reachable = exposed
+        # Docker forwards the ports its containers publish before the firewall's input rules see them (net.docker_bypass)
+        docker = docker_published(scan.host) if exposed else set()
         if exposed:
             tool, rules, why = firewall_rules(scan)
             if tool and rules is None:
@@ -261,7 +272,18 @@ class ExposedServices(Check):
                         f"It may block these services, but {why}, so the app can't tell which of them it lets through.")
                 notes.append(Note("limitation", f"A firewall ({tool}) is active", text, ("net.firewall_off",)))
             elif tool and rules:
-                verdict = {s: rules.allows(s.port, s.proto) for s in exposed}
+                # Docker's proxy is root's: a socket whose program is named is someone else's
+                verdict = {s: True if s.port in (docker or ()) or s.process == "docker-proxy"
+                           else None if docker is None and not s.process else rules.allows(s.port, s.proto)
+                           for s in exposed}
+                past = [s for s in exposed if s.port in (docker or ()) or s.process == "docker-proxy"]
+                if past:
+                    ev.append(Evidence.val("Published by Docker, past the firewall", ", ".join(s.label() for s in past)))
+                elif docker is None:
+                    notes.append(Note("limitation", "Docker's ports couldn't be listed",
+                                      "Docker is running, but which ports its containers publish couldn't be read: those "
+                                      "get past the firewall's rules, so the app can't tell what it blocks.",
+                                      ("net.docker_bypass",)))
                 blocked = [s for s, v in verdict.items() if v is False]
                 unsure = [s for s, v in verdict.items() if v is None]
                 reachable = [s for s, v in verdict.items() if v is not False]
@@ -307,13 +329,21 @@ class ExposedServices(Check):
         r = scan.host.run("cupsctl") if cups_not_asked(scan.host) is None else None
         if r is not None and r.ok and "_share_printers=1" in r.stdout:
             ev.append(Evidence.val("CUPS printer sharing", "on"))
-        if not c.value:
-            return passed("No services listen on all interfaces.", *ev, notes=notes, findings=findings)
+        if docker:
+            notes.append(Note("risk", "Docker's ports get past the firewall",
+                              "Docker forwards the ports its containers publish before the firewall's rules for "
+                              "incoming connections see them: whatever those rules say, other machines reach them.",
+                              ("net.docker_bypass",)))
+        if not exposed:
+            notes.append(Note("limitation", "What isn't counted",
+                              f"UDP sockets on ports {eph[0]}-{eph[1]} are left out: programs use those for their own "
+                              "lookups and calls, and a server on one (a game server) can't be told from them."))
+            return passed("No service accepts connections from other machines.", *ev, notes=notes, findings=findings)
         if findings[self.FINDING]:
-            return warned(f"{len(exposed)} service{'s listen' if len(exposed) != 1 else ' listens'} on all interfaces, "
+            return warned(f"{len(exposed)} service{'s listen' if len(exposed) != 1 else ' listens'} for other machines, "
                           "but the firewall blocks them.", *ev, notes=notes, findings=findings, partial=partial)
         if len(reachable) < len(exposed):
-            return failed(f"{len(reachable)} of {len(exposed)} services listening on all interfaces "
+            return failed(f"{len(reachable)} of {len(exposed)} services listening for other machines "
                           f"{'are' if len(reachable) != 1 else 'is'} reachable through the firewall.", *ev,
                           notes=notes, findings=findings, partial=partial)
         return failed(f"{len(exposed)} service{'s are' if len(exposed) != 1 else ' is'} reachable from other "
@@ -331,6 +361,8 @@ class DockerBypass(Check):
     def detect(self, scan: Scan) -> Outcome:
         host = scan.host
         if not installed(host, "docker"):
+            if installed(host, "podman"):
+                return self._podman_alone(host)
             return absent("Docker isn't installed.")
         podman = self._podman(host)                     # `docker --version` asks the program, not the daemon
         if podman is not None:
@@ -407,6 +439,21 @@ class DockerBypass(Check):
                            "read yet: check where they publish ports with sudo podman ps.", *ev)
         return unknown("docker here is Podman, which couldn't say how it runs containers (podman info failed).", *ev)
 
+    def _podman_alone(self, host: Host) -> Outcome:
+        """Podman without Docker or its shim: rootless containers publish ordinary sockets; rootful ones (sudo podman)
+        are forwarded by its network rules, which the app can't read without root."""
+        root = rootful_podman(host)
+        ev = [Evidence.val("Podman", "installed, without Docker"),
+              Evidence.val("Containers running as root", {True: "yes", False: "none", None: "unknown"}[root])]
+        if root:
+            return unknown("Podman runs containers as root here: the ports they publish are forwarded by Podman's own "
+                           "network rules, and whether those get past the host firewall depends on rules the app can't "
+                           "read without administrator access. sudo podman ps shows which ports they publish.", *ev)
+        if root is None:
+            return unknown("Podman is installed, and whether it runs containers as root couldn't be told.", *ev)
+        return passed("Podman runs no container as root now: the ports your own containers publish are ordinary "
+                      "listening sockets, which the host firewall filters.", *ev, notes=[self.ROOTLESS])
+
     # what the docker CLI would otherwise follow to another daemon, set empty (-H overrides them too)
     LOCAL = {"DOCKER_HOST": "", "DOCKER_CONTEXT": ""}
 
@@ -428,6 +475,49 @@ class DockerBypass(Check):
         r = host.run(*DockerBypass._daemon(host), "info", "--format", "{{json .SecurityOptions}}",
                      env=DockerBypass.LOCAL)
         return r.ok and "rootless" in r.stdout
+
+
+_PUBLISHED = re.compile(r"(?:^|,\s*)(?:\d+\.\d+\.\d+\.\d+|\[?[0-9a-fA-F:]*\]?):(\d+)(?:-(\d+))?->")
+
+
+def docker_published(host: Host) -> set[int] | None:
+    """The host ports rootful Docker's containers publish (`docker ps`, as net.docker_bypass asks it: never when its
+    service isn't running, which through docker.socket would start it), forwarded before the firewall's input rules;
+    empty without Docker running (or with Podman's shim, or rootless Docker, whose ports are ordinary sockets); None
+    when they couldn't be listed."""
+    if not installed(host, "docker") or DockerBypass._podman(host) is not None or not DockerBypass._docker_running(host):
+        return set()
+    r = host.run(*DockerBypass._daemon(host), "ps", "--format", "{{.Ports}}", env=DockerBypass.LOCAL)
+    if r.missing:
+        return set()
+    if not r.ok:
+        return None
+    ports: set[int] = set()
+    for line in r.stdout.splitlines():
+        for m in _PUBLISHED.finditer(line):
+            lo, hi = int(m.group(1)), int(m.group(2) or m.group(1))
+            ports.update(range(lo, min(hi, lo + 1000) + 1))
+    if ports and DockerBypass._rootless_docker(host):
+        return set()
+    return ports
+
+
+def rootful_podman(host: Host) -> bool | None:
+    """Whether Podman runs containers as root here: a conmon (Podman's per-container monitor) of root's, read from
+    /proc (no root needed); None when /proc can't be read."""
+    proc = host.sys_path("/proc")
+    try:
+        pids = [p for p in os.listdir(proc) if p.isdigit()]
+    except OSError:
+        return None
+    for pid in pids:
+        try:
+            status = (proc / pid / "status").read_text()
+        except OSError:
+            continue
+        if re.search(r"^Name:\s*conmon\s*$", status, re.M) and re.search(r"^Uid:\s*0\s", status, re.M):
+            return True
+    return False
 
 
 def iptables_in_nft(host: Host) -> bool:

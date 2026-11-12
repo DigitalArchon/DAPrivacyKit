@@ -1150,8 +1150,8 @@ def detect_exposed_services(host: Host, listeners: list | None = None) -> Contex
     parsed = network.parse_ss(r.stdout)
     if listeners is not None:
         listeners[:] = parsed
-    found = network.exposed(parsed, network.ephemeral_range(host))
-    ev = [Evidence.count("Services listening on all interfaces", len(found))]
+    found = network.exposed(parsed, network.ephemeral_range(host), network.address_interfaces(host))
+    ev = [Evidence.count("Services listening for other machines", len(found))]
     ev += [Evidence.val("Listening", s.label()) for s in found[:20]]
     notes = []
     if any(s.port == 5355 for s in found) and _llmnr_answers(host) is not False:
@@ -1164,7 +1164,8 @@ def detect_exposed_services(host: Host, listeners: list | None = None) -> Contex
             "drop-in under /etc/systemd/resolved.conf.d/.",
             ("net.hostname_broadcast", "net.exposed_services")))
     return ContextValue("exposed_services", bool(found), ev,
-                        "Sockets bound to all interfaces (DHCP, mDNS and ephemeral UDP ports aside)", notes=notes)
+                        "Sockets bound to all interfaces, or to an address other machines reach (DHCP, mDNS and "
+                        "ephemeral UDP ports aside)", notes=notes)
 
 
 def _llmnr_answers(host: Host) -> bool | None:

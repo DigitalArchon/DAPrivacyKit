@@ -1311,7 +1311,7 @@ checks:
 # ---------------------------------------------------------------------------
 
   - id: net.exposed_services
-    title: Services listening on all interfaces
+    title: Services other machines can reach
     category: network
     severity: 7
     warn_lower: 2
@@ -1322,8 +1322,15 @@ checks:
     scope: user
     tier: guided
     detect:
-      - 'ss -tulpnH; flag local addresses 0.0.0.0, [::], *'
-      - 'Allowlist expected listeners (DHCP client on 68, mDNS on 5353 handled by net.hostname_broadcast)'
+      - 'ss -tulpnH; flag local addresses 0.0.0.0, [::], *, and any address of this computer''s but loopback and the
+        host-only bridges of containers and virtual machines (docker0, br-*, virbr*, lxcbr*, podman*: `ip -o addr
+        show`): Samba, CUPS or sshd bound to the LAN address, or a public IPv6 one, are reachable too'
+      - 'Allowlist expected listeners (DHCP client on 68, mDNS on 5353 handled by net.hostname_broadcast); UDP sockets
+        in the ephemeral range are clients'' and left out (said in a note), except WireGuard''s 51820 and Tailscale''s
+        41641 (or tailscaled, wireguard-go), which answer only their peers: listed, never counted'
+      - 'Docker''s published ports (docker ps, as net.docker_bypass asks it) are forwarded before the firewall''s input
+        rules: never "blocked by" ufw or firewalld, whatever they say; when Docker runs and its ports can''t be listed,
+        what the firewall does for a socket whose program isn''t named (docker-proxy is root''s) can''t be told'
       - 'sshd: sshd -T | grep -Ei "passwordauthentication|permitrootlogin"'
       - 'CUPS: cupsctl | grep _share_printers=1, only while cups.service runs (through cups.socket it would start it)
         and CUPS is this computer''s (no CUPS_SERVER, nor a ServerName in ~/.cups/client.conf or
@@ -1362,11 +1369,14 @@ checks:
         enables only the socket)'
       - 'Rules in DOCKER-USER aren''t read (root, and what they block depends on what they match): the finding says
         to accept it once they cover the ports'
+      - 'Podman without Docker or its shim: a conmon of root''s in /proc means containers run as root, whose published
+        ports its own network rules forward (couldn''t check: they need root to read); none, a pass (rootless
+        containers publish ordinary sockets)'
     fix: Publish as 127.0.0.1:<port>:<port>, or add rules to the DOCKER-USER chain.
     remedy: >
       Docker's published ports get past the firewall. Guide… shows how to publish them on this
       computer only, or add firewall rules Docker respects.
-    verify: Check rootful Podman (netavark) behaviour too.
+    verify: Whether rootful Podman's forwarded ports (netavark, iptables and nftables drivers) get past ufw and firewalld.
 
   - id: net.firewall_off
     title: Host firewall disabled
@@ -4139,7 +4149,7 @@ checks:
       built for this check from the services listening now (never by running the test again).
     remedy: >
       Services here can be reached from the internet over IPv6. Guide… turns each one off or keeps it to
-      this computer, as for “Services listening on all interfaces”; the firewall check covers the rest.
+      this computer, as for “Services other machines can reach”; the firewall check covers the rest.
     contacts:
       - 'Nobody by default. With a port probe server set: that server, which connects to your public IPv6 address on the listed ports.'
     related: [net.exposed_services, net.firewall_off]
