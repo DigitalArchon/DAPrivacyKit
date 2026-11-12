@@ -304,10 +304,6 @@ def test_dns_names_with_any_pointers_are_read_or_refused_quickly(tail):
     assert all(isinstance(n, str) for n in asked) and all(isinstance(a, str) for a in answers)
 
 
-@pytest.mark.xfail(strict=True, reason="pcap.Flows._packet (pcap.py:194-197) reads the byte after IPv6's fixed header "
-                   "as TCP or UDP whatever its next-header says beyond 6 and 17: a connection behind an extension header "
-                   "(hop-by-hop, routing, destination options) isn't counted, so a program can hide its hosts from the "
-                   "trial's report")
 @given(V6, st.integers(1024, 65535), hostnames)
 def test_pcap_an_ipv6_connection_behind_an_extension_header_is_counted(dst, sport, name):
     hbh = bytes([6, 0]) + b"\x01\x04\x00\x00\x00\x00"        # next: TCP, 8 bytes, a PadN option
@@ -318,16 +314,14 @@ def test_pcap_an_ipv6_connection_behind_an_extension_header_is_counted(dst, spor
     assert [h["host"] for h in f.result()["hosts"]] == [name]
 
 
-@pytest.mark.xfail(strict=True, reason="pcap.Flows._packet (pcap.py:187-191) doesn't look at IPv4's fragment offset: the "
-                   "payload of a later fragment is read as a TCP or UDP header, so a program's data shows up as "
-                   "connections to hosts it never contacted")
 @given(V4, st.integers(1024, 65535), st.integers(1, 1000))
 def test_pcap_a_later_ipv4_fragment_is_no_new_connection(dst, sport, offset):
     src = b"\x0a\x00\x02\x0f"
     fake = tcp(sport, 443, 0x02, 9)                           # bytes that look like a SYN, inside a later fragment
     f = pcap.Flows("169.254.0.1")
     f.feed(pcap_header() + record(ether(0x0800, ipv4(src, dst, 6, fake, frag=offset * 8))))
-    assert f.result()["hosts"] == []
+    # the destination is still named (every packet counts), but as fragments, never as the connection its bytes mimic
+    assert all(h["ports"] == ["fragments"] for h in f.result()["hosts"])
 
 
 # ------------------------------------------------------------------ clearsigned lists, against the real gpgv
@@ -456,9 +450,6 @@ def test_deb_readers_refuse_damaged_packages_with_their_own_error_quickly(tmp_pa
         pass
 
 
-@pytest.mark.xfail(strict=True, reason="packages.ar_members (packages.py:85-95): a member whose size field says -60 "
-                   "leaves the position where it was (pos += 60 + size), so a 68-byte .deb loops for ever, a list "
-                   "growing in memory, when Verify a download or Tor Browser's set-up looks inside it")
 def test_a_deb_member_of_size_minus_60_is_refused():
     with tempfile.TemporaryDirectory() as d:
         p = Path(d) / "x.deb"
@@ -506,10 +497,6 @@ def test_rpm_reader_fails_only_as_verify_expects(tmp_path_factory, sig, main, pa
         raise AssertionError(e)
 
 
-@pytest.mark.xfail(strict=True, reason="packages.rpm (packages.py:225-241) takes a value's type from the package: an "
-                   "INT32 where the signature should be (tag 1002, 1006, 268, 267 or 278) is written with write_bytes(int), "
-                   "and a STRING digest algorithm (5093) is looked up in a dict as a list: TypeError, which Verify a "
-                   "download doesn't catch (it catches PackageError, OSError, struct.error)")
 @pytest.mark.parametrize("sig,main", [([(1002, 4, b"\0\0\0\1", 1)], []),
                                       ([(268, 4, b"\0\0\0\1", 1)], []),
                                       ([(268, 7, b"sig", 3)], [(5092, 6, b"ab\0", 1), (5093, 6, b"8\0", 1)])])
@@ -545,9 +532,6 @@ def test_a_program_is_never_called_a_document_whatever_its_name(head, rest, name
     assert any("program" in w or "runs" in w for w in ins.warnings)
 
 
-@pytest.mark.xfail(strict=True, reason="sniff._content (sniff.py:175-181) looks for a tar header (ustar at 257) and an ISO "
-                   "volume (CD001 at 0x8001) before the magic numbers at the start: an ELF program carrying either is "
-                   "called a tar archive or a disk image, and the page never says it is a program")
 @pytest.mark.parametrize("at,marker", [(257, b"ustar"), (0x8001, b"CD001")])
 def test_a_program_carrying_another_formats_marker_is_still_a_program(at, marker):
     data = bytearray(b"\x7fELF\x02\x01\x01" + bytes(0x8100))
@@ -588,9 +572,6 @@ def test_a_damaged_zip_is_an_archive_and_never_an_error(entries, at, junk):
     assert ins.kind in ("program", "archive", "document") or at < 4    # its first bytes broken: no ZIP at all
 
 
-@pytest.mark.xfail(strict=True, reason="sniff._zip (sniff.py:132-141) reads a ZIP's mimetype entry but catches neither "
-                   "zlib.error nor the like: a mimetype entry stored deflated with broken data makes inspect() raise, "
-                   "and the download's listing fails")
 def test_a_zip_whose_mimetype_entry_wont_inflate_is_an_archive():
     good = zip_bytes([("mimetype", b"application/vnd.oasis.opendocument.text" * 3, zipfile.ZIP_DEFLATED)])
     i = good.index(b"mimetype", 30) + len(b"mimetype")             # the local entry's name, then its deflated bytes
