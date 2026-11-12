@@ -101,7 +101,8 @@ def distro_name(host: Host) -> str:
     return re.sub(r"[^a-z0-9.-]+", "-", name)
 
 
-def capture(host: Host, directory: Path, out=sys.stdout) -> list[Path]:
+def capture(host: Host, directory: Path, out=None) -> list[Path]:
+    out = out if out is not None else sys.stdout      # the stream at call time, not the one at import
     clean = Sanitiser(host)
     target = directory / distro_name(host)
     written = []
