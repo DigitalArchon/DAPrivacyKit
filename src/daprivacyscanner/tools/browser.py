@@ -886,7 +886,18 @@ def check_latest(net, b: Browser, archive_name: str, kept: bool = False) -> str:
 # exploits need. Mullvad Browser: Standard, its own default (nothing is preset for it; preset_vpn's profile leaves the
 # level alone): it is for everyday browsing, where sites need more of what Safest turns off.
 SECURITY_LEVELS = {"safest": 1, "safer": 2, "standard": 4}
-SECURITY_MODULE = "modules/SecurityLevel.sys.mjs"                    # in omni.ja: the prefs each level sets
+# In omni.ja: the module with the prefs each level sets. Tor Browser 15 (Firefox ESR 140) kept it in modules/; 16 (ESR
+# 153) has it under moz-src/, where the app didn't look: with only the slider preset, 16.0.1 found the prefs at
+# Standard's values at its first start, asked for a restart and showed its "unusual security settings" bar (found on
+# the lab, 2026-11-12; the table itself is in the same form). Both places, then any entry of that name, should it move.
+SECURITY_MODULES = ("moz-src/toolkit/components/securitylevel/SecurityLevel.sys.mjs", "modules/SecurityLevel.sys.mjs")
+SECURITY_MODULE = SECURITY_MODULES[-1]
+
+
+def _security_module(z) -> str | None:
+    names = set(z.namelist())
+    found = next((n for n in SECURITY_MODULES if n in names), None)
+    return found or next((n for n in sorted(names) if n.endswith("/SecurityLevel.sys.mjs")), None)
 
 
 def _security_prefs(omni: Path, level: int) -> dict[str, bool]:
@@ -896,7 +907,10 @@ def _security_prefs(omni: Path, level: int) -> dict[str, bool]:
     import zipfile
     try:
         with zipfile.ZipFile(omni) as z:
-            text = z.read(SECURITY_MODULE).decode(errors="replace")
+            name = _security_module(z)
+            if name is None:
+                return {}
+            text = z.read(name).decode(errors="replace")
     except (OSError, KeyError, zipfile.BadZipFile):
         return {}
     table = text[text.find("kSecuritySettings = {"):]

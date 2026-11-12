@@ -527,27 +527,60 @@ SECURITY_TABLE = b'''const kSecuritySettings = {
 };'''
 
 
-def omni(table=SECURITY_TABLE) -> bytes:
+def omni(table=SECURITY_TABLE, name=B.SECURITY_MODULE) -> bytes:
     import zipfile
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as z:
-        z.writestr(B.SECURITY_MODULE, table)
+        z.writestr(name, table)
     return buf.getvalue()
 
 
-def test_tor_browser_is_set_up_at_safest(host):  # noqa: F811
+# Tor Browser 16.0.1's table (moz-src/toolkit/components/securitylevel/SecurityLevel.sys.mjs), as it is in omni.ja
+SECURITY_TABLE_16 = b'''/* eslint-disable */
+// prettier-ignore
+const kSecuritySettings = {
+  // Preference name:                        [0, 1-high 2-m    3-m    4-low]
+  "javascript.options.ion":                  [,  false, false, false, true ],
+  "javascript.options.baselinejit":          [,  false, false, false, true ],
+  "javascript.options.native_regexp":        [,  false, false, false, true ],
+  "mathml.disabled":                         [,  true,  true,  true,  false],
+  "gfx.font_rendering.graphite.enabled":     [,  false, false, false, true ],
+  "gfx.font_rendering.opentype_svg.enabled": [,  false, false, false, true ],
+  "svg.disabled":                            [,  true,  false, false, false],
+  // Expect asmjs to be switched off for all levels. See tor-browser#44687.
+  // TODO: Stop tracking this preference entirely. See tor-browser#44712.
+  "javascript.options.asmjs":                [,  false, false, false, false],
+  // tor-browser#44234, tor-browser#44242: this interferes with the correct
+  // functioning of the browser. So, WASM is also handled by NoScript now.
+  "javascript.options.wasm":                 [,  true,  true,  true,  true ],
+};
+/* eslint-enable */'''
+
+
+@pytest.mark.parametrize("version,module,table", [
+    ("15.0.24", "modules/SecurityLevel.sys.mjs", SECURITY_TABLE),
+    ("16.0.1", "moz-src/toolkit/components/securitylevel/SecurityLevel.sys.mjs", SECURITY_TABLE_16),
+    ("16.0.1", "moz-src/elsewhere/SecurityLevel.sys.mjs", SECURITY_TABLE_16)])     # should it move again
+def test_tor_browser_is_set_up_at_safest(host, version, module, table):  # noqa: F811
     """The level and every pref the browser's own module sets for it, from that module's table, so it starts
-    there without asking for a restart; appended to the profile the archive ships."""
+    there without asking for a restart; appended to the profile the archive ships. Tor Browser 16 moved the module:
+    with the slider alone, 16.0.1 asked for a restart and showed its custom-level bar (the lab, 2026-11-12)."""
     disk = open_ramdisk(host)
     archive = disk / "tor-browser-linux-x86_64-15.0.24.tar.xz"
-    archive.write_bytes(tarball({**TOR, "tor-browser/Browser/omni.ja": omni(),
+    archive.write_bytes(tarball({**TOR, "tor-browser/Browser/omni.ja": omni(table, module),
                                  "tor-browser/Browser/TorBrowser/Data/Browser/profile.default": None}))
     target = B.unpack(host, archive, B.BROWSERS["tor"], {})
     assert B.preset_security(host, B.BROWSERS["tor"], target) == "safest"
     prefs = (target / "Browser/TorBrowser/Data/Browser/profile.default/prefs.js").read_text()
     for line in ('user_pref("browser.security_level.security_slider", 1);', 'user_pref("javascript.options.ion", false);',
-                 'user_pref("svg.disabled", true);', 'user_pref("browser.security_level.security_custom", false);'):
+                 'user_pref("svg.disabled", true);', 'user_pref("browser.security_level.security_custom", false);',
+                 'user_pref("javascript.options.wasm", true);'):
         assert line in prefs
+    if version.startswith("16"):
+        for line in ('user_pref("mathml.disabled", true);', 'user_pref("javascript.options.asmjs", false);',
+                     'user_pref("gfx.font_rendering.opentype_svg.enabled", false);'):
+            assert line in prefs
+        assert prefs.count("user_pref(") == 3 + 9
     info = B.record_release(host, B.BROWSERS["tor"], archive, "download", "safest", signed=1790687273)
     assert info["security"] == "safest" and info["signed"] == 1790687273
     assert B.preset_security(host, B.BROWSERS["mullvad"], disk / "mullvad-browser") == "standard"    # its own default
