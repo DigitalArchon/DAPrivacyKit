@@ -707,6 +707,9 @@ def test_quitting_waits_for_a_fix_under_way(cat, tmp_path, monkeypatch):
     from conftest import sample
     from daprivacyscanner import blockdev
     host = make_host(tmp_path, commands={("lsblk", "-J", "-o", blockdev.COLUMNS): sample("lsblk/debian-12-partial.json")})
+    profile = host.home / ".profile"                   # an auto fix to apply, whatever the umask the suite runs under
+    profile.write_text("# login\n")
+    profile.chmod(0o666)
     with TestClient(create_app(T, cat, make_host=lambda: host)) as c:
         c.post("/api/scan", headers=HT)
         cid = next(cid for cid, r in c.app.state.report["results"].items() if r.get("fixable")

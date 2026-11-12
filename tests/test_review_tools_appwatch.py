@@ -762,6 +762,7 @@ def test_the_helper_ends_a_watch_when_its_input_ends(monkeypatch):
     import sys
     ended = []
     monkeypatch.setattr(helper, "_no_dumps", lambda: None)
+    monkeypatch.setattr(helper, "_harden", lambda: None)       # it sets the process's umask and working folder
     monkeypatch.setattr(helper, "own_source", lambda: None)
     monkeypatch.setattr(helper, "_watch_forget", lambda: ended.append(True))
     monkeypatch.setattr(helper, "_WATCH", {"proc": object(), "uid": 1000})
