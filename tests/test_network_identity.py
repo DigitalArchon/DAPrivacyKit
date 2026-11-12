@@ -80,3 +80,12 @@ def test_a_unique_hostname_sent_nowhere_passes(cat, tmp_path):
                                                                 "ipv6.dhcp-send-hostname=0\n"})
     o = detect(cat, "net.hostname_broadcast", make_scan(host))
     assert o.status is Status.PASS and "doesn't seem to be announced" in o.summary
+
+
+@pytest.mark.parametrize("hostname, common", [
+    ("fedora", True), ("localhost-live", True), ("ubuntu-pc", True), ("cachyos", True),
+    ("MintDev", False), ("t14-7q2", False), ("fedora-2", False), ("GPUTestPC1", False),
+])
+def test_common_hostnames(hostname, common):
+    from daprivacyscanner.checks.network import common_hostname
+    assert common_hostname(hostname) is common

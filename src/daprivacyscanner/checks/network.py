@@ -900,12 +900,20 @@ COMMON_HOSTNAME_WORDS = frozenset({
     "linuxmint", "lmde", "deepin", "solus", "mx", "antix", "pc", "laptop", "notebook", "box", "host", "machine", "my"})
 
 
+# words that only say what kind of computer it is: one of them beside a common name keeps it common ("ubuntu-pc",
+# Fedora's "localhost-live")
+DEVICE_WORDS = frozenset({"pc", "laptop", "desktop", "notebook", "computer", "box", "machine", "host", "workstation",
+                          "server", "live", "localdomain"})
+
+
 def common_hostname(hostname: str) -> bool:
-    """Whether a hostname is one many computers share: made only of generic words ("fedora", "localhost", "ubuntu-pc").
-    Anything else, digits included ("t14-7q2", "fedora-2"), sets it apart."""
+    """Whether a hostname is one many computers share: one common name, with at most words for the kind of computer
+    ("fedora", "localhost", "ubuntu-pc", "localhost-live"). Anything else sets it apart: digits ("t14-7q2",
+    "fedora-2"), another word, or two common words run together ("MintDev")."""
     from ._util import GENERIC_NAMES, _WORDS
     words = [w.lower() for part in re.split(r"[^A-Za-z0-9]+", hostname) for w in _WORDS.findall(part)]
-    return bool(words) and all(w in GENERIC_NAMES or w in COMMON_HOSTNAME_WORDS for w in words)
+    named = [w for w in words if w not in DEVICE_WORDS]
+    return bool(words) and len(named) <= 1 and all(w in GENERIC_NAMES or w in COMMON_HOSTNAME_WORDS for w in named)
 
 
 @register
