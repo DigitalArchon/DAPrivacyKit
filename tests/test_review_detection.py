@@ -111,20 +111,20 @@ def test_an_unprivileged_scan_ranks_autologin_by_what_tpm_unlock_could_make_it(c
     from daprivacyscanner.model import Outcome, Status
     from test_runner import check, laptop_host, run
     autologin = check("auth.autologin", lambda self, scan: Outcome(Status.FAIL, "Logs in by itself."))
-    host = laptop_host(tmp_path, lsblk="fedora-40-btrfs-luks.json")
+    host = laptop_host(tmp_path, lsblk="fedora-40-btrfs-luks.json", files={"/etc/passwd": "alice:x:1000:1000::/home/alice:/bin/bash\n"})
     report = run(cat, host, autologin)
     r = report.results["auth.autologin"]
-    assert (r.lowest, r.effective_severity, r.severity_text()) == (6, 10, "6–10") and report.findings == [r]
+    assert (r.lowest, r.effective_severity, r.severity_text()) == (3, 10, "3–10") and report.findings == [r]
     assert report.context.values["tpm_unlock_no_pin"].needs_admin
     d = report.to_dict()
-    assert d["results"]["auth.autologin"]["severity_low"] == 6
+    assert d["results"]["auth.autologin"]["severity_low"] == 3
     assert d["context"]["values"]["tpm_unlock_no_pin"]["needs_admin"] is True
     text = report_mod.export(d, cat, "text", None, False, {})
-    assert "[6–10] Problem: Automatic login enabled" in text
-    assert ("Severity 6–10: it depends on whether the disk unlocks with nothing typed, which needs administrator access "
+    assert "[3–10] Problem: Automatic login enabled" in text
+    assert ("Severity 3–10: it depends on whether the disk unlocks with nothing typed, which needs administrator access "
             "(a scan with administrator access, --admin, settles it). Ranked at 10, the highest it could be.") in text
     exported = json.loads(report_mod.export(d, cat, "json", None, False, {}))
-    assert exported["report"]["results"]["auth.autologin"]["severity_low"] == 6
+    assert exported["report"]["results"]["auth.autologin"]["severity_low"] == 3
     # known: no range, and nothing said
     r.severity_low = None
     assert r.severity_text() == "10" and "severity_low" not in r.to_dict()
@@ -136,7 +136,7 @@ def test_a_risk_with_a_range_is_lowered_at_both_ends(cat, tmp_path):
     autologin = check("auth.autologin", lambda self, scan: Outcome(Status.WARN, "Logs in by itself, sometimes."))
     r = run(cat, laptop_host(tmp_path, lsblk="fedora-40-btrfs-luks.json"), autologin).results["auth.autologin"]
     lower = cat["auth.autologin"].warn_lower
-    assert (r.severity_low, r.effective_severity) == (6 - lower, 10 - lower) and r.as_warning
+    assert (r.severity_low, r.effective_severity) == (max(1, 3 - lower), 10 - lower) and r.as_warning
 
 
 # ------------------------------------------------------------------ updates against stale package lists
@@ -197,6 +197,96 @@ def test_what_is_waiting_stays_a_finding_with_stale_lists(cat, tmp_path):
     _aged(host, "/var/lib/apt/periodic/update-success-stamp", 40)
     o = detect(cat, "kern.updates", make_scan(host))
     assert o.status is Status.WARN and any(n.title == "More may be waiting" for n in o.notes)
+
+
+# ------------------------------------------------------------------ disk encryption, as the disks really are
+
+def _disk(*parts):
+    import json
+    return json.dumps({"blockdevices": [{"name": "nvme0n1", "type": "disk", "mountpoints": [None], "children": list(parts)}]})
+
+
+def _part(name, fstype, mp, parttype=None, children=None):
+    p = {"name": name, "type": "part", "fstype": fstype, "mountpoints": [mp]}
+    if parttype:
+        p["parttype"] = parttype
+    if children:
+        p["children"] = children
+    return p
+
+
+LUKS_ROOT = _part("nvme0n1p3", "crypto_LUKS", None,
+                  children=[{"name": "luks-root", "type": "crypt", "fstype": "ext4", "mountpoints": ["/", "/home"]}])
+
+
+def _fde(tmp_path, lsblk_json, files=None, commands=None):
+    from daprivacyscanner import blockdev
+    host = make_host(tmp_path, files=files or {}, commands=commands or {})
+    devices = blockdev.parse_lsblk(lsblk_json)
+    blockdev.add_sysfs_facts(host, devices)
+    return ctxmod.detect_fde(devices, "", host), devices, host
+
+
+@pytest.mark.parametrize("extra, value", [
+    # an ESP mounted where the app didn't look, known by its partition type
+    (_part("nvme0n1p1", "vfat", "/boot/firmware", "c12a7328-f81f-11d2-ba4b-00a0c93ec93b"), "full"),
+    (_part("nvme0n1p1", "vfat", "/recovery"), "full"),                       # Pop!_OS's recovery partition
+    (_part("nvme0n1p4", "ext4", "/data"), "partial"),                        # a data partition that isn't encrypted
+])
+def test_partitions_that_hold_no_data_dont_make_encryption_partial(tmp_path, extra, value):
+    assert _fde(tmp_path, _disk(extra, LUKS_ROOT))[0].value == value
+
+
+def test_a_partition_type_from_udev_when_lsblk_didnt_give_it(tmp_path):
+    files = {"/sys/class/block/nvme0n1p1/dev": "259:1\n",
+             "/run/udev/data/b259:1": "E:ID_PART_ENTRY_TYPE=C12A7328-F81F-11D2-BA4B-00A0C93EC93B\n"}
+    v, devices, _ = _fde(tmp_path, _disk(_part("nvme0n1p1", "vfat", "/esp"), LUKS_ROOT), files)
+    assert v.value == "full" and devices[1].parttype == "c12a7328-f81f-11d2-ba4b-00a0c93ec93b"
+
+
+def test_a_loop_image_is_as_encrypted_as_the_filesystem_its_file_is_on(tmp_path):
+    import json
+    loop = {"name": "loop7", "type": "loop", "fstype": "ext4", "mountpoints": ["/var/lib/waydroid/data"]}
+    text = json.loads(_disk(LUKS_ROOT, _part("nvme0n1p4", "ext4", "/data")))
+    text["blockdevices"].append(loop)
+    on_root = {"/sys/block/loop7/loop/backing_file": "/var/lib/waydroid/images/data.img\n"}
+    v, _, _ = _fde(tmp_path, json.dumps(text), on_root)
+    assert v.value == "partial" and [e.value for e in v.evidence if e.label == "Not encrypted"] == ["/data"]
+    v, _, _ = _fde(tmp_path / "b", json.dumps(text), {"/sys/block/loop7/loop/backing_file": "/data/x.img\n"})
+    assert sorted(e.value for e in v.evidence if e.label == "Not encrypted") == ["/data", "/var/lib/waydroid/data"]
+
+
+@pytest.mark.parametrize("uuid, value", [("CRYPT-LUKS2-0f2c4e5a1b2c4d3e8f90123456789abc-luks-root", "full"),
+                                         ("CRYPT-VERITY-abc-luks-root", "none"),        # verity: checked, not encrypted
+                                         ("CRYPT-INTEGRITY-luks-root", "none")])
+def test_dm_verity_and_integrity_are_not_encryption(tmp_path, uuid, value):
+    files = {"/sys/block/dm-0/dm/name": "luks-root\n", "/sys/block/dm-0/dm/uuid": uuid + "\n"}
+    v, devices, _ = _fde(tmp_path, _disk(LUKS_ROOT), files)
+    assert v.value == value
+
+
+@pytest.mark.parametrize("answer, value", [("off\n", "partial"), ("aes-256-gcm\n", "full"), (None, None)])
+def test_a_zfs_home_under_a_luks_root_is_judged_by_its_own_encryption(cat, tmp_path, answer, value):
+    from daprivacyscanner.host import CommandResult
+    from daprivacyscanner.checks.encryption import storage_of
+    mounts = "/dev/mapper/luks-root / ext4 rw 0 0\ntank/home /home zfs rw,xattr 0 0\n"
+    cmd = ("zfs", "get", "-H", "-o", "value", "encryption", "tank/home")
+    commands = {cmd: answer} if answer else {cmd: CommandResult(cmd, 1, "", "permission denied")}
+    root = _part("nvme0n1p3", "crypto_LUKS", None,
+                 children=[{"name": "luks-root", "type": "crypt", "fstype": "ext4", "mountpoints": ["/"]}])
+    v, devices, host = _fde(tmp_path, _disk(root), {"/proc/mounts": mounts}, commands)
+    assert v.value == value
+    st = storage_of(make_scan(host, devices=devices, fde=v), "/home/alice/Documents")
+    assert st.encrypted is {"partial": False, "full": True, None: None}[value]
+
+
+def test_a_zfs_root_is_judged_by_its_own_encryption(tmp_path):
+    mounts = "rpool/ROOT/ubuntu / zfs rw 0 0\n"
+    disk = _disk(_part("nvme0n1p1", "vfat", "/boot/efi"), _part("nvme0n1p2", "zfs_member", None))
+    for answer, value in (("aes-256-gcm\n", "full"), ("off\n", "none")):
+        v, _, _ = _fde(tmp_path / answer.strip(), disk, {"/proc/mounts": mounts},
+                       {"zfs get -H -o value encryption rpool/ROOT/ubuntu": answer})
+        assert v.value == value
 
 
 # ------------------------------------------------------------------ automatic login set up elsewhere

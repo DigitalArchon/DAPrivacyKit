@@ -38,13 +38,6 @@ class ContextValue:
                 "note": self.note, "partial": self.partial, "notes": [n.to_dict() for n in self.notes],
                 **({"needs_admin": True} if self.needs_admin else {})}
 
-    def settle(self) -> str:
-        """What would tell this key, when it is unknown, in words for the severity line ("needs administrator
-        access"); "" when it is known."""
-        if self.value is not None:
-            return ""
-        return "needs administrator access" if self.needs_admin else "couldn't be determined"
-
 
 @dataclass
 class Context:
@@ -110,9 +103,63 @@ def detect_fde(devices: list[blockdev.Device] | None, lsblk_error: str = "", hos
         if method:
             return ContextValue("fde", "home", ev + home_ev,
                                 f"/ is not encrypted; the home folder is ({HOME_ENCRYPTION[method]})")
-    for mp in a.unencrypted:
+    value, reason, unencrypted = a.value, a.reason, list(a.unencrypted)
+    if host is not None:
+        # ZFS datasets and bcachefs never show in lsblk's mount points: LUKS under / and an unencrypted ZFS /home was
+        # "full", and every data-at-rest finding was lowered for it
+        native = native_filesystems(host, devices)
+        root = native.get("/")
+        if value is None and root is not None:
+            ev.append(Evidence.val("Root filesystem", f"{root[1]} ({root[2]})"))
+            if root[0] is False:
+                value, reason, unencrypted = "none", f"/ is {root[1]} without its own encryption", ["/"]
+            elif root[0] is True:
+                plain = blockdev.plain_data_mounts(devices)
+                value, unencrypted = ("partial" if plain else "full"), plain
+                reason = f"/ is {root[1]} with its own encryption" + ("; some other mounted filesystems are not"
+                                                                       if plain else "")
+        others = {mp: v for mp, v in native.items() if mp != "/"}
+        if value in ("full", "partial"):
+            plain = sorted(mp for mp, (enc, _, _) in others.items() if enc is False)
+            unsure = sorted(mp for mp, (enc, _, _) in others.items() if enc is None)
+            if plain:
+                value, unencrypted = "partial", sorted(set(unencrypted) | set(plain))
+                reason = "/ is encrypted; some other mounted filesystems are not"
+            elif unsure and value == "full":
+                ev += [Evidence.val("Its encryption couldn't be read", f"{mp} ({others[mp][1]})") for mp in unsure]
+                return ContextValue("fde", None, ev, "/ is encrypted, but whether " + ", ".join(unsure)
+                                    + " is couldn't be told (its own encryption, which lsblk doesn't show)")
+    for mp in unencrypted:
         ev.append(Evidence.path("Not encrypted", mp))
-    return ContextValue("fde", a.value, ev, a.reason)
+    return ContextValue("fde", value, ev, reason)
+
+
+NATIVE_FS = frozenset({"zfs", "bcachefs"})
+
+
+def native_filesystems(host: Host, devices: list[blockdev.Device]) -> dict[str, tuple[bool | None, str, str]]:
+    """{mount point: (encrypted or None, filesystem, how it was told)} for the mounted ZFS datasets and bcachefs
+    filesystems lsblk shows no mount point for (boot ones left out): ZFS by `zfs get encryption` (any user may ask:
+    off, or aes-…), bcachefs by whether every device it is on sits on dm-crypt, else not known (its own encryption
+    needs bcachefs's tools as root). VERIFY: on a real ZFS install, zfs get as a user."""
+    shown = {mp for mp, _ in blockdev.mounted(devices)}
+    out: dict[str, tuple[bool | None, str, str]] = {}
+    for line in (host.read_sys("/proc/mounts") or "").splitlines():
+        f = line.split()
+        if len(f) < 3 or f[2] not in NATIVE_FS:
+            continue
+        source, mp, fs = unescape_mount(f[0]), unescape_mount(f[1]), f[2]
+        if mp in shown or mp in blockdev.BOOT_MOUNTS or mp.startswith("/boot/") or "/.zfs/snapshot/" in mp + "/":
+            continue
+        if fs == "zfs":
+            r = host.run("zfs", "get", "-H", "-o", "value", "encryption", source)
+            v = r.stdout.strip() if r.ok else ""
+            out[mp] = (False if v == "off" else True if v.startswith("aes") else None, "ZFS", f"zfs encryption: {v or '?'}")
+        else:
+            parts = [blockdev.find(devices, host, p) for p in source.split(":")]
+            enc = all(p is not None and p.encrypted for p in parts)
+            out[mp] = (True if enc else None, "bcachefs", "on dm-crypt" if enc else "its own encryption not readable")
+    return out
 
 
 # how a home folder can be encrypted on a disk that isn't, best first

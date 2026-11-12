@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .. import blockdev, ini
-from ..context import read_swaps
+from ..context import NATIVE_FS, read_swaps
 from ..desktop import parse_gvariant
 from ..host import Host, Unreadable, unescape_mount
 from ..model import Evidence, Note, Outcome, Status
@@ -31,19 +31,38 @@ def _devices(scan: Scan) -> list[blockdev.Device] | None:
 @register
 class FdeMissing(Check):
     id = "enc.fde_missing"
+    reads_context = ("virtualization",)
 
     def detect(self, scan: Scan) -> Outcome:
         fde = scan.context.values["fde"]
         if fde.value is None:
             return unknown(f"Couldn't tell whether the disk is encrypted: {fde.note}", *fde.evidence)
         if fde.value == "none":
-            return failed("The root filesystem is not encrypted.", *fde.evidence, findings={"home_ecryptfs": False})
+            vm = scan.context["virtualization"] == "vm"
+            notes = [Note("limitation", "Encryption outside this virtual machine can't be seen",
+                          "This disk is an image file on the host computer. If the host's disk is encrypted, the image "
+                          "is protected while the host is off; but anyone with a copy of the image (a backup, a "
+                          "snapshot, the host's administrator or provider) reads it, and that can't be checked from "
+                          "in here.")] if vm else [SELF_ENCRYPTING_NOTE]
+            return failed("The root filesystem is not encrypted.", *fde.evidence, findings={"home_ecryptfs": False},
+                          notes=notes)
         if fde.value == "home":
             from ..context import home_encryption
             method, _ = home_encryption(scan.host, _devices(scan))
             return failed(HOME_ONLY_SUMMARY.get(method, "Only the home folder is encrypted; the rest of the disk isn't."),
                           *fde.evidence, notes=home_only_notes(method), findings={"home_ecryptfs": method == "ecryptfs"})
         return passed("The root filesystem is encrypted.", *fde.evidence, findings={"home_ecryptfs": False})
+
+
+SELF_ENCRYPTING_NOTE = Note(
+    "limitation", "If the drive encrypts itself, the app can't tell",
+    "Some SSDs can encrypt everything they store themselves, locked with a password set in the computer's firmware "
+    "(a drive password) or with a tool such as sedutil (an Opal self-encrypting drive). That happens inside the drive, "
+    "where the app can't see it, so this check looks only for the encryption the operating system sets up (LUKS). If "
+    "this drive does encrypt itself with a password you set, it protects the computer while it is off; but drive "
+    "makers' own encryption has had serious flaws (several popular SSDs could be read without the password, 2018), and "
+    "Windows stopped relying on it for BitLocker. Encrypting in the operating system is what to rely on.",
+    ())
 
 
 HOME_ONLY_SUMMARY = {
@@ -1304,14 +1323,52 @@ EFI_SECURE_BOOT_OLD = f"/sys/firmware/efi/vars/SecureBoot-{EFI_GLOBAL}/data"   #
 NEEDS_ADMIN = "needs administrator access"
 
 
+# shim's own variables: MokSBStateRT is there (1) while `mokutil --disable-validation` has shim boot what it doesn't
+# check, and the kernel then counts Secure Boot as off (efi_get_secureboot), whatever SecureBoot says
+SHIM_GUID = "605dab50-e046-4300-abb6-3dd810dd8b23"
+EFI_SETUP_MODE = f"/sys/firmware/efi/efivars/SetupMode-{EFI_GLOBAL}"
+EFI_MOK_SB_STATE = f"/sys/firmware/efi/efivars/MokSBStateRT-{SHIM_GUID}"
+EFI_DB = "/sys/firmware/efi/efivars/db-d719b2cb-3d3a-4596-a3bc-dad00e67656f"
+# the certificates through which the firmware runs any Linux distribution's signed shim (and so its GRUB and kernel):
+# Microsoft's third-party UEFI CAs, in db on nearly every PC. Their subject names, as the DER carries them
+MICROSOFT_THIRD_PARTY = (b"Microsoft Corporation UEFI CA 2011", b"Microsoft UEFI CA 2023")
+
+
+def _efi_byte(host, path: str) -> int | None:
+    """The first byte of an EFI variable's value (after its 4 bytes of attributes), or None."""
+    try:
+        data = host.read_head(host.sys_path(path), 8)
+    except Unreadable:
+        return None
+    return data[4] if data and len(data) > 4 else None
+
+
+def third_party_trusted(host) -> bool | None:
+    """Whether the firmware's db holds a Microsoft third-party UEFI CA (any distribution's shim then boots), None when
+    db can't be read (it is world-readable as efivarfs shows it, tested on Mint 22.3)."""
+    try:
+        data = host.read_head(host.sys_path(EFI_DB), 1 << 20)
+    except Unreadable:
+        return None
+    if data is None:
+        return None
+    return any(name in data for name in MICROSOFT_THIRD_PARTY)
+
+
 def secure_boot(scan: Scan) -> tuple[bool | None, str]:
-    """Whether Secure Boot is on, and where that was read. The firmware's SecureBoot variable
-    (usually readable by everyone); on UEFI firmware without one, Secure Boot isn't supported,
-    so it is off. Then mokutil, the kernel's own boot message, and (when the variable is there
-    but only root may read it) the helper. None with NEEDS_ADMIN when only root could tell."""
+    """Whether Secure Boot checks what boots, and where that was read. The kernel's own verdict first (its boot
+    message, which counts shim's validation turned off and the firmware's setup mode as off), then the firmware's
+    variables: SecureBoot (usually readable by everyone), with SetupMode (1: no keys, nothing checked) and shim's
+    MokSBStateRT (validation turned off with mokutil); on UEFI firmware without SecureBoot, it isn't supported, so off.
+    Then mokutil (which says when validation is off in shim), and (when the variable is there but only root may read
+    it) the helper. None with NEEDS_ADMIN when only root could tell."""
     host = scan.host
     if not isdir(host.sys_path("/sys/firmware/efi")):
         return False, "not available with legacy BIOS boot"
+    from .kernel import _kernel_log
+    m = re.search(r"secureboot: Secure boot (enabled|disabled)", _kernel_log(scan) or "", re.I)
+    if m:
+        return m.group(1).lower() == "enabled", "the kernel's boot messages"
     unreadable = False
     for path, offset in ((EFI_SECURE_BOOT, 4), (EFI_SECURE_BOOT_OLD, 0)):   # efivarfs: 4 bytes of attributes first
         try:
@@ -1319,20 +1376,22 @@ def secure_boot(scan: Scan) -> tuple[bool | None, str]:
         except Unreadable:
             unreadable, data = True, None
         if data and len(data) > offset:
+            if data[offset] == 1 and _efi_byte(host, EFI_SETUP_MODE) == 1:
+                return False, "the firmware is in setup mode: no keys are enrolled, so nothing is checked"
+            if data[offset] == 1 and _efi_byte(host, EFI_MOK_SB_STATE) == 1:
+                return False, "shim's validation is turned off (mokutil --disable-validation): nothing after it is checked"
             return data[offset] == 1, "the firmware's SecureBoot setting"
     if not unreadable and sys_children(host, "/sys/firmware/efi/efivars"):
         # the firmware's settings are visible, and it has no SecureBoot one: VMs and older PCs
         return False, "the firmware doesn't support Secure Boot"
     r = host.run("mokutil", "--sb-state")
     said = (r.stdout + r.stderr).lower()
+    if "validation is disabled" in said:
+        return False, "shim's validation is turned off (mokutil): nothing after it is checked"
     if "secureboot enabled" in said or "secureboot disabled" in said:
         return "secureboot enabled" in said, "mokutil"
     if "doesn't support secure boot" in said or ("not supported" in said and "efi variables" not in said):
         return False, "the firmware doesn't support Secure Boot"
-    from .kernel import _kernel_log
-    m = re.search(r"secureboot: Secure boot (enabled|disabled)", _kernel_log(scan) or "", re.I)
-    if m:
-        return m.group(1).lower() == "enabled", "the kernel's boot messages"
     if unreadable:
         # there, but only root may read it: the helper can, with administrator access
         try:
@@ -1355,10 +1414,7 @@ class BootNoSecureboot(Check):
         places = boot_places(scan, devices)
         notes = _lockdown_notes(scan)
         if places and all(d is not None and d.encrypted for _, d in places):
-            if [w for w, _ in places] == ["/boot"]:
-                return passed("/boot is on encrypted storage.", Evidence.val("/boot", places[0][1].name), notes=notes)
-            return passed("The kernel and initramfs are on encrypted storage.",
-                          *(Evidence.val(w, d.name) for w, d in places), notes=notes)
+            return self._encrypted_boot(scan, places, notes)
         sb, how = secure_boot(scan)
         ev = [Evidence.val(w, f"{d.name} ({d.fstype}), {'encrypted' if d.encrypted else 'not encrypted'}" if d else
                            "not found") for w, d in places] or [Evidence.val("/boot", "not found")]
@@ -1380,14 +1436,66 @@ class BootNoSecureboot(Check):
         uki = booted_uki(scan)
         ev.append(Evidence.val("Booted a unified kernel image (UKI)", "yes" if uki else "no"))
         if uki:
-            return passed(f"{where} isn't encrypted, but Secure Boot is on and checks the whole boot image (a UKI).",
-                          *ev, notes=notes)
+            ms = third_party_trusted(scan.host)
+            ev.append(Evidence.val("The firmware trusts Microsoft's certificate for other systems' boot loaders",
+                                   {True: "yes", False: "no", None: "couldn't be read"}[ms]))
+            if ms is False:
+                return passed(f"{where} isn't encrypted, but Secure Boot is on, with keys of its own, and checks the "
+                              "whole boot image (a UKI).", *ev, notes=notes)
+            return warned(f"Secure Boot is on and checks the whole boot image (a UKI), but the firmware "
+                          f"{'also' if ms else 'may also'} trust another system's signed boot loader, which could ask "
+                          "for the passphrase instead.", *ev, notes=notes + [THIRD_PARTY_NOTE])
         return warned(f"Secure Boot is on, but the initramfs on the unencrypted {where} isn't checked by it.", *ev,
                       notes=notes + [Note("risk", "What Secure Boot checks here, and what it doesn't",
                                           "The firmware checks the bootloader, and the bootloader the kernel. The "
                                           "initramfs, which asks for the disk passphrase, and GRUB's configuration "
                                           "aren't signed, so a changed one still runs. A unified kernel image (UKI) "
                                           "puts the kernel and initramfs in one signed file.")])
+
+
+    def _encrypted_boot(self, scan: Scan, places, notes) -> Outcome:
+        """The kernel and initramfs on encrypted storage: what asks for the passphrase is then the bootloader (GRUB),
+        on the EFI partition, which nothing encrypts, or in the disk's first sectors with legacy BIOS. A pass rested on
+        the encryption alone (the review of 2026-11-12): without Secure Boot that bootloader isn't checked, so
+        someone with the computer for a few minutes could put one there that keeps the passphrase."""
+        ev = [Evidence.val(w, d.name) for w, d in places]
+        what = "/boot is" if [w for w, _ in places] == ["/boot"] else "The kernel and initramfs are"
+        sb, how = secure_boot(scan)
+        if sb is None and how == NEEDS_ADMIN:
+            o = needs_root("Reading the firmware's Secure Boot setting", *ev)
+            o.notes = notes
+            return o
+        if sb is None:
+            return unknown(f"{what} on encrypted storage, but whether Secure Boot checks the boot loader that asks "
+                           "for the passphrase couldn't be read.", *ev, notes=notes)
+        ev.append(Evidence.val("Secure Boot", ("on" if sb else "off") + f" ({how})"))
+        loader = Note("risk", "What asks for the passphrase isn't encrypted",
+                      "With /boot encrypted, the boot loader (GRUB) asks for the passphrase before anything is "
+                      "decrypted, so it is itself stored unencrypted: on the EFI partition, or in the disk's first "
+                      "sectors with legacy BIOS. Without Secure Boot nothing checks it, and someone with the computer "
+                      "for a few minutes could replace it with one that keeps your passphrase.")
+        if not sb:
+            return warned(f"{what} on encrypted storage, but Secure Boot is off, so the boot loader that asks for the "
+                          "passphrase isn't checked.", *ev, notes=notes + [loader])
+        ms = third_party_trusted(scan.host)
+        ev.append(Evidence.val("The firmware trusts Microsoft's certificate for other systems' boot loaders",
+                               {True: "yes", False: "no", None: "couldn't be read"}[ms]))
+        if ms is False:
+            return passed(f"{what} on encrypted storage, and Secure Boot, with keys of its own, checks the boot "
+                          "loader that asks for the passphrase.", *ev, notes=notes)
+        return warned(f"{what} on encrypted storage and Secure Boot is on, but the firmware "
+                      f"{'also' if ms else 'may also'} trust another system's signed boot loader, which could ask for "
+                      "the passphrase instead.", *ev, notes=notes + [THIRD_PARTY_NOTE])
+
+
+THIRD_PARTY_NOTE = Note(
+    "risk", "Secure Boot trusts every distribution's boot loader",
+    "The firmware trusts Microsoft's certificate for other systems' boot loaders, as nearly every PC does: any "
+    "Linux distribution's signed shim, its GRUB and kernel, boot here with an initramfs of anyone's making, which "
+    "could show a passphrase prompt that looks like yours and keep what you type. Secure Boot keys of your own "
+    "(sbctl, enrolled without Microsoft's) close that; some graphics cards' and network cards' firmware needs "
+    "Microsoft's certificate, so check yours first. A TPM that releases the disk's key only to this boot's measurements "
+    "(PCRs), with a PIN, also makes a different boot stand out.")
 
 
 ESP_MOUNTS = ("/efi", "/boot/efi", "/boot")                    # where an EFI system partition (or XBOOTLDR) is mounted
@@ -1633,6 +1741,12 @@ def storage_of(scan: Scan, path: str) -> Storage:
     m = max((m for m in mounts(host) if path == m.target or path.startswith(m.target.rstrip("/") + "/")),
             key=lambda m: len(m.target), default=None)
     st = Storage(m.target if m else None, m.fstype if m else None)
+    if m is not None and m.fstype in NATIVE_FS and m.target not in {mp for mp, _ in blockdev.mounted(_devices(scan) or [])}:
+        # a ZFS dataset or bcachefs that lsblk shows no mount point for: its own encryption counts, never that of the
+        # device the mount above it is on
+        from ..context import native_filesystems
+        st.encrypted = native_filesystems(host, _devices(scan) or []).get(m.target, (None,))[0]
+        return st
     d = blockdev.holding(_devices(scan) or [], path)
     if d is None:
         return st

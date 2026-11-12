@@ -10,6 +10,7 @@ from dataclasses import dataclass
 
 from pathlib import Path
 
+from .blockdev import NOT_ENCRYPTING_DM
 from .host import Host, Unreadable, unescape_mount
 
 
@@ -64,7 +65,9 @@ def layers(host: Host, name: str, depth: int = 0) -> list[Layer]:
     label = (read_text(host, base / "dm" / "name") or read_text(host, base / "md" / "level") or "").strip()
     uuid = (read_text(host, base / "dm" / "uuid") or "").strip()
     part = (base / "partition").exists()
-    kind = ("crypt" if uuid.startswith("CRYPT-") else "lvm" if uuid.startswith("LVM-") else "md" if name.startswith("md")
+    # dm-verity and dm-integrity are CRYPT- too, and encrypt nothing (blockdev.NOT_ENCRYPTING_DM): a device-mapper layer
+    kind = ("crypt" if uuid.startswith("CRYPT-") and not uuid.upper().startswith(NOT_ENCRYPTING_DM)
+            else "lvm" if uuid.startswith("LVM-") else "md" if name.startswith("md")
             else "dm" if label else "partition" if part else "disk")
     layer = Layer(name, kind, label, num(read_text(host, base / "queue" / "discard_max_bytes")))
     below = [s.name for s in children(base / "slaves")]

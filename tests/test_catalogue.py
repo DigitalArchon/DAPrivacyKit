@@ -92,9 +92,11 @@ def test_folded_text_is_one_line(cat):
 
 @pytest.mark.parametrize("check_id, values, expected", [
     # an unencrypted fixed disk is critical on every kind of machine (decided, keep it)
-    ("enc.fde_missing", {"device": "laptop", "fde": "none"}, 10),
-    ("enc.fde_missing", {"device": "desktop", "fde": "none"}, 10),
-    ("enc.fde_missing", {"device": None, "fde": "none"}, 10),
+    ("enc.fde_missing", {"device": "laptop", "fde": "none", "virtualization": "none"}, 10),
+    ("enc.fde_missing", {"device": "desktop", "fde": "none", "virtualization": "none"}, 10),
+    ("enc.fde_missing", {"device": None, "fde": "none", "virtualization": "none"}, 10),
+    # inside a VM the disk is an image on the host, whose own encryption can't be seen from in here
+    ("enc.fde_missing", {"fde": "none", "virtualization": "vm"}, 7),
     # only the home folder encrypted: still high; fscrypt or a LUKS /home less serious than nothing, eCryptfs in between
     ("enc.fde_missing", {"device": "laptop", "fde": "home", "home_ecryptfs": False}, 7),
     ("enc.fde_missing", {"device": "desktop", "fde": "home", "home_ecryptfs": True}, 8),
@@ -138,11 +140,16 @@ def test_effective_severity(cat, check_id, values, expected):
 def test_unknown_context_is_ranked_by_the_highest_it_could_be(cat):
     """The owner's decision (2026-11-12): an unknown key is never the benign branch. Without administrator access a
     laptop that unlocks from the TPM showed automatic login at 6, not 10."""
-    sev = effective_severity(cat["auth.autologin"], {"tpm_unlock_no_pin": None})
-    assert (sev.lowest, sev.value) == (6, 10) and sev.uncertain_on == ("tpm_unlock_no_pin",) and sev.uncertain
+    disk = {"fde": "full", "multi_user": False}
+    sev = effective_severity(cat["auth.autologin"], {**disk, "tpm_unlock_no_pin": None})
+    assert (sev.lowest, sev.value) == (3, 10) and sev.uncertain_on == ("tpm_unlock_no_pin",) and sev.uncertain
     assert not sev.not_applicable and sev.modifier is None          # nothing known decided it
-    sev = effective_severity(cat["auth.autologin"], {"tpm_unlock_no_pin": False})
-    assert (sev.lowest, sev.value, sev.uncertain_on, sev.uncertain) == (6, 6, (), False)
+    sev = effective_severity(cat["auth.autologin"], {**disk, "tpm_unlock_no_pin": False})
+    assert (sev.lowest, sev.value, sev.uncertain_on, sev.uncertain) == (3, 3, (), False)
+    # a passphrase at boot comes first for one person's computer; not with several accounts, or no encryption
+    assert effective_severity(cat["auth.autologin"], {**disk, "multi_user": True, "tpm_unlock_no_pin": False}).value == 6
+    assert effective_severity(cat["auth.autologin"], {"fde": "none", "multi_user": False,
+                                                      "tpm_unlock_no_pin": False}).value == 6
 
 
 def test_unknown_before_a_match_does_not_make_it_uncertain(cat):
@@ -167,7 +174,7 @@ def test_a_name_that_changes_nothing_is_not_uncertain(cat):
 def test_a_risk_lowers_both_ends_of_a_range(cat):
     from daprivacyscanner.catalogue import as_warning
     spec = cat["auth.autologin"]
-    w = as_warning(spec, effective_severity(spec, {}))
+    w = as_warning(spec, effective_severity(spec, {"fde": "none"}))
     assert (w.lowest, w.value) == (6 - spec.warn_lower, 10 - spec.warn_lower) and w.as_warning
 
 

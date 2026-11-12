@@ -42,7 +42,7 @@ def test_runs_implemented_checks_and_lists_the_rest(cat, tmp_path):
     assert report.not_implemented["enc.partial_fde"].not_applicable
     d = report.to_dict()
     assert d["results"]["enc.fde_missing"]["evidence"] == [{"kind": "path", "label": "Not encrypted", "value": "/"}]
-    assert d["modifiers"]["enc.fde_missing"] == [False, False]      # no encryption at all
+    assert d["modifiers"]["enc.fde_missing"] == [False, False, False]      # no encryption at all, not in a VM
 
 
 def test_severity_follows_context(cat, tmp_path):
@@ -99,8 +99,9 @@ def test_unknown_context_is_reported_as_uncertainty(cat, tmp_path):
     autologin = check("auth.autologin", lambda self, scan: Outcome(Status.FAIL))
     host = laptop_host(tmp_path, lsblk="fedora-40-btrfs-luks.json")      # encrypted: TPM state needs root
     r = run(cat, host, autologin).results[autologin.id]
-    assert (r.severity_low, r.effective_severity) == (6, 10) and r.uncertain_on == ("tpm_unlock_no_pin",)
-    assert r.to_dict()["severity_low"] == 6
+    # a passphrase at boot (3) unless the disk unlocks by itself (10); and whether others log in isn't known either
+    assert (r.severity_low, r.effective_severity) == (3, 10)
+    assert r.uncertain_on == ("multi_user", "tpm_unlock_no_pin") and r.to_dict()["severity_low"] == 3
 
 
 def test_a_crashing_check_is_an_error_and_the_scan_goes_on(cat, tmp_path):

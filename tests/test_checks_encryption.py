@@ -368,13 +368,33 @@ SB = "/sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c"
 
 OTHER_VAR = "/sys/firmware/efi/efivars/BootOrder-8be4df61-93ca-11d2-aa0d-00e098032b8c"
 STUB = "/sys/firmware/efi/efivars/StubInfo-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f"
+DB = "/sys/firmware/efi/efivars/db-d719b2cb-3d3a-4596-a3bc-dad00e67656f"
+OWN_KEYS = b"\x07\x00\x00\x00" + b"\x30\x82 ... CN=Alice's own Platform Key ..."           # sbctl's keys, no Microsoft
+MS_KEYS = OWN_KEYS + b" ... Microsoft Corporation UEFI CA 2011 ..."
+SETUP = "/sys/firmware/efi/efivars/SetupMode-8be4df61-93ca-11d2-aa0d-00e098032b8c"
+MOK_RT = "/sys/firmware/efi/efivars/MokSBStateRT-605dab50-e046-4300-abb6-3dd810dd8b23"
 
 
 @pytest.mark.parametrize("files, commands, status, said", [
-    # on, but shim and GRUB leave the initramfs unchecked: a warning; a booted UKI (StubInfo) is checked whole
+    # on, but shim and GRUB leave the initramfs unchecked: a warning; a booted UKI (StubInfo) is checked whole, a pass
+    # with keys of the machine's own; trusting Microsoft's third-party CA any distribution's shim boots: a risk
     ({SB: b"\x06\x00\x00\x00\x01"}, {}, Status.WARN, "on (the firmware's SecureBoot setting)"),
-    ({SB: b"\x06\x00\x00\x00\x01", STUB: b"\x06\x00\x00\x00s\x00"}, {}, Status.PASS,
+    ({SB: b"\x06\x00\x00\x00\x01", STUB: b"\x06\x00\x00\x00s\x00", DB: OWN_KEYS}, {}, Status.PASS,
      "on (the firmware's SecureBoot setting)"),
+    ({SB: b"\x06\x00\x00\x00\x01", STUB: b"\x06\x00\x00\x00s\x00", DB: MS_KEYS}, {}, Status.WARN,
+     "on (the firmware's SecureBoot setting)"),
+    ({SB: b"\x06\x00\x00\x00\x01", STUB: b"\x06\x00\x00\x00s\x00"}, {}, Status.WARN,                # db not readable
+     "on (the firmware's SecureBoot setting)"),
+    # SecureBoot says 1, but nothing is checked: the firmware in setup mode, or shim's validation turned off
+    ({SB: b"\x06\x00\x00\x00\x01", SETUP: b"\x06\x00\x00\x00\x01"}, {}, Status.FAIL,
+     "off (the firmware is in setup mode: no keys are enrolled, so nothing is checked)"),
+    ({SB: b"\x06\x00\x00\x00\x01", MOK_RT: b"\x06\x00\x00\x00\x01"}, {}, Status.FAIL,
+     "off (shim's validation is turned off (mokutil --disable-validation): nothing after it is checked)"),
+    # the kernel's own verdict comes first: it counts shim's validation and setup mode
+    ({SB: b"\x06\x00\x00\x00\x01"}, {"dmesg": "[    0.000000] secureboot: Secure boot disabled\n"}, Status.FAIL,
+     "off (the kernel's boot messages)"),
+    ({}, {("mokutil", "--sb-state"): "SecureBoot enabled\nSecureBoot validation is disabled in shim\n"}, Status.FAIL,
+     "off (shim's validation is turned off (mokutil): nothing after it is checked)"),
     ({SB: b"\x06\x00\x00\x00\x00"}, {}, Status.FAIL, "off (the firmware's SecureBoot setting)"),
     (None, {}, Status.FAIL, "off (not available with legacy BIOS boot)"),
     # UEFI whose firmware has no SecureBoot setting at all (VMs, older PCs): not supported, so off
@@ -416,11 +436,21 @@ def test_secure_boot_setting_only_root_may_read(cat, tmp_path):
         var.chmod(0o644)
 
 
-def test_grub_encrypted_boot_passes(cat, tmp_path):
+def test_grub_encrypted_boot_passes_only_with_secure_boot_checking_grub(cat, tmp_path):
+    """/boot encrypted passed before Secure Boot was read: GRUB, which asks for the passphrase, is on the unencrypted
+    EFI partition (or the disk's first sectors), and nothing checks it without Secure Boot."""
     no_boot = [d for d in UBUNTU if "/boot" not in d.mountpoints]       # /boot on the encrypted root
     for d in no_boot:
         d.mountpoints = [m for m in d.mountpoints if m != "/boot/efi"]
-    assert detect(cat, "enc.boot_no_secureboot", make_scan(make_host(tmp_path), devices=no_boot)).status is Status.PASS
+    o = detect(cat, "enc.boot_no_secureboot", make_scan(make_host(tmp_path), devices=no_boot))
+    assert o.status is Status.WARN and "Secure Boot is off" in o.summary                     # legacy BIOS
+    for db, status in ((OWN_KEYS, Status.PASS), (MS_KEYS, Status.WARN)):
+        host = make_host(tmp_path / str(status), commands={})
+        (host.sys_path("/sys/firmware/efi/efivars")).mkdir(parents=True)
+        host.sys_path(SB).write_bytes(b"\x06\x00\x00\x00\x01")
+        host.sys_path(DB).write_bytes(db)
+        o = detect(cat, "enc.boot_no_secureboot", make_scan(host, devices=no_boot))
+        assert o.status is status, o.summary
 
 
 @pytest.mark.parametrize("mounts_text, status", [

@@ -105,8 +105,11 @@ def test_grub_with_boot_on_the_encrypted_root_still_passes(cat, tmp_path):
     """Only GRUB's own program is on the EFI partition; the kernels are in /boot on the encrypted root."""
     host = make_host(tmp_path, files={"/boot/vmlinuz-6.8.0": "x", "/boot/initrd.img-6.8.0": "x",
                                       "/efi/EFI/ubuntu/grubx64.efi": "MZ"})
+    (host.sys_path("/sys/firmware/efi/efivars")).mkdir(parents=True)
+    host.sys_path("/sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c").write_bytes(b"\x06\0\0\0\x01")
+    host.sys_path("/sys/firmware/efi/efivars/db-d719b2cb-3d3a-4596-a3bc-dad00e67656f").write_bytes(b"\x07\0\0\0own keys")
     o = detect(cat, "enc.boot_no_secureboot", make_scan(host, devices=_no_boot_partition(lsblk("ubuntu-24.04-luks-lvm.json"))))
-    assert o.status is Status.PASS and o.summary == "/boot is on encrypted storage."
+    assert o.status is Status.PASS and o.summary.startswith("/boot is on encrypted storage, and Secure Boot")
 
 
 # ------------------------------------------------------------------ hibernation

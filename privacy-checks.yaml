@@ -119,6 +119,10 @@ checks:
     category: encryption
     severity: 10
     modifiers:
+      # inside a VM the disk is an image on the host, whose own encryption can't be seen from here: the image is
+      # readable by whoever has a copy (a backup, a snapshot, the provider), not by someone holding a laptop
+      - when: "virtualization == 'vm'"
+        severity: 7
       - when: "fde == 'home'"
         severity: 7
       - when: "fde == 'home' and home_ecryptfs"
@@ -268,7 +272,9 @@ checks:
   - id: enc.swap_persistent
     title: Swap keeps old memory on the disk across restarts
     category: encryption
-    severity: 3
+    # what it adds needs administrator access to the unlocked machine, or the passphrase, which give most of it anyway,
+    # and the fix costs hibernation: low (the review of 2026-11-12; a finding still, since it keeps the user's data)
+    severity: 2
     scope: user
     tier: guided
     why: >
@@ -533,17 +539,29 @@ checks:
     why: >
       An attacker with brief physical access can modify the initramfs to capture the disk passphrase. Secure Boot
       as distributions ship it (shim, GRUB, a signed kernel) doesn't check the initramfs or GRUB's configuration;
-      a unified kernel image (UKI), signed as a whole, does.
+      a unified kernel image (UKI), signed as a whole, does. With /boot encrypted, the boot loader that asks for
+      the passphrase is still unencrypted, and only Secure Boot checks it. And while the firmware trusts
+      Microsoft's certificate for other systems' boot loaders, as nearly every PC does, any distribution's signed
+      boot loader can be started in its place with a passphrase prompt of anyone's making.
     detect:
       - 'Where the kernels and initramfs are, and that none of it has no crypt ancestor: /boot when it holds vmlinuz* or
         initrd* (its own partition, or a folder of the root filesystem), and an EFI partition mounted at /efi, /boot/efi
         or /boot that holds them (unified kernel images in EFI/Linux, what systemd-boot''s loader/entries/*.conf name in
         their linux and initrd lines); a booted UKI came from the EFI partition even where it can''t be listed (umask=0077)'
       - 'A UKI booted: systemd-stub sets the StubInfo-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f EFI variable'
-      - 'Secure Boot: the SecureBoot EFI variable under the EFI global GUID, SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c
-        (efivarfs, readable by all; old sysfs efi/vars); UEFI with efivars visible but no SecureBoot variable = not
-        supported (off); then mokutil --sb-state (stdout and stderr); then the kernel log line "secureboot: Secure boot
-        enabled|disabled"'
+      - 'Secure Boot: the kernel log line "secureboot: Secure boot enabled|disabled" first (the kernel counts shim''s
+        validation turned off, MokSBStateRT, and the firmware''s setup mode as off: efi_get_secureboot); then the SecureBoot
+        EFI variable under the EFI global GUID, SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c (efivarfs, readable by
+        all; old sysfs efi/vars), off when SetupMode is 1 or shim''s MokSBStateRT-605dab50-e046-4300-abb6-3dd810dd8b23 is 1;
+        UEFI with efivars visible but no SecureBoot variable = not supported (off); then mokutil --sb-state (stdout and
+        stderr; "validation is disabled in shim" is off)'
+      - '/boot on encrypted storage is a pass only with Secure Boot checking the boot loader that asks for the
+        passphrase (GRUB, unencrypted on the EFI partition or in the disk''s first sectors): off, or legacy BIOS, a
+        warning'
+      - 'Secure Boot that checks everything (a UKI, or GRUB in front of an encrypted /boot) is a pass only with keys of
+        the machine''s own: the firmware''s db (efivarfs, readable by all) holding Microsoft''s third-party UEFI CA (2011 or
+        2023, by its subject name) lets any distribution''s signed shim boot with an initramfs of anyone''s making, which
+        could ask for the passphrase: a warning, as when db can''t be read'
       - 'Kernel lockdown (/sys/kernel/security/lockdown): mentioned only in confidentiality mode, in plain words'
     fix: >
       Explain Secure Boot, and that only a signed UKI brings the initramfs under the signature: with shim and GRUB,
@@ -702,13 +720,19 @@ checks:
     category: auth
     severity: 6
     modifiers:
+      # a passphrase asked at boot comes first: only someone who knows it gets to the automatic login (the review of
+      # 2026-11-12: it was 6 whatever the disk encryption)
+      - when: "fde != 'none' and fde != 'home' and not tpm_unlock_no_pin and not multi_user"
+        severity: 3
       - when: "tpm_unlock_no_pin"
         severity: 10
     scope: user
     tier: guided
     why: >
       Anyone who powers on the device (after LUKS unlock, if any) gets the full session.
-      Usually also leads to a keyring or wallet with a blank password.
+      Usually also leads to a keyring or wallet with a blank password. With the disk encrypted and
+      its passphrase asked at boot, only someone who knows it gets that far, so it matters less for
+      a computer one person uses; when the disk unlocks with nothing typed, nothing protects it.
     detect:
       - 'GDM: AutomaticLoginEnable in /etc/gdm3/custom.conf or /etc/gdm/custom.conf'
       - 'SDDM: [Autologin] User= in /usr/lib/sddm/sddm.conf.d/*.conf, /etc/sddm.conf.d/*.conf and /etc/sddm.conf'
@@ -3619,6 +3643,9 @@ checks:
     title: Freed memory isn't cleared (init_on_free)
     category: kernel
     severity: 1
+    # off on nearly every machine, and records nothing of the user's: worth knowing, not a finding (the review of
+    # 2026-11-12)
+    kind: info
     scope: system
     tier: advice
     why: >
@@ -3657,6 +3684,8 @@ checks:
     title: Kernel can't keep sandboxed programs from the session's hidden sockets (Landlock)
     category: kernel
     severity: 1
+    # every kernel before 6.12 (the LTS releases' own) lacks it, and it records nothing: worth knowing, not a finding
+    kind: info
     scope: user
     tier: advice
     why: >
@@ -3768,6 +3797,10 @@ checks:
     title: Thunderbolt/DMA protections weak
     category: kernel
     severity: 3
+    modifiers:
+      # a laptop left asleep with its disk encrypted: a device plugged in can read the disk's key out of memory
+      - when: "device == 'laptop' and fde != 'none'"
+        severity: 5
     scope: user
     tier: advice
     detect:

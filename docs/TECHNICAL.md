@@ -249,6 +249,19 @@ plugin: without systemd's plugin the text dump prints no `tpm2-pin`, which is no
 the kernel command line are read without it, so a key file is found by an unprivileged scan too. What can't be told
 (no plugin and no JSON, `try-empty-password`) is unknown. An empty passphrase in a keyslot isn't tried.
 
+`fde` comes from lsblk, with what its columns leave out read from /sys and udev's database (`blockdev.add_sysfs_facts`):
+a device-mapper device's DM UUID (lsblk calls dm-verity and dm-integrity "crypt"; they encrypt nothing), a loop device's
+backing file (an ext4 image is as encrypted as the filesystem its file is on) and a mounted partition's type (an EFI
+system or recovery partition mounted outside /boot holds no one's data). ZFS datasets and bcachefs never show in lsblk's
+mount points: each is judged by its own encryption (`zfs get encryption`, which any user may ask), and one that can't
+be told leaves `fde` unknown rather than "full" (`context.native_filesystems`; `storage_of` uses the same, so a path on
+an unencrypted ZFS /home is never "on an encrypted disk"). A drive that encrypts itself (Opal) can't be seen: the
+finding says so. `multi_user` counts systemd-homed's accounts (UIDs 60001–60513) and is unknown, with a note, where
+nsswitch.conf takes accounts from SSSD, LDAP, winbind or NIS (they aren't listed) and only one local account is found.
+`autologin` reads LightDM's /etc/xdg layer, greetd's config as its unit names it (COSMIC's cosmic-greeter.toml),
+openSUSE's /etc/sysconfig/displaymanager, getty units written whole (NixOS), members of a group the login screen's PAM
+lets in with no password (Mint's and Ubuntu's nopasswdlogin) and enabled units with PAMName= and an account's User=.
+
 A check's modifiers may also use names the check itself sets. One is shared: `data_on_encrypted_disk`, which
 the runner sets for the findings about data kept on the disk (`Check.stored_at` says where: the user's folders
 unless the check says otherwise; `_util.on_encrypted_disk` answers from `fde`, and from each path's filesystem
@@ -274,7 +287,14 @@ Each check returns a `CheckResult` (`model.py`): `status` (`pass`, `fail`, `warn
 secrets or account addresses), `kind`, `fixable`, and `notes` (things that aren't findings, such as
 "hibernation is one step away"). A **finding** is `fail` or `warn` with severity above 0 and kind
 `finding`; the server and the page use the same rule. `unknown` is never a pass and never fixable;
-`needs_root()` marks a result as needing administrator access.
+`needs_root()` marks a result as needing administrator access. A pass claims only what was read: one that would rest
+on a stale or partial source is couldn't tell, or says what it rests on (kern.updates passes only on package lists
+refreshed in the last week, and says when; enc.boot_no_secureboot passes on an encrypted /boot or a UKI only with
+Secure Boot checking the boot loader and keys of the machine's own). A system folder is listed with
+`_util.sys_children`, which raises `Unreadable` for one that can't be opened (never "empty": a test forbids `children()`
+of a `sys_path` in the check modules), and a command's output is taken with `_util.output`, None when it failed.
+Process names come from `procnames.comm`, which reads /proc/PID/comm as bytes (the kernel cuts a name mid-character at
+15 bytes, and any process can set its own).
 
 Databases are only read through `sqlite_count()`: read-only, `immutable=1`, so a scan never takes a lock
 on an app's database. An immutable reader doesn't see a write-ahead log, where an app using one keeps its newest records
