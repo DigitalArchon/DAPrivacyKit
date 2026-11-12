@@ -29,12 +29,15 @@ import shlex
 import sys
 import time
 from pathlib import Path
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
-from ..checks._util import mounts
+from ..checks._util import Mount, mounts
 from ..host import Host
 from ..paths import PathResolver
 from . import trimtest as T
+
+if TYPE_CHECKING:
+    from ..privileged import Privileged
 
 NAMES_TIMEOUT = 600
 STEP_TIMEOUT = 300
@@ -96,7 +99,7 @@ def target(host: Host, mount: str) -> dict | None:
 
 # ------------------------------------------------------------------ the list
 
-def scan(host: Host, mount: str, privileged: Callable[[], object | None], job: dict,
+def scan(host: Host, mount: str, privileged: Callable[[], Privileged | None], job: dict,
          trim_passed: bool | None = None) -> dict:
     """The names of deleted files the helper can still read on the filesystem at `mount`, by folder
     (helper.names_begin), annotated for the page (view). For the page to show once: never kept,
@@ -202,7 +205,7 @@ def clear_command(mount: str) -> str:
     return "sudo python3 -c " + shlex.quote(code)
 
 
-def clear_journal(privileged: Callable[[], object | None]) -> dict:
+def clear_journal(privileged: Callable[[], Privileged | None]) -> dict:
     """Has the kernel write the listed filesystem's journal out and zero it (helper.names_journal_clear):
     the names in it, every folder's and every account's, are gone from it at once. Only while the helper
     holds a listing; nothing is kept of it, and there is nothing to undo."""
@@ -212,7 +215,7 @@ def clear_journal(privileged: Callable[[], object | None]) -> dict:
     return h.call("names_journal_clear", {}, CLEAR_TIMEOUT)
 
 
-def orphans(privileged: Callable[[], object | None]) -> dict:
+def orphans(privileged: Callable[[], Privileged | None]) -> dict:
     """The names in the journal's records of folders that are no listed folder's (helper.names_orphans),
     hash-like ones apart: shown only when the user asks for them."""
     h = privileged()
@@ -294,9 +297,11 @@ class Seen:
     client's marker each folder holds."""
 
     def __init__(self, host: Host):
-        self.host, self._mounts, self._markers = host, None, {}
+        self.host = host
+        self._mounts: list[Mount] | None = None
+        self._markers: dict[Path, str | None] = {}
 
-    def mounts(self) -> list:
+    def mounts(self) -> list[Mount]:
         if self._mounts is None:
             self._mounts = mounts(self.host)
         return self._mounts

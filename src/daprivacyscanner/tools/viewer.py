@@ -102,7 +102,8 @@ def desktop_entry(host: Host, desktop_id: str) -> tuple[Path, dict[str, str]] | 
             text = path.read_text(errors="replace")
         except OSError:
             continue
-        entry, inside = {}, False
+        entry: dict[str, str] = {}
+        inside = False
         for line in text.splitlines():
             s = line.strip()
             if s.startswith("["):
@@ -215,7 +216,7 @@ def _flatpak_viewer(host: Host, app: str, desktop_id: str, entry: dict[str, str]
     i = argv.index("run") + 1 if "run" in argv else None
     pos = next((j for j in range(i, len(argv)) if not argv[j].startswith("-")), None) if i else None
     app_id = argv[pos] if pos is not None else None
-    if (not app_id or not re.fullmatch(r"[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)+", app_id)
+    if (i is None or pos is None or not app_id or not re.fullmatch(r"[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)+", app_id)
             or entry.get("X-Flatpak", app_id) != app_id):
         raise ViewError(f"{app}'s launcher couldn't be read.")
     # a browser from Flatpak: it hands what it opens to a copy of itself already running, with its network and
@@ -674,7 +675,7 @@ def view(host: Host, folder: str, name: str, private: Path, spawn: Callable = su
     if isinstance(getattr(proc, "pid", None), int):
         _LAUNCHED[proc.pid] = v.app
         _VIEWS[stage.name] = proc.pid
-        if isinstance(getattr(xephyr, "pid", None), int):
+        if xephyr is not None and isinstance(getattr(xephyr, "pid", None), int):
             _DISPLAYS[xephyr.pid] = proc.pid            # its display: named with it, and not ended as the browser's
     if hasattr(proc, "poll"):
         deadline = time.monotonic() + WATCH

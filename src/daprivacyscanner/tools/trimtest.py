@@ -31,13 +31,16 @@ import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 from .. import helper as H
 from ..checks._util import Mount, children, mounts, read_text, systemctl_state
 from ..host import Host
 from ..paths import PathResolver
 from ..storage import Drive, Layer, dev_name, device_stats, drive, layers, num, stop_reason
+
+if TYPE_CHECKING:
+    from ..privileged import Privileged
 
 FOLDER = "trim-test"
 SMALL = (512, 1024, 1536)                   # small enough for btrfs to keep inside its own records
@@ -212,7 +215,7 @@ def targets(host: Host) -> list[Target]:
             continue
         # the deepest layer that takes no TRIM is where it stops: a logical volume on LUKS without discards says 0
         # because LUKS does (enc.trim_off's Stack.stop)
-        stuck = ([x for x in t.layers if x.discard_max == 0] or [None])[-1]
+        stuck = next((x for x in reversed(t.layers) if x.discard_max == 0), None)
         if stuck is not None:
             t.known, t.no_trim = no_trim_text(t, stuck), "layer"
             if stuck.kind in ("crypt", "lvm") or stuck.kind == "md" and stuck.label in ("raid4", "raid5", "raid6"):
@@ -354,6 +357,8 @@ NO_COMPRESSION = _no_compression             # tests replace it
 def make_folder(t: Target) -> bool:
     """The test folder, empty and the user's own. Returns whether it is a subvolume of its own."""
     folder = t.folder
+    if folder is None:
+        raise ValueError("That filesystem can't be tested.")
     remove_folder(folder)
     folder.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     sub = t.fstype == "btrfs" and SUBVOLUME(folder.parent, folder.name)
@@ -470,7 +475,7 @@ def new_steps(size: int) -> list[dict]:
              "done": 0, "total": 0, "estimate": est.get(i)} for i, label, opt in STEPS]
 
 
-def run(host: Host, mount: str, privileged: Callable[[], object | None], job: dict,
+def run(host: Host, mount: str, privileged: Callable[[], Privileged | None], job: dict,
         sleep: Callable[[float], None] = time.sleep) -> dict:
     """The whole test, for the target at `mount`. `privileged()` gives the helper (None when
     administrator access has ended); `job` is updated as it goes (steps, phase, pass, done, total)
@@ -542,8 +547,9 @@ def run(host: Host, mount: str, privileged: Callable[[], object | None], job: di
     stats: dict[str, dict] = {}
     home_fs = holding(mounts(host), logical(host, host.home))
     inline = t.fstype == "btrfs"                 # only btrfs keeps small files inside its own records
-    facts = {"subvolume": False, "nocompress": False, "trimmed": None, "deleted_at": None, "trimmed_at": None,
-             "home_here": home_fs is not None and home_fs.source == t.source, "missing": {}}
+    facts: dict[str, Any] = {"subvolume": False, "nocompress": False, "trimmed": None, "deleted_at": None,
+                             "trimmed_at": None, "home_here": home_fs is not None and home_fs.source == t.source,
+                             "missing": {}}
     try:
         phase("write")
         facts["subvolume"] = make_folder(t)

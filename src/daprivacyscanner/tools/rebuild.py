@@ -51,13 +51,16 @@ import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
+from typing import TYPE_CHECKING, Any, Callable, Iterator, Sequence
 
 from ..checks._util import children, holders, open_files
 from ..host import Host
 from ..procnames import comm
 from . import names as N
 from . import trimtest as T
+
+if TYPE_CHECKING:
+    from ..privileged import Privileged
 
 FILLERS_MAX = 4000                          # files written into one folder at most
 FILLER_ROUNDS = 60
@@ -323,7 +326,7 @@ def item(host: Host, t: dict, r: dict, rel: str, procs: _Procs, seen: N.Seen, pr
     return it
 
 
-def plan(host: Host, mount: str, rels: list[str], rebuild_rels: list[str] = ()) -> dict:
+def plan(host: Host, mount: str, rels: list[str], rebuild_rels: Sequence[str] = ()) -> dict:
     """What cleaning these folders would do, for this machine as it is now: each folder's method
     and what stops it, the steps, and what it does and doesn't reach. `rebuild_rels`: folders the
     user asked to rebuild (fillers left names). Changes nothing."""
@@ -646,10 +649,10 @@ def rebuild(top: Path, rel: str, record: Callable[[dict], None] = lambda info: N
             # the swap goes by name: the name must still be the folder its entries came from (renamed and another
             # put in its place meanwhile, that other would have been swapped, and its entries merged into this)
             try:
-                now = os.stat(name, dir_fd=parent, follow_symlinks=False)
+                there = os.stat(name, dir_fd=parent, follow_symlinks=False)
             except OSError:
-                now = None
-            if now is None or (now.st_dev, now.st_ino) != (st.st_dev, st.st_ino):
+                there = None
+            if there is None or (there.st_dev, there.st_ino) != (st.st_dev, st.st_ino):
                 raise Refused("it was renamed or replaced while its entries were moved")
         except BaseException as e:
             back = None                          # why undoing stopped, if it did
@@ -822,7 +825,7 @@ def recover(host: Host) -> dict:
     """Finishes or undoes what the note says was interrupted, then deletes the note. Returns {"text", "commands"}:
     what was done, and the commands for what couldn't be put back (an entry whose name was taken meanwhile)."""
     note, lock = _read_note(host)
-    if note is None:
+    if note is None or lock is None:                # the one comes with the other
         return {"text": "Nothing was interrupted.", "commands": []}
     try:
         if note["kind"] == "unreadable":
@@ -938,7 +941,7 @@ def _recover_rebuild(top: Path, note: dict) -> dict:
 
 # ------------------------------------------------------------------ fillers
 
-def filler_names(length: int):
+def filler_names(length: int) -> Iterator[str]:
     """The names fillers of this length take, in order: underscores, then a counter ("____",
     "___0" ... "___9", "__10" ...). Recognisable afterwards (FILLER in names.py) and saying nothing;
     in an indexed folder each lands where its name's hash puts it, which the counter varies."""
@@ -960,7 +963,7 @@ def fillers(top: Path, rel: str, left: list[str], recheck: Callable[[], list[str
         os.close(parent)
     made: list[str] = []
     rounds = 0
-    pools: dict[int, object] = {}
+    pools: dict[int, Iterator[str]] = {}
     try:
         def make(length: int) -> str | None:
             for f in pools.setdefault(length, filler_names(length)):
@@ -1003,8 +1006,8 @@ def fillers(top: Path, rel: str, left: list[str], recheck: Callable[[], list[str
 
 # ------------------------------------------------------------------ the whole clean-up
 
-def run(host: Host, mount: str, rels: list[str], privileged: Callable[[], object | None], job: dict,
-        rebuild_rels: list[str] = ()) -> dict:
+def run(host: Host, mount: str, rels: list[str], privileged: Callable[[], Privileged | None], job: dict,
+        rebuild_rels: Sequence[str] = ()) -> dict:
     """Cleans the folders `rels` (those the plan allows now), trims, and checks; `job` is updated
     as it goes (steps, phase) and its "cancel" stops it between folders and rounds."""
     t, r = listing(host, mount)
@@ -1013,13 +1016,14 @@ def run(host: Host, mount: str, rels: list[str], privileged: Callable[[], object
     items = [item(host, t, r, rel, procs, seen, "rebuild" if rel in rebuild_rels else "") for rel in dict.fromkeys(rels)]
     todo = [i for i in items if not i.blockers]
     trims = t["no_trim"] not in ("hdd", "layer")
-    job["steps"] = steps = (
+    steps: list[dict[str, Any]] = (
         [{"id": f"f{n}", "label": f"{'Rebuilding' if i.method == 'rebuild' else 'Fillers in'} {i.display}",
           "state": "pending", "started": None, "finished": None} for n, i in enumerate(todo)]
         + ([{"id": "trim", "label": f"Trimming {t['mount']}", "state": "pending", "started": None, "finished": None}]
            if trims and todo else [])
         + ([{"id": "check", "label": "Reading the folders, their old records and the journal again", "state": "pending",
              "started": None, "finished": None}] if todo else []))
+    job["steps"] = steps
     by_id = {s["id"]: s for s in steps}
 
     def helper():
@@ -1027,6 +1031,9 @@ def run(host: Host, mount: str, rels: list[str], privileged: Callable[[], object
         if h is None:
             raise N.Stopped("Administrator access ended, so it stopped.")
         return h
+
+    def names_left(rel: str) -> Callable[[], list[str]]:
+        return lambda: helper().call("names_folder", {"path": rel}, CHECK_TIMEOUT)["left"]
 
     def begin(sid: str) -> None:
         now = time.time()
@@ -1038,7 +1045,7 @@ def run(host: Host, mount: str, rels: list[str], privileged: Callable[[], object
 
     done: list[dict] = [{"path": i.display, "rel": i.rel, "method": i.method, "skipped": " ".join(i.blockers)}
                         for i in items if i.blockers]
-    treated = []
+    treated: list[str] = []
     if todo and interrupted(host):
         raise Refused(UNFINISHED)
     try:
@@ -1046,7 +1053,7 @@ def run(host: Host, mount: str, rels: list[str], privileged: Callable[[], object
             if job.get("cancel"):
                 raise N.Stopped("Stopped.")
             begin(f"f{n}")
-            out = {"path": i.display, "rel": i.rel, "method": i.method}
+            out: dict[str, Any] = {"path": i.display, "rel": i.rel, "method": i.method}
             # looked at again just before: the folders before it can take minutes (fillers), and a program may have
             # opened, or started watching, this one meanwhile
             now = item(host, t, r, i.rel, _Procs(host), seen, "rebuild" if i.method == "rebuild" else "")
@@ -1064,9 +1071,7 @@ def run(host: Host, mount: str, rels: list[str], privileged: Callable[[], object
                             out.update(error=e.reason, leftover=f"{above}/{e.folder}", leftover_count=e.count)
                     else:
                         first = helper().call("names_folder", {"path": i.rel}, CHECK_TIMEOUT)["left"]
-                        out.update(fillers(top, i.rel, first,
-                                           lambda rel=i.rel: helper().call("names_folder", {"path": rel},
-                                                                           CHECK_TIMEOUT)["left"],
+                        out.update(fillers(top, i.rel, first, names_left(i.rel),
                                            lambda: bool(job.get("cancel")), lambda lengths: note.write(lengths=lengths)))
                         out["listed_left"] = len(first)
                         # fillers that left names: a rebuild reaches them, where one is possible here
@@ -1094,7 +1099,7 @@ def run(host: Host, mount: str, rels: list[str], privileged: Callable[[], object
                 s.update(state="done", finished=time.time())
 
 
-def recheck(host: Host, mount: str, rels: list[str], privileged: Callable[[], object | None]) -> dict:
+def recheck(host: Host, mount: str, rels: list[str], privileged: Callable[[], Privileged | None]) -> dict:
     """Reads the folders cleaned before, the records they had and the journal again (helper.names_check):
     the journal's copies go as it wraps."""
     t, r = listing(host, mount)

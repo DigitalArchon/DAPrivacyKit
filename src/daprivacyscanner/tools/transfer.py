@@ -246,7 +246,8 @@ def downloads(host: Host, folder: str) -> tuple[list[Entry], int]:
         return [], 0
     try:
         dev, disk, names = _ramdisk_dev(host), _disk_size(host), os.listdir(fd)
-        out, other, now = [], 0, time.time()
+        out: list[Entry] = []
+        other, now = 0, time.time()
         deadline = time.monotonic() + BUDGET
         for name in sorted(names):
             try:
@@ -378,7 +379,7 @@ def snapshot(host: Host, folder: str, name: str, check: str | None, stage: tuple
         free = os.statvfs(ramdisk.folder(host, ramdisk.BROWSER))
         if st.st_size + (16 << 20) > free.f_bavail * free.f_frsize:
             raise TransferError(f"There isn't room in ~/TempBrowser to check a copy of {name} first.")
-        path, sfd = _stage(host, ".checking-") if own else stage
+        path, sfd = _stage(host, ".checking-") if stage is None else stage
         try:
             copied = _copy(src, sfd, safe_name(name), mode)
             cfd = os.open(copied, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=sfd)
@@ -523,7 +524,7 @@ def _add_fd(host: Host, folder: str, sfd: int, src_name: str, clean: bool,
             res = metadata.clean(host, stage_path / name)
             if settled is not None and not settled():
                 raise StillArriving(f"{src_name} changed while it was cleaned.")
-            if not res.ok:
+            if not res.ok or res.output is None:
                 raise TransferError(f"{src_name} couldn't be cleaned: {res.message}")
             # what the cleaned copy still says, looked at as the Outbox does: a copy with where it was made, who
             # made it, the device or a title or comment left in it went into To upload as cleaned

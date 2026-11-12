@@ -178,7 +178,8 @@ def find(host: Host, mount: str) -> Drive:
 
 def _files_in(folder: Path, dev: int, budget: list[int]) -> tuple[list[Path], int]:
     """Regular files under `folder`, on the same filesystem, following no links."""
-    files, size = [], 0
+    files: list[Path] = []
+    size = 0
     for top, dirs, names, dfd in os.fwalk(folder, follow_symlinks=False):
         for d in list(dirs):
             try:

@@ -292,8 +292,10 @@ def hibernation_possible(host: Host) -> bool | None:
     live = host.root == Path("/")
     if live and _HIBERNATION and time.monotonic() - _HIBERNATION[0] < 30:   # panels ask every few seconds
         return _HIBERNATION[1]
+    value: bool | None
     try:
-        value = detect_hibernation(host).value
+        found = detect_hibernation(host).value
+        value = found if isinstance(found, bool) else None          # it is True, False or None
     except Exception:  # noqa: BLE001 - a note, never a reason the panel fails
         value = None
     if live:

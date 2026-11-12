@@ -130,7 +130,7 @@ def keep(host: Host, b, archive: Path, verify: Callable[[Host, Path], dict]) -> 
     tidy(host, b)
     staging = base / f".{b.id}.new-{os.urandom(4).hex()}"
     staging.mkdir(mode=0o700)
-    old = None
+    old, placed = None, False
     try:
         for src in (sig, archive):
             _copy(src, staging / src.name)
@@ -140,9 +140,9 @@ def keep(host: Host, b, archive: Path, verify: Callable[[Host, Path], dict]) -> 
             old = base / f".{b.id}.old-{os.urandom(4).hex()}"
             os.rename(place, old)                       # never a mix of the old archive and the new signature
         os.rename(staging, place)
-        staging = None
+        placed = True
     finally:
-        if staging is not None:
+        if not placed:
             _remove(staging)
         if old is not None:
             _remove(old)

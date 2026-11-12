@@ -595,10 +595,10 @@ def show_many(host: Host, paths: list[Path], progress=None, stop=None) -> list[F
         elif mat2:
             r = run_tool(host, ["mat2", "--show", "--", *map(str, batch)], read=list(batch),
                          timeout=TIMEOUT + 10 * len(batch))
-            got = parse_mat2_show_files(r.stdout + r.stderr, [str(p) for p in batch])
+            shown = parse_mat2_show_files(r.stdout + r.stderr, [str(p) for p in batch])
             for p in batch:
-                if str(p) in got:
-                    items, supported, error = got[str(p)]
+                if str(p) in shown:
+                    items, supported, error = shown[str(p)]
                     out.append(FileMeta(p, items, "mat2", error=error, supported=supported))
                 else:
                     out.append(show(host, p))
@@ -850,12 +850,12 @@ def clean_many(host: Host, files: list[Chosen], lightweight: bool = False, progr
         raise
 
     if check_after:
-        made = [r for r in run.results if r.ok and r.output]
+        made = [(r, r.output) for r in run.results if r.ok and r.output]
         try:
-            metas = show_many(host, [r.output for r in made], stop=stop)
+            metas = show_many(host, [out for _, out in made], stop=stop)
         except Stopped:
             raise _stopped(run) from None
-        for r, meta in zip(made, metas):
+        for (r, _), meta in zip(made, metas):
             r.remaining = meta
     return run
 
@@ -880,7 +880,8 @@ def _clean_singles(host: Host, batch: list[Chosen], lightweight: bool, run: Clea
             run.results.append(Cleaned(c, False, message=cant_write(host, c.path.parent)))
         else:
             todo.append(c)
-    works, copies = [], []
+    works: list[Path] = []
+    copies: list[tuple[Chosen, Path | None, str]] = []
     try:
         for c in todo:
             try:
@@ -903,7 +904,7 @@ def _clean_singles(host: Host, batch: list[Chosen], lightweight: bool, run: Clea
             if ok and (out.exists() or out.is_symlink()):            # made meanwhile: never overwritten
                 ok, said = False, (f"{out.name} is already there: rename or delete it first, so it isn't "
                                    "overwritten.")
-            if ok:
+            if ok and copy is not None:                 # a verdict: there was a copy
                 os.rename(cleaned_name(copy), out)
             run.results.append(Cleaned(c, True, out, said) if ok else Cleaned(c, False, message=said))
     finally:
@@ -991,7 +992,7 @@ PACKAGES = {"mat2": {"debian": "mat2", "fedora": "mat2", "arch": "mat2", "suse":
 
 def install_command(host: Host, program: str) -> str | None:
     from ..checks.guides import install
-    return install(SimpleNamespace(host=host), **PACKAGES[program])
+    return install(SimpleNamespace(host=host), **PACKAGES[program])  # type: ignore[arg-type]  # it reads .host alone
 
 
 def status(host: Host) -> dict:

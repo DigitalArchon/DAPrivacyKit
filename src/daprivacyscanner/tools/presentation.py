@@ -201,10 +201,11 @@ def _klipper(host: Host, info: DesktopInfo, p: Plan) -> None:
     if (kde.major or 0) >= 6 and applet.trays and not applet.widget and "plasmashell" in processes(host):
         tray = {state: kde.dbus("org.kde.plasmashell", "/PlasmaShell", "org.kde.PlasmaShell.evaluateScript",
                                 tray_script(KLIPPER_APPLET, state == "on", applet.trays)) for state in ("on", "off")}
-        if None not in tray.values():
+        scripts = {state: script for state, script in tray.items() if script is not None}
+        if len(scripts) == len(tray):
             p.changes.append(("Klipper (Plasma's clipboard history) turned off; on again afterwards",
                               PlasmaTraySet(KLIPPER_APPLET, "Clipboard (Klipper)", paths.config_home / APPLETSRC,
-                                            list(applet.trays), tray, "off")))
+                                            list(applet.trays), scripts, "off")))
             p.notes.append("What Klipper kept before stays, hidden while it is off: clear it from its menu first if you "
                            "might open it while sharing.")
             return
@@ -396,7 +397,11 @@ def turn_off(host: Host) -> dict:
     data = _load(host)
     if data is None:
         return {**status(host), "messages": [], "kept": [], "failed": []}
-    ctx, messages, kept, failed, left = _ctx(host), [], [], [], []
+    ctx = _ctx(host)
+    messages: list[str] = []
+    kept: list[str] = []
+    failed: list[str] = []
+    left: list[dict] = []
     for rec in reversed(data["records"]):
         try:
             res = ACTION_KINDS[rec["kind"]].revert(rec, ctx, force=False)

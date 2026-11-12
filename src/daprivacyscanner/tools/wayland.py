@@ -114,7 +114,7 @@ class _Connection:
         """Every event up to a wl_display.sync's answer; raises on a protocol error."""
         cb = self.new_id()
         self.send(_msg(DISPLAY_ID, 0, _uint(cb)))
-        events = []
+        events: list[tuple[int, int, bytes]] = []
         while True:
             obj, op, payload = self._event()
             if obj == DISPLAY_ID and op == 0:                     # wl_display.error

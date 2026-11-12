@@ -220,7 +220,8 @@ def summarise(records: Iterable[list], w: Where, seconds: float, names: bool = F
     `names`: also name each place's files (a trial's made-up home; never for the real one)."""
     places: dict[tuple[str, str], dict] = {}
     totals = {"opened": 0, "written": 0, "created": 0, "deleted": 0, "ran": 0}
-    regular, touched, seen, regular_yours = [], {}, 0, 0
+    touched: dict[str, dict] = {}
+    regular, seen, regular_yours = [], 0, 0
     short = seconds < REGULAR_MINUTES * 60 + 60
     for rec in records:
         path, flags, opens, writes, minutes, who = rec[:6]
@@ -326,7 +327,7 @@ GVFS_PATHS_MAX = 200000
 def needles(records: Iterable[list], w: Where) -> list[str]:
     """The user's own files the app opened (not folders, not programs' data), and the files it opened in /tmp
     or /var/tmp that another program made: the names to look for."""
-    out = []
+    out: list[str] = []
     for rec in records:
         path, flags, who = rec[0], rec[1], rec[5]
         if who or flags & DIR or len(out) >= NEEDLES_MAX:
@@ -513,7 +514,8 @@ class _GvfsKeys:
     they are ("root"), or relative to the top of the filesystem they are on (another disk's, named by its UUID)."""
 
     def __init__(self, wanted: list[str], w: Where, fresh: set[bytes] | None = None, salt: bytes = b""):
-        self.wanted, self.w, self.keys, self.fresh, self.salt = wanted, w, {}, fresh, salt
+        self.wanted, self.w, self.fresh, self.salt = wanted, w, fresh, salt
+        self.keys: dict[str, dict[bytes, int]] = {}
 
     def _key(self, tree: str, path: str) -> str | None:
         if tree == "home":
@@ -605,7 +607,8 @@ def _gvfs_tree(data: bytes) -> set[bytes]:
     out: set[bytes] = set()
     if not data.startswith(b"\xda\x1ameta") or len(data) < 32:
         return out
-    stack, seen = [(int.from_bytes(data[16:20], "big"), None)], set()
+    stack: list[tuple[int, bytes | None]] = [(int.from_bytes(data[16:20], "big"), None)]
+    seen: set[int] = set()
     while stack and len(out) < GVFS_PATHS_MAX:
         at, parent = stack.pop()
         if at in seen or at + 16 > len(data):

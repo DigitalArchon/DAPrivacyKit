@@ -49,7 +49,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from ..fix import make_writable
 from ..host import Host
@@ -192,8 +192,8 @@ class Trial:
     short_of_room: int | None = None     # ended for it (RoomWatch): the room that was left in the runtime folder
     nesting: str | None = None           # why it looks like a program that starts sandboxes of its own (seccomp.nesting_reason)
     # while it runs
-    proc: object = None
-    xephyr: object = None
+    proc: Any = None                     # a Popen (or what tests give): used through poll, pid, wait, stdout
+    xephyr: Any = None
     watch: homewatch.HomeWatch | None = None
     shared: list[homewatch.HomeWatch] = field(default_factory=list)      # a Box's: its Exchange folder's (binds)
     flows: pcap.Flows | None = None
@@ -443,7 +443,8 @@ def in_tree(root: str, rel: str) -> str | None:
     isn't there, or goes through too many links. The app reads the tree outside any sandbox: only the last part was
     resolved before, so a folder linked to the computer's (usr/bin -> /usr/bin) listed the computer's own programs
     as the package's (the review of 2026-11-04)."""
-    parts, done, links = [p for p in rel.split("/") if p not in ("", ".")], [], 0
+    parts, links = [p for p in rel.split("/") if p not in ("", ".")], 0
+    done: list[str] = []
     while parts:
         part = parts.pop(0)
         if part == "..":
@@ -1039,12 +1040,13 @@ class Bubblewrap(Engine):
         # strict: no namespaces of its own, also by bubblewrap's own --disable-userns; nesting (ticked, for a program
         # that starts sandboxes of its own) lets it make them, mounts included (seccomp.py)
         strict = parts.filt is None or parts.filt.profile == seccomp.STRICT
-        a = [bwrap, "--die-with-parent", *sandbox.namespaces(bool(parts.pasta)),
+        a: list[str] = [bwrap, "--die-with-parent", *sandbox.namespaces(bool(parts.pasta)),
              *(sandbox.no_new_userns(host) if strict else []), *(parts.filt.argv() if parts.filt else []),
              *sandbox.system(host, etc=False),
              # bubblewrap 0.10 and later lay the package's /usr over the computer's themselves (the first source at
              # the bottom), before AppArmor's bwrap-userns-restrict profile takes the capabilities from what they start
-             *(["--overlay-src", "/usr", "--overlay-src", deb_usr, "--ro-overlay", "/usr"] if native else []),
+             *(["--overlay-src", "/usr", "--overlay-src", deb_usr, "--ro-overlay", "/usr"]
+               if native and deb_usr else []),
              # an /etc of the sandbox's own, holding only what programs read and nothing of the computer's settings
              # (sandbox.app_etc): what it covered over the computer's own /etc missed the account's name in passwd-,
              # the mirrors, tokens in /etc/environment and more (the review of 2026-11-12)
@@ -1151,7 +1153,8 @@ def declared(host: Host, app: str) -> dict[str, list[str]]:
     from types import SimpleNamespace
     from ..checks.sandbox import flatpak_permissions
     from ..paths import PathResolver
-    perms = flatpak_permissions(SimpleNamespace(host=host, paths=PathResolver(host.home, host.environ)), app)
+    scan = SimpleNamespace(host=host, paths=PathResolver(host.home, host.environ))      # all it reads of a Scan
+    perms = flatpak_permissions(scan, app)  # type: ignore[arg-type]  # a Scan's .host and .paths alone
     ctx = perms.get(("Context",), {})
     out = {k: [x.strip() for x in ctx.get(k, "").split(";") if x.strip() and not x.strip().startswith("!")]
            for k in ("filesystems", "sockets", "devices", "shared", "features")}
@@ -1775,8 +1778,8 @@ def _finish(host: Host, t: Trial) -> None:
     time.sleep(0.3)                                     # the last events
     if t.watch is not None:
         t.watch.stop()
-    for w in t.shared:
-        w.stop()
+    for shared in t.shared:
+        shared.stop()
     if t.reader is not None:
         t.reader.stop()
     if t.xephyr is not None and hasattr(t.xephyr, "poll") and t.xephyr.poll() is None:

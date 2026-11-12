@@ -13,6 +13,7 @@ import base64
 import os
 import sqlite3
 from pathlib import Path
+from typing import Callable
 
 
 def _b64(n: int) -> str:
@@ -50,7 +51,7 @@ def _sqlite(path: Path, table: str, columns: str, row: tuple) -> None:
         con.close()
 
 
-def _files() -> list[tuple[str, str, object]]:
+def _files() -> list[tuple[str, str, bytes | Callable[[Path], object]]]:
     """(path under the home, what it stands for, its contents: bytes, or a callable given the path)."""
     ff, tb = f"{_hex(4)}.default-release", f"{_hex(4)}.default"
     host, user = f"srv-{_hex(2)}.example.net", f"user{_hex(2)}"

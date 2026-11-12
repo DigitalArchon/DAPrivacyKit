@@ -23,6 +23,7 @@ import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from ..host import Host
 from ..procnames import comm
@@ -165,7 +166,10 @@ def microphones(host: Host) -> list[Device]:
     except OSError:
         nodes = []
     for n in nodes:
-        card = ALSA_CAPTURE.match(f"/dev/snd/{n}").group(1)
+        m = ALSA_CAPTURE.match(f"/dev/snd/{n}")
+        if m is None:                               # never: the nodes are the ones that matched
+            continue
+        card = m.group(1)
         name = _sys_text(host, f"/proc/asound/card{card}/id") or f"card {card}"
         by_card.setdefault(card, Device("microphone", name)).nodes.append(f"/dev/snd/{n}")
     return list(by_card.values())
@@ -221,7 +225,9 @@ def parse_pw_dump(text: str) -> list[Stream]:
         return []
     if not isinstance(data, list):
         return []
-    nodes, clients, links = {}, {}, []
+    nodes: dict[Any, dict] = {}                   # pw-dump's ids, as it writes them
+    clients: dict[Any, dict] = {}
+    links: list[dict] = []
     for o in data:
         if not isinstance(o, dict):
             continue
