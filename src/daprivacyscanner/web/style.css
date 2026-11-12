@@ -349,7 +349,7 @@ details.stepdetail .files { margin: 0; padding-left: 18px; }
 .gactions { display: flex; gap: 10px; align-items: center; }
 .effects { margin: 0; padding-left: 18px; color: var(--muted); }
 .cmds { display: flex; flex-direction: column; gap: 4px; }
-.cmd { display: flex; gap: 8px; align-items: center; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 4px 4px 4px 8px; }
+.cmd { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 4px 4px 4px 8px; }
 .cmd code { flex: 1; font-family: var(--mono); font-size: 0.75rem; overflow-wrap: anywhere; }
 .step .tag.root { color: var(--warn); }
 
@@ -709,3 +709,4 @@ h3.cat-head { margin: 0; font-size: inherit; font-weight: inherit; }
 button.big { font-size: 1rem; padding: 8px 20px; }
 .details .about-check p { margin: 0; }
 .asks-again { color: var(--warn); }
+.cmd .cmd-hidden { flex-basis: 100%; }

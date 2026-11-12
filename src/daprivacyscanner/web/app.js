@@ -1667,9 +1667,16 @@ function clipboardKept(what) {
     h("div", { class: "orow" }, fixButtons(spec, clip)));
 }
 
+// A command as it can be pasted, with Copy. One made with a name from outside the app (a file's, a drive's) can hold
+// characters that turn text round or don't show: they are shown as ⟨U+…⟩ and said; Copy copies the command as it is.
 function commandBlock(cmds) {
-  return h("div", { class: "cmds" }, cmds.map(c => h("div", { class: "cmd" }, h("code", {}, c),
-    h("button", { class: "small ghost", onclick: (e) => copyText(c, e.target) }, "Copy"))));
+  return h("div", { class: "cmds" }, cmds.map(c => {
+    const shown = visibleText(c, true);
+    return h("div", { class: "cmd" }, h("code", {}, h("bdi", {}, shown)),
+      h("button", { class: "small ghost", onclick: (e) => copyText(c, e.currentTarget) }, "Copy"),
+      shown !== c ? h("div", { class: "small errmsg cmd-hidden" }, "This command holds characters that don't show or that "
+        + "turn text round (shown here as ⟨U+…⟩): read it with them in mind before you run it.") : null);
+  }));
 }
 
 // a choice that shapes the step's options (a size, a yes/no): changing it builds the guide again,
@@ -2526,7 +2533,7 @@ async function openVerify(data, path = "") {
   btn.addEventListener("click", run);
   const recent = data.downloads.length ? h("div", { class: "recent" }, h("span", { class: "small muted" }, `Newest in ${data.downloads_dir}:`),
     data.downloads.slice(0, 8).map(d => h("button", { class: "small ghost", title: `${fmtSize(d.size)}`,
-      onclick: () => { file.input.value = d.path; run(); } }, d.name))) : null;
+      onclick: () => { file.input.value = d.path; run(); } }, nameText(d.name)))) : null;
   const body = h("div", { class: "verify" },
     h("p", { class: "small" }, "Checks that a file is the one its makers published. Put the signature (.asc, .sig, .gpg, "
       + ".sign) or the signed checksum list (SHA256SUMS and SHA256SUMS.gpg, sha256sum.txt and .gpg, CHECKSUM…) from the "
@@ -2558,7 +2565,7 @@ function verdictBox(v) {
   const sigLine = (s) => h("li", {},
     // green only for a good signature by a key the app lists (verify.Signature.badge)
     h("span", { class: `badge sig-${s.badge_kind || s.status}` }, s.badge || s.status.replace("_", " ")),
-    " ", h("code", {}, s.path.split("/").pop()), s.inside ? ` (inside it: ${s.inside})` : "",
+    " ", h("code", {}, nameText(s.path.split("/").pop())), s.inside ? ` (inside it: ${s.inside})` : "",
     s.project ? ` by ${s.project}'s key (${s.key_name})` : s.key_name ? ` by ${s.key_name}` : "",
     s.fingerprint_grouped || s.issuer ? h("div", { class: "fpr" }, s.fingerprint_grouped || s.issuer) : null,
     s.detail ? h("div", { class: "small muted" }, s.detail) : null,
@@ -2576,7 +2583,7 @@ function verdictBox(v) {
           h("button", { class: "small ghost", onclick: (e) => copyText(d, e.target) }, "Copy"))),
       sigs.length ? h("div", {}, h("h4", {}, "Signatures"), h("ul", { class: "small sigs" }, sigs.map(sigLine))) : null,
       v.lists.length ? h("div", {}, h("h4", {}, "Checksum lists"), h("ul", { class: "small" }, v.lists.flatMap(l =>
-        l.entries.map(e => h("li", {}, h("code", {}, l.name), `: ${e.algo_title} `, e.matches ? "matches" : h("b", { class: "errmsg" }, "doesn't match")))))) : null,
+        l.entries.map(e => h("li", {}, h("code", {}, nameText(l.name)), `: ${e.algo_title} `, e.matches ? "matches" : h("b", { class: "errmsg" }, "doesn't match")))))) : null,
       v.pasted ? h("div", { class: "small" }, `Pasted ${v.pasted.algo_title} checksum: `, v.pasted.matches ? "matches" : h("b", { class: "errmsg" }, "doesn't match")) : null));
 }
 
@@ -2630,12 +2637,12 @@ function metaRow(f, { path = f.path, tick = null, open = false } = {}) {
       !f.count && !f.error ? h("div", { class: "small muted" }, "Nothing the app can see: no location, names, device or "
         + "dates in it.") : null,
       f.groups.map(g => h("div", { class: `metagroup${META_WARN.has(g.id) ? " warn" : ""}` }, h("h4", {}, g.title),
-        h("ul", { class: "small" }, g.sample.map(it => h("li", {}, h("span", { class: "muted" }, it.key + ": "), it.value,
+        h("ul", { class: "small" }, g.sample.map(it => h("li", {}, h("span", { class: "muted" }, it.key + ": "), h("bdi", {}, visibleText(it.value, true)),
           it.member ? h("span", { class: "muted" }, ` (in ${it.member})`) : null)),
           g.count > g.sample.length ? h("li", { class: "muted" }, `and ${g.count - g.sample.length} more`) : null))),
       more ? h("div", { class: "orow" }, h("button", { class: "small", onclick: (e) => full(e.target) }, "Show everything")) : null);
   };
-  const det = h("details", { class: "meta-det" }, h("summary", {}, h("span", { class: "meta-name" }, f.rel || f.name),
+  const det = h("details", { class: "meta-det" }, h("summary", {}, nameText(f.rel || f.name, "meta-name"),
     h("span", { class: "meta-badges" }, badges)), body);
   let loaded = false;
   det.addEventListener("toggle", () => {
@@ -2685,7 +2692,7 @@ async function openMetadata(data, paths = []) {
     if (n) changed();
   };
   const renderChosen = () => fill(chosenList, chosen.length ? chosen.map((p, i) => h("div", { class: "meta-item" },
-    h("code", {}, p), h("button", { class: "small ghost", title: "Take it off the list", disabled: busyNow,
+    h("code", {}, nameText(p)), h("button", { class: "small ghost", "aria-label": `Take ${visibleText(p)} off the list`, title: "Take it off the list", disabled: busyNow,
       onclick: () => { chosen.splice(i, 1); changed(); } }, "✕")))
     : h("div", { class: "small muted" }, "Nothing chosen yet: add files, a folder (its subfolders too), or type a path."));
   const pickInto = async (folder) => {
@@ -2805,10 +2812,10 @@ async function openMetadata(data, paths = []) {
       h("div", { class: `notebox ${failed.length ? "risk" : "info"} small` }, job.state === "stopped" ? "Stopped. " : "",
         `${plural(ok.length, "clean copy", "clean copies")} made`, failed.length ? `; ${failed.length} couldn't be cleaned (listed below)` : "",
         ". The originals weren't changed."),
-      res.folders.map(f => h("div", { class: "orow small" }, f.output ? [h("code", {}, f.folder), " → ", h("code", {}, f.output),
+      res.folders.map(f => h("div", { class: "orow small" }, f.output ? [h("code", {}, nameText(f.folder)), " → ", h("code", {}, nameText(f.output)),
         open(f.output_path)] : `Nothing in ${f.folder} could be cleaned, so no cleaned folder was made.`)),
       singles.length ? h("div", { class: "small" }, singles.length === 1 ? null : h("div", {}, "Beside the files chosen on their own:"),
-        singles.slice(0, 50).map(r => h("div", { class: "orow" }, h("code", {}, r.name), " → ", h("code", {}, r.output_name),
+        singles.slice(0, 50).map(r => h("div", { class: "orow" }, h("code", {}, nameText(r.name)), " → ", h("code", {}, nameText(r.output_name)),
           open(r.path.slice(0, r.path.lastIndexOf("/")) || "/")))) : null,
       leaky.length ? h("div", { class: "warnbox small" }, `${plural(leaky.length, "cleaned copy still says", "cleaned copies still say")} `
         + "where it was made, who made it, the device, or a title, comment or description: mat2 couldn't remove all of "
@@ -2818,7 +2825,7 @@ async function openMetadata(data, paths = []) {
         + " (mostly what any file of its kind has: its format, size, colours)"),
         pagedList(rest, r => metaRow(r.remaining, { path: r.output }))) : null,
       failed.length ? h("div", {}, h("h4", {}, "Couldn't be cleaned (no copy made)"),
-        pagedList(failed, r => h("div", { class: "meta-row small" }, h("code", {}, r.rel), " ", h("span", { class: "errmsg" }, r.message)))) : null);
+        pagedList(failed, r => h("div", { class: "meta-row small" }, h("code", {}, nameText(r.rel)), " ", h("span", { class: "errmsg" }, r.message)))) : null);
   };
 
   showBtn.addEventListener("click", () => start("read"));
@@ -2872,12 +2879,12 @@ async function openMetadata(data, paths = []) {
 
 function metaFile(f) {
   return h("div", { class: "metafile" },
-    h("div", { class: "orow" }, h("b", {}, f.name), h("span", { class: "small muted" },
+    h("div", { class: "orow" }, h("b", {}, nameText(f.name)), h("span", { class: "small muted" },
       f.count ? `${plural(f.count, "item")} (read with ${f.tool})` : f.error ? "" : `Nothing found (read with ${f.tool})`)),
     f.error ? h("div", { class: "small errmsg" }, f.error) : null,
     f.groups.map(g => h("div", { class: `metagroup${META_WARN.has(g.id) ? " warn" : ""}` },
       h("h4", {}, g.title),
-      h("ul", { class: "small" }, g.items.slice(0, 40).map(it => h("li", {}, h("span", { class: "muted" }, it.key + ": "), it.value,
+      h("ul", { class: "small" }, g.items.slice(0, 40).map(it => h("li", {}, h("span", { class: "muted" }, it.key + ": "), h("bdi", {}, visibleText(it.value, true)),
         it.member ? h("span", { class: "muted" }, ` (in ${it.member})`) : null)),
         g.items.length > 40 ? h("li", { class: "muted" }, `and ${g.items.length - 40} more`) : null))));
 }
@@ -3046,7 +3053,7 @@ async function openHandover() {
       d.drives.length ? d.drives.map(x => h("div", { class: "trim-target" },
         h("label", { class: "check" }, h("input", { type: "radio", name: "handover-drive", checked: x.mount === chosen, disabled: !!x.blocked,
           onchange: () => { chosen = x.mount; look.disabled = false; } }),
-          h("b", {}, x.label || x.mount), h("span", { class: "small muted" }, ` ${x.mount}, ${x.fstype || "unknown filesystem"}`
+          h("b", {}, nameText(x.label || x.mount)), h("span", { class: "small muted" }, ` ${x.mount}, ${x.fstype || "unknown filesystem"}`
             + (x.transport ? `, ${x.transport.toUpperCase()}` : ""))),
         x.blocked ? h("div", { class: "small muted" }, x.blocked) : null))
         : h("div", { class: "notebox small" }, "No removable or external drive is mounted. Plug it in and open it in the file "
@@ -3079,8 +3086,8 @@ function handoverPlan(p, back, closeAll) {
     h("div", { class: "small" }, g.text),
     h("details", {}, h("summary", { class: "small" }, "Every file"),
       h("ul", { class: "small files" },
-        g.folders.map(f => h("li", {}, h("code", {}, f + "/"), h("span", { class: "muted" }, " (the folder, with everything in it)"))),
-        g.files.map(f => h("li", {}, h("code", {}, f))),
+        g.folders.map(f => h("li", {}, h("code", {}, nameText(f + "/")), h("span", { class: "muted" }, " (the folder, with everything in it)"))),
+        g.files.map(f => h("li", {}, h("code", {}, nameText(f)))),
         g.more ? h("li", { class: "muted" }, `and ${g.more} more`) : null)));
   return [
     h("div", { class: "orow" }, h("button", { class: "small ghost", onclick: back }, "← Drives"), h("b", {}, name),
@@ -3136,7 +3143,7 @@ async function openRetire() {
     const rows = data.drives.map(x => h("div", { class: "trim-target" },
       h("label", { class: "check" }, h("input", { type: "radio", name: "retire-drive", checked: x.name === chosen, disabled: !!x.blocked,
         onchange: () => { chosen = x.name; answers.kind = ""; answers.from_start = false; render(); } }),
-        h("b", {}, x.model || x.name), h("span", { class: "small muted" }, ` ${x.path}, ${fmtSize(x.size)}, ${x.kind_title}`
+        h("b", {}, nameText(x.model || x.name)), h("span", { class: "small muted" }, ` ${x.path}, ${fmtSize(x.size)}, ${x.kind_title}`
           + (x.serial ? `, serial ${x.serial}` : ""))),
       x.blocked ? h("div", { class: "small muted" }, x.blocked) : null));
     fill(body,
@@ -4776,7 +4783,7 @@ function trialReady(data, t, call) {
   // in memory, the session's runtime folder is all the room it has: it is ended before it fills that (trial.RoomWatch)
   const memory = t.where === "memory" ? (st.places || []).find(p => p.id === "memory") : null;
   return [
-    h("p", {}, h("b", {}, t.name), ` — ${TRIAL_KIND[t.kind] || t.what}. Nothing has run yet.`),
+    h("p", {}, h("b", {}, nameText(t.name)), ` — ${TRIAL_KIND[t.kind] || t.what}. Nothing has run yet.`),
     t.notes.map(n => h("div", { class: "notebox info small" }, n)),
     memory ? h("div", { class: "notebox info small" }, h("b", {}, "In memory, it has the room your session's runtime "
       + `folder has left, ${fmtSize(memory.free)} now. `), "If it fills that to within "
@@ -4786,7 +4793,7 @@ function trialReady(data, t, call) {
     t.candidates.length ? [h("h4", {}, "Which program in it to start"),
       h("div", { class: "applist" }, t.candidates.map(c => h("label", {},
         h("input", { type: "radio", name: "trial-prog", checked: c.rel === program, onchange: () => { program = c.rel; } }),
-        h("code", {}, c.rel), h("span", { class: "small muted" }, `${c.what}${c.label ? `: ${c.label}` : ""}`))))] : null,
+        h("code", {}, nameText(c.rel)), h("span", { class: "small muted" }, c.what, c.label ? [": ", nameText(c.label)] : null))))] : null,
     h("div", { class: "orow" }, h("span", { class: "small muted" }, "Arguments for it (optional; most programs need none)"), args),
     h("h4", {}, "Network"),
     radio("off", "None", "it can reach nothing: not the internet, not this computer, not your network"),
@@ -4917,7 +4924,7 @@ function trialResult(t, call, st = {}) {
   const discard = h("button", { class: "primary" }, "Discard the trial");
   discard.addEventListener("click", () => call("/api/tools/trial/discard", {}, discard, "Discarding…"));
   return [
-    h("p", {}, h("b", {}, t.name), ` ran for ${fmtMinutes(r.seconds)} and `, r.ended || (t.stopped ? "was ended here" : r.failed
+    h("p", {}, h("b", {}, nameText(t.name)), ` ran for ${fmtMinutes(r.seconds)} and `, r.ended || (t.stopped ? "was ended here" : r.failed
       ? `ended with an error (exit status ${t.exit})` : "ended by itself"), "."),
     r.short_of_room != null ? h("div", { class: "warnbox" }, `Less than ${Math.round((st.room_kept || 0) / 1048576)} MB `
       + `was left (${fmtSize(r.short_of_room)}) in your session's runtime folder, where it ran in memory: that is where `
@@ -4951,7 +4958,7 @@ function trialResult(t, call, st = {}) {
         + "besides the decoys. On your computer these would be in your home folder."), placesTable(s)]
       : h("p", { class: "small" }, "Nothing."),
     s.regular.length ? [h("h4", {}, "Files it writes to all the time"),
-      h("ul", { class: "named" }, s.regular.map(f => h("li", {}, h("code", {}, f.path), ` — ${f.type}, ${plural(f.writes, "write")}`)))] : null,
+      h("ul", { class: "named" }, s.regular.map(f => h("li", {}, h("code", {}, nameText(f.path)), ` — ${f.type}, ${plural(f.writes, "write")}`)))] : null,
     r.missed ? h("div", { class: "small muted" }, "It did more than could be recorded: some of it is missing above.") : null,
     r.copies_ended ? h("div", { class: "warnbox small" }, `It had Flatpak start ${plural(r.copies_ended, "more copy", "more copies")} `
       + "of itself, which ran outside this watch, with the app's real data in ~/.var/app. They were ended with the "
@@ -5063,8 +5070,8 @@ function appChooser(apps, name) {
   const list = h("div", { class: "applist" });
   const draw = (q) => fill(list, apps.filter(a => !q || `${a.name} ${a.command}`.toLowerCase().includes(q)).map(a =>
     h("label", {}, h("input", { type: "radio", name, checked: a.id === chosen, onchange: () => { chosen = a.id; } }),
-      h("span", {}, a.name), APP_KIND[a.kind] ? h("span", { class: "kindtag" }, APP_KIND[a.kind]) : null,
-      h("span", { class: "small muted" }, a.comment || ""))));
+      nameText(a.name), APP_KIND[a.kind] ? h("span", { class: "kindtag" }, APP_KIND[a.kind]) : null,
+      h("span", { class: "small muted" }, visibleText(a.comment || "")))));
   const filter = h("input", { type: "search", autocomplete: "off", spellcheck: "false", placeholder: "Find an app…",
     "aria-label": "Find an app", oninput: (e) => draw(e.target.value.trim().toLowerCase()) });
   draw("");
@@ -5189,11 +5196,11 @@ function placesTable(r) {
   let kind = null;
   for (const p of r.places) {
     if (p.kind !== kind) { kind = p.kind; rows.push(h("tr", { class: "kind" }, h("td", { colspan: 6 }, r.kinds[kind] || kind))); }
-    rows.push(h("tr", {}, h("td", { class: "folder" }, p.folder), cell(p.opened), cell(p.written), cell(p.created), cell(p.deleted),
+    rows.push(h("tr", {}, h("td", { class: "folder" }, nameText(p.folder)), cell(p.opened), cell(p.written), cell(p.created), cell(p.deleted),
       h("td", { class: p.left ? "" : "zero" }, p.left ? `${p.left} (${fmtSize(p.bytes)})` : "0")));
     if (p.files?.length) rows.push(h("tr", {}, h("td", { colspan: 6, class: "folder" }, h("details", { class: "small" },
       h("summary", {}, `Its files (${p.files.length}${p.files.length >= 60 ? ", the first" : ""})`),
-      h("ul", { class: "named" }, p.files.map(f => h("li", {}, h("code", {}, f.name), ` ${f.did}`)))))));
+      h("ul", { class: "named" }, p.files.map(f => h("li", {}, h("code", {}, nameText(f.name)), ` ${f.did}`)))))));
   }
   return h("table", { class: "places" },
     h("thead", {}, h("tr", {}, h("th", {}, "Folder"), h("th", { title: "Opened, not changed" }, "Read"),
@@ -5209,7 +5216,7 @@ function keepsResult(job, reload, after) {
     try { await api("POST", "/api/tools/keeps/dismiss"); await reload(); } catch (e) { toast(e.message, "error"); }
   });
   return [
-    h("p", {}, h("b", {}, r.app), ` was watched for ${fmtMinutes(r.seconds)}. It read ${plural(t.opened, "file")}, changed `
+    h("p", {}, h("b", {}, nameText(r.app)), ` was watched for ${fmtMinutes(r.seconds)}. It read ${plural(t.opened, "file")}, changed `
       + `${t.written}, made ${t.created} and deleted ${t.deleted}`
       + (r.system.length ? `, besides ${r.system.reduce((n, s) => n + s.files, 0)} of the system's own (programs, libraries, settings).` : ".")),
     job.ended_itself ? h("p", { class: "small muted" }, job.ended_itself === "closed"
@@ -5225,14 +5232,14 @@ function keepsResult(job, reload, after) {
         h("p", { class: "small" }, `${plural(rec.found.length, "file")} written during the watch `
           + `${rec.found.length > 1 ? "hold" : "holds"} the names of your files it opened (${rec.names} looked for). These `
           + "are where a record of what you opened is kept:"),
-        h("ul", { class: "named" }, rec.found.map(f => h("li", {}, h("code", {}, f.path), ` — ${f.type}, written by `
+        h("ul", { class: "named" }, rec.found.map(f => h("li", {}, h("code", {}, nameText(f.path)), ` — ${f.type}, written by `
           + `${f.who ? `another program (${f.who})` : "the app itself"}: ${plural(f.names, "name")}`)))]
       : h("p", { class: "small" }, `No file written during the watch holds the names of the ${plural(rec.names, "file")} of `
         + "yours it opened, as plain text. A compressed or encrypted store could still hold them."),
     rec.skipped ? h("div", { class: "small muted" }, `${plural(rec.skipped, "file")} too large or too many to read `
       + `${rec.skipped > 1 ? "were" : "was"} not searched.`) : null,
     r.regular.length || r.regular_yours ? [h("h4", {}, "Files it writes to all the time"),
-      r.regular.length ? h("ul", { class: "named" }, r.regular.map(f => h("li", {}, h("code", {}, f.path), ` — ${f.type}, `
+      r.regular.length ? h("ul", { class: "named" }, r.regular.map(f => h("li", {}, h("code", {}, nameText(f.path)), ` — ${f.type}, `
         + `${fmtSize(f.size)}, written in ${plural(f.minutes, "different minute")} (${plural(f.writes, "write")})`))) : null,
       r.regular_yours ? h("p", { class: "small muted" }, `${r.regular.length ? "Besides these, " : ""}`
         + `${plural(r.regular_yours, "file")} of your own, saved again and again: counted, not named, since they are `
@@ -5251,11 +5258,11 @@ function keepsResult(job, reload, after) {
       h("p", { class: "muted" }, "An app that hands its work to a background program of its own, or to a copy that was "
         + "already running, shows here; so does everything else that was running. Counted per folder (in your own "
         + "folders and on other disks, changes rather than files):"),
-      h("ul", { class: "named" }, (r.others_places || []).map(o => h("li", {}, h("code", {}, o.folder || "other folders"),
+      h("ul", { class: "named" }, (r.others_places || []).map(o => h("li", {}, h("code", {}, nameText(o.folder || "other folders")),
         ` — ${[o.files ? plural(o.files, "file") : "", o.changes ? plural(o.changes, "change") : ""].filter(Boolean)
           .join(", ")}, by ${o.who}`)))) : null,
     r.gone.length ? h("details", { class: "small" }, h("summary", {}, "By programs that ended before they could be identified"),
-      h("ul", { class: "named" }, r.gone.map(g => h("li", {}, h("code", {}, g.folder), `: ${plural(g.events, "event")}`)))) : null,
+      h("ul", { class: "named" }, r.gone.map(g => h("li", {}, h("code", {}, nameText(g.folder)), `: ${plural(g.events, "event")}`)))) : null,
     h("details", { class: "small" }, h("summary", {}, "How complete this is"),
       h("ul", {},
         h("li", {}, `${r.events} events seen on ${r.watched.join(", ")}; ${r.foreign} by other accounts or the system, not kept.`),
@@ -5608,14 +5615,14 @@ function namesList(names, trimmed, { start, closeAll }) {
       onchange: (e) => { e.target.checked ? picked.add(f.rel) : picked.delete(f.rel); refreshBtn(); } }) : null;
     const count = f.names.length + f.hashes.length;
     return h("div", { class: "names-folder" },
-      h("div", { class: "orow" }, box ? h("label", { class: "check small" }, box, h("b", {}, f.path)) : h("b", { class: "small" }, f.path),
+      h("div", { class: "orow" }, box ? h("label", { class: "check small" }, box, h("b", {}, nameText(f.path))) : h("b", { class: "small" }, nameText(f.path)),
         h("span", { class: "small muted" }, plural(count, "name")
           + (f.journal_only && f.journal_only < count ? `, ${f.journal_only} in the journal only` : "")),
         f.gone ? h("span", { class: "badge", title: r?.why }, "deleted folder") : null,
         r?.journal && !f.gone ? h("span", { class: "badge", title: r.why }, "in the journal") : null,
         r && r.method !== "none" ? h("span", { class: `badge method-${r.method}`, title: r.why }, METHOD[r.method]) : null),
       f.notes.map(n => h("div", { class: "notebox small" }, n)),
-      f.names.length ? h("ul", { class: "small" }, f.names.map(n => h("li", {}, n))) : null,
+      f.names.length ? h("ul", { class: "small" }, f.names.map(n => h("li", {}, nameText(n)))) : null,
       f.hashes.length ? h("details", { class: "small hashes" },
         h("summary", {}, `${plural(f.hashes.length, "name")} made from a hash`),
         h("p", {}, f.browser_cache
@@ -5739,7 +5746,7 @@ function openJournalOthers(names, j) {
         h("p", { class: "small" }, all.length ? `${plural(all.length, "name")} in ${plural(r.records, "record")} of the journal, `
           + "of files deleted and of files still there:" : "None can be read any more: the journal has moved on, or was cleared."),
         r.truncated ? h("div", { class: "small muted" }, "Only part of it is shown: there were too many.") : null,
-        r.names.length ? h("ul", { class: "small names-list" }, r.names.map(n => h("li", {}, n))) : null,
+        r.names.length ? h("ul", { class: "small names-list" }, r.names.map(n => h("li", {}, nameText(n)))) : null,
         r.hashes.length ? h("details", { class: "small hashes" }, h("summary", {}, `${plural(r.hashes.length, "name")} made from a hash`),
           h("ul", {}, r.hashes.map(n => h("li", {}, n)))) : null,
         j.clearable ? h("p", { class: "small" }, "Clear the journal, in the list behind this, removes them all.") : null,
@@ -5770,7 +5777,7 @@ async function openNamesPlan(mount, folders, relist, rebuild = [], clearJournal 
     onClose: () => { closed = true; clearTimeout(timer); } });
   synced.addEventListener("change", () => { goBtn.disabled = !synced.checked; });
   fill(body,
-    h("ul", { class: "small" }, plan.folders.map(f => h("li", {}, h("b", {}, f.path), " ",
+    h("ul", { class: "small" }, plan.folders.map(f => h("li", {}, h("b", {}, nameText(f.path)), " ",
       f.blockers.length ? h("span", { class: "errmsg" }, "Not now: " + f.blockers.join(" ")) : h("span", { class: "muted" }, `(${METHOD[f.method]}) ${f.why}`)))),
     plan.steps.length ? [h("h4", {}, "What it does"), h("ol", { class: "small" }, plan.steps.map(x => h("li", {}, x)))] : null,
     plan.side_effects.length ? [h("h4", {}, "Worth knowing"), h("ul", { class: "small" }, plan.side_effects.map(x => h("li", {}, x)))] : null,
@@ -5818,11 +5825,11 @@ function cleanResult(res, folders, mount, relist, close, clearJournal = null) {
   const check = async () => render((await api("POST", "/api/tools/names/check", { mount, folders: treated })).result);
   const render = (r) => fill(out,
     h("ul", { class: "small clean-result" }, r.folders.map(f => h("li", { class: `st-${f.state}` },
-      h("b", {}, f.path), " ", f.text,
+      h("b", {}, nameText(f.path)), " ", f.text,
       f.commands?.length ? commandBlock(f.commands) : null,
       f.rebuild_offer ? h("div", { class: "orow" }, h("button", { class: "small", onclick: () => { close();
         openNamesPlan(mount, [f.rel], relist, [f.rel], clearJournal); } }, "Rebuild instead…")) : null,
-      f.left?.length ? h("details", {}, h("summary", {}, "Which names"), h("ul", {}, f.left.map(n => h("li", {}, n)))) : null))),
+      f.left?.length ? h("details", {}, h("summary", {}, "Which names"), h("ul", {}, f.left.map(n => h("li", {}, nameText(n))))) : null))),
     r.explanation.map(x => h("p", { class: "small" }, x)),
     h("p", { class: "muted small" }, "Nothing of this is kept: it is gone when you close this window."),
     h("div", { class: "orow" },

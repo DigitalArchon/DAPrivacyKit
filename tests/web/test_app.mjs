@@ -2918,7 +2918,18 @@ while ($$(".modal").length) { $$(".modal .buttons button").at(-1).click(); await
   const nameText = window.eval("nameText");
   const n = nameText("invoice\u202Egpj.exe");
   check(n.tagName === "BDI" && n.textContent === "invoice⟨U+202E⟩gpj.exe", "a name's reordering mark is shown, never obeyed");
-  check(nameText("a\nb\u0007").textContent === "a⟨U+000A⟩b⟨U+0007⟩", "and its control characters too"); }
+  check(nameText("a\nb\u0007").textContent === "a⟨U+000A⟩b⟨U+0007⟩", "and its control characters too");
+  let copied = null;
+  const clip0 = Object.getOwnPropertyDescriptor(window.navigator, "clipboard");
+  Object.defineProperty(window.navigator, "clipboard", { configurable: true, value: { writeText: async (t) => { copied = t; } } });
+  const block = window.eval("commandBlock")(["rm -- 'photo\u202Egpj.sh'"]);
+  window.document.body.append(block);
+  check(block.querySelector("code").textContent === "rm -- 'photo⟨U+202E⟩gpj.sh'" && block.querySelector(".cmd-hidden"),
+        "a command made with such a name shows the mark, and says so");
+  block.querySelector("button").click(); await tick();
+  check(copied === "rm -- 'photo\u202Egpj.sh'", "Copy copies the command as it is");
+  block.remove();
+  if (clip0) Object.defineProperty(window.navigator, "clipboard", clip0); else delete window.navigator.clipboard; }
 
 // the text's size: Ctrl+plus, Ctrl+minus, Ctrl+0 in the window, remembered
 { const doc = window.document;
