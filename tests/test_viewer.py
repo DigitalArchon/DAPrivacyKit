@@ -313,3 +313,49 @@ def test_a_copy_replaced_by_a_link_isnt_given_to_the_viewer(host, tmp_path):
     (stage / "report.pdf").write_bytes(PDF)
     a = V.argv(host, v, stage / "report.pdf", "report.pdf", own, disp)
     assert (str(stage / "report.pdf"), "/home/user/report.pdf") in pairs(a, "--ro-bind")
+
+
+def test_on_x11_the_viewer_gets_a_display_of_its_own_or_this_one_only_when_ticked(host, monkeypatch):
+    """The review of 2026-11-12: a viewer a hostile file took over, given the X server's socket, could read and type
+    into every other window. Xephyr first, its focus keeper sizing the viewer's window to it, the viewer's sandbox
+    given Xephyr's socket alone; without Xephyr only when the user ticked that it may."""
+    set_up(host)
+    del host.environ["WAYLAND_DISPLAY"]
+    (host.root / "tmp/.X11-unix").mkdir(parents=True, exist_ok=True)
+    (host.root / "tmp/.X11-unix/X0").write_text("")
+    (host.root / "proc/net").mkdir(parents=True, exist_ok=True)
+    (host.root / "proc/net/unix").write_text("")
+    private = host.home / "TempBrowser/.tor-browser-app"
+    private.mkdir(parents=True, exist_ok=True)
+    with pytest.raises(V.ViewError, match="tick that it may use this display"):
+        V.view(host, "tor-browser", "report.pdf", private, lambda argv, **kw: pytest.fail("started"),
+               check(host, "report.pdf"))
+    calls = []
+    V.view(host, "tor-browser", "report.pdf", private, lambda argv, **kw: calls.append(unseal(argv)) or Proc(),
+           check(host, "report.pdf"), real_display=True)
+    [argv] = calls
+    assert ("/tmp/.X11-unix/X0", "/tmp/.X11-unix/X0") in pairs(argv, "--ro-bind")           # this display, as ticked
+    host.runner.handlers["Xephyr"] = lambda argv: CommandResult(tuple(argv), 0)
+    calls.clear()
+
+    class Server(Proc):
+        pid = 4_194_401
+
+        def poll(self):
+            return None
+
+    def spawn(argv, **kw):
+        if "Xephyr" in argv:
+            calls.append(argv)
+            sock = V.wayland.socket.socket(V.wayland.socket.AF_UNIX)
+            V.wayland._bind(sock, private / "view/x11/X1")              # a long path, through its folder
+            return Server()
+        calls.append(unseal(argv))
+        return Proc()
+    got = V.view(host, "tor-browser", "report.pdf", private, spawn, check(host, "report.pdf"))
+    xephyr, viewer = calls
+    assert "Xephyr" in xephyr and ("--seccomp" in xephyr) is V.seccomp.supported()      # Xephyr's own: strict
+    assert ("/tmp/.X11-unix/X0", "/tmp/.X11-unix/X0") in pairs(xephyr, "--ro-bind")
+    ro = pairs(viewer, "--ro-bind")
+    assert (str(private / "view/x11/X1"), "/tmp/.X11-unix/X99") in ro and not any(s.endswith("X11-unix/X0") for s, _ in ro)
+    assert got["app"] == "Document Viewer"

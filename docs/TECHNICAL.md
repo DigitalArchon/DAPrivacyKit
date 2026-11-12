@@ -138,8 +138,9 @@ Tools are what the user starts on files, folders or drives they choose, where ch
 - **The helper** (`helper.py`) is the only code that runs as root. It is started through `pkexec`
   when something needs it, speaks a line-based JSON protocol, exposes a fixed list of named actions,
   and validates every argument itself: it doesn't trust the app.
-- **Sandboxes** (bubblewrap) are started by the app for the browser in memory and for View offline….
-  Whatever runs inside them is treated as hostile.
+- **Sandboxes** (bubblewrap) are started by the app for the browser in memory, for View offline…, Try an app and
+  Boxes. Whatever runs inside them is treated as hostile: each gets a system-call filter (`tools/seccomp.py`), on
+  X11 a display of its own unless the user says otherwise, and nothing it writes is shown as the app's own words.
 
 Programs the app runs get the host's environment (`hostenv.host_env`): the AppImage runtime's variables
 (`APPIMAGE`, `APPDIR`, `ARGV0`, `OWD`…) are left out, and variables the app changed for itself only (such as
@@ -889,7 +890,60 @@ The host's `bwrap` and `pasta` are always called by full path from system folder
 --clearenv               the environment is built from scratch
 ```
 
-Nested user namespaces stay allowed, so Firefox's own content sandbox keeps working inside.
+**The system-call filter** (`tools/seccomp.py`; the review of 2026-11-12). Without one, code inside could ask the
+kernel for anything a program can: a user namespace of its own gives it root's capabilities over the namespaces it
+makes, and with them nf_tables, the new mount API and more. Every bubblewrap the app starts gets a seccomp BPF program,
+built by hand (stdlib only), as Flatpak's own filter does:
+
+- refused (EPERM): the kernel keyring (`add_key`, `keyctl`, `request_key`), `syslog`, `acct`, quotas, modules,
+  `kexec`, swap, `reboot`, port I/O, 16-bit code (`modify_ldt`, `vm86`), `uselib`, `open_by_handle_at`,
+  `lookup_dcookie`, the NUMA calls, `ptrace`, `perf_event_open`, `bpf`, `userfaultfd`; `personality` other than
+  Linux's own (and asking); `ioctl` TIOCSTI, TIOCLINUX and TIOCSETD;
+- refused as missing (ENOSYS), so programs fall back: `clone3` (its arguments are in memory, where a filter can't
+  look; `clone` then gets the checks), `io_uring_*`, and the new mount API (`open_tree`, `move_mount`, `fsopen`,
+  `fsconfig`, `fsmount`, `fspick`, `mount_setattr`, `open_tree_attr`) but under the nesting profile;
+- sockets of any family but Unix, IPv4, IPv6 and netlink refused as unsupported (EAFNOSUPPORT), and of netlink only
+  routing, socket diagnostics, SELinux's notifications and device events (EPROTONOSUPPORT for the rest: nf_tables's
+  netfilter, generic netlink's families).
+
+By profile: **strict** (no namespaces of any kind through `clone` or `unshare`, no `mount`, `umount`, `pivot_root`,
+`chroot` or `setns`) for Xephyr's sandbox, the viewer's, tor's, the unpacking sandboxes and trials, which also get
+bubblewrap's `--disable-userns` where it has it (0.8+); **browser** (namespaces and `chroot` allowed, which Firefox's
+content sandbox and Chromium's need; no mounts, `pivot_root` or `setns`) for Mullvad Browser's sandbox and Tor
+Browser's inner one; **nesting** (namespaces, mounts and the new mount API: bubblewrap 0.13 makes its binds read-only
+with `mount_setattr` and doesn't fall back, tested on CachyOS) for Tor Browser's outer sandbox, whose gate starts
+tor's and the browser's sandboxes, and for a trial or Box ticked to start sandboxes of its own. Filters stack: tor's
+and the browser's are held to the outer one's too.
+
+The program checks which system-call table a call came through: x86-64's, and i386's, which a 64-bit program reaches
+with `int 0x80` (an x86-64-only filter lets it past everything: the numbers differ), each with its own numbers;
+x32's numbers are refused as missing; any other table kills the process. On i386, `socket` and `socketpair` through
+`socketcall` (arguments in memory) are refused, so a 32-bit program makes no connections, the direct calls checked
+as on x86-64. x86-64 only: elsewhere there is no filter, and the panel says so. Tested in an emulator and in the real
+kernel (`tests/test_seccomp.py`: keyctl, a user namespace, AF_PACKET, AF_ALG, netfilter's netlink, TIOCSTI and the
+i386 table refused; files, threads, fork and Unix and IP sockets working).
+
+How it gets there (`sandbox.Filter`, `make_filter`): a memory file passed to bubblewrap (`--seccomp FD`); under pasta,
+which passes its command nothing but stdin, stdout and stderr, a file in the runtime folder opened as descriptor 3 by
+a shell just before bubblewrap (`Filter.wrap`), which bubblewrap reads and closes before anything runs inside
+(tested: nothing in the sandbox holds it). Tor Browser's gate gets tor's and the browser's programs in its
+configuration and makes their descriptors itself (`torgate.with_filters`, for `@SECCOMP:profile@` placeholders).
+
+What a namespace of its own still reaches, under the browser and nesting profiles: traffic control and the rest of
+routing netlink in a network namespace it makes, which the filter can't look into. Live-tested (2026-11-12): both
+browsers on a private Xvfb on Mint 22.3 (bubblewrap 0.9, Tor Browser in Xephyr, check.torproject.org) and on KDE
+Plasma 6.7 Wayland on CachyOS (bubblewrap 0.13.1): Tor bootstrapped, pages loaded, Firefox's content processes had
+user namespaces of their own and three filters (ours, the outer one's, their own).
+
+**Programs that start sandboxes of their own** (`seccomp.nesting_reason`, `installed_reason`): Electron and Chromium
+(whose sandbox needs a user namespace), CEF, Qt WebEngine, WebKitGTK and glycin (GNOME's image loaders, in
+bubblewrap). Recognised by names in an unpacked tree (`chrome-sandbox`, `*.asar`…), an AppImage's own listing (the
+squashfs directory table after its runtime, unpacked where Python can: gzip, xz, lzma, zstd from Python 3.14; nothing
+of it is run) or names inside the program (the libraries it links), and for an installed app the program's folders and
+what a script runs. A trial or Box of one is pre-ticked "Let it start sandboxes of its own" (the nesting profile), its
+cost said; a viewer that is gets it, said in its notes. Under the strict profile glycin runs its loaders without its
+own sandbox ("Glycin running without sandbox", inside the app's: tested on CachyOS), and an Electron app may start with
+its own sandbox off.
 
 **Filesystem** (`sandbox.system`, `etc_argv`, `proc_masks`, `_folder`):
 
@@ -1100,17 +1154,25 @@ stdin and bubblewrap holds it as `--sync-fd 0`; the browser itself gets `/dev/nu
 uses (99–199, neither a socket file nor an abstract socket): libxcb tries the abstract socket of its
 display first and only falls back to the path when nobody listens there, so an unused number makes it use
 the bound path. An X authority file of its own is written with only that display's cookie, for any host.
-On X11 the sandbox protects files and the network, not the screen: any X11 client can read other windows
-and inject keystrokes. The panel says so, with `sbx.x11_session`'s How to….
+Given the X server's socket, a sandbox protects files and the network, not the screen: any X11 client can read
+other windows and every key typed (XRecord) and type into them (XTEST), a terminal included, with no kernel flaw
+needed, and the sandbox's other walls fall with it. So (the owner's decision of 2026-11-12, `sandbox.own_display`) on
+X11 **a display of its own is the default** wherever Xephyr is installed, for the browsers, trials, Boxes and View
+offline…; the real display only when the user has ticked that it may (`real_display` in the start's request; the
+browser panel's "Give it a display of its own" unticked, or, without Xephyr, "Let … use this display anyway", with
+the risk named and the command that installs Xephyr; a Box's "Let it use this display (X11)" in its guide). A start
+that would get neither is refused, saying why. A Flatpak trial or viewer is given the X server's socket by Flatpak
+(it takes the socket of `$DISPLAY`, which Xephyr's private socket isn't): only with the tick. The panel says all
+this, with `sbx.x11_session`'s How to….
 
 A display reached over TCP (SSH forwarding) needs the network: Tor Browser's sandbox refuses it, and
 Mullvad Browser then runs without pasta.
 
-**A display of its own (Xephyr)**, optional on X11 (`sandbox.nested`):
+**A display of its own (Xephyr)**, the default on X11 where it is installed (`sandbox.nested`):
 
 - Xephyr (the host's; its package named per distribution) runs in a sandbox of its own with **no
-  network**, the computer's X socket bound by path, and the computer's cookie. It is the only thing given
-  the real display.
+  network**, the computer's X socket bound by path, and the computer's cookie, under the strict system-call filter
+  and `--disable-userns`. It is the only thing given the real display.
 - It listens only on its socket file in the private folder (`-nolisten tcp -nolisten local`), with a
   fresh random 16-byte MIT-MAGIC-COOKIE-1, `-no-host-grab`, `-resizeable`, and `-terminate 10` (it ends
   10 seconds after its last client disconnects: the browser's start runs short-lived X clients first).
@@ -1119,7 +1181,15 @@ Mullvad Browser then runs without pasta.
   override-redirect window) took the focus from the browser's window and the browser closed the menu. The keeper
   sets the input focus (revert to PointerRoot) on each normal window the browser maps and on the one the pointer
   enters, never on menus, tooltips or GTK's 10×10 helpers; it disconnects 8 seconds after the browser's windows
-  are gone, so `-terminate` still ends Xephyr. Without python3, Xephyr runs alone.
+  are gone, so `-terminate` still ends Xephyr. Without python3, Xephyr runs alone. For a program on trial, a Box's
+  app or a viewer (`--fill`, never the browser's, which sizes its own window for resistFingerprinting) it also gives
+  each main window it maps the whole display (ConfigureWindow), or the largest size its WM_NORMAL_HINTS allow, centred,
+  and again when the display is resized; a dialog (WM_TRANSIENT_FOR) keeps its size. Without it a program opened at a
+  size of its own in the corner, and with no window manager inside it couldn't be moved or resized (live-tested on a
+  private Xvfb: GNOME Calculator in a trial and xreader for View offline… filled their displays).
+- A viewer's display (View offline…) is started for it and named with it when ~/TempBrowser is closed
+  (`viewer.displays`), never ended as the browser's while the viewer runs; it ends by itself once the viewer has
+  (tested: both gone within 25 seconds of the viewer).
 - The browser's sandbox gets only Xephyr's socket, under an unused display number, with Xephyr's cookie.
 - Size (`screen_size`): the work area from `_NET_WORKAREA` (else `xdpyinfo`'s screen less 48 px for a
   panel), clamped to 800×600 … 1400×1100. There is no window manager inside to stretch the window, and
@@ -1250,21 +1320,48 @@ Mullvad Browser needs ordinary internet access. Where pasta (the `passt` package
 ```
 host
 └─ python3 KEYRING wrapper
-   └─ pasta --config-net --quiet --no-map-gw -t none -u none -T none -U none --dns-forward 169.254.0.1
+   └─ pasta --config-net --quiet --no-map-gw --no-icmp -t none -u none -T none -U none --dns-forward 169.254.0.1
             -M 9a:55:9a:55:9a:55 -I eth0 -a 10.0.2.15 -n 24 -g 10.0.2.2 [-a fd00::15 -g fe80::9855:9aff:fe55:9a55 | -4] --
       └─ /bin/sh -c '<fence rules> ; exec "$0" "$@"'      (as root of pasta's namespace)
-         └─ bwrap --unshare-all --share-net …              (pasta's namespace, not the computer's)
-            /etc/resolv.conf: nameserver 169.254.0.1, options edns0
-            └─ python3 LANDLOCK → start-mullvad-browser → firefox
+         └─ python3 -I -c <dnsfilter.py> <config> …        (binds 127.0.0.1:53, forks the filter, execs on)
+            └─ /bin/sh -c 'exec 3<"$0" …' <filter file>     (the system-call filter as descriptor 3)
+               └─ bwrap --unshare-all --share-net --seccomp 3 …   (pasta's namespace, not the computer's)
+                  /etc/resolv.conf: nameserver 127.0.0.1, options edns0
+                  └─ python3 STAY → python3 LANDLOCK → start-mullvad-browser → firefox
 ```
 
 - `--no-map-gw`: the host's loopback services aren't reachable through the gateway address. No ports
   are forwarded in either direction (`-t/-u/-T/-U none`).
-- DNS goes to pasta's forwarder at 169.254.0.1, which forwards to the computer's resolver. Over TCP only
-  where pasta forwards that too: pasta 2026-01-20 does, 2024-02-20 (Mint 22.3, Ubuntu 24.04) sent the
-  connection on to 169.254.0.1 itself, where it timed out (tested). `probe_fence` connects to it from inside
-  (2 seconds at most, once per run of the app) and the fence lets TCP through only where that worked;
-  elsewhere it is refused at once. The sandbox's resolver asks with EDNS0, so a large answer comes over UDP.
+- DNS goes to pasta's forwarder at 169.254.0.1, which forwards to the computer's resolver. That resolver answers
+  more than the internet's names: tested from pasta's namespace on Mint 22.3 (systemd-resolved, 2026-11-12),
+  `_gateway` gave the router's address, `_outbound` this computer's address on the local network, `_localdnsstub`
+  127.0.0.53, the computer's own name its addresses, and reverse lookups of the router's and this computer's
+  addresses their names (`OPNsense.localdomain`, the hostname); a router's DNS answers its devices' names, and a
+  single label can go out as LLMNR. So the sandbox's lookups go first to **the lookups' filter**
+  (`tools/dnsfilter.py`, `sandbox.dns_filter`): the computer's python3, started by the fence's script as root of
+  pasta's namespace, binds 127.0.0.1:53 there (UDP and TCP; the sandbox's resolv.conf names it), forks, and the
+  parent execs on into bubblewrap. It refuses (REFUSED) a query with more than one question, a single label, a name
+  under local, localhost, lan, home, internal, localdomain, intranet, corp, private or home.arpa, and a reverse lookup
+  (in-addr.arpa, ip6.arpa) of a network that overlaps a refused one (the fence's ranges, the computer's own networks,
+  NAT64's forms of them); and an answer with an A or AAAA record in a refused network, whole (Mullvad's proxies,
+  which the fence lets through, excepted). The rest it passes to the forwarder over one socket marked with SO_MARK
+  `0x5ec` (which needs the namespace's CAP_NET_ADMIN: the sandbox has none, tested), and the fence's pref-50 rule lets
+  only marked UDP to 169.254.0.1:53 through; the sandbox's own queries to the forwarder are refused (EACCES, tested).
+  Reverse-path filtering is turned off in pasta's namespace (`rp_filter`, loose on Ubuntu and Mint and copied into
+  new namespaces), whose check of the forwarder's answers is an unmarked lookup that met the prohibit rule: the
+  answers were dropped (tested). The filter dies with bubblewrap (the parent-death signal, and a look at its parent
+  every second; nothing was left running, tested), drops every capability once its sockets are made, sets
+  no_new_privs, applies Landlock's limits on files (none allowed) and the strict system-call filter. TCP clients are
+  answered over the same UDP upstream. What it can't tell: a network whose resolver answers names under its own public
+  domain (a company's split DNS) still gets those resolved, though not to local addresses. Without python3 the sandbox
+  asks the forwarder itself, as before, and the panel says the lookups go to the computer's resolver as they are.
+  Over TCP the forwarder itself is used only without the filter, and only where pasta forwards that too: pasta
+  2026-01-20 does, 2024-02-20 (Mint 22.3, Ubuntu 24.04) sent the connection on to 169.254.0.1 itself, where it timed
+  out (tested). `probe_fence` connects to it from inside (2 seconds at most, once per run of the app) and the fence
+  lets TCP through only where that worked; elsewhere it is refused at once. The sandbox's resolver asks with EDNS0,
+  so a large answer comes over UDP.
+- `--no-icmp`: pasta passes the namespace's pings on from ping sockets of the computer's, to any host; nothing in a
+  sandbox needs to ping (the review of 2026-11-12; Try an app had it already).
 - Abstract Unix sockets belong to the network namespace, so the session's are out of reach.
 - **Addresses of its own** (`sandbox.pasta_opts`). By default pasta copies the computer's interface name, its
   addresses (the global IPv6 address, which a VPN hides and whose EUI-64 form holds the hardware address), its
@@ -1287,10 +1384,10 @@ has no capabilities to change them):
 | Pref | Rule |
 |---|---|
 | 40 | `lookup main to 10.64.0.1 ipproto tcp dport 1080` and `to 10.124.0.0/22 … dport 1080`: Mullvad VPN's SOCKS5 proxies inside its tunnel, which Mullvad Browser's extension uses to change the browser's country (from mullvad.net/help/socks5-proxy and Mullvad's proxy list, which also uses 10.124.2.x). Only reachable while Mullvad VPN is connected |
-| 50 | `lookup main to 169.254.0.1 ipproto udp dport 53`, and `… ipproto tcp dport 53` where pasta forwards DNS over TCP: pasta's DNS forwarder, for DNS alone |
+| 50 | `lookup main to 169.254.0.1 ipproto udp dport 53 fwmark 0x5ec`: pasta's DNS forwarder, for the lookups' filter's queries alone (without the filter: unmarked, and `… ipproto tcp dport 53` where pasta forwards DNS over TCP) |
 | 100 | `prohibit` to 0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10 (CGNAT, Tailscale), 169.254.0.0/16, 172.16.0.0/12, 192.0.0.0/24, 192.168.0.0/16, 198.18.0.0/15, 224.0.0.0/3 |
-| 100 | `prohibit` to fc00::/7, fe80::/10, ff00::/8 (tolerated if pasta has no IPv6) |
-| 100 | `prohibit` to **the computer's own networks** (`host_networks`, listed on the computer with `ip -j address show` and `ip -j route show table all type unicast` just before pasta starts): every address of the computer's on every interface (but loopback's) and the network it is on, a point-to-point link's far end, and the unicast routes of every routing table, merged, those inside the ranges above left out. Not the default routes, nor the routes through one interface that between them cover at least a sixteenth of IPv4 (or of IPv6's 2000::/3): a VPN that carries everything but the local network does it with broad routes in place of a default one (WireGuard's "exclude private IPs", OpenVPN's 0.0.0.0/1 and 128.0.0.0/1) |
+| 100 | `prohibit` to fc00::/7, fe80::/10, ff00::/8, and NAT64's forms of the IPv4 ranges above and of 127.0.0.0/8 in 64:ff9b::/96 and 64:ff9b:1::/96 (`sandbox.nat64`: on an IPv6-only network with NAT64, 64:ff9b::c0a8:101 is the router at 192.168.1.1 through the network's translator; the rest of the prefix is how such a network reaches the IPv4 internet, and stays open. A provider's own NAT64 prefix can't be known from here) (tolerated if pasta has no IPv6) |
+| 100 | `prohibit` to **the computer's own networks** (`host_networks`, listed on the computer with `ip -j address show` and `ip -j route show table all type unicast` just before pasta starts): every address of the computer's on every interface (but loopback's) and the network it is on, a point-to-point link's far end, and the unicast routes of every routing table, merged, those inside the ranges above left out; the IPv4 ones in NAT64's forms too. Not the default routes, nor the routes through one interface that between them cover at least a sixteenth of IPv4 (or of IPv6's 2000::/3): a VPN that carries everything but the local network does it with broad routes in place of a default one (WireGuard's "exclude private IPs", OpenVPN's 0.0.0.0/1 and 128.0.0.0/1) |
 | 100 | `prohibit` to **every unicast route pasta copied except the default one**, should a pasta version copy any |
 
 pasta connects from the computer's side, so the namespace's own routes say nothing of where it can reach: before
@@ -1325,12 +1422,24 @@ runtime folder, `owner.hold`): another copy's start would empty the session fold
 Then:
 
 - the `sandboxed` mark is written;
-- the start is watched for 3 seconds: if it exits with an error, the log's last lines (pasta's notices
-  left out) are shown, Xephyr is killed, and the mark is removed if this was the copy's first start (no
-  website ever reached it);
+- the start is watched for 3 seconds: if it exits with an error, the reason is said in the app's own words, matched
+  from what only the sandbox's set-up writes (`sandbox.START_REASONS`: bubblewrap's, pasta's, the fence's, the
+  Landlock and keyring wrappers', the filter's, the gate's "tor didn't start"), the line that said it only quoted as
+  the start log's (`sandbox.start_reason`: one line, cut short, control characters and those that reorder or hide
+  text shown as their codes, `visible`); anything else by its exit status. Xephyr is killed, and the mark is removed
+  if this was the copy's first start and the log says the sandbox stopped before the browser ran (`NEVER_RAN`). The
+  review of 2026-11-12 found the log within the sandbox's reach: `STAY`, which holds it as its stderr, was dumpable,
+  so anything inside could open `/proc/1/fd/2` and write a sentence of its choosing after "couldn't start:", or the
+  lines that shed the mark. `STAY` now makes itself undumpable before it starts anything (its `/proc` entries are
+  root's, which nothing inside is: tested with the real bubblewrap, `/proc/1/environ`, `/proc/1/fd` and writing to
+  `/proc/1/fd/2` refused), and the browser's own output goes nowhere (`QUIET`). Without python3 (no `STAY`)
+  bubblewrap's own init holds the log within the browser's reach, so the log is no proof then and the mark stays;
+- tor's status (`tor_status`: status.json, which tor's sandbox can write) is shown as tor's own words, quoted after
+  "Tor says:", made visible and cut short; a viewer's failure the same (its stderr is the log, which a file it opened
+  can steer);
 - a later failure is reported by the panel (`launch_problem`, which also reaps the process), by its exit
   status alone: once the browser has run, the log could hold anything a website that took it over wrote into
-  it (the sandbox can reach the log's descriptor), which the page would show as the app's own words. It stays on
+  it, which the page would show as the app's own words. It stays on
   the card until the user dismisses it (OK) or starts the browser again: said once, the panel's next poll drew the
   card without it two seconds later (found in the review of 2026-10-17).
 
@@ -1568,6 +1677,14 @@ Also said on the page, since the sandbox can't cover them (found in the review o
 - **With the graphics card given**, `/proc/driver` (NVIDIA's driver reads its files there) and so the card's
   serial number (`/proc/driver/nvidia/gpus/*/information`; NVIDIA's driver gives it to any program that may use
   the card anyway): said under the box (`gpuRisks`).
+- **The installation's own id** (the review of 2026-11-12): `statfs("/usr")`'s `f_fsid` is a fold of the root
+  filesystem's UUID, the same inside the sandbox as outside (a bind keeps the filesystem: tested), and the inode
+  numbers and dates of `/usr`'s files are this installation's own. None of them changes at a restart, so, unlike the
+  boot time, they link sessions across restarts too; only a copy of `/usr` could hide them. Said on the page, in the
+  browser panel and Try an app's.
+
+The lookups under pasta are filtered (section 7.13): what the computer's resolver would answer about the local
+network isn't passed on.
 
 ---
 
@@ -1585,7 +1702,11 @@ Also said on the page, since the sandbox can't cover them (found in the review o
    (links and other filesystems mounted inside are skipped). Each regular file is opened `O_WRONLY |
    O_NOFOLLOW`, re-checked with `fstat`, and every data region (`SEEK_DATA` / `SEEK_HOLE`) is overwritten
    with zeros in place, then `fsync`ed. Then everything on that device is deleted, deepest first, never
-   anything in another filesystem mounted inside.
+   anything in another filesystem mounted inside. A folder or file the user closed (no write or search permission)
+   is opened first, without following links, and changed by its own descriptor (`fchmod`; one it can't read is
+   opened `O_PATH` and changed through `/proc/self/fd`, its own inode, no name looked up again), only while it is
+   still a folder or regular file on that device (`ramdisk._chmod_entry`): `chmod` by name, with the folder's
+   descriptor, followed a link put there since it was checked (the review of 2026-11-12).
 3. The helper unmounts it (never lazily: a lazy unmount would leave files reachable through whatever holds
    them; `EBUSY` is refused) and puts the folder back: removed if the helper made it, its old permissions
    restored otherwise (from the state in /run, or after a reboot from the folder's own attribute).
@@ -1987,9 +2108,16 @@ drive they came from (its model, serial, size and WWN, `retire.identity`): anoth
     after Stop, tested), no capabilities, a new session, an environment built from scratch, `/usr` read-only, an
     `/etc` of its own holding only what programs read (`sandbox.app_etc`, below), the throwaway home at
     `/home/user`, the program read-only at `/app`, the display (on Wayland a socket the compositor marks as a
-    sandbox's where it has the protocol; on X11 the X server's, with a warning, or Xephyr when ticked), no session
+    sandbox's where it has the protocol; on X11 Xephyr, a display of its own, wherever it is installed, its focus
+    keeper sizing the program's windows to it, and the X server's own socket only when the user ticks that it may:
+    `sandbox.own_display`; a Flatpak app, which Flatpak gives the X server's socket, only with the tick), no session
     D-Bus, keyring or agents, and the kernel keyring and crash-dump protections every start gets
-    (`sandbox.KEYRING`). Unlike the browser's innermost sandbox, it gets no `/proc` masks (`sandbox.proc_masks`):
+    (`sandbox.KEYRING`). The system-call filter: strict, with `--disable-userns` where bubblewrap has it, or the
+    nesting profile when "Let it start sandboxes of its own" is ticked (pre-ticked where `seccomp.nesting_reason`
+    found an Electron, Chromium, CEF, Qt WebEngine, WebKitGTK or glycin program: live-tested on CachyOS with Obsidian
+    1.15.1's AppImage, which ran and checked for updates through the observed network; GNOME Calculator and Meld ran
+    under the strict one, on Xephyr on Mint and on Wayland on CachyOS, Meld's glycin saying its loaders ran without
+    their own sandbox). The unpacking sandbox gets the strict one too. Unlike the browser's innermost sandbox, it gets no `/proc` masks (`sandbox.proc_masks`):
     once a file of a `/proc` is covered, the kernel refuses a new `/proc` mount inside, and programs that start a
     bubblewrap sandbox of their own mount one: WebKitGTK's web processes (Yelp, Epiphany, Evolution, any GNOME app
     with a web view) and GNOME's thumbnailer (tested on Fedora 44 with GNOME 50 on 2026-10-17, in a sandbox like the
@@ -2116,7 +2244,8 @@ drive they came from (its model, serial, size and WWN, `retire.identity`): anoth
     namespace) and ended with the trial (`end_flatpak_copies`), which the result says; the page says all this
     before the start, and the Box's guide too.
   - **The network**: none, or its own through pasta (`--pcap` into a pipe), fenced off from the local network
-    (`sandbox.fence(proxies=False)`: Mullvad Browser's proxy exception isn't for a program on trial), refused
+    (`sandbox.fence(proxies=False)`: Mullvad Browser's proxy exception isn't for a program on trial) with its
+    lookups through the filter in front of pasta's forwarder (`sandbox.pasta_command`, section 7.13), refused
     when pasta or the fence isn't usable; never the computer's own network. `tools/pcap.py` reads the packets as
     they come and keeps only sums per host: connections, ports, bytes each way. Each connection is named on its
     own, by the name in its first message (TLS's SNI, an HTTP Host line), else the DNS answer that had given the

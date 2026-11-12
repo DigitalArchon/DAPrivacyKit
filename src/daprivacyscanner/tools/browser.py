@@ -211,6 +211,7 @@ def sandbox_status(host: Host) -> dict:
     return {"available": why is None, "why": why or "", "landlock": sandbox.landlock_usable(host),
             "apparmor": why is not None and restricted,
             "python": host.sys_path(sandbox.PYTHON).exists(),
+            "seccomp": seccomp.supported(),             # the system-call filter (tools/seccomp.py): x86-64 only
             "xephyr": {"available": bool(host.runner.which(sandbox.XEPHYR)), "install": _install_command(host, "Xephyr")},
             "pasta": {"available": pasta is None, "why": pasta or "",
                       "install": _install_command(host, "passt"),
@@ -1377,7 +1378,7 @@ _LOCK = threading.Lock()
 # STAY (no python3) bubblewrap's own init holds it, within the browser's reach: the log is then no proof (_start).
 NEVER_RAN = ("bwrap: ", "Landlock could not be applied", "A keyring of its own could not be made",
              "tor couldn't be started", "tor didn't start", "pasta: ", "system-call filter couldn't be made",
-             "The local network could not be fenced off")
+             "The local network could not be fenced off", "The lookups' filter could not be set up")
 
 
 def _file_text(log: Path) -> str:

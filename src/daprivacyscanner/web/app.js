@@ -3072,7 +3072,12 @@ function browserSandbox(data, opts) {
       "The browser sees only its own folder in the RAM disk: not your home folder, your other programs, your keyring, "
       + "or your SSH and GPG keys, and not your name or this computer's (inside, it is \"user\" on \"localhost\"), nor "
       + "this computer's settings beyond what it needs to run (its clock is on UTC, as Tor Browser shows sites anyway). "
-      + "It can't change its own program files, only its profile and Downloads. ",
+      + "It can't change its own program files, only its profile and Downloads. "
+      + (sb.seccomp === false ? "On this processor there is no filter on what it may ask the kernel. "
+        : "A filter refuses what it may ask the kernel that no browser needs: the kernel's keyring, mounting, tracing "
+          + "other programs, and the kernel's less used parts where flaws are found. It may still make namespaces of its "
+          + "own, which the browser's own sandbox needs: through them a website that got past both could reach a little "
+          + "more of the kernel. "),
       h("b", {}, "Tor Browser"), " has no network of its own: only Tor's, through a filter that lets it show its "
       + "circuits and ask for a new identity but never change how Tor connects. So even a website that got past the "
       + "browser's own protections couldn't reach your real address, this computer's services or your local network. ",
@@ -3082,7 +3087,12 @@ function browserSandbox(data, opts) {
             + "printers, other computers), this computer's or the router's hardware address, or other programs' hidden "
             + "sockets. Mullvad VPN's own proxies are let through, so its extension can change the browser's country while "
             + "the VPN is connected. Your router's public address can't be refused (this computer doesn't know it), and many "
-            + "routers show their settings page there too: keep that page behind a password of its own."
+            + "routers show their settings page there too: keep that page behind a password of its own. "
+            + (sb.python ? "Its lookups go through a filter that refuses the local network's names and addresses (the "
+              + "router's, this computer's, other devices'), which this computer's resolver would otherwise answer; a "
+              + "company network's own names under its public domain still resolve, though not to local addresses."
+              : "Its lookups go to this computer's resolver as they are, which can answer the local network's names "
+              + "(the router's, this computer's, other devices'): the filter that refuses them needs the computer's python3.")
           : " gets a network of its own: the internet, but not this computer's own services or other programs' hidden "
             + `sockets. It can still reach your local network: ${sb.pasta.lan_why}`)
         : " shares this computer's network: see the warning below.",
@@ -3093,7 +3103,10 @@ function browserSandbox(data, opts) {
         + "computer gives the disks its programs come from (on Fedora a disk encryption's id, on Debian often the "
         + "computer's name), and when the computer was started (every program can read its clock), which stays the same "
         + "until you restart, as does your login session's number: in two sessions before a restart, a website that got "
-        + "that far could tell they were on the same computer. Restart between sessions you want kept apart. Unless you allow it "
+        + "that far could tell they were on the same computer. Restart between sessions you want kept apart. Nor the id of "
+        + "the disk the browser's system programs come from (any program can ask for it; it comes from the disk's own id) "
+        + "and those files' numbers and dates, which are this installation's own and stay the same after a restart: a "
+        + "website that got that far could recognise this computer in every session. Unless you allow it "
         + "below, it has no graphics card: pages draw with the processor (WebGL and video work, more slowly and with more of the processor), which "
         + "keeps the graphics drivers, a large part of the kernel, out of its reach. A website can see one detail of that: "
         + "WebGL answers as drawing in software does, which differs in one value from what the graphics card would give "
@@ -4088,10 +4101,18 @@ function trialChoose(data, call) {
         + "the computer restarts, the processor and the disks' partitions. Hiding them would stop programs that start a "
         + "sandbox of their own, as GNOME's thumbnails and web pages in GNOME apps do. The list of what is mounted where "
         + "gives its folders' real paths too: that path is in your home folder (a Box's), or in your cache folder for a "
-        + "trial on the disk, and it names your account."),
+        + "trial on the disk, and it names your account. The id of the disk the system's programs come from, and those files' "
+        + "numbers and dates, are this installation's own and stay the same after a restart."),
       h("li", {}, h("b", {}, "Of your settings it sees only what programs read: "), "fonts, certificates, the desktop's "
         + "defaults and your time zone. Not your accounts, network or VPN settings, your package mirrors, or anything "
-        + "put in /etc/environment for every program to read.")),
+        + "put in /etc/environment for every program to read."),
+      h("li", {}, h("b", {}, "What it may ask the kernel is filtered: "), "not the kernel's keyring, mounting, tracing "
+        + "other programs, or the kernel's less used parts where flaws are found. A program that starts sandboxes of its "
+        + "own (Electron and Chromium apps, apps built on WebKitGTK) may need them: tick it below, at a cost said there. "
+        + "Without it, GNOME's image loaders (glycin) run without their own sandbox, inside this one. 32-bit programs "
+        + "can't make connections here."),
+      h("li", {}, h("b", {}, "With its own network, its lookups are filtered: "), "the local network's names and "
+        + "addresses (the router's, this computer's, other devices') aren't answered.")),
     h("h4", {}, "Where the trial lives"), places,
     h("h4", {}, "A file you downloaded"),
     h("p", { class: "small muted" }, "An AppImage, a program, a script, an archive (tar, zip) or a .deb package. An archive "
@@ -4160,8 +4181,9 @@ function trialReady(data, t, call) {
       + "program trying to break out would look first. Without it, drawing is done by the processor", !!st.gpu),
     tick("sound", "Sound", "this computer's sound server, outside the sandbox", !!st.sound),
     st.sound ? soundNote : null,
-    tick("nesting", "Let it start sandboxes of its own", (t.nesting ? `it looks like ${t.nesting}, which won't start, or `
-      + "shows nothing, without them. " : "Electron and Chromium apps, and apps built on WebKitGTK, need it. ")
+    tick("nesting", "Let it start sandboxes of its own", (t.nesting ? `it looks like ${t.nesting}, which may not start, `
+      + "show nothing, or run without its own sandbox, without them. "
+      : "Electron and Chromium apps, and apps built on WebKitGTK, need it. ")
       + "The cost: the kernel's namespaces and mounts are within its reach then, so a program built to break out "
       + "through a flaw in them has more to work with", !flat),
     flat ? h("p", { class: "small muted" }, "A Flatpak app puts itself in a group of Flatpak's own, which this app "

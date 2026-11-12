@@ -602,7 +602,8 @@ def boxes(check, scan, outcome):
                            "connections, on this computer's own network, so it could reach the internet and your local "
                            "network even with no network of its own."),
                 *([Input("nesting", "Let it start sandboxes of its own", "bool", nesting, bool(guess),
-                         help=(f"It looks like {guess}, which won't start, or shows nothing, without them. "
+                         help=(f"It looks like {guess}, which may not start, show nothing, or run without its own "
+                               "sandbox, without them. "
                                if guess else "Electron and Chromium apps, and apps built on WebKitGTK, need it. ")
                               + "The cost: the kernel's namespaces and mounts are within the app's reach then, so an "
                                 "app built to break out through a flaw in them has more to work with.")]

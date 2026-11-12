@@ -431,8 +431,11 @@ is left on your disk afterwards.
      programs. Untick only if you need a screen reader or an input method for Chinese, Japanese or Korean.
    - **Allow sound**: leave it off unless you need it. The sound server is outside the sandbox and gives
      away more than sound; the panel lists what.
-   - **Give it a display of its own (Xephyr)**, on X11 only: stops the browser and other windows from
-     seeing or typing into each other. It costs copy and paste between them.
+   - **Give it a display of its own (Xephyr)**, on X11 only, ticked wherever Xephyr is installed: the browser
+     then can't see or type into your other windows (on X11 any program on your display can read what other windows
+     show and every key you type, and type into them, even into a terminal). It costs copy and paste between them.
+     Untick it only knowing that. Without Xephyr the panel gives the command that installs it, and the browser starts
+     on your display only once you tick **Let the browser use this display anyway**.
    - For Tor Browser, **how it connects**: directly, or through a built-in bridge (obfs4, Snowflake, meek)
      or **Bridges I have…**. Use bridges where Tor is blocked. (Tor Browser's own Connect page is
      switched off in the sandbox; choose here instead.)
@@ -473,9 +476,11 @@ starts it without that entry.
 - Finished downloads are listed in the panel. The app says what each really is, whatever its name (a
   program disguised as a PDF is named as a program). **Save…** copies one out to a folder you choose.
   **View offline…** opens a document or picture in your usual viewer with no network, so the document
-  can't contact anyone. A viewer from Flatpak must be closed first (if it is open, it would be given the file
-  with its network), and a web browser from Flatpak isn't used: choose a document viewer as the default for that
-  kind of file instead.
+  can't contact anyone. On X11 it opens in a display of its own (one window, Xephyr) wherever Xephyr is installed,
+  so a file that took the viewer over couldn't read or type into your other windows; without Xephyr, or for a viewer
+  from Flatpak, it opens on your display only once you tick that it may. A viewer from Flatpak must be closed first
+  (if it is open, it would be given the file with its network), and a web browser from Flatpak isn't used: choose a
+  document viewer as the default for that kind of file instead.
 
 **Before you start, the panel may warn about:**
 
@@ -487,11 +492,18 @@ starts it without that entry.
   `passt` with the command shown. With it, the local network is fenced off, all but your router's public
   address, which your computer doesn't know: many routers show their settings page there too, so give that
   page a password of its own.
-- **X11 desktop**: the sandbox protects your files but not your screen. Wayland is safer.
+- **X11 desktop**: on your display the browser could read and type into your other windows; a display of its
+  own (Xephyr) keeps it from them, and is the default where Xephyr is installed. Wayland is safer still.
 
 **What the sandbox can't hide** from a website that got past the browser's own protections is listed in the
-panel: among it, when the computer was started, which stays the same until you restart. Restart between
-sessions you want kept apart.
+panel: among it, when the computer was started, which stays the same until you restart (restart between
+sessions you want kept apart), and the id of the disk the system's programs come from, which stays the same even
+after a restart.
+
+**What else the sandbox does**: it filters what the browser may ask the kernel (not its keyring, mounting, tracing
+other programs, or its less used parts, where flaws are found), and Mullvad Browser's lookups, which go through a
+filter that won't answer your local network's names and addresses (your router's, this computer's, other
+devices'). Messages from inside the sandbox, such as Tor's, are shown as quotes, never as the app's own words.
 
 **It is for one session, or a few over a day.** It doesn't update itself. If you start it more than 24
 hours after setting it up, it first checks for a newer version and won't start if one is out: save what
@@ -524,12 +536,16 @@ give it those. Don't run what you know to be hostile, and don't take a quiet tri
 - **An app that is installed**: started with a throwaway home, as on a first run. Your real profile isn't
   touched.
 
-Before it starts you choose its **network** (none, or its own with your local network fenced off and the
-hosts it contacts listed; the second needs the `passt` package) and what it gets (the graphics card, sound,
-on X11 a display of its own). The graphics card is off to begin with: with it the program draws as it would
-outside, smoothly and with 3D, at the cost of the card's drivers handling what the program sends them, which
-is where a program trying to break out would look first. Without it the processor does the drawing.
-Sound gives it this computer's sound server, which runs outside the sandbox:
+Before it starts you choose its **network** (none, or its own with your local network fenced off, its lookups
+filtered and the hosts it contacts listed; the second needs the `passt` package) and what it gets (the graphics card,
+sound, and on X11 a display of its own, ticked wherever Xephyr is installed: without it the program could read and
+type into your other windows, so it starts on your display only once you tick that it may). The graphics card is off
+to begin with: with it the program draws as it would outside, smoothly and with 3D, at the cost of the card's drivers
+handling what the program sends them, which is where a program trying to break out would look first. Without it the
+processor does the drawing. **Let it start sandboxes of its own** is ticked for a program that looks like it needs
+them (Electron and Chromium apps, apps built on WebKitGTK): it lets the program reach more of the kernel, and the
+window says so. Whatever you choose, what the program may ask the kernel is filtered, and 32-bit programs can't make
+connections in the sandbox. Sound gives it this computer's sound server, which runs outside the sandbox:
 with it the program could also record from the microphone, read your user and computer names, and have the
 sound server connect anywhere, even with no network of its own. The window lists this when you tick it. Then
 **Start the trial**, use the program, and close it or **End the trial**.
@@ -699,7 +715,9 @@ fix.
   are kept. Sites aren't kept by name either, but each as a code, so the next run can count the new ones:
   anyone who can read the Box's folder could check whether it contacted a site they have in mind (the app's
   own files in its home, a browser's history, can say more anyway). Reverting a Box in History removes its
-  menu entry and settings; its data in `~/Boxes` stays until you delete it.
+  menu entry and settings; its data in `~/Boxes` stays until you delete it. As in a trial, a Box on X11 gets a
+  display of its own wherever Xephyr is installed (its guide's **Let it use this display (X11)** opts out, the risk
+  said), and **Let it start sandboxes of its own** is for an app that needs them.
 
 ---
 

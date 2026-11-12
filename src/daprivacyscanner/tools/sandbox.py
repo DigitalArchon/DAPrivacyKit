@@ -43,7 +43,9 @@ Inside it the browser sees:
 Nothing else: no home folder, no session D-Bus (so no keyring, portals or notifications), no SSH
 or GPG agent, an environment built from scratch. It has its own user (always uid 1000, "user"), PID,
 IPC, UTS and cgroup namespaces, a new session (no typing into the terminal that started it, TIOCSTI),
-and no capabilities. Nested user namespaces stay allowed, so Firefox's own sandbox keeps working.
+and no capabilities. A system-call filter (tools/seccomp.py, given to bubblewrap with --seccomp: Filter) refuses
+what no browser needs; the browser profile lets it make namespaces and chroot, so Firefox's own sandbox keeps
+working (its content processes, tested, still have user namespaces of their own), never mount or setns.
 
 The network:
 - Tor Browser has none of its own. Two sandboxes, one inside the other: the outer one shares the
@@ -70,7 +72,10 @@ The network:
   reached). Mullvad VPN's own SOCKS5 proxies inside its tunnel are
   let through (FENCE_ALLOWED, TCP to port 1080 only): Mullvad Browser's extension uses them to change the
   browser's country while the VPN stays where it is. Its DNS goes to pasta's forwarder (DNS_FORWARD),
-  named in a resolv.conf of the sandbox's own. Without pasta it shares the computer's network, which
+  named in a resolv.conf of the sandbox's own; where the computer has python3, through a filter in pasta's
+  namespace first (tools/dnsfilter.py, dns_filter), which refuses the local network's names and addresses that the
+  computer's resolver answers (_gateway, _outbound, the computer's name, reverse lookups: tested). Without pasta it
+  shares the computer's network, which
   shows it this computer's and the router's hardware (MAC) addresses (netlink and the neighbour table,
   no /sys needed: tested), and every device on the network: the page says so, prominently.
 
@@ -81,10 +86,11 @@ inside the sandbox by the host's python3 just before the program runs. The X ser
 under an unused display number because libxcb tries the abstract socket of its display first and falls
 back to the path only when nobody listens there, not when Landlock refuses it.
 
-On X11 the sandbox keeps the browser from your files, not from the screen: any X11 program can read
-what other windows show and what is typed into them, and type into them (a terminal included), so
-a compromised browser could do that, and so could any other program to the browser. The page says
-so, with the Wayland check's guide.
+On X11 any program with the X server's socket can read what other windows show and what is typed into them
+(XRecord), and type into them (XTEST), a terminal included: a sandbox given it keeps nothing from the screen. So on
+X11 every sandbox gets a display of its own, Xephyr (nested), wherever Xephyr is installed, and this display only
+when the user has ticked that it may (own_display), the risk named, with the command that installs Xephyr. The page
+says what Xephyr costs (one window, no copy and paste), and that its window is still one of the session's.
 
 VERIFY: on Ubuntu 24.04 with apparmor_restrict_unprivileged_userns=1, bubblewrap without a profile
 of its own can't set up its namespaces: probe() finds that and the page says why; on Fedora, Arch,
@@ -416,6 +422,7 @@ def read_log(fd: int, limit: int = 4000) -> str:
 START_REASONS = (("bwrap: ", "its sandbox couldn't be set up"),
                  ("pasta: ", "its network of its own (pasta) couldn't be set up"),
                  ("The local network could not be fenced off", "the local network couldn't be fenced off"),
+                 ("The lookups' filter could not be set up", "the filter in front of its lookups couldn't be set up"),
                  ("Landlock could not be applied", "Landlock's limits couldn't be applied"),
                  ("A keyring of its own could not be made", "a keyring of its own couldn't be made"),
                  ("system-call filter couldn't be made", "its system-call filter couldn't be made"),
