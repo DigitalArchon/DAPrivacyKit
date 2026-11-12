@@ -118,3 +118,67 @@ def test_a_few_survivors_of_a_trim_that_arrived_dont_read_as_trim_not_working(ro
     assert any("smaller than its own internal unit" in p for p in r["explanation"])
     r, *_ = run(root, trims=False)
     assert r["headline"].startswith("TRIM isn't clearing deleted data here")
+
+
+# ------------------------------------------------------------------ malformed packages and files (property tests' finds)
+
+def test_an_ar_member_size_that_isnt_a_count_is_refused(tmp_path):
+    """A size field of "-60" kept the reader on the same header for ever, the list growing."""
+    from daprivacyscanner.tools import packages as P
+    head = lambda name, size: f"{name:<16}{0:<12}{0:<6}{0:<6}{100644:<8}{size:<10}`\n".encode()  # noqa: E731
+    deb = tmp_path / "x.deb"
+    for size in ("-60", "+5", "1e3", "999999"):
+        deb.write_bytes(b"!<arch>\n" + head("debian-binary", size) + b"2.0\n")
+        with pytest.raises(P.PackageError, match="member size"):
+            P.ar_members(deb)
+
+
+def test_rpm_values_of_the_wrong_kind_are_refused(tmp_path):
+    """An INT32 signature tag reached write_bytes(int), a STRING digest algorithm was looked up as a dict key:
+    TypeError, which Verify didn't catch."""
+    import struct
+    from daprivacyscanner.tools import packages as P
+    from test_verify_packages import header
+    work = tmp_path / "w"
+    work.mkdir()
+
+    def rpm(sig_tags, main_tags):
+        sighdr = header(sig_tags)
+        sighdr += b"\0" * (-len(sighdr) % 8)
+        p = tmp_path / "app-1.0-1.x86_64.rpm"
+        p.write_bytes(b"\xed\xab\xee\xdb" + b"\0" * 92 + sighdr + header(main_tags) + b"payload")
+        return p
+    with pytest.raises(P.PackageError, match="wrong kind"):
+        P.rpm(rpm([(1002, 4, struct.pack(">I", 7), 1)], [(1000, 6, b"app\0", 1)]), work)
+    with pytest.raises(P.PackageError, match="wrong kind"):
+        P.rpm(rpm([(268, 7, b"sig", 3)], [(5092, 8, b"ab\0", 1), (5093, 6, b"sha256\0", 1)]), work)
+
+
+def test_a_zip_whose_mimetype_wont_unpack_is_an_archive(tmp_path):
+    """zlib.error escaped from a mimetype entry deflated with broken data."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("mimetype", "application/vnd.oasis.opendocument.text" * 20)
+    data = bytearray(buf.getvalue())
+    start = 30 + len("mimetype")                         # the local header, then the deflated data
+    data[start:start + 8] = b"\xff" * 8
+    ins = inspected(tmp_path, bytes(data), "letter.odt")
+    assert ins.kind == "archive"
+
+
+def test_a_program_is_named_as_a_program_whatever_else_it_carries(tmp_path):
+    elf = bytearray(b"\x7fELF" + b"\0" * 0x9000)
+    elf[257:262] = b"ustar"
+    assert inspected(tmp_path, bytes(elf), "notes.tar").kind == "program"
+    elf = bytearray(b"\x7fELF" + b"\0" * 0x9000)
+    elf[0x8001:0x8006] = b"CD001"
+    ins = inspected(tmp_path, bytes(elf), "photos.iso")
+    assert ins.kind == "program" and ins.what == "a Linux program"
+
+
+def test_an_ipv6_connection_behind_a_hop_by_hop_header_is_counted():
+    from test_pcap_review import ME6, eth6, feed, ip6
+    from test_trial import tcp
+    hop = bytes([6, 0]) + b"\0" * 6                      # hop-by-hop options, then TCP
+    hosts = feed([eth6(ip6(ME6, "2001:db8::7", 0, hop + tcp(5000, 443, 0x02)))])
+    assert hosts["2001:db8::7"]["ports"] == ["443"]

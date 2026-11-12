@@ -21,6 +21,7 @@ from __future__ import annotations
 import os
 import re
 import zipfile
+import zlib
 from dataclasses import dataclass, field
 
 SCAN_LIMIT = 16 * 1024 * 1024          # bytes read looking for macros or a PDF's actions
@@ -144,7 +145,8 @@ def _ooxml_parts(z: zipfile.ZipFile, names: list[str]) -> bytes:
         try:
             with z.open(n) as part:
                 out.append(part.read(OOXML_PART).lower())
-        except (zipfile.BadZipFile, OSError, KeyError, ValueError, RuntimeError, NotImplementedError, EOFError):
+        except (zipfile.BadZipFile, OSError, KeyError, ValueError, RuntimeError, NotImplementedError, EOFError,
+                zlib.error):
             continue
     return b"\n".join(out)
 
@@ -169,8 +171,8 @@ def _zip(fd: int, name: str) -> Inspection:
                     with z.open("mimetype") as m:             # its first bytes only: a huge entry isn't unpacked
                         mimetype = m.read(100).decode("ascii", "replace").strip()
                 office = _ooxml_parts(z, names) if any(n.lower() == "[content_types].xml" for n in names) else b""
-    except (zipfile.BadZipFile, OSError, KeyError, ValueError, RuntimeError, NotImplementedError, EOFError):
-        return Inspection("archive", "a ZIP archive")
+    except (zipfile.BadZipFile, OSError, KeyError, ValueError, RuntimeError, NotImplementedError, EOFError, zlib.error):
+        return Inspection("archive", "a ZIP archive")            # a broken deflate stream raises zlib.error
     lower = [n.lower() for n in names]
     if "androidmanifest.xml" in lower or "classes.dex" in lower:
         return Inspection("program", "an Android app")
@@ -213,6 +215,11 @@ def _content(fd: int, size: int, name: str) -> Inspection:
         return Inspection("program", "a desktop launcher")
     if head.startswith(b"MZ") and size >= 64:
         return Inspection("program", "a Windows program")
+    # a program is named as one first, whatever else it also carries: an ELF with "ustar" at byte 257, or "CD001"
+    # at 32 KiB, was called a tar archive or a disk image, and its warnings weren't a program's
+    for magic, kind, what in _MAGIC:
+        if kind == "program" and head.startswith(magic):
+            return Inspection(kind, what)
     if _read(fd, 5, 0x8001) in (b"CD001", b"BEA01") or (size >= 512 and _read(fd, 4, size - 512) == b"koly"):
         return Inspection("disk image", "a disk image")
     if head[257:262] == b"ustar":

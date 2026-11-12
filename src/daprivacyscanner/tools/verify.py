@@ -862,7 +862,8 @@ def verify(host: Host, path: Path, key_files: list[Path] = (), expected: str = "
         package_notes: list[str] = []
         try:
             inner = P.embedded(path, ks.dir)
-        except (P.PackageError, OSError, struct.error) as e:
+        except (P.PackageError, OSError, struct.error, ValueError, TypeError, IndexError) as e:   # a package's to set
+            e = e if isinstance(e, (P.PackageError, OSError)) else P.PackageError("it is damaged")
             inner = []
             package_notes.append(f"The package's own signature couldn't be read ({e}).")
         for e in inner:

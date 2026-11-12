@@ -72,12 +72,17 @@ def kind(path: Path) -> str | None:
 
 # ------------------------------------------------------------------ .deb
 
+MAX_MEMBERS = 1000                        # a .deb has three or four
+
+
 def ar_members(path: Path) -> list[tuple[str, int, int]]:
-    """(name, offset of its data, size) of each member."""
+    """(name, offset of its data, size) of each member. A size that isn't a plain count of bytes ("-60" kept the
+    reader on the same header for ever), or one past the end of the file, is a damaged package."""
     out = []
     with open(path, "rb") as f:
         if f.read(8) != AR_MAGIC:
             raise PackageError("not an ar archive")
+        end = os.fstat(f.fileno()).st_size
         pos = 8
         while True:
             f.seek(pos)
@@ -87,10 +92,12 @@ def ar_members(path: Path) -> list[tuple[str, int, int]]:
             if len(h) < 60 or h[58:60] != b"`\n":
                 raise PackageError("a damaged member header")
             name = h[:16].decode("ascii", "replace").strip().rstrip("/")
-            try:
-                size = int(h[48:58].decode().strip())
-            except ValueError:
-                raise PackageError("a damaged member size") from None
+            field_ = h[48:58].strip()
+            if not field_.isdigit():
+                raise PackageError("a damaged member size")
+            size = int(field_)
+            if pos + 60 + size > end or len(out) >= MAX_MEMBERS:
+                raise PackageError("a damaged member size")
             out.append((name, pos + 60, size))
             pos += 60 + size + (size & 1)
     return out
@@ -210,6 +217,16 @@ def _value(f, entry: tuple[int, int, int], limit: int = MAX_VALUE) -> bytes | in
     raise PackageError(f"an RPM value of type {typ}")
 
 
+def _typed(f, entry: tuple[int, int, int], *kinds: type):
+    """_value(), refused unless it is of a kind the tag has: a signature as bytes (or text, for rpm 6's), the digest's
+    algorithm as a number, the digest as text. The type is the package's to set: an INT32 signature tag reached
+    write_bytes(int), a STRING algorithm tag was looked up as a dict key (TypeError, uncaught)."""
+    v = _value(f, entry)
+    if not isinstance(v, kinds):
+        raise PackageError("a value in its header is of the wrong kind")
+    return v
+
+
 def rpm(path: Path, work: Path) -> list[Embedded]:
     with open(path, "rb") as f:
         if f.read(4) != RPM_LEAD:
@@ -221,7 +238,7 @@ def rpm(path: Path, work: Path) -> list[Embedded]:
         whole = next((t for t in (1002, 1006) if t in sig_tags), None)
         if whole is not None:
             sig = work / "rpm-signature"
-            sig.write_bytes(_value(f, sig_tags[whole]))
+            sig.write_bytes(_typed(f, sig_tags[whole], bytes))
             size = os.fstat(f.fileno()).st_size
             out.append(Embedded("its signature header", sig, work / "rpm-signed.pipe", ranges=[(hstart, size - hstart)],
                                 source=path))
@@ -229,15 +246,14 @@ def rpm(path: Path, work: Path) -> list[Embedded]:
         head = next((t for t in (268, 267, 278) if t in sig_tags), None)
         if head is None:
             return []
-        raw = _value(f, sig_tags[head])
+        raw = _typed(f, sig_tags[head], bytes, list)
         sig = work / "rpm-signature"
-        sig.write_bytes(raw.encode() if isinstance(raw, str) else
-                        "\n".join(raw).encode() if isinstance(raw, list) else raw)
+        sig.write_bytes("\n".join(raw).encode() if isinstance(raw, list) else raw)
         problem, uncovered = "", ""
         if 5092 in main:
-            algo = DIGEST_ALGOS.get(_value(f, main[5093]) if 5093 in main else 1)
-            want = _value(f, main[5092])
-            want = (want[0] if isinstance(want, list) else "").lower()
+            algo = DIGEST_ALGOS.get(_typed(f, main[5093], int) if 5093 in main else 1)
+            want = _typed(f, main[5092], list)
+            want = (want[0] if want else "").lower()
             if algo is None or not want:
                 uncovered = "its signed header names its contents' digest in a form the app can't read"
             else:
