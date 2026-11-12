@@ -513,7 +513,7 @@ def rootful_podman(host: Host) -> bool | None:
         return None
     for pid in pids:
         try:
-            status = (proc / pid / "status").read_text()
+            status = (proc / pid / "status").read_text(encoding="utf-8", errors="replace")    # its name: any bytes
         except OSError:
             continue
         if re.search(r"^Name:\s*conmon\s*$", status, re.M) and re.search(r"^Uid:\s*0\s", status, re.M):

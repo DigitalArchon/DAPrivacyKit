@@ -123,3 +123,18 @@ def test_rootful_podman_without_docker_is_not_passed_over(cat, tmp_path):
     assert o.status is Status.UNKNOWN and "as root" in o.summary
     (host.root / "proc/4242/status").write_text("Name:\tconmon\nUid:\t1000\t1000\t1000\t1000\n")
     assert detect(cat, "net.docker_bypass", make_scan(host)).status is Status.PASS
+
+
+def test_a_process_whose_name_isnt_utf8_doesnt_hide_rootful_podman(cat, tmp_path):
+    """Any account can name its process anything: one name that isn't UTF-8 in /proc/PID/status raised
+    UnicodeDecodeError, and the check couldn't run at all."""
+    from daprivacyscanner.checks.network import rootful_podman
+    host = make_host(tmp_path, installed=("podman",), files={"/proc/4343/status": "Name:\tbash\nUid:\t1000\n"})
+    (host.root / "proc/4141").mkdir()
+    (host.root / "proc/4141/status").write_bytes(b"Name:\tbad\xff\xfe\nUid:\t1001\t1001\t1001\t1001\n")
+    assert rootful_podman(host) is False
+    assert detect(cat, "net.docker_bypass", make_scan(host)).status is Status.PASS
+    (host.root / "proc/4242").mkdir()
+    (host.root / "proc/4242/status").write_text("Name:\tconmon\nUid:\t0\t0\t0\t0\n")
+    o = detect(cat, "net.docker_bypass", make_scan(host))
+    assert o.status is Status.UNKNOWN and "as root" in o.summary
