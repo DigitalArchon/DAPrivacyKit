@@ -28,6 +28,7 @@ from . import keys as K
 from . import packages as P
 
 MAX_COMPANION = 2 * 1024 * 1024         # checksum lists and signatures are small; anything bigger isn't one
+MAX_KEYRING = 64 * 1024 * 1024          # a keyring read for its revocations (gpgv itself reads any size)
 MAX_DIR_ENTRIES = 2000
 CHUNK = 1024 * 1024
 SIG_SUFFIXES = (".asc", ".sig", ".gpg", ".sign", ".minisig")
@@ -46,7 +47,7 @@ _BARE = re.compile(r"^([0-9A-Fa-f]{32,128})\s*$")
 CLEARSIGNED = "-----BEGIN PGP SIGNED MESSAGE-----"
 SIGNATURE_BEGIN, SIGNATURE_END = "-----BEGIN PGP SIGNATURE-----", "-----END PGP SIGNATURE-----"
 
-LEVELS = ("verified", "signed", "intact", "bad", "unchecked")
+LEVELS = ("verified", "other_project", "expired", "signed", "intact", "bad", "unchecked")
 
 
 # ------------------------------------------------------------------ checksum lists
@@ -208,36 +209,64 @@ class Signature:
     path: Path
     over: Path                           # what it signs (the same file, for a clearsigned list)
     kind: str                            # "openpgp", "ssh" or "minisign"
-    status: str                          # good | bad | no_key | revoked | error | no_tool | unsupported
+    status: str                          # good | expired | bad | no_key | revoked | error | no_tool | unsupported
     fingerprint: str = ""                # the signer's primary key (OpenPGP), "SHA256:..." (SSH) or key id (minisign)
     issuer: str = ""                     # who the signature says made it, when the key isn't available
     project: K.Project | None = None
     key_name: str = ""
-    source: str = ""                     # where the key came from: "list", "keyring", "keyfile"
-    expired: bool = False                # good, but the key has expired since
+    source: str = ""                     # where the key came from: "list", "keyring", "keyfile:NAME", "signature"
+    expired: str = ""                    # status expired: "key" (it has expired) or "signature" (the signature has)
     signed_at: int | None = None
     detail: str = ""
     inside: str = ""                     # a signature inside the package: where ("_gpgorigin")
     install: str = ""                    # no_tool: the command that installs the program it needs, on this system
+    signer: str = ""                     # OpenPGP: the key that signed, the primary or one of its subkeys
+    hash_algo: int | None = None         # OpenPGP: the signature's hash algorithm (RFC 9580, 9.5)
+    newer_subkey: bool = False           # a project's, by a subkey the app's copy of its key doesn't have
 
     @property
     def good(self) -> bool:
         return self.status == "good"
 
+    @property
+    def badge(self) -> tuple[str, str]:
+        """(words, kind) for the page's badge: green only for a good signature by a key the app lists."""
+        if self.status == "good" and not self.project:
+            return ("good, but by the key inside it" if self.kind == "ssh" else "good, but by an unlisted key"), "unlisted"
+        if self.status == "expired":
+            return ("expired key" if self.expired == "key" else "expired signature"), "expired"
+        return BADGE_WORDS.get(self.status, self.status.replace("_", " ")), self.status
+
+    @property
+    def words(self) -> str:
+        if self.status == "good" and not self.project:
+            return ("a good signature by the key inside it, which anyone can make" if self.kind == "ssh" else
+                    "a good signature, by a key the app doesn't list")
+        if self.status == "expired":
+            return "made with a key that has expired" if self.expired == "key" else "a signature that has expired"
+        return STATUS_WORDS.get(self.status, self.status)
+
     def to_dict(self, home: Path | None = None) -> dict:
+        badge, badge_kind = self.badge
         return {"path": _show(self.path, home), "over": _show(self.over, home), "kind": self.kind,
                 "status": self.status, "fingerprint": self.fingerprint,
                 "fingerprint_grouped": K.group(self.fingerprint) if re.fullmatch(r"[0-9A-F]{40}", self.fingerprint) else self.fingerprint,
                 "issuer": self.issuer, "project": self.project.name if self.project else None,
                 "project_signs": self.project.signs if self.project else None, "key_name": self.key_name,
                 "source": self.source, "expired": self.expired, "signed_at": self.signed_at, "detail": self.detail,
-                "inside": self.inside, "install": self.install, "status_words": STATUS_WORDS.get(self.status, self.status)}
+                "inside": self.inside, "install": self.install, "status_words": self.words,
+                "badge": badge, "badge_kind": badge_kind}
 
 
-# a signature's status in words, for the terminal's report (the page has its own badges)
+# a signature's status in words, for the terminal's report, and on the page's badges
 STATUS_WORDS = {"good": "good signature", "bad": "bad signature", "no_key": "the key that made it isn't available",
                 "revoked": "made with a revoked key", "error": "couldn't be checked",
                 "no_tool": "can't be checked: a program it needs isn't installed", "unsupported": "a kind this can't check"}
+BADGE_WORDS = {"good": "good signature", "bad": "bad signature", "no_key": "no key", "revoked": "revoked key",
+               "error": "couldn't be checked", "no_tool": "no program to check it", "unsupported": "unsupported"}
+# OpenPGP hash algorithms too weak to rely on (RFC 9580, 9.5): someone able to make two files with the same hash
+# could have one signed and hand out the other
+WEAK_SIG_HASHES = {1: "MD5", 2: "SHA-1", 3: "RIPEMD-160"}
 # the packages that hold the programs that check signatures, by distribution family (checks.guides.install)
 TOOL_PACKAGES = {"gpgv": {"debian": "gpgv", "fedora": "gnupg2", "arch": "gnupg", "suse": "gpg2"},
                  "ssh-keygen": {"debian": "openssh-client", "fedora": "openssh-clients", "arch": "openssh",
@@ -271,7 +300,10 @@ def sig_kind(data: bytes) -> str | None:
 
 
 def parse_gpg_status(text: str) -> list[dict]:
-    """gpgv's --status-fd lines, one dict per signature (NEWSIG starts each)."""
+    """gpgv's --status-fd lines, one dict per signature (NEWSIG starts each). VALIDSIG gives the key that signed
+    first (`signer`, a subkey or the primary), its primary key last (`fpr`), and the hash algorithm. EXPSIG (the
+    signature itself has expired) and EXPKEYSIG (the key has) are both `expired`, never good: the date in a
+    signature is the signer's own claim, so whoever holds an expired key can sign today and date it back."""
     sigs: list[dict] = []
     cur: dict | None = None
     for line in text.splitlines():
@@ -288,12 +320,16 @@ def parse_gpg_status(text: str) -> list[dict]:
             if word == "NEWSIG":
                 continue
         if word in ("GOODSIG", "EXPSIG", "EXPKEYSIG", "REVKEYSIG", "BADSIG"):
-            cur["status"] = {"GOODSIG": "good", "EXPSIG": "good", "EXPKEYSIG": "expired",
+            cur["status"] = {"GOODSIG": "good", "EXPSIG": "expired", "EXPKEYSIG": "expired",
                              "REVKEYSIG": "revoked", "BADSIG": "bad"}[word]
+            if word in ("EXPSIG", "EXPKEYSIG"):
+                cur["expired"] = "signature" if word == "EXPSIG" else "key"
             cur["keyid"] = args[0] if args else ""
         elif word == "VALIDSIG" and args:
+            cur["signer"] = args[0]
             cur["fpr"] = args[-1] if len(args) >= 10 else args[0]
             cur["time"] = int(args[2]) if len(args) > 2 and args[2].isdigit() else None
+            cur["hash"] = int(args[7]) if len(args) > 7 and args[7].isdigit() else None
         elif word == "ERRSIG" and args:
             cur["status"] = cur.get("status") or ("no_key" if len(args) > 5 and args[5] == "9" else "error")
             cur["issuer"] = args[6] if len(args) > 6 and re.fullmatch(r"[0-9A-Fa-f]{40,64}", args[6]) else args[0]
@@ -326,6 +362,7 @@ class KeySet:
             gh = Path(host.environ.get("GNUPGHOME") or host.home / ".gnupg")
             self.user_keyrings = [gh / n for n in ("pubring.kbx", "pubring.gpg") if (gh / n).is_file()]
         self._dir: tempfile.TemporaryDirectory | None = None
+        self.revoked: set[str] = set()           # every key and subkey a copy anywhere says is revoked
 
     def __enter__(self) -> "KeySet":
         base = self.host.environ.get("XDG_RUNTIME_DIR")
@@ -333,10 +370,25 @@ class KeySet:
                                                 dir=base if base and os.path.isdir(base) else None)
         d = Path(self._dir.name)
         (d / "home").mkdir(mode=0o700)
-        (d / "listed.gpg").write_bytes(K.keyring(self.projects))
+        listed = K.keyring(self.projects)
+        (d / "listed.gpg").write_bytes(listed)
+        sources = [listed]
         for i, (p, infos) in enumerate(self.key_files):
             if infos:
-                (d / f"chosen-{i}.gpg").write_bytes(K.dearmor(p.read_bytes()))
+                binary = K.dearmor(p.read_bytes())
+                (d / f"chosen-{i}.gpg").write_bytes(binary)
+                sources.append(binary)
+        for kr in self.user_keyrings:
+            try:
+                if kr.stat().st_size <= MAX_KEYRING:
+                    sources.append(kr.read_bytes())
+            except OSError:
+                pass
+        for data in sources:
+            try:
+                self.revoked |= K.keyring_revocations(data)
+            except (K.PacketError, IndexError):
+                pass
         return self
 
     def __exit__(self, *exc) -> None:
@@ -349,27 +401,47 @@ class KeySet:
         assert self._dir is not None, "use KeySet as a context manager"
         return Path(self._dir.name)
 
+    def chosen_rings(self) -> list[Path]:
+        return [self.dir / f"chosen-{i}.gpg" for i, (_, infos) in enumerate(self.key_files) if infos]
+
+    def runs(self) -> list[tuple[str, list[Path]]]:
+        """The keyrings each signature is checked against, apart: the app's listed keys alone, then the user's own
+        (the key files they chose, their GnuPG keyring) alone. gpgv uses the first copy of a key it finds, so
+        together the first copy hid what another held: the user's stale copy of a listed key, a revocation the
+        app's copy carries; the app's copy, a revocation made since that only theirs carries; and a project's
+        stolen signing subkey re-wrapped as a primary key of the thief's, in a key file or the keyring, was used
+        ahead of the app's copy, which says it is revoked. The worst of the two counts (combined())."""
+        user = [*self.chosen_rings(), *self.user_keyrings]
+        return [("list", [self.dir / "listed.gpg"])] + ([("user", user)] if user else [])
+
     def keyrings(self) -> list[Path]:
-        """In the order gpgv looks in them, which uses the first copy of a key it finds: the user's own (a key file
-        they chose, their keyring) before the app's. A listed key revoked since the app was made has its revocation
-        there, and with the app's copy first it was passed over ("verified"). The verdict rests on the fingerprint
-        either way, so no other copy can stand in for a listed key."""
-        chosen = [self.dir / f"chosen-{i}.gpg" for i, (_, infos) in enumerate(self.key_files) if infos]
-        return [*chosen, *self.user_keyrings, self.dir / "listed.gpg"]
+        """Every keyring, the user's own first (as one gpgv call would read them)."""
+        return [*self.chosen_rings(), *self.user_keyrings, self.dir / "listed.gpg"]
 
     def minisign_keys(self) -> list[Path]:
         return [p for p, infos in self.key_files if not infos]
 
-    def classify(self, fpr: str) -> tuple[K.Project | None, str, str]:
-        """(project, key name, where the key came from) for a signer's fingerprint."""
-        hit = K.owner(self.projects, fpr)
+    def is_revoked(self, *fprs: str) -> bool:
+        """Whether any copy says this key (a fingerprint, or the key id a fingerprint ends in) is revoked."""
+        for f in (x.upper() for x in fprs if x):
+            if f in self.revoked or (len(f) == 16 and any(r.endswith(f) for r in self.revoked)):
+                return True
+        return False
+
+    def classify(self, fpr: str, signer: str = "", run: str = "list") -> tuple[K.Project | None, str, str, bool]:
+        """(project, key name, where the key came from, by a subkey the app's copy lacks) for a good signature:
+        `fpr` its primary key (VALIDSIG's last field), `signer` the key that signed. A project's only when the
+        primary is one it pins (keys.pinned): never by a subkey's fingerprint."""
+        where = "list" if run == "list" else next(
+            (f"keyfile:{p.name}" for p, infos in self.key_files for k in infos if k.fingerprint == fpr), "keyring")
+        hit = K.pinned(self.projects, fpr, signer or fpr)
         if hit:
-            return hit[0], hit[1], "list"
+            return hit[0], hit[1], where, not hit[2]
         for p, infos in self.key_files:
             for k in infos:
-                if fpr in k.all:
-                    return None, (k.uids[0] if k.uids else ""), f"keyfile:{p.name}"
-        return None, "", "keyring"
+                if k.fingerprint == fpr:
+                    return None, (k.uids[0] if k.uids else ""), where, False
+        return None, "", where, False
 
 
 def check_openpgp(host: Host, keyset: KeySet, sig: Path, data: Path | None, signed: str | None = None) -> Signature:
@@ -378,38 +450,44 @@ def check_openpgp(host: Host, keyset: KeySet, sig: Path, data: Path | None, sign
     counts only when the two agree."""
     over = data or sig
     if host.runner.which("gpgv"):
-        argv = ["gpgv", "--homedir", str(keyset.dir / "home"), "--status-fd", "1"]
-        for kr in keyring_args(keyset):
-            argv += ["--keyring", str(kr)]
-        out = None
-        if data is None and signed is not None:
-            fd, name = tempfile.mkstemp(dir=keyset.dir, suffix=".txt")
-            os.close(fd)
-            out = Path(name)
-            argv += ["--output", str(out)]
-        argv += [str(sig)] + ([str(data)] if data else [])
-        try:
-            r = host.run(*argv, timeout=600)
-            checked = out.read_bytes().decode("utf-8", "replace") if out is not None else None
-        finally:
-            if out is not None:
-                out.unlink(missing_ok=True)
-        found = parse_gpg_status(r.stdout)
-        if not found:
-            return Signature(sig, over, "openpgp", "error", detail=(r.stderr or r.stdout).strip()[:300]
+        runs, failed = [], None
+        for run, rings in keyset.runs():
+            argv = ["gpgv", "--homedir", str(keyset.dir / "home"), "--status-fd", "1"]
+            for kr in rings:
+                argv += ["--keyring", str(kr)]
+            out = None
+            if data is None and signed is not None:
+                fd, name = tempfile.mkstemp(dir=keyset.dir, suffix=".txt")
+                os.close(fd)
+                out = Path(name)
+                argv += ["--output", str(out)]
+            argv += [str(sig)] + ([str(data)] if data else [])
+            try:
+                r = host.run(*argv, timeout=600)
+                checked = out.read_bytes().decode("utf-8", "replace") if out is not None else None
+            finally:
+                if out is not None:
+                    out.unlink(missing_ok=True)
+            found = parse_gpg_status(r.stdout)
+            if not found:
+                failed = failed or r
+                continue
+            if out is not None and not _same_text(checked or "", signed):
+                return Signature(sig, over, "openpgp", "bad", detail="what its signature covers isn't what the app read "
+                                 "as signed in it")
+            runs.append([_from_status(keyset, sig, over, s, run) for s in found])
+        if not runs:
+            return Signature(sig, over, "openpgp", "error", detail=(failed.stderr or failed.stdout).strip()[:300]
                              or "gpgv found no signature in it")
-        if out is not None and not _same_text(checked or "", signed):
-            return Signature(sig, over, "openpgp", "bad", detail="what its signature covers isn't what the app read "
-                             "as signed in it")
         # every signature in the file must be good; report the first that isn't, else the first by a listed key
-        results = [_from_status(keyset, sig, over, s) for s in found]
+        results = combined(runs)
         bad = next((s for s in results if s.status in ("bad", "revoked")), None)
         if bad:
             return bad
         good = [s for s in results if s.good]
         if good:
             return next((s for s in good if s.project), good[0])
-        return results[0]
+        return next((s for s in results if s.status == "expired"), results[0])
     if host.runner.which("sqv") and data is not None:
         return _check_sqv(host, keyset, sig, data)
     issuers = _issuers(sig)
@@ -443,17 +521,40 @@ def _issuers(sig: Path) -> list[str]:
         return []
 
 
-def _from_status(keyset: KeySet, sig: Path, over: Path, s: dict) -> Signature:
+RANK = {"revoked": 0, "good": 1, "expired": 2, "bad": 3, "no_key": 4, "error": 5}
+
+
+def combined(runs: list[list[Signature]]) -> list[Signature]:
+    """Each signature as the worst the separate checks (KeySet.runs) found it, a revocation known anywhere first;
+    otherwise good by any copy of the key beats expired (an expiry can be extended, and the newer copy says so),
+    the app's listed copy first. A bad signature counts unless another copy of a key found it good: that is a
+    different key with the same key id, and says nothing of the file."""
+    out = []
+    for i in range(max(len(r) for r in runs)):
+        found = [r[i] for r in runs if i < len(r)]
+        out.append(min(found, key=lambda s: RANK.get(s.status, 9)))     # min keeps the first of a rank: the list's
+    return out
+
+
+def _from_status(keyset: KeySet, sig: Path, over: Path, s: dict, run: str = "list") -> Signature:
     status = s.get("status") or "error"
-    if status in ("good", "expired") and s.get("fpr"):
+    if status in ("good", "expired", "revoked") and s.get("fpr"):
         fpr = s["fpr"].upper()
-        project, name, source = keyset.classify(fpr)
-        return Signature(sig, over, "openpgp", "good", fpr, project=project, key_name=name, source=source,
-                         expired=status == "expired", signed_at=s.get("time"))
+        signer = (s.get("signer") or fpr).upper()
+        project, name, source, newer = keyset.classify(fpr, signer, run)
+        if keyset.is_revoked(fpr, signer):
+            status = "revoked"              # gpgv says only "expired" of a key both expired and revoked
+        if status == "revoked" and project is None:          # whose key it was, to say so
+            hit = K.owner(keyset.projects, signer) or K.owner(keyset.projects, fpr)
+            project, name = (hit[0], hit[1]) if hit else (None, name)
+        return Signature(sig, over, "openpgp", status, fpr, project=project, key_name=name, source=source,
+                         expired=s.get("expired", "") if status == "expired" else "", signed_at=s.get("time"),
+                         signer=signer, hash_algo=s.get("hash"), newer_subkey=newer)
     if status == "revoked":
-        fpr = (s.get("fpr") or s.get("keyid") or "").upper()
-        project, name, source = keyset.classify(fpr) if fpr else (None, "", "")
-        return Signature(sig, over, "openpgp", "revoked", fpr, project=project, key_name=name, source=source)
+        fpr = (s.get("keyid") or "").upper()
+        hit = K.owner(keyset.projects, fpr) if fpr else None
+        return Signature(sig, over, "openpgp", "revoked", fpr, project=hit[0] if hit else None,
+                         key_name=hit[1] if hit else "", source=run)
     if status == "bad":
         issuer = (s.get("keyid") or "").upper()
         hit = K.owner(keyset.projects, issuer) if issuer else None
@@ -468,33 +569,47 @@ def _check_sqv(host: Host, keyset: KeySet, sig: Path, data: Path) -> Signature:
     """sqv (Sequoia's verifier) reads OpenPGP keyrings, not keybox files: the listed keys and chosen
     key files only. It prints the fingerprint of each key that made a good signature; that may be a
     signing subkey, which is mapped to its primary key."""
-    rings = [k for k in keyset.keyrings() if k.suffix == ".gpg" and k.parent == keyset.dir]
-    argv = ["sqv"]
-    for kr in rings:
-        argv += ["--keyring", str(kr)]
-    r = host.run(*argv, str(sig), str(data), timeout=600)
-    fprs = [ln.strip().upper() for ln in r.stdout.splitlines() if re.fullmatch(r"[0-9A-Fa-f]{40,64}", ln.strip())]
-    if r.ok and fprs:
-        fpr = fprs[0]
-        try:                                   # when it was made: the packet naming the key sqv checked
-            signed_at = K.signature_created(sig.read_bytes()[:MAX_COMPANION], issuer=fpr)
-        except (OSError, K.PacketError):
-            signed_at = None
-        project, name, source = keyset.classify(fpr)
-        if project is not None:
-            fpr = next((f for f, _ in project.keys if f == fpr), project.keys[0][0])
-        else:
-            for _, infos in keyset.key_files:
-                fpr = next((k.fingerprint for k in infos if fpr in k.all), fpr)
-        return Signature(sig, data, "openpgp", "good", fpr, project=project, key_name=name, source=source,
-                         signed_at=signed_at)
-    issuers = _issuers(sig)
-    issuer = issuers[0] if issuers else ""
-    hit = K.owner(keyset.projects, issuer) if issuer else None
-    text = (r.stderr or r.stdout).lower()
-    status = "bad" if hit or "bad signature" in text else "no_key"
-    return Signature(sig, data, "openpgp", status, issuer=issuer, project=hit[0] if hit else None,
-                     detail=(r.stderr or r.stdout).strip()[:300])
+    chosen = [(keyset.dir / f"chosen-{i}.gpg", infos) for i, (_, infos) in enumerate(keyset.key_files) if infos]
+    listed = [k for p in keyset.projects if p.key for k in K.parse_keys(p.key)]
+    runs = [("list", [keyset.dir / "listed.gpg"], listed)]
+    if chosen:                                 # apart, as with gpgv (KeySet.runs)
+        runs.append(("user", [p for p, _ in chosen], [k for _, infos in chosen for k in infos]))
+    results = []
+    for run, rings, infos in runs:
+        argv = ["sqv"]
+        for kr in rings:
+            argv += ["--keyring", str(kr)]
+        r = host.run(*argv, str(sig), str(data), timeout=600)
+        fprs = [ln.strip().upper() for ln in r.stdout.splitlines() if re.fullmatch(r"[0-9A-Fa-f]{40,64}", ln.strip())]
+        if r.ok and fprs:
+            signer = fprs[0]
+            try:                                   # when it was made: the packet naming the key sqv checked
+                signed_at = K.signature_created(sig.read_bytes()[:MAX_COMPANION], issuer=signer)
+            except (OSError, K.PacketError):
+                signed_at = None
+            # the primary of the key sqv used, in the keyrings of this run (a primary there is its own)
+            fpr = next((k.fingerprint for k in infos if k.fingerprint == signer), None) or next(
+                (k.fingerprint for k in infos if signer in k.subkeys), signer)
+            project, name, source, newer = keyset.classify(fpr, signer, run)
+            status = "revoked" if keyset.is_revoked(fpr, signer) else "good"
+            if status == "revoked" and project is None:
+                hit = K.owner(keyset.projects, signer)
+                project, name = (hit[0], hit[1]) if hit else (None, name)
+            results.append(Signature(sig, data, "openpgp", status, fpr, project=project, key_name=name, source=source,
+                                     signed_at=signed_at, signer=signer, newer_subkey=newer))
+            continue
+        issuers = _issuers(sig)
+        issuer = issuers[0] if issuers else ""
+        hit = K.owner(keyset.projects, issuer) if issuer and run == "list" else None
+        text = (r.stderr or r.stdout).lower()
+        status = "bad" if hit or "bad signature" in text else "no_key"
+        if hit and keyset.is_revoked(issuer):
+            status = "revoked"                 # sqv refuses a revoked key's signature as it does a bad one
+        results.append(Signature(sig, data, "openpgp", status, issuer=issuer, project=hit[0] if hit else None,
+                                 detail=(r.stderr or r.stdout).strip()[:300]))
+    if any(s.status == "revoked" for s in results):
+        return next(s for s in results if s.status == "revoked")
+    return next((s for s in results if s.good), results[0])
 
 
 _SSH_GOOD = re.compile(r'Good "[^"]*" signature with (\S+) key (SHA256:\S+)')
@@ -678,7 +793,7 @@ class Verdict:
                 lines.append(f"  {ALGO_TITLE[a]}: {self.hashes[a]}")
         for s in self.signatures + [l.signature for l in self.lists if l.signature]:
             who = s.project.name if s.project else (s.key_name or s.issuer or "an unknown key")
-            lines.append(f"  Signature {s.path.name}: {STATUS_WORDS.get(s.status, s.status)} ({who}"
+            lines.append(f"  Signature {s.path.name}: {s.words} ({who}"
                          + (f", {K.group(s.fingerprint)}" if re.fullmatch(r"[0-9A-F]{40}", s.fingerprint) else "") + ")")
         for l in self.lists:
             for e, ok in l.matched:
@@ -836,9 +951,14 @@ def decide(path: Path, size: int, hashes: dict, signatures: list[Signature], lis
 
     good_direct = [s for s in signatures if s.good]
     good_lists = [l for l in lists if l.signature and l.signature.good and any(ok for _, ok in l.matched)]
-    trusted = [s for s in good_direct if s.project] + [l.signature for l in good_lists if l.signature.project]
+    by_project = [s for s in good_direct if s.project] + [l.signature for l in good_lists if l.signature.project]
     other = [s for s in good_direct if not s.project] + [l.signature for l in good_lists if not l.signature.project]
     intact = any(ok for l in lists for _, ok in l.matched) or bool(paste_info and paste_info["matches"])
+    # a file named as one project's is verified only by that project's key: otherwise the weakest of the listed
+    # keys (some are one person's, some a build server's) would have made anything "Verified", Tails images too
+    named = K.all_for_file(projects, path.name)
+    trusted = [s for s in by_project if not named or s.project.id in {p.id for p in named}]
+    foreign = [s for s in by_project if all(s is not t for t in trusted)]
 
     if trusted:
         s = trusted[0]
@@ -849,10 +969,12 @@ def decide(path: Path, size: int, hashes: dict, signatures: list[Signature], lis
                   f"checked on {s.project.name}'s own site on {s.project.checked.isoformat()}. "
                   "It is the file they published, unchanged.")
         v.signed_at = s.signed_at
-        if s.expired:
-            v.notes.append("The key has expired since. A signature made while it was valid still counts; if the "
-                           "file is new, ask why it was signed with an expired key.")
-        if s.source == "keyring":
+        v.notes += _weak_notes(s, lists, path)
+        if s.newer_subkey:
+            mine = "your GnuPG keyring" if s.source == "keyring" else f"the key file {s.source.split(':', 1)[-1]}"
+            v.notes.append(f"It was signed with a signing subkey the app's copy of {s.project.name}'s key doesn't have "
+                           f"yet. Your copy of the key, in {mine}, shows {s.project.name}'s key vouching for it.")
+        elif s.source == "keyring":
             v.notes.append("The key came from your own GnuPG keyring, and its fingerprint is the one the app lists.")
         return v
     pinned = K.published(projects, hashes.get("sha256"))
@@ -865,17 +987,60 @@ def decide(path: Path, size: int, hashes: dict, signatures: list[Signature], lis
         v.notes.append(f"{p.name} doesn't sign this file, so this rests on that page: a newer release has a new "
                        "checksum, which the app only knows once it is updated.")
         return v
+    if foreign:
+        s, theirs = foreign[0], named[0]
+        via = "" if s.over == path else f", through the checksum list {s.over.name},"
+        v.level, v.title = "other_project", f"Not verified: signed by {s.project.name}, but named as {theirs.name}'s file"
+        v.text = (f"It has a good signature{via} by {s.project.name}'s release key ({s.key_name}), but its name is "
+                  f"that of {theirs.signs}, and {s.project.name} doesn't sign those. A file renamed by mistake can look "
+                  f"like this; so can a file made to pass for {theirs.name}'s by someone who got hold of "
+                  f"{s.project.name}'s key. The app only calls a file verified when the key is that of the project "
+                  "whose file it is.")
+        v.signed_at = s.signed_at
+        v.steps = [f"If it is {s.project.name}'s file, give it back its own name and verify it again.",
+                   f"If it should be {theirs.name}'s, don't use it: download it again from {theirs.name}'s own site. "
+                   f"{theirs.how}"]
+        return v
+
+    good_list_sigs = [l.signature for l in lists if l.signature and any(ok for _, ok in l.matched)]
+    expired = [s for s in signatures + good_list_sigs if s.status == "expired"]
+    if expired:
+        s = next((x for x in expired if x.project), expired[0])
+        via = "" if s.over == path else f", through the checksum list {s.over.name},"
+        who = f"{s.project.name}'s key ({s.key_name})" if s.project else _who(s)
+        key = s.expired == "key"
+        v.level = "expired"
+        v.title = "Not verified: signed with a key that has expired" if key else "Not verified: its signature has expired"
+        v.text = (f"It has a signature{via} by {who} that matches it, but "
+                  + ("that key has expired. " if key else "the signature itself has expired. ")
+                  + "The date a signature carries is the signer's own claim, so anyone who got hold of an old key "
+                  "could sign a file today and date it back to when the key was still valid: a signature by an "
+                  "expired key can't show who made the file.")
+        v.steps = ["If it is an old release, that may be all it is: compare its SHA-256 (below) with the one the "
+                   "project's own site gives for that release.",
+                   "For anything new, download it again with its current signature: a new release is signed with a "
+                   "key that is valid now."]
+        return v
+
     if other:
         s = other[0]
         via = "" if s.over == path else f" (through the checksum list {s.over.name})"
-        v.level, v.title = "signed", "Signed, by a key the app doesn't list"
-        where = {"keyring": "a key in your GnuPG keyring", "signature": "the key named in the signature"}.get(
-            s.source, f"the key in {s.source.split(':', 1)[-1]}" if s.source.startswith("keyfile:") else "a key")
-        v.text = (f"It has a good signature{via} by {where}" + (f" ({s.key_name})" if s.key_name else "")
-                  + f", fingerprint {K.group(s.fingerprint) if re.fullmatch(r'[0-9A-F]{40}', s.fingerprint) else s.fingerprint}. "
-                  "That proves it is unchanged since that key signed it; whether that key is the project's is "
-                  "for you to check.")
+        fpr = K.group(s.fingerprint) if re.fullmatch(r'[0-9A-F]{40}', s.fingerprint) else s.fingerprint
+        v.level, v.title = "signed", "Not verified: signed by an unknown key"
+        if s.kind == "ssh":
+            v.text = (f"It has an SSH signature{via} that matches it, by the key with fingerprint {fpr}. An SSH "
+                      "signature carries the key that made it, and is checked against that same key, so anyone can "
+                      "make one with a key of their own. It shows the file hasn't changed since whoever holds that key "
+                      "signed it, not who that is. The app lists no SSH keys, so an SSH signature is never verified.")
+        else:
+            where = {"keyring": "a key in your GnuPG keyring"}.get(
+                s.source, f"the key in {s.source.split(':', 1)[-1]}" if s.source.startswith("keyfile:") else "a key")
+            v.text = (f"It has a good signature{via} by {where}" + (f" ({s.key_name})" if s.key_name else "")
+                      + f", fingerprint {fpr}, which the app doesn't list. It shows the file hasn't changed since "
+                      "whoever holds that key signed it, not who that is: anyone can make a key with any name on it. "
+                      "Whether that key is the project's is for you to check.")
         v.signed_at = s.signed_at
+        v.notes += _weak_notes(s, lists, path)
         v.steps = ["Compare that fingerprint, every character, with the one on the project's own website (over "
                    "https), ideally in more than one place (its site, its source repository, a release "
                    "announcement)."]
@@ -894,8 +1059,10 @@ def decide(path: Path, size: int, hashes: dict, signatures: list[Signature], lis
             v.notes.append("MD5 and SHA-1 checksums are weak: fine for spotting a damaged download, no protection "
                            "against a file made on purpose to match.")
     else:
-        v.level, v.title = "unchecked", "Nothing to check it against"
-        v.text = ("There is no signature or checksum list next to it" if not all_sigs and not lists else
+        none = not all_sigs and not lists
+        v.level = "unchecked"
+        v.title = "Not verified: nothing to check it against" if none else "Not verified: its signature couldn't be checked"
+        v.text = ("There is no signature or checksum list next to it" if none else
                   "Its signature couldn't be checked here") + ", so the app can't tell whether it is the file its " \
                  "makers published."
     for s in unchecked:
@@ -912,6 +1079,24 @@ def decide(path: Path, size: int, hashes: dict, signatures: list[Signature], lis
                                       + ("given with --checksum" if given else "pasted here") + " to "
                                       "check the file isn't damaged."))
     return v
+
+
+def _weak_notes(s: Signature, lists: list[SumsList], path: Path) -> list[str]:
+    """Notes on a good signature that rests on a weak hash: the signature's own (VALIDSIG's hash algorithm), or a
+    signed checksum list whose entries for the file are MD5 or SHA-1 only."""
+    out = []
+    if s.hash_algo in WEAK_SIG_HASHES:
+        out.append(f"The signature is made over a {WEAK_SIG_HASHES[s.hash_algo]} hash, which is weak: someone able to "
+                   "make two files with the same hash could have had one of them signed and passed off the other. It "
+                   "is still the key's signature; a project that cares about it signs with SHA-256 or better.")
+    if s.over != path:
+        mine = [e for l in lists if l.signature is s for e, ok in l.matched if ok]
+        if mine and all(e.algo in WEAK for e in mine):
+            names = " and ".join(sorted({ALGO_TITLE[e.algo] for e in mine}))
+            out.append(f"The signed list gives only {'an' if names.startswith('MD5') else 'a'} {names} checksum for this "
+                       "file, which is weak: the signature shows the list is theirs, but a file made on purpose to "
+                       "match that checksum would match it too.")
+    return out
 
 
 def _unchecked_step(s: Signature, path: Path) -> str:

@@ -1953,7 +1953,8 @@ function pathPicker(data, { multiple = false, onPick, label = "File" }) {
     data.can_pick ? h("button", { class: "small", onclick: (e) => choose(e.target) }, "Choose…") : null) };
 }
 
-const VERDICT_CLASS = { verified: "ok", signed: "info", intact: "warn", bad: "bad", unchecked: "warn" };
+const VERDICT_CLASS = { verified: "ok", other_project: "warn", expired: "warn", signed: "info", intact: "warn", bad: "bad",
+                        unchecked: "warn" };
 
 async function openVerify(data, path = "") {
   data = data || await toolsInfo();
@@ -2008,7 +2009,8 @@ const signedOn = (t) => `Signed on ${fmtDay(t)}: releases are signed as they com
 
 function verdictBox(v) {
   const sigLine = (s) => h("li", {},
-    h("span", { class: `badge sig-${s.status}` }, s.status === "good" ? "good signature" : s.status.replace("_", " ")),
+    // green only for a good signature by a key the app lists (verify.Signature.badge)
+    h("span", { class: `badge sig-${s.badge_kind || s.status}` }, s.badge || s.status.replace("_", " ")),
     " ", h("code", {}, s.path.split("/").pop()), s.inside ? ` (inside it: ${s.inside})` : "",
     s.project ? ` by ${s.project}'s key (${s.key_name})` : s.key_name ? ` by ${s.key_name}` : "",
     s.fingerprint_grouped || s.issuer ? h("div", { class: "fpr" }, s.fingerprint_grouped || s.issuer) : null,

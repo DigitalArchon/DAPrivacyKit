@@ -1411,14 +1411,25 @@ it, or a checksum list holding its hash, signed by a key the app lists).
   fingerprint (v4 SHA-1, v5/v6 SHA-256) and refuses a key block whose primary keys aren't exactly the
   pinned fingerprints. Keys may also come from the user's GnuPG keyring (read only, never imported into)
   and from key files the user chooses. The app never fetches a key.
-- **Checking OpenPGP signatures:** the host's `gpgv`, with a temporary home and keyrings of the app's own; the
-  user's copies of a key (a chosen key file, their keyring) come before the app's, since gpgv uses the first it
-  finds and only theirs can hold a revocation made after the app was built.
-  Where gpgv is missing, `sqv` (Sequoia) checks detached signatures, against the listed keys and chosen key
-  files only (it can't read GnuPG's keybox). A good signature by a signing subkey is mapped to its primary
-  key.
-- **SSH signatures** (`ssh-keygen -Y check-novalidate -n file`): checked for being good, and the key's
-  fingerprint shown. There is no list of SSH keys, so an SSH signature is never *verified*.
+- **Checking OpenPGP signatures:** the host's `gpgv`, with a temporary home and keyrings of the app's own, run
+  twice and apart (`KeySet.runs`): against the app's listed keys alone, then against the user's own copies (a
+  chosen key file, their keyring) alone. gpgv uses the first copy of a key it finds, so in one run a stale copy
+  of a listed key hid the revocation the app's copy holds, the app's copy hid one made since that only the
+  user's holds, and a project's stolen signing subkey re-wrapped as a primary key of the thief's (in a key file
+  or the keyring, read first) was found good. Each signature counts as the worst of the two (`combined`): a
+  revocation anywhere first; otherwise good by any copy beats expired (an expiry can be extended). gpgv
+  reports a key both expired and revoked as expired only (EXPKEYSIG, tested with 2.4.4), so the revocations
+  are also read from every copy's packets (`keys.revoked_keys`, the keybox's blocks with `keybox_blocks`).
+  A signature is a project's only when VALIDSIG's primary key (its last field) is a pinned primary
+  (`keys.pinned`): a v4 fingerprint is the same for a key whether its packet is a primary or a subkey, so a
+  subkey's fingerprint never stands for the project. A signing subkey the app's copy doesn't have (a project's
+  newer one, from the user's copy, bound to the pinned primary as gpgv checks) is the project's, with a note.
+  Where gpgv is missing, `sqv` (Sequoia) checks detached signatures, against the listed keys and the chosen key
+  files, apart in the same way (it can't read GnuPG's keybox). A good signature by a signing subkey is mapped to
+  its primary key in the keyring it came from.
+- **SSH signatures** (`ssh-keygen -Y check-novalidate -n file`): checked against the key the signature carries,
+  so anyone can make a good one; the key's fingerprint is shown, and the result says so. There is no list of SSH
+  keys, so an SSH signature is never *verified*.
 - **minisign signatures:** need the project's minisign public key, chosen as a key file; a good one is
   shown with its key id. It is never *verified* either, since the app lists no minisign keys.
 - **Checksum lists:** GNU (`hash  name`, `hash *name`), BSD (`SHA256 (name) = hash`) and bare hashes; the
@@ -1438,23 +1449,27 @@ it, or a checksum list holding its hash, signed by a key the app lists).
   a debsigs member (a detached signature over `debian-binary`, `control.tar.*` and `data.tar.*` joined). An
   `.rpm`: the signature header's tags 1002/1006 (over header and payload), or 267/268/278 (over the header
   only, which must then hold the payload digest, tag 5092, checked; without it the contents aren't covered,
-  and the result says so). What a signature covers that can be large is streamed to gpgv through a named
-  pipe, never copied into memory-backed `/run`.
+  and the result says so). What a signature covers that can be large (the header too) is streamed to gpgv
+  through a named pipe, once for each check, never copied into memory-backed `/run`; a header value must lie in
+  the header's own store, and a signature value larger than 64 KB is refused (its size is the package's to set).
 
 **Verdicts** (`verify.decide`), in this order:
 
 | Level | Title | When |
 |---|---|---|
-| `bad` | Don't use this file | Any bad signature, a revoked key, a checksum in a list that doesn't match, or a pasted checksum that doesn't match |
-| `verified` | Verified: made by *project* | A good signature by a listed project's key over the file, over a checksum list containing its hash, or inside the package; or the file's SHA-256 is one a project publishes on its own site (`checksums` in the YAML, with a note that a newer release needs the app updated) |
-| `signed` | Signed, by a key the app doesn't list | A good signature by any other key (keyring, chosen key file, SSH, minisign), with its fingerprint to compare with the project's site |
+| `bad` | Don't use this file | Any bad signature, a revoked key (known to any copy of it), a checksum in a list that doesn't match, or a pasted checksum that doesn't match |
+| `verified` | Verified: made by *project* | A good signature by a listed project's key over the file, over a checksum list containing its hash, or inside the package, when the file's name is that project's or no project's; or the file's SHA-256 is one a project publishes on its own site (`checksums` in the YAML, with a note that a newer release needs the app updated). A signature over SHA-1 or MD5 (VALIDSIG's hash algorithm), or a signed list holding only an MD5 or SHA-1 for the file, gets a note that it is weak |
+| `other_project` | Not verified: signed by *X*, but named as *Y*'s file | A good signature by a listed project's key on a file named as another project's (`keys.all_for_file`): otherwise the weakest listed key (some are one person's, some a build server's) would verify a Tails image |
+| `expired` | Not verified: signed with a key that has expired / its signature has expired | EXPKEYSIG or EXPSIG: the date in a signature is the signer's own claim, so whoever holds an expired key can sign today and date it back |
+| `signed` | Not verified: signed by an unknown key | A good signature by any other key (keyring, chosen key file, SSH, minisign), with its fingerprint to compare with the project's site; for SSH, that the signature carries its own key and anyone can make one |
 | `intact` | Not damaged, but not verified | A checksum matches; MD5 and SHA-1 alone get a note that they are weak |
-| `unchecked` | Nothing to check it against | No companion, or signatures that couldn't be checked (no key, no tool) |
+| `unchecked` | Not verified: nothing to check it against / its signature couldn't be checked | No companion, or signatures that couldn't be checked (no key, no tool) |
 
 A project that signs nothing (`unsigned: true`: Garuda Linux, Bazzite) is *intact* at best, and the
-result says that is as far as a check can go. An expired key's signature still counts, with a note. A *verified*
-or *signed* result says when the good signature it rests on was made ("Signed on 4 November 2026", local time):
-an older release renamed as a newer one still matches its own signature, and only its date gives it away.
+result says that is as far as a check can go. A *verified*, *other_project* or *signed* result says when the good
+signature it rests on was made ("Signed on 4 November 2026", local time): an older release renamed as a newer one
+still matches its own signature, and only its date gives it away. The page's badge is green only for a good
+signature by a listed key (`Signature.badge`).
 
 `daprivacyscanner --verify FILE [--key KEYFILE] [--checksum HEX]` prints the same report; exit status 0
 when verified, 1 for anything less, 2 when the file or a key couldn't be read.

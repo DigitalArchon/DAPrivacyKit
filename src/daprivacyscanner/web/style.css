@@ -484,7 +484,8 @@ details summary { cursor: pointer; color: var(--muted); }
 .fpr { font-family: var(--mono); font-size: 12.5px; letter-spacing: .02em; -webkit-user-select: text; user-select: text; }
 .badge.sig-good { color: var(--ok); }
 .badge.sig-bad, .badge.sig-revoked { color: #fff; background: var(--danger); border-color: var(--danger); }
-.badge.sig-no_key, .badge.sig-no_tool, .badge.sig-error, .badge.sig-unsupported { color: var(--warn); }
+.badge.sig-no_key, .badge.sig-no_tool, .badge.sig-error, .badge.sig-unsupported, .badge.sig-unlisted,
+.badge.sig-expired { color: var(--warn); }
 .metafile { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; background: var(--panel-2);
   display: flex; flex-direction: column; gap: 6px; }
 .metafile.failed { border-color: var(--warn); }

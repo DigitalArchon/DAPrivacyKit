@@ -230,6 +230,103 @@ def key_expiries(data: bytes | str) -> dict[str, int | None]:
     return out
 
 
+KEY_REVOCATION, SUBKEY_REVOCATION = 0x20, 0x28
+USER_ATTRIBUTE = 17
+
+
+def revoked_keys(data: bytes) -> set[str]:
+    """The fingerprints of the keys and subkeys that key data holds a revocation for: a key revocation (0x20)
+    after a primary key, which takes its subkeys with it, or a subkey revocation (0x28) after a subkey. The
+    revocations aren't checked here: those in a keyring were checked by gpg as it imported them, the app's own
+    copies are its own, and one in a key file the user chose can at worst make a good file look bad. gpgv sees
+    only the first copy of a key it finds, and reports a key both expired and revoked as only expired
+    (EXPKEYSIG, tested with gpgv 2.4.4), so a revocation in any copy has to be looked for here."""
+    out: set[str] = set()
+    primary: str | None = None
+    current: str | None = None
+    subs: list[str] = []
+    gone = False
+
+    def done():
+        if primary and gone:
+            out.add(primary)
+            out.update(subs)
+
+    for tag, body in packets(data):
+        if tag == PUBLIC_KEY:
+            done()
+            try:
+                primary = current = fingerprint(body)
+            except PacketError:
+                primary = current = None
+            subs, gone = [], False
+        elif tag == PUBLIC_SUBKEY:
+            try:
+                current = fingerprint(body)
+                subs.append(current)
+            except PacketError:
+                current = None
+        elif tag in (USER_ID, USER_ATTRIBUTE):
+            current = None                            # what follows certifies the user ID, it revokes no key
+        elif tag == SIGNATURE and current and body:
+            kind = body[2] if body[0] == 3 and len(body) > 2 else body[1] if len(body) > 1 else None
+            if kind == KEY_REVOCATION and current == primary:
+                gone = True
+            elif kind == SUBKEY_REVOCATION and current != primary:
+                out.add(current)
+    done()
+    return out
+
+
+def keybox_blocks(data: bytes):
+    """The OpenPGP key blocks in a GnuPG keybox (pubring.kbx): each blob is its length (4 bytes), its type (1
+    byte, 2 for OpenPGP), version and flags, then where its key block starts in it and how long it is."""
+    i, n = 0, len(data)
+    while i + 16 <= n:
+        size = int.from_bytes(data[i:i + 4], "big")
+        if size < 16 or i + size > n:
+            return
+        if data[i + 4] == 2:
+            off, length = int.from_bytes(data[i + 8:i + 12], "big"), int.from_bytes(data[i + 12:i + 16], "big")
+            if off + length <= size:
+                yield data[i + off:i + off + length]
+        i += size
+
+
+def keyring_revocations(data: bytes) -> set[str]:
+    """revoked_keys() over a keyring file as gpgv reads it: a keybox, or OpenPGP packets one after the other.
+    Damaged blocks are passed over."""
+    blocks = list(keybox_blocks(data)) if data[8:12] == b"KBXf" else [data]
+    out: set[str] = set()
+    for b in blocks:
+        try:
+            out |= revoked_keys(b)
+        except PacketError:
+            continue
+    return out
+
+
+@functools.lru_cache(maxsize=64)
+def _subkeys_by_primary(key: bytes) -> dict[str, tuple[str, ...]]:
+    return {k.fingerprint: k.subkeys for k in parse_keys(key)} if key else {}
+
+
+def pinned(projects, primary: str, signer: str = "") -> tuple[Project, str, bool] | None:
+    """(project, key name, the signing key is in the app's copy) when `primary`, the primary key gpgv says made a
+    signature (VALIDSIG's last field), is one a project pins. Only a primary counts: a v4 fingerprint is the
+    same whether its packet is a primary key or a subkey, so a project's signing subkey, stolen and wrapped as a
+    primary key of someone else's with a self-signature of their own, has the subkey's fingerprint as its
+    primary's, and matching subkeys here made a file signed with it "Verified". `signer` (VALIDSIG's first
+    field): the key that signed, the primary or one of its subkeys; one the app's copy doesn't have came from the
+    user's copy of the key, where gpgv found it bound to that primary."""
+    primary, signer = primary.upper(), (signer or primary).upper()
+    for p in projects:
+        for f, name in p.keys:
+            if f == primary:
+                return p, name, signer == f or signer in _subkeys_by_primary(p.key).get(f, ())
+    return None
+
+
 def group(fpr: str) -> str:
     """A fingerprint as people compare it: "27DE B156 44C6 ..." (two halves of five groups)."""
     g = [fpr[i:i + 4] for i in range(0, len(fpr), 4)]
@@ -357,7 +454,9 @@ def load(path: Path | str | None = None) -> tuple[Project, ...]:
 
 
 def owner(projects, fpr: str) -> tuple[Project, str] | None:
-    """The project whose key (primary or subkey) has this fingerprint or key id, and the key's name."""
+    """The project whose key (primary or subkey) has this fingerprint or key id, and the key's name: for naming
+    who a signature says made it (an issuer whose key is missing, a bad signature), never for deciding that a
+    good one is a project's (pinned())."""
     fpr = fpr.upper()
     for p in projects:
         for f, name in p.keys:
@@ -381,6 +480,11 @@ def published(projects, sha256: str | None) -> tuple[Project, str, str] | None:
 
 def for_file(projects, filename: str) -> Project | None:
     return next((p for p in projects if p.matches(filename)), None)
+
+
+def all_for_file(projects, filename: str) -> list[Project]:
+    """Every project whose files are named like this one (Tor Browser Developers sign Mullvad Browser too)."""
+    return [p for p in projects if p.matches(filename)]
 
 
 def keyring(projects) -> bytes:

@@ -314,13 +314,22 @@ The answer is one of:
   Fedora, Arch Linux, CachyOS, Kali, Tails, Qubes OS, Whonix, openSUSE, Manjaro, EndeavourOS, Tor Browser
   and Mullvad Browser, Mullvad VPN, Proton VPN, IVPN, VeraCrypt, KeePassXC, Cryptomator and Mozilla, and the
   one this app's own releases are signed with (Digital Archon's).
-- **Signed, by a key the app doesn't list**: the signature is good, but the app can't tell whose key it
+  A file named as one project's (a Tails image, say) is verified only by that project's key.
+- **Not verified: signed by X, but named as Y's file**: a project's key signed it, but its name is another
+  project's. Either it was renamed by mistake, or someone who got hold of the first project's key is passing it
+  off as the second's.
+- **Not verified: signed with a key that has expired** (or **its signature has expired**): the date in a
+  signature is the signer's own claim, so someone with an old key could sign a file today and date it back.
+  For an old release, compare its checksum with the project's site; for anything new, get the current one.
+- **Not verified: signed by an unknown key**: the signature matches, but the app can't tell whose key it
   is. Compare the fingerprint shown with the one on the project's website. Keys from your own GnuPG
-  keyring or a key file you choose, SSH signatures and minisign signatures end up here.
+  keyring or a key file you choose, SSH signatures and minisign signatures end up here. An SSH signature
+  carries its own key, so anyone can make one.
 - **Not damaged, but not verified**: a checksum matches. That proves the download isn't damaged, but not
   that nobody swapped both the file and its checksum.
-- **Nothing to check it against**: no signature or checksum was found. The tool says what to download.
-- **Don't use this file**: a signature or checksum doesn't match, or the key was revoked.
+- **Not verified: nothing to check it against**: no signature or checksum was found. The tool says what to download.
+- **Don't use this file**: a signature or checksum doesn't match, or the key was revoked (by any copy of
+  it the app sees: its own, a key file you chose, your keyring).
 
 From a terminal: `daprivacyscanner --verify FILE` (exit status 0 when verified, 1 otherwise).
 

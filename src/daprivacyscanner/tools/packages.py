@@ -33,6 +33,7 @@ AR_MAGIC = b"!<arch>\n"
 RPM_LEAD = b"\xed\xab\xee\xdb"
 HEADER_MAGIC = b"\x8e\xad\xe8\x01"
 MAX_MEMBER_LIST = 1 << 20                 # a _gpg* member is a few KB
+MAX_VALUE = 1 << 16                       # an OpenPGP signature in an RPM's signature header is a few hundred bytes
 DIGEST_ALGOS = {1: "md5", 2: "sha1", 8: "sha256", 9: "sha384", 10: "sha512", 11: "sha224"}
 _FILES = re.compile(r"^\s+([0-9a-f]{32})\s+([0-9a-f]{40})\s+(\d+)\s+(\S+)\s*$")
 
@@ -182,18 +183,24 @@ def _header(f, off: int) -> tuple[dict[int, tuple[int, int, int]], int, int]:
     if n > 100000 or size > 1 << 28:
         raise PackageError("an RPM header too large to be real")
     index = f.read(16 * n)
+    if len(index) < 16 * n:
+        raise PackageError("a damaged RPM header")
     store = off + 16 + 16 * n
     tags = {}
     for i in range(n):
         tag, typ, o, cnt = struct.unpack(">IIII", index[16 * i:16 * i + 16])
+        if o > size or typ == 7 and o + cnt > size:               # a value must lie in the header's own store
+            raise PackageError("a damaged RPM header")
         tags[tag] = (typ, store + o, cnt)
     return tags, off, store + size
 
 
-def _value(f, entry: tuple[int, int, int]) -> bytes | int | list[str]:
+def _value(f, entry: tuple[int, int, int], limit: int = MAX_VALUE) -> bytes | int | list[str]:
     typ, off, cnt = entry
     f.seek(off)
     if typ == 7:                                                   # BIN
+        if cnt > limit:                     # its count is the package's to set: it had the whole file read into /run
+            raise PackageError("a value in its signature header is too large to be a signature")
         return f.read(cnt)
     if typ == 4:                                                   # INT32
         return struct.unpack(">I", f.read(4))[0]
@@ -210,8 +217,6 @@ def rpm(path: Path, work: Path) -> list[Embedded]:
         sig_tags, _, end = _header(f, 96)
         start = (end + 7) // 8 * 8                                   # the signature header is padded to 8
         main, hstart, hend = _header(f, start)
-        f.seek(hstart)
-        header = f.read(hend - hstart)
         out = []
         whole = next((t for t in (1002, 1006) if t in sig_tags), None)
         if whole is not None:
@@ -228,8 +233,6 @@ def rpm(path: Path, work: Path) -> list[Embedded]:
         sig = work / "rpm-signature"
         sig.write_bytes(raw.encode() if isinstance(raw, str) else
                         "\n".join(raw).encode() if isinstance(raw, list) else raw)
-        hdr = work / "rpm-header"
-        hdr.write_bytes(header)
         problem, uncovered = "", ""
         if 5092 in main:
             algo = DIGEST_ALGOS.get(_value(f, main[5093]) if 5093 in main else 1)
@@ -246,7 +249,9 @@ def rpm(path: Path, work: Path) -> list[Embedded]:
                     problem = "its contents don't match the digest in its signed header"
         else:
             uncovered = "only its header is signed, and the header holds no digest of the contents"
-        out.append(Embedded("its signature header", sig, hdr, problem, uncovered=uncovered))
+        # the header (up to 256 MB) streamed to gpgv as the payload is, never copied into /run
+        out.append(Embedded("its signature header", sig, work / "rpm-header.pipe", problem, uncovered=uncovered,
+                            ranges=[(hstart, hend - hstart)], source=path))
         return out
 
 
@@ -262,8 +267,9 @@ def embedded(path: Path, work: Path) -> list[Embedded]:
 
 @contextmanager
 def streamed(e: Embedded, timeout: float = 600):
-    """While in use, `e.data` is a named pipe that the package's `ranges` are written into, for a
-    reader (gpgv) that opens it. Nothing to do for an Embedded without ranges."""
+    """While in use, `e.data` is a named pipe that the package's `ranges` are written into, for each
+    reader (gpgv) that opens it in turn: the signature is checked against the app's keys and the user's
+    apart (verify.KeySet.runs), so it is read once per check. Nothing to do for an Embedded without ranges."""
     if not e.ranges:
         yield
         return
@@ -272,30 +278,29 @@ def streamed(e: Embedded, timeout: float = 600):
 
     def feed():
         deadline = time.monotonic() + timeout
-        fd = None
-        while fd is None and not stop.is_set() and time.monotonic() < deadline:
+        while not stop.is_set() and time.monotonic() < deadline:
             try:
                 fd = os.open(e.data, os.O_WRONLY | os.O_NONBLOCK)       # ENXIO until a reader has it open
             except OSError:
                 time.sleep(0.02)
-        if fd is None:
-            return
-        os.set_blocking(fd, True)
-        try:
-            with open(e.source, "rb") as src:
-                for off, size in e.ranges:
-                    src.seek(off)
-                    left = size
-                    while left and not stop.is_set():
-                        b = src.read(min(left, 1 << 20))
-                        if not b:
-                            break
-                        os.write(fd, b)
-                        left -= len(b)
-        except OSError:
-            pass                                                      # the reader went away
-        finally:
-            os.close(fd)
+                continue
+            os.set_blocking(fd, True)
+            try:
+                with open(e.source, "rb") as src:
+                    for off, size in e.ranges:
+                        src.seek(off)
+                        left = size
+                        while left and not stop.is_set():
+                            b = src.read(min(left, 1 << 20))
+                            if not b:
+                                break
+                            os.write(fd, b)
+                            left -= len(b)
+            except OSError:
+                pass                                                  # the reader went away
+            finally:
+                os.close(fd)
+            time.sleep(0.02)                  # the reader sees the end and closes before the next one is waited for
     t = threading.Thread(target=feed, daemon=True)
     t.start()
     try:
