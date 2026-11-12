@@ -845,7 +845,7 @@ def _unlocks_unattended(host: Host, device: str) -> list[tuple[str, str]]:
 # ------------------------------------------------------------------ autologin
 
 DM_UNITS = {"gdm": "gdm", "gdm3": "gdm", "sddm": "sddm", "plasmalogin": "plasmalogin", "lightdm": "lightdm",
-            "greetd": "greetd", "lxdm": "lxdm"}
+            "greetd": "greetd", "cosmic-greeter": "greetd", "lxdm": "lxdm"}
 
 
 def active_display_manager(host: Host) -> str | None:
@@ -920,7 +920,10 @@ def _plasmalogin(r: _Reader) -> list[Evidence]:
 
 
 def _lightdm(r: _Reader) -> list[Evidence]:
-    paths = (r.glob("/usr/share/lightdm/lightdm.conf.d", "*.conf") + r.glob("/etc/lightdm/lightdm.conf.d", "*.conf")
+    # LightDM's order (lightdm.conf's header): the packaged drop-ins, /usr/local's, XDG_CONFIG_DIRS' (/etc/xdg), /etc's,
+    # then the main file
+    paths = (r.glob("/usr/share/lightdm/lightdm.conf.d", "*.conf") + r.glob("/usr/local/share/lightdm/lightdm.conf.d", "*.conf")
+             + r.glob("/etc/xdg/lightdm/lightdm.conf.d", "*.conf") + r.glob("/etc/lightdm/lightdm.conf.d", "*.conf")
              + ["/etc/lightdm/lightdm.conf"])
     cfg, _ = r.layered(paths)
     ev = []
@@ -932,30 +935,105 @@ def _lightdm(r: _Reader) -> list[Evidence]:
     return ev
 
 
+GREETD_CONFIGS = ("/etc/greetd/config.toml", "/etc/greetd/cosmic-greeter.toml")
+GREETD_UNITS = ("greetd.service", "cosmic-greeter.service")
+
+
+def _greetd_configs(r: _Reader) -> list[str]:
+    """The files greetd reads: the --config (or -c) its unit gives it (COSMIC's cosmic-greeter.service runs greetd
+    --config /etc/greetd/cosmic-greeter.toml), else greetd's default and COSMIC's."""
+    for d in ("/etc/systemd/system", "/usr/lib/systemd/system", "/lib/systemd/system"):
+        for unit in GREETD_UNITS:
+            t = r.text(f"{d}/{unit}") or ""
+            m = re.search(r"^\s*ExecStart=.*?\s(?:--config|-c)[=\s]+(/\S+)", t, re.M)
+            if m:
+                return [m.group(1)]
+    return list(GREETD_CONFIGS)
+
+
 def _greetd(r: _Reader) -> list[Evidence]:
-    t = r.text("/etc/greetd/config.toml")
-    if not t:
+    ev = []
+    for path in _greetd_configs(r):
+        t = r.text(path)
+        if not t:
+            continue
+        try:
+            cfg = tomllib.loads(t)
+        except tomllib.TOMLDecodeError:
+            ev.append(Evidence.note(f"{path} could not be parsed"))
+            continue
+        session = cfg.get("initial_session")
+        if isinstance(session, dict):
+            ev.append(Evidence.val(f"greetd [initial_session] user ({path})", str(session.get("user", "set"))))
+    return ev
+
+
+def _sysconfig(r: _Reader) -> list[Evidence]:
+    """openSUSE: YaST's DISPLAYMANAGER_AUTOLOGIN (a user logged in at once) and DISPLAYMANAGER_PASSWORD_LESS_LOGIN (no
+    password at the login screen) in /etc/sysconfig/displaymanager, which its display managers take up."""
+    t = r.text("/etc/sysconfig/displaymanager") or ""
+    vals = {m.group(1): m.group(2) for m in re.finditer(r'^\s*(DISPLAYMANAGER_\w+)\s*=\s*"?([^"\n]*)"?', t, re.M)}
+    ev = []
+    if vals.get("DISPLAYMANAGER_AUTOLOGIN", "").strip():
+        ev.append(Evidence.val("openSUSE DISPLAYMANAGER_AUTOLOGIN", vals["DISPLAYMANAGER_AUTOLOGIN"].strip()))
+    if vals.get("DISPLAYMANAGER_PASSWORD_LESS_LOGIN", "").strip().lower() == "yes":
+        ev.append(Evidence.val("openSUSE DISPLAYMANAGER_PASSWORD_LESS_LOGIN", "yes"))
+    return ev
+
+
+# the login screens' PAM files, where Mint's and Ubuntu's "no password required" (Users and Groups) lets members of
+# nopasswdlogin in with no password: auth sufficient pam_succeed_if.so user ingroup nopasswdlogin
+DM_PAM = {"lightdm": ("lightdm",), "gdm": ("gdm-password",), "sddm": ("sddm",), "plasmalogin": ("plasmalogin",)}
+NOPASSWD = re.compile(r"^\s*auth\s+(?:sufficient|\[[^\]]*success=(?:done|ok)[^\]]*\])\s+pam_succeed_if\.so\s.*"
+                      r"\buser\s+ingroup\s+(\S+)", re.M)
+
+
+def _no_password_group(r: _Reader, dm: str | None) -> list[Evidence]:
+    """Accounts the login screen lets in without a password: members of a group its PAM file passes with
+    pam_succeed_if (nopasswdlogin on Mint and Ubuntu). Not automatic, but anyone at the login screen gets their session."""
+    files = DM_PAM.get(dm or "", tuple(f for fs in DM_PAM.values() for f in fs))
+    groups = {m.group(1) for f in files for m in NOPASSWD.finditer(r.text(f"/etc/pam.d/{f}") or "")}
+    if not groups:
         return []
+    members = []
+    for line in (r.text("/etc/group") or "").splitlines():
+        f = line.split(":")
+        if len(f) >= 4 and f[0] in groups:
+            members += [m for m in f[3].split(",") if m]
+    return [Evidence.val("Logs in at the login screen with no password (group "
+                         f"{', '.join(sorted(groups))})", ", ".join(sorted(set(members)))[:200])] if members else []
+
+
+SYSTEMD_UNIT_DIRS = ("/etc/systemd/system", "/usr/lib/systemd/system", "/lib/systemd/system")
+
+
+def _session_units(r: _Reader) -> list[Evidence]:
+    """Sessions systemd starts by itself: an enabled service with PAMName= and a User= that isn't root opens that
+    account's session at boot with no login (kiosks, cage@tty1, a Wayland compositor started as a unit)."""
+    ev, base = [], r.host.sys_path("/etc/systemd/system")
     try:
-        cfg = tomllib.loads(t)
-    except tomllib.TOMLDecodeError:
-        return [Evidence.note("/etc/greetd/config.toml could not be parsed")]
-    session = cfg.get("initial_session")
-    if isinstance(session, dict):
-        return [Evidence.val("greetd [initial_session] user", str(session.get("user", "set")))]
-    return []
-
-
-def _lxdm(r: _Reader) -> list[Evidence]:
-    t = r.text("/etc/lxdm/lxdm.conf")
-    user = ini.get(ini.parse(t), "base", "autologin") if t else None
-    return [Evidence.val("LXDM autologin", user)] if user else []
+        wanted = {p.name for d in base.glob("*.wants") if d.is_dir() for p in d.iterdir()}
+    except OSError:
+        wanted = set()
+    for name in sorted(wanted):
+        if not name.endswith(".service"):
+            continue
+        template = re.sub(r"@[^.]+\.service$", "@.service", name)
+        text = next((t for d in SYSTEMD_UNIT_DIRS for n in dict.fromkeys((name, template))
+                     if (t := r.text(f"{d}/{n}"))), "")
+        keys = {m.group(1): m.group(2).strip() for m in re.finditer(r"^\s*(PAMName|User)=(.*)$", text, re.M)}
+        if keys.get("PAMName") and keys.get("User") not in (None, "", "root", "0"):
+            ev.append(Evidence.val(f"Session started by {name}", keys["User"]))
+    return ev
 
 
 def _getty(r: _Reader) -> list[Evidence]:
+    """A console that logs an account in by itself: agetty --autologin (-a) in a getty unit's drop-in, or in the unit
+    itself where the system writes its units whole (NixOS's services.getty.autologinUser, in /etc/systemd/system)."""
     ev = []
+    autologin = re.compile(r"^\s*ExecStart=.*\s(--autologin|-a)(\s|=)", re.M)
+    base = r.host.sys_path("/etc/systemd/system")
     for unit in ("getty@*.service.d", "autovt@*.service.d", "serial-getty@*.service.d"):
-        base = r.host.sys_path("/etc/systemd/system")
         try:
             dirs = sorted(base.glob(unit))
         except OSError:
@@ -963,10 +1041,23 @@ def _getty(r: _Reader) -> list[Evidence]:
         for d in dirs:
             for conf in sorted(d.glob("*.conf")):
                 t = r.text(Path("/etc/systemd/system") / d.name / conf.name) or ""
-                for line in t.splitlines():
-                    if line.strip().startswith("ExecStart=") and re.search(r"\s(--autologin|-a)(\s|=)", line + " "):
-                        ev.append(Evidence.path("Console autologin", f"/etc/systemd/system/{d.name}/{conf.name}"))
+                if autologin.search(t + " "):
+                    ev.append(Evidence.path("Console autologin", f"/etc/systemd/system/{d.name}/{conf.name}"))
+    try:
+        units = sorted(p.name for p in base.glob("*getty@*.service")) + sorted(p.name for p in base.glob("autovt@*.service"))
+    except OSError:
+        units = []
+    for name in dict.fromkeys(units):
+        t = r.text(f"/etc/systemd/system/{name}") or ""
+        if autologin.search(t + " "):
+            ev.append(Evidence.path("Console autologin", f"/etc/systemd/system/{name}"))
     return ev
+
+
+def _lxdm(r: _Reader) -> list[Evidence]:
+    t = r.text("/etc/lxdm/lxdm.conf")
+    user = ini.get(ini.parse(t), "base", "autologin") if t else None
+    return [Evidence.val("LXDM autologin", user)] if user else []
 
 
 AUTOLOGIN_SOURCES: dict[str, Callable[[_Reader], list[Evidence]]] = {
@@ -988,7 +1079,7 @@ def detect_autologin(host: Host) -> ContextValue:
             ev.append(Evidence.val("Display manager", dm))
         found = [e for fn in AUTOLOGIN_SOURCES.values() for e in fn(r)]
         note = "From every known display manager's configuration and console getty overrides"
-    found += _getty(r)
+    found += _getty(r) + _sysconfig(r) + _no_password_group(r, dm) + _session_units(r)
     ev += found
     for p in r.unreadable:
         ev.append(Evidence.path("Needs administrator access", p))

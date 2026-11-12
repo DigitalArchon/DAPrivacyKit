@@ -292,6 +292,29 @@ DM = "/etc/systemd/system/display-manager.service"
       "[Service]\nExecStart=\nExecStart=-/sbin/agetty -o '-p -f -- \\\\u' --noclear --autologin alice %I $TERM\n"},
      "gdm3", True),
     ({}, "lightdm", False),
+    # LightDM's /etc/xdg layer (XDG_CONFIG_DIRS), between the packaged drop-ins and /etc's
+    ({"/etc/xdg/lightdm/lightdm.conf.d/80-x.conf": "[Seat:*]\nautologin-user=alice\n"}, "lightdm", True),
+    # COSMIC: greetd with a config of its own, named by cosmic-greeter.service
+    ({"/etc/greetd/cosmic-greeter.toml": "[initial_session]\ncommand='start-cosmic'\nuser='alice'\n",
+      "/usr/lib/systemd/system/cosmic-greeter.service":
+      "[Service]\nExecStart=greetd --config /etc/greetd/cosmic-greeter.toml\n"}, "cosmic-greeter", True),
+    # openSUSE: YaST's settings, which its display managers take up
+    ({"/etc/sysconfig/displaymanager": 'DISPLAYMANAGER="sddm"\nDISPLAYMANAGER_AUTOLOGIN="alice"\n'}, "display-manager-legacy", True),
+    ({"/etc/sysconfig/displaymanager": 'DISPLAYMANAGER_AUTOLOGIN=""\nDISPLAYMANAGER_PASSWORD_LESS_LOGIN="no"\n'}, "sddm", False),
+    ({"/etc/sysconfig/displaymanager": 'DISPLAYMANAGER_PASSWORD_LESS_LOGIN="yes"\n'}, "sddm", True),
+    # NixOS writes getty's unit whole (services.getty.autologinUser): no drop-in
+    ({"/etc/systemd/system/getty@.service": "[Service]\nExecStart=@/nix/store/x-util-linux/bin/agetty agetty --login-program "
+      "/nix/store/y-shadow/bin/login --autologin alice --noclear --keep-baud %I 115200,38400,9600 $TERM\n"}, None, True),
+    # Mint's and Ubuntu's "no password required": members of nopasswdlogin pass LightDM's PAM with no password
+    ({"/etc/pam.d/lightdm": "#%PAM-1.0\nauth    requisite       pam_nologin.so\n"
+      "auth    sufficient      pam_succeed_if.so user ingroup nopasswdlogin\n",
+      "/etc/group": "root:x:0:\nnopasswdlogin:x:118:alice\n"}, "lightdm", True),
+    ({"/etc/pam.d/lightdm": "auth    sufficient      pam_succeed_if.so user ingroup nopasswdlogin\n",
+      "/etc/group": "nopasswdlogin:x:118:\n"}, "lightdm", False),                       # Mint's default: nobody in it
+    # a session systemd starts itself: an enabled unit with PAMName= and an account's User=
+    ({"/etc/systemd/system/kiosk.service": "[Service]\nUser=alice\nPAMName=login\nTTYPath=/dev/tty7\nExecStart=cage firefox\n",
+      "/etc/systemd/system/graphical.target.wants/kiosk.service": ""}, "gdm3", True),
+    ({"/etc/systemd/system/kiosk.service": "[Service]\nUser=alice\nPAMName=login\nExecStart=cage firefox\n"}, "gdm3", False),
 ])
 def test_autologin(tmp_path, files, unit, expected):
     links = {DM: f"/lib/systemd/system/{unit}.service"} if unit else {}

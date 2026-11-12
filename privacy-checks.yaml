@@ -715,7 +715,19 @@ checks:
       - 'Plasma Login Manager (plasmalogin, KDE''s fork of SDDM, Plasma 6.6+): [Autologin] User= in
         /usr/lib/plasmalogin/defaults.conf, /usr/lib/plasmalogin/plasmalogin.conf.d/*.conf, /etc/plasmalogin.conf.d/*.conf
         and /etc/plasmalogin.conf (tested on Plasma 6.7: automatic login from /etc and from a packaged drop-in)'
-      - 'LightDM: autologin-user= or autologin-guest=true in /usr/share/lightdm/lightdm.conf.d/*, /etc/lightdm/lightdm.conf.d/* and lightdm.conf'
+      - 'LightDM: autologin-user= or autologin-guest=true in /usr/share/lightdm/lightdm.conf.d/*,
+        /usr/local/share/lightdm/lightdm.conf.d/*, /etc/xdg/lightdm/lightdm.conf.d/*, /etc/lightdm/lightdm.conf.d/* and
+        lightdm.conf, in that order'
+      - 'greetd: [initial_session] in the --config its unit gives it (COSMIC''s cosmic-greeter.service:
+        /etc/greetd/cosmic-greeter.toml), else /etc/greetd/config.toml and cosmic-greeter.toml'
+      - 'openSUSE: DISPLAYMANAGER_AUTOLOGIN set, or DISPLAYMANAGER_PASSWORD_LESS_LOGIN="yes", in /etc/sysconfig/displaymanager'
+      - 'Consoles: agetty --autologin (-a) in a getty, autovt or serial-getty drop-in, or in the unit itself in
+        /etc/systemd/system (NixOS writes them whole: services.getty.autologinUser)'
+      - 'No password at the login screen: auth sufficient pam_succeed_if.so user ingroup GROUP in the display manager''s
+        PAM file (/etc/pam.d/lightdm, gdm-password, sddm) with members in GROUP (Mint''s and Ubuntu''s nopasswdlogin,
+        Users and Groups → No password required; tested on Mint 22.3: the rule is there, the group empty by default)'
+      - 'A session systemd starts by itself: an enabled service (a link in /etc/systemd/system/*.wants) with PAMName= and
+        a User= other than root'
     fix: >
       Disable autologin (root): the lines are commented out in the files under /etc; a packaged file
       (/usr/lib/sddm/sddm.conf.d, /usr/lib/plasmalogin, /usr/share/lightdm/lightdm.conf.d) that sets it is overridden by a

@@ -199,6 +199,27 @@ def test_what_is_waiting_stays_a_finding_with_stale_lists(cat, tmp_path):
     assert o.status is Status.WARN and any(n.title == "More may be waiting" for n in o.notes)
 
 
+# ------------------------------------------------------------------ automatic login set up elsewhere
+
+def test_the_autologin_guide_gives_commands_for_what_its_helper_edit_doesnt_reach(cat, tmp_path):
+    from test_guides import build
+    files = {"/etc/pam.d/lightdm": "auth sufficient pam_succeed_if.so user ingroup nopasswdlogin\n",
+             "/etc/group": "nopasswdlogin:x:118:alice,bob\n",
+             "/etc/greetd/cosmic-greeter.toml": "[initial_session]\ncommand='start-cosmic'\nuser='alice'\n",
+             "/etc/sysconfig/displaymanager": 'DISPLAYMANAGER_AUTOLOGIN="alice"\n',
+             "/etc/systemd/system/kiosk.service": "[Service]\nUser=alice\nPAMName=login\n",
+             "/etc/systemd/system/multi-user.target.wants/kiosk.service": ""}
+    host = make_host(tmp_path, files=files)
+    av = ctxmod.detect_autologin(host)
+    assert av.value is True
+    g = build(cat, host, "auth.autologin", autologin=av)
+    cmds = [c for s in g.steps for c in s.commands]
+    assert not any(s.options for s in g.steps)              # none of these is the helper's edit to make
+    assert {"sudo gpasswd -d alice nopasswdlogin", "sudo gpasswd -d bob nopasswdlogin",
+            "sudoedit /etc/greetd/cosmic-greeter.toml", "sudoedit /etc/sysconfig/displaymanager",
+            "sudo systemctl disable kiosk.service"} <= set(cmds)
+
+
 # ------------------------------------------------------------------ what unlocks the disk with nothing typed
 
 ROOT_LUKS = "luks-0f2c4e5a-1b2c-4d3e-8f90-123456789abc"      # the Fedora sample's root; its /boot is plain ext4

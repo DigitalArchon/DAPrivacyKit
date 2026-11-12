@@ -66,9 +66,11 @@ def _autologin_blockers(scan, users: list[str]) -> tuple[list[str], list[str]]:
 @guide("auth.autologin")
 def autologin(check, scan, outcome):
     ev = scan.context.values["autologin"].evidence
-    manual = [e for e in ev if e.label.startswith(("greetd", "Console autologin"))]
+    # set up where the helper's edit doesn't reach: steps of commands for the user (context.detect_autologin's labels)
+    elsewhere = ("greetd", "Console autologin", "openSUSE", "Logs in at the login screen", "Session started by")
+    manual = [e for e in ev if e.label.startswith(elsewhere)]
     steps = []
-    if any(not e.label.startswith(("greetd", "Console autologin", "Display manager", "Needs")) for e in ev):
+    if any(not e.label.startswith((*elsewhere, "Display manager", "Needs")) for e in ev):
         blockers, unsure = _autologin_blockers(scan, _autologin_users(ev))
         steps.append(Step("Turn off automatic login", options=[option(check, "Turn off automatic login", [RootChange(
             "edit_config", {"target": "autologin"},
@@ -80,13 +82,35 @@ def autologin(check, scan, outcome):
                           "password. Without it, you can't get back to your desktop after the next restart."]
             + [f"Whether {u} has a password couldn't be told here: check with sudo passwd -S {u} (P means it has "
                "one) before turning automatic login off." for u in unsure]))
-    if manual:
+    greetd = sorted({m.group(1) for e in manual if (m := re.match(r"greetd .*\((/\S+)\)$", e.label))}) or \
+        (["/etc/greetd/config.toml"] if any(e.label.startswith("greetd") for e in manual) else [])
+    if any(e.label.startswith(("greetd", "Console autologin")) for e in manual):
         steps.append(Step("Automatic login set up elsewhere",
                           "These need editing by hand: remove the [initial_session] section from "
-                          "/etc/greetd/config.toml, or the console autologin override files listed below.",
-                          commands=[f"sudo rm {e.value}" for e in manual if e.label == "Console autologin"]
-                          + (["sudoedit /etc/greetd/config.toml"] if any(e.label.startswith("greetd") for e in manual)
-                             else [])))
+                          f"{', '.join(greetd) or 'greetd’s configuration'}, or the console autologin files listed "
+                          "below (a getty unit written whole, as NixOS does, is changed in its configuration: "
+                          "services.getty.autologinUser).",
+                          commands=[f"sudo rm {e.value}" for e in manual if e.label == "Console autologin"
+                                    and ".service.d/" in str(e.value)] + [f"sudoedit {p}" for p in greetd]))
+    if any(e.label.startswith("openSUSE") for e in manual):
+        steps.append(Step("openSUSE: turn it off in the display manager settings",
+                          "In YaST → System → /etc/sysconfig Editor (or the file itself), set DISPLAYMANAGER_AUTOLOGIN "
+                          "to nothing and DISPLAYMANAGER_PASSWORD_LESS_LOGIN to no.",
+                          commands=["sudoedit /etc/sysconfig/displaymanager"]))
+    nopass = [e for e in manual if e.label.startswith("Logs in at the login screen")]
+    if nopass:
+        group = re.search(r"\(group ([^,)]+)", nopass[0].label)
+        users = [u.strip() for e in nopass for u in str(e.value).split(",") if u.strip()]
+        steps.append(Step("Ask for the password at the login screen",
+                          "These accounts are let in at the login screen without a password (Users and Groups → "
+                          "No password required, which puts them in the group). Take them out of it:",
+                          commands=[f"sudo gpasswd -d {u} {group.group(1) if group else 'nopasswdlogin'}" for u in users]))
+    units = [e.label.removeprefix("Session started by ") for e in manual if e.label.startswith("Session started by")]
+    if units:
+        steps.append(Step("A session systemd starts by itself",
+                          "These units log an account in at boot with no login screen. Turn them off (a kiosk set up "
+                          "on purpose stays so: accept the finding then):",
+                          commands=[f"sudo systemctl disable {u}" for u in units]))
     return Guide(check.id, "Turn off automatic login",
                  "With automatic login, anyone who turns the machine on is logged in as you. Without it, you type "
                  "your password at boot, and that same password then unlocks your keyring (GNOME Keyring or KWallet) "
