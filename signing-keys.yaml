@@ -16,9 +16,13 @@
 #   files     Shell patterns of the file names it publishes: used only to say what to download to verify
 #             a file (`how`) when nothing is next to it, never to decide a verdict.
 #   how       What to download next to the file to verify it, in plain words.
-#   keys      The primary keys' fingerprints (40 hex digits, v4) with a name for each.
+#   keys      The primary keys' fingerprints (40 hex digits, v4) with a name for each, and optionally
+#             `role: successor` for a key pinned now to take over when the current one is retired (copies
+#             never fetch keys, so only a successor already in a copy can ever verify there); it verifies
+#             like any listed key. Signing subkeys aren't pinned: the ones in `key` count when the primary
+#             key binds them (a subkey binding signature it made; gpgv and sqv check it).
 #   key       The public keys, ASCII-armoured, exported minimal (gpg --export-options
-#             export-minimal,export-clean), holding exactly the primary keys in `keys`.
+#             export-minimal,export-clean), holding exactly the primary keys in `keys` and their subkeys.
 #   checksums Optional: SHA-256s the project publishes on its own site for files it doesn't sign, each
 #             {file, sha256, source (the https:// page it is on)}. A file with one of them is verified.
 #   unsigned  Optional, true for a project that publishes no signature at all: then no key_from, keys

@@ -193,7 +193,10 @@ def test_the_appimage_is_named_after_the_version_it_builds(tmp_path):
         "packaging/appimage/pins.sh": (ROOT / "packaging/appimage/pins.sh").read_text(),
         "packaging/appimage/Containerfile": "FROM scratch\n"})
     (repo / "pyproject.toml").write_text('[project]\nversion = "2.0"\n')               # bumped, not committed
-    for mode, version in (("build", "1.0"), ("dev", "2.0")):
+    head = subprocess.run(["git", "rev-parse", "--short=12", "HEAD"], cwd=repo, env=env, capture_output=True,
+                          text=True).stdout.strip()
+    # a dev build carries +dev.<commit>, .dirty with uncommitted changes: never a release's own name
+    for mode, version in (("build", "1.0"), ("dev", f"2.0+dev.{head}.dirty")):
         r = subprocess.run(["bash", "packaging/build-appimage.sh", mode], cwd=repo, env=env, capture_output=True,
                            text=True)
         assert r.returncode == 0, r.stderr

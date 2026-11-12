@@ -110,27 +110,50 @@ def fingerprint(body: bytes) -> str:
 @dataclass(frozen=True)
 class KeyInfo:
     fingerprint: str                      # the primary key's
-    subkeys: tuple[str, ...] = ()
+    subkeys: tuple[str, ...] = ()         # those its primary key binds (a subkey binding signature it made follows)
     uids: tuple[str, ...] = ()
+    unbound: tuple[str, ...] = ()         # subkey packets with no binding signature by this primary: never its own
 
     @property
     def all(self) -> tuple[str, ...]:
         return (self.fingerprint,) + self.subkeys
 
 
+def _names_key(sig_body: bytes, fpr: str) -> bool:
+    """Whether a signature names this key as its issuer: its fingerprint (subpacket 33), or its key id (16), which is
+    a v4 fingerprint's last 16 hex digits and a v6 one's first."""
+    for kind, sub, _ in _subpackets(sig_body):
+        if kind == 33 and len(sub) >= 1 and sub[1:].hex().upper() == fpr:
+            return True
+        if kind == 16 and len(sub) == 8 and sub.hex().upper() in (fpr[-16:], fpr[:16]):
+            return True
+    return False
+
+
 def parse_keys(data: bytes | str) -> list[KeyInfo]:
-    """The keys in armoured or binary key data, each with its subkeys and user IDs."""
+    """The keys in armoured or binary key data, each with its subkeys and user IDs. A subkey counts as the key's only
+    when a subkey binding signature (type 0x18) issued by that primary key follows it: a subkey packet spliced into
+    a key block from elsewhere stays `unbound`. This reads the packets' structure; gpgv and sqv check the
+    signatures themselves, and accept nothing a binding doesn't hold up."""
     keys: list[dict] = []
+    sub: str | None = None
     for tag, body in packets(dearmor(data)):
         if tag == PUBLIC_KEY:
-            keys.append({"fpr": fingerprint(body), "subs": [], "uids": []})
+            keys.append({"fpr": fingerprint(body), "subs": [], "uids": [], "bound": set()})
+            sub = None
         elif tag == PUBLIC_SUBKEY and keys:
-            keys[-1]["subs"].append(fingerprint(body))
+            sub = fingerprint(body)
+            keys[-1]["subs"].append(sub)
         elif tag == USER_ID and keys:
             keys[-1]["uids"].append(body.decode("utf-8", errors="replace"))
+            sub = None
+        elif tag == SIGNATURE and keys and sub and body[:1] in (b"\x04", b"\x05", b"\x06") and len(body) > 1 \
+                and body[1] == 0x18 and _names_key(body, keys[-1]["fpr"]):
+            keys[-1]["bound"].add(sub)
     if not keys:
         raise PacketError("no public key in it")
-    return [KeyInfo(k["fpr"], tuple(k["subs"]), tuple(k["uids"])) for k in keys]
+    return [KeyInfo(k["fpr"], tuple(s for s in k["subs"] if s in k["bound"]), tuple(k["uids"]),
+                    tuple(s for s in k["subs"] if s not in k["bound"])) for k in keys]
 
 
 def _subpackets(body: bytes):
@@ -352,6 +375,9 @@ class Project:
     unsigned: bool = False                       # it publishes no signature: `how` says what there is
     # SHA-256s the project publishes on its own site for files it doesn't sign: (file, sha256, page)
     checksums: tuple[tuple[str, str, str], ...] = ()
+    # primary keys pinned now for when the current one has to be retired (lost, compromised): copies never fetch
+    # keys, so a successor counts only if it was in the copy already. It verifies like any key listed.
+    successors: tuple[str, ...] = ()
 
     def matches(self, filename: str) -> bool:
         return any(fnmatch.fnmatchcase(filename, pat) for pat in self.files)
@@ -412,12 +438,18 @@ def parse(data) -> list[Project]:
                                p["checked"], tuple(str(x) for x in p["files"]), _text(p["how"]), (), b"",
                                note=_text(p.get("note")), unsigned=True, checksums=tuple(sums)))
             continue
-        pins = []
+        pins, successors = [], []
         for k in p["keys"]:
             fpr = str((k or {}).get("fingerprint", "")).upper()
             if not _FPR.match(fpr) or not (k or {}).get("name"):
                 raise DataError(f"{where}: each key needs a 40-digit fingerprint and a name")
+            if set(k) - {"fingerprint", "name", "role"} or k.get("role", "current") not in ("current", "successor"):
+                raise DataError(f"{where}: a key has a fingerprint, a name and, optionally, role current or successor")
             pins.append((fpr, _text(k["name"])))
+            if k.get("role") == "successor":
+                successors.append(fpr)
+        if len(successors) == len(pins):
+            raise DataError(f"{where}: a successor key needs a current one beside it")
         try:
             binary = dearmor(str(p["key"]))
             infos = parse_keys(binary)
@@ -429,7 +461,8 @@ def parse(data) -> list[Project]:
                             f"pinned with it ({', '.join(f for f, _ in pins)})")
         out.append(Project(p["id"], _text(p["name"]), _text(p["signs"]), p["source"], _text(p["key_from"]),
                            p["checked"], tuple(str(x) for x in p["files"]), _text(p["how"]), tuple(pins), binary,
-                           tuple(s for k in infos for s in k.subkeys), _text(p.get("note")), checksums=tuple(sums)))
+                           tuple(s for k in infos for s in k.subkeys), _text(p.get("note")), checksums=tuple(sums),
+                           successors=tuple(successors)))
     if not out:
         raise DataError(f"{DATA_NAME}: no projects")
     return out
