@@ -481,7 +481,14 @@ the app with the display before it can overwrite anything, and `~/TempBrowser` c
 ### Try an app
 
 Run a program you don't know yet where it can do no harm: in a sandbox, with a made-up home folder in place
-of yours. **Try something…**, then choose:
+of yours.
+
+**What this is: a way to watch a program, not a guarantee.** A trial keeps a program from your files, and
+without a network from sending anything, while you see what it does. It is not proof that a program is safe:
+one built to break out of a sandbox can try the kernel, the screen, and the graphics card's drivers if you
+give it those. Don't run what you know to be hostile, and don't take a quiet trial as a clean bill of health.
+
+**Try something…**, then choose:
 
 - **A file you downloaded**: an AppImage, a program, a script, an archive (tar, zip) or a `.deb` package. A
   copy is tried; the file itself isn't changed or run. A `.deb` is unpacked, never installed.
@@ -490,7 +497,10 @@ of yours. **Try something…**, then choose:
 
 Before it starts you choose its **network** (none, or its own with your local network fenced off and the
 hosts it contacts listed; the second needs the `passt` package) and what it gets (the graphics card, sound,
-on X11 a display of its own). Sound gives it this computer's sound server, which runs outside the sandbox:
+on X11 a display of its own). The graphics card is off to begin with: with it the program draws as it would
+outside, smoothly and with 3D, at the cost of the card's drivers handling what the program sends them, which
+is where a program trying to break out would look first. Without it the processor does the drawing.
+Sound gives it this computer's sound server, which runs outside the sandbox:
 with it the program could also record from the microphone, read your user and computer names, and have the
 sound server connect anywhere, even with no network of its own. The window lists this when you tick it. Then
 **Start the trial**, use the program, and close it or **End the trial**.
@@ -503,12 +513,15 @@ You see:
   read.
 - **What it wrote in its home**: on your computer these files would be in your home folder.
 
-**Discard the trial** removes everything of it. A sandbox isn't a guarantee: it keeps a program from your
-files, but not a program built to break out of sandboxes. Don't run what you know to be hostile. And a trial
-shows what a program does while you watch, not what it would do next week. The program can still read what
-the system tells any program about the computer: the kernel's command line (which often names your disks'
-ids), an id that stays the same until a restart, the processor. Hiding them would stop programs that start a
-sandbox of their own, as GNOME's thumbnails and the web pages in GNOME apps do.
+**Discard the trial** removes everything of it. A trial shows what a program does while you watch, not what
+it would do next week. The program can still read what the system tells any program about the computer: the
+kernel's command line (which often names your disks' ids), an id that stays the same until a restart, the
+processor. Hiding them would stop programs that start a sandbox of their own, as GNOME's thumbnails and the
+web pages in GNOME apps do. The list of what is mounted where also gives the real path of its home folder,
+which is in your cache folder for a trial on the disk, or in your home folder for a Box, and names your
+account. Of your settings it sees only what programs read — fonts, certificates, the desktop's defaults and
+your time zone — and nothing of your accounts, network or VPN settings, package mirrors, or anything put in
+`/etc/environment` for every program to read.
 
 ### What does this app keep?
 

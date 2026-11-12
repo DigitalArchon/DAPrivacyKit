@@ -3974,17 +3974,24 @@ function trialChoose(data, call) {
     h("p", {}, "Run a program you don't know yet where it can do no harm: in a sandbox, with a made-up home folder in "
       + "place of yours. None of your files, keys or accounts are within its reach. You see what it writes, which "
       + "decoy files it looks at, and which hosts it contacts if you let it online. Then everything of it is discarded."),
+    // first, and plainly: what a trial is for and what it can't promise (the owner's decision of 2026-11-12)
+    h("div", { class: "notebox risk small" }, h("b", {}, "What this is: a way to watch a program, not a guarantee. "),
+      "A trial keeps a program from your files, and without a network from sending anything, while you see what it "
+      + "does. It is not proof that a program is safe: one built to break out of a sandbox can try the kernel, the "
+      + "screen, and the graphics card's drivers if you give it those. Don't run what you know to be hostile, and "
+      + "don't take a quiet trial as a clean bill of health."),
     h("ul", { class: "small" },
       h("li", {}, h("b", {}, "The file you choose isn't changed or run where it is: "), "a copy is tried."),
-      h("li", {}, h("b", {}, "A sandbox isn't a guarantee. "), "It keeps a program from your files and, without a network, "
-        + "from sending anything. A program made to break out of sandboxes through a flaw in the kernel isn't stopped by "
-        + "it: don't run what you know to be hostile."),
       h("li", {}, h("b", {}, "A trial shows what a program does while you watch, "), "not what it would do next week."),
       h("li", {}, h("b", {}, "It can still read what the system tells any program about this computer: "), "the kernel's "
         + "version and settings, its command line (which often names your disks' ids), an id that stays the same until "
         + "the computer restarts, the processor and the disks' partitions. Hiding them would stop programs that start a "
         + "sandbox of their own, as GNOME's thumbnails and web pages in GNOME apps do. The list of what is mounted where "
-        + "gives its folders' real paths too: on the disk, that is in your home folder, which names your account.")),
+        + "gives its folders' real paths too: that path is in your home folder (a Box's), or in your cache folder for a "
+        + "trial on the disk, and it names your account."),
+      h("li", {}, h("b", {}, "Of your settings it sees only what programs read: "), "fonts, certificates, the desktop's "
+        + "defaults and your time zone. Not your accounts, network or VPN settings, your package mirrors, or anything "
+        + "put in /etc/environment for every program to read.")),
     h("h4", {}, "Where the trial lives"), places,
     h("h4", {}, "A file you downloaded"),
     h("p", { class: "small muted" }, "An AppImage, a program, a script, an archive (tar, zip) or a .deb package. An archive "
@@ -3999,7 +4006,9 @@ function trialChoose(data, call) {
 function trialReady(data, t, call) {
   const st = data.status, flat = t.kind === "flatpak";
   let program = t.candidates[0]?.rel || "";
-  const o = { network: "off", gpu: !!st.gpu, sound: false, nested: false, decoys: true };
+  // the graphics card off by default (the owner's decision of 2026-11-12): its drivers, in the kernel and in the
+  // program, then handle what the program sends them, which is the widest way out of a sandbox there is here
+  const o = { network: "off", gpu: false, sound: false, nested: false, decoys: true };
   const args = h("input", { type: "text", class: "path", autocomplete: "off", spellcheck: "false", placeholder: "none",
     "aria-label": "Arguments" });
   const radio = (value, label, note, disabled) => h("label", { class: "check" },
@@ -4040,7 +4049,9 @@ function trialReady(data, t, call) {
           : `needs pasta${pasta.install ? ` (${pasta.install})` : ""}`, !(pasta.available && pasta.lan_blocked)),
     h("h4", {}, "What it gets"),
     tick("decoys", "Decoy files in its home", "made-up SSH keys, browser profiles, wallets and documents: a program that opens them has gone looking"),
-    tick("gpu", "The graphics card", "so it draws as it would outside; its drivers then handle what the program sends them", !!st.gpu),
+    tick("gpu", "The graphics card", "it then draws as it would outside, smoothly, and 3D works; the cost is that the "
+      + "card's drivers, in the kernel and in the program, handle what the program sends them, which is where a "
+      + "program trying to break out would look first. Without it, drawing is done by the processor", !!st.gpu),
     tick("sound", "Sound", "this computer's sound server, outside the sandbox", !!st.sound),
     st.sound ? soundNote : null,
     tick("nested", "A display of its own", "it can't see or type into your other windows (needs Xephyr); no copy and paste with them",

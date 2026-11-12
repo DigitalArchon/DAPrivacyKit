@@ -445,8 +445,10 @@ def argv(host: Host, v: Viewer, copy: Path, name_in: str, own: Path, disp: sandb
     if disp.kind == "none" or disp.network:
         raise ViewError(disp.note or "There is no display to show it on.")
     etc = sandbox.identity_files(own / "etc", None)
-    a = [sandbox._need(host, sandbox.BWRAP), *sandbox.namespaces(False), *sandbox.system(host),
-         *sandbox.identity(host, etc, own_dns=False)]
+    a = [sandbox._need(host, sandbox.BWRAP), *sandbox.namespaces(False), *sandbox.system(host, etc=False),
+         # an /etc of its own, with only what viewers read: a viewer opens a file a website gave the browser, and
+         # the list of what to cover over the computer's own /etc missed what no list foresees (sandbox.app_etc)
+         *sandbox.app_etc(host, etc, resolv=False)]
     if kept(host):
         a.append("--die-with-parent")                   # its parent is the keeper (KEEPER), not the app
     if sync is not None:

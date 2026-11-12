@@ -943,11 +943,14 @@ class Bubblewrap(Engine):
         # --die-with-parent: Stop ends bubblewrap, and the sandbox must go with it. Its own process is in a session
         # of its own (--new-session), so a signal to the group doesn't reach it: without this the program ran on
         # after Stop, its folder deleted under it (seen with KWrite on CachyOS)
-        a = [bwrap, "--die-with-parent", *sandbox.namespaces(bool(parts.pasta)), *sandbox.system(host),
+        a = [bwrap, "--die-with-parent", *sandbox.namespaces(bool(parts.pasta)), *sandbox.system(host, etc=False),
              # bubblewrap 0.10 and later lay the package's /usr over the computer's themselves (the first source at
              # the bottom), before AppArmor's bwrap-userns-restrict profile takes the capabilities from what they start
              *(["--overlay-src", "/usr", "--overlay-src", deb_usr, "--ro-overlay", "/usr"] if native else []),
-             *sandbox.identity(host, parts.etc, own_dns=bool(parts.pasta)), *sandbox._gpu_argv(parts.devices)]
+             # an /etc of the sandbox's own, holding only what programs read and nothing of the computer's settings
+             # (sandbox.app_etc): what it covered over the computer's own /etc missed the account's name in passwd-,
+             # the mirrors, tokens in /etc/environment and more (the review of 2026-11-12)
+             *sandbox.app_etc(host, parts.etc, resolv=bool(parts.pasta)), *sandbox._gpu_argv(parts.devices)]
         a += ["--bind", home, sandbox.HOME_IN, "--perms", "0700", "--dir", sandbox.RUNTIME_IN]
         if t.kind == "deb":
             opt = package_part(t, "opt")

@@ -1710,11 +1710,16 @@ while ($$(".modal").length) { $$(".modal .buttons button").at(-1).click(); await
 
 // Try an app: a file chosen and prepared, the program in it picked, options, the run, the result, discarded
 await window.openTrial(); await tick();
-check(text(".modal .trial").includes("A sandbox isn't a guarantee") && $$(".modal .trial input[name=trial-where]").length === 2
-      && text(".modal .trial").includes("which doesn't erase it"), "it starts by saying what a sandbox is and isn't, and where the trial can live");
+check(text(".modal .trial .notebox.risk").includes("a way to watch a program, not a guarantee")
+      && text(".modal .trial").includes("don't take a quiet trial as a clean bill of health")
+      && $$(".modal .trial input[name=trial-where]").length === 2 && text(".modal .trial").includes("which doesn't erase it"),
+      "it starts by saying plainly what a trial contains and doesn't, and where the trial can live (the review of 2026-11-12)");
+check(text(".modal .trial").includes("Of your settings it sees only what programs read")
+      && text(".modal .trial").includes("/etc/environment"),
+      "it says the sandbox's /etc holds only what programs read, not the computer's settings");
 check(text(".modal .trial").includes("The list of what is mounted where gives its folders' real paths too")
-      && text(".modal .trial").includes("which names your account"),
-      "it says the mount list gives a trial on the disk the account's name (the review of 2026-11-04)");
+      && text(".modal .trial").includes("it names your account"),
+      "it says the mount list gives a trial on the disk, and a Box, the account's name (the reviews of 2026-11-04 and 11-12)");
 check(text(".modal .trial").includes("swap on a disk (/swapfile)") && !text(".modal .trial").includes("nothing of the trial touches the disk"),
       "in memory isn't said to keep it off the disk when swap reaches one (the 2026-10-17 review)");
 { const prep = $$(".modal .trial button").find(b => b.textContent === "Prepare it");
@@ -1733,8 +1738,10 @@ check(text(".modal .trial .notebox.risk").includes("This is an X11 session") && 
   check(net.length === 2 && net[0].checked && net[1].disabled && text(".modal .trial").includes("sudo apt install passt"),
         "no network by default; the observed one says what it needs when pasta is missing");
   const ticks = $$(".modal .trial input[type=checkbox]");
-  check(ticks.length === 4 && ticks[0].checked && ticks[1].checked && !ticks[2].checked && !ticks[3].checked,
-        "decoys and the graphics card are on, sound and a display of its own off");
+  check(ticks.length === 4 && ticks[0].checked && !ticks[1].checked && !ticks[2].checked && !ticks[3].checked,
+        "decoys are on; the graphics card, sound and a display of its own off (the owner's decision of 2026-11-12)");
+  check(text(".modal .trial").includes("where a program trying to break out would look first"),
+        "the graphics card's tick says what it gives and what it costs");
   const soundNote = () => $$(".modal .trial .warnbox").find(n => n.textContent.includes("With sound"));
   check(soundNote()?.hidden === true, "what sound gives isn't listed while it is off");
   ticks[2].click();
@@ -1746,7 +1753,7 @@ check(text(".modal .trial .notebox.risk").includes("This is an X11 session") && 
   $(".modal .trial input.path").value = "--demo";
   $$(".modal .trial button").find(b => b.textContent === "Start the trial").click(); await tick(); await tick(); }
 { const sent = JSON.parse(trialCalls.at(-1).slice(6));
-  check(sent.program === "tool/main.py" && sent.args === "--demo" && sent.network === "off" && sent.decoys === true && sent.gpu === true,
+  check(sent.program === "tool/main.py" && sent.args === "--demo" && sent.network === "off" && sent.decoys === true && sent.gpu === false,
         "the start sends what was chosen: " + trialCalls.at(-1));
   check(text(".modal .trial").includes("tool.tar.gz is running in its sandbox") && text(".modal .trial .warnbox").includes("looking at decoy files")
         && text(".modal .trial").includes("an SSH private key"), "while it runs, a decoy it looks at is shown at once"); }

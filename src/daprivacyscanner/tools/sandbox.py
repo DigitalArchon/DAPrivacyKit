@@ -177,13 +177,6 @@ FENCE_ALLOWED = (("10.64.0.1", 1080), ("10.124.0.0/22", 1080))
 # anything but DNS, and Mullvad's proxy address on anything but its port (a route lookup: no packet is sent)
 FENCE_PROBE = ("192.0.0.8", DNS_FORWARD, "10.64.0.1")
 
-# /etc entries that say whose computer this is, covered in the viewer's sandbox (tools/viewer.py: it keeps the
-# computer's /etc, since a viewer may read anything there, and has no network to send anything with):
-# files replaced by an empty one, folders by an empty tmpfs.
-EMPTIED_FILES = ("fstab", "crypttab", "subuid", "subgid", "mailname", "machine-info", "krb5.conf", "adjtime")
-EMPTIED_DIRS = ("ssh", "NetworkManager", "wireguard", "openvpn", "cups", "sssd", "samba", "ppp",
-                "wpa_supplicant", "netplan")
-
 # The browser's /etc: these, as the computer has them (a missing one is left out), and ETC_OWN, the sandbox's own.
 # A link is kept as a link when what it points to is in the sandbox (/usr, /proc, or a kept entry), else the file
 # it points to is bound in its place.
@@ -192,6 +185,24 @@ ETC_KEPT = ("ld.so.cache", "ld.so.conf", "ld.so.conf.d", "nsswitch.conf", "host.
             "crypto-policies", "gtk-2.0", "gtk-3.0", "gtk-4.0", "xdg", "pulse", "alsa", "asound.conf", "drirc",
             "vulkan", "glvnd", "locale.alias")
 ETC_OWN = ("passwd", "group", "hostname", "hosts", "machine-id", "timezone")
+# A trial's, a Box's and the viewer's /etc: an allowlist too (app_etc), ETC_KEPT and these. It was a list of what to
+# cover (EMPTIED_FILES, EMPTIED_DIRS) over the computer's own /etc, which missed, as such a list always does: passwd-
+# and group-, the copies of those files that the tools which change them leave behind, 0644 here, with the account's
+# name and the user's full name in them; the time zone and keyboard layout, which say where the computer is;
+# /etc/environment and /etc/profile.d, where a proxy's password or a token put there for every program to read lives;
+# the package mirrors (apt's sources, pacman.conf, yum.repos.d: the country, a company's own mirror); the display
+# manager's settings, which name the account that logs in automatically; and the app's own mount units in
+# /etc/systemd/system, whose names hold the path of the user's home (found in the review of 2026-11-12). What an
+# app on trial needs beyond the browser's list, tested with real apps (below): a session bus of its own
+# (dbus-1: GTK and Qt apps start one), accessibility (at-spi2), XML catalogues and magic files, the readline and
+# terminfo settings a script may read, and what names the distribution (programs that look for it beyond
+# os-release).
+# Left out on purpose, and said on the page: the time zone and the keyboard layout (locale.conf, vconsole.conf,
+# default/keyboard, X11), /etc/environment, profile and profile.d, the mirrors, and anything else not listed.
+ETC_APPS = ("dbus-1", "at-spi2", "xml", "magic", "magic.mime", "inputrc", "terminfo", "shells", "nvidia",
+            "ca-certificates.conf", "lsb-release", "debian_version", "redhat-release", "fedora-release",
+            "arch-release", "SuSE-release", "kde4rc", "kderc", "ImageMagick-6", "ImageMagick-7", "libva.conf",
+            "sensors3.conf", "libreoffice")
 UTC = ("/usr/share/zoneinfo/Etc/UTC", "/usr/share/zoneinfo/UTC")
 IDENTITY_IN = "/run/identity"           # in Tor Browser's outer sandbox: the sandbox's own files, for the inner one
 # /proc's files that say whose computer it is, covered in the innermost sandbox (proc_masks): the kernel command line
@@ -492,23 +503,59 @@ def resolver(host: Host) -> str | None:
     return "\n".join(kept) + "\n" if any(k.startswith("nameserver") for k in kept) else None
 
 
+def _kept_argv(host: Host, kept: tuple[str, ...], inner: bool = False) -> list[str]:
+    """The entries of `kept` as the computer has them, for an /etc that is a tmpfs (etc_argv, app_etc): a missing one
+    is left out; a link is kept as a link when what it points to is in the sandbox (/usr, /proc, or another kept
+    entry), else the file it points to is bound in its place."""
+    argv: list[str] = []
+    for name in kept:
+        p = host.sys_path(f"/etc/{name}")
+        if p.is_symlink():
+            real = _inside(host, os.path.realpath(p))
+            if real.startswith(("/usr/", "/proc/")) or (real.startswith("/etc/") and real.split("/")[2] in kept):
+                argv += ["--symlink", os.readlink(p), f"/etc/{name}"]
+            elif host.sys_path(real).exists():
+                argv += ["--ro-bind", f"/etc/{name}" if inner else real, f"/etc/{name}"]
+        elif p.exists():
+            argv += ["--ro-bind", f"/etc/{name}", f"/etc/{name}"]
+    return argv
+
+
+def app_etc(host: Host, files: dict[str, Path], resolv: bool, local_time: bool = True) -> list[str]:
+    """The /etc of a trial, a Box and the viewer: a tmpfs with ETC_KEPT and ETC_APPS as the computer has them, the
+    sandbox's own passwd, group, hostname, hosts and machine-id (`files`, from identity_files), and nothing else of
+    the computer's settings. `resolv`: the sandbox's own resolv.conf (pasta's forwarder) is put in place; without it
+    there is none, since such a sandbox has no network of the computer's to use one. `local_time`: the computer's
+    time zone, so an app on trial shows the times the user expects (the page says a program can read it); the
+    browser's sandbox has UTC instead (etc_argv).
+
+    An allowlist, as the browser's is: a list of what to cover over the computer's own /etc misses what no list
+    foresees (ETC_APPS' notes). Tested with real apps on Mint 22.3 and the lab."""
+    argv = ["--tmpfs", "/etc", *_kept_argv(host, (*ETC_KEPT, *ETC_APPS))]
+    for name in ("passwd", "group", "hostname", "hosts", "machine-id"):
+        argv += ["--ro-bind", str(files[name]), f"/etc/{name}"]
+    if local_time:
+        for name in ("localtime", "timezone"):
+            p = host.sys_path(f"/etc/{name}")
+            if p.is_symlink() and os.path.realpath(p).startswith(("/usr/", str(host.sys_path("/usr")) + "/")):
+                argv += ["--symlink", _inside(host, os.path.realpath(p)), f"/etc/{name}"]
+            elif p.exists():
+                argv += ["--ro-bind", f"/etc/{name}", f"/etc/{name}"]
+    else:
+        utc = next((z for z in UTC if host.sys_path(z).exists()), None)
+        argv += (["--symlink", utc, "/etc/localtime"] if utc else []) + ["--ro-bind", str(files["timezone"]), "/etc/timezone"]
+    if resolv and "resolv.conf" in files:
+        argv += ["--ro-bind", str(files["resolv.conf"]), "/etc/resolv.conf"]
+    return argv + ["--remount-ro", "/etc"]
+
+
 def etc_argv(host: Host, files: dict[str, Path], resolv: str | None, inner: bool = False) -> list[str]:
     """The browser's /etc: a tmpfs with ETC_KEPT as the computer has them and ETC_OWN from `files`
     (identity_files), the clock on UTC, then made read-only. `resolv`: "own" (files["resolv.conf"]:
     pasta's forwarder), "host" (the computer's resolver) or None (none: Tor Browser's inner sandbox,
     which has no network to use one). `inner`: for the sandbox inside Tor Browser's outer one, every
     file taken from the outer one's /etc."""
-    argv = ["--tmpfs", "/etc"]
-    for name in ETC_KEPT:
-        p = host.sys_path(f"/etc/{name}")
-        if p.is_symlink():
-            real = _inside(host, os.path.realpath(p))
-            if real.startswith(("/usr/", "/proc/")) or (real.startswith("/etc/") and real.split("/")[2] in ETC_KEPT):
-                argv += ["--symlink", os.readlink(p), f"/etc/{name}"]
-            elif host.sys_path(real).exists():
-                argv += ["--ro-bind", f"/etc/{name}" if inner else real, f"/etc/{name}"]
-        elif p.exists():
-            argv += ["--ro-bind", f"/etc/{name}", f"/etc/{name}"]
+    argv = ["--tmpfs", "/etc", *_kept_argv(host, ETC_KEPT, inner)]
     for name in ETC_OWN:
         argv += ["--ro-bind", f"/etc/{name}" if inner else str(files[name]), f"/etc/{name}"]
     utc = next((z for z in UTC if host.sys_path(z).exists()), None)
@@ -537,31 +584,6 @@ def proc_masks(src: str, gpu: bool = False, host: Host | None = None) -> list[st
         if exists(f"/proc/{name}"):
             out += ["--tmpfs", f"/proc/{name}", "--remount-ro", f"/proc/{name}"]
     return out
-
-
-def identity(host: Host, files: dict[str, Path] | None, own_dns: bool) -> list[str]:
-    """For the viewer's sandbox, which keeps the computer's /etc: its identifying files covered by the
-    sandbox's own (`files`, from identity_files), and the resolver: the sandbox's own resolv.conf when
-    `own_dns`, else the computer's, whose /etc/resolv.conf is often a link into /run (systemd-resolved,
-    NetworkManager)."""
-    argv: list[str] = []
-    if files:
-        for name in ("passwd", "group", "hostname", "hosts", "machine-id", *EMPTIED_FILES):
-            t = _etc_target(host, name)
-            if t and not t[1]:
-                argv += ["--ro-bind", str(files.get(name, files["empty"])), t[0]]
-        for name in EMPTIED_DIRS:
-            t = _etc_target(host, name)
-            if t and t[1]:
-                argv += ["--tmpfs", t[0]]
-    t = _etc_target(host, "resolv.conf")
-    if own_dns and files and "resolv.conf" in files:
-        target = t[0] if t else "/etc/resolv.conf"
-        if t or host.sys_path("/etc/resolv.conf").is_symlink():
-            argv += ["--ro-bind", str(files["resolv.conf"]), target]
-    elif t and t[0].startswith("/run/"):
-        argv += ["--ro-bind-try", t[0], t[0]]
-    return argv
 
 
 def bind_source(base: Path | str, rel: str = "", kind: str = "dir") -> str | None:

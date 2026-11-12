@@ -1244,12 +1244,13 @@ existing file and never executable.
 **View offline…** (`viewer.py`) opens the copy in the desktop's own viewer for its type (`xdg-mime query
 default`, then its `.desktop` file's `Exec`), with **no network at all**:
 
-- a program from `/usr` or `/opt` runs in bubblewrap with no network namespace sharing (loopback only),
-  the computer's `/etc` read-only with what names the user or computer covered (`identity`: passwd, group,
-  hostname, hosts, machine-id, fstab, crypttab, krb5.conf…; folders such as `ssh`, `NetworkManager`,
-  `wireguard`, `cups` replaced by empty tmpfs), an empty home in memory with only that file read-only in
-  it, and the display (a compositor-marked Wayland socket where possible). No sound, no D-Bus, no other
-  file. No `/proc` masks (glycin-based viewers start sandboxes of their own);
+- a program from `/usr` or `/opt` runs in bubblewrap with no network namespace sharing (loopback only), an
+  `/etc` of its own holding only what programs read (`sandbox.app_etc`, as a trial's: it was the computer's
+  whole `/etc` with a list of what to cover over it, which missed what no list foresees — the review of
+  2026-11-12, under Try an app above), an empty home in memory with only that file read-only in it (bound by
+  itself, never through a link in its place: `sandbox.bind_source`), and the display (a compositor-marked
+  Wayland socket where possible). No sound, no D-Bus, no other file, and no resolver at all. No `/proc` masks
+  (glycin-based viewers start sandboxes of their own);
 - a Flatpak app runs in Flatpak's own sandbox with what it declares for itself dropped (`flatpak run --sandbox`)
   and only this given back (`viewer.FLATPAK_RUN`): the display (`--socket=wayland`, or `x11` with `ipc`), the
   filtered session bus with its own name (`--own-name`: Text Editor 51 won't start without it), `--unshare=network`,
@@ -1767,8 +1768,8 @@ drive they came from (its model, serial, size and WWN, `retire.identity`): anoth
     for a leftover.
   - **The sandbox** (the `bubblewrap` engine; engines sit behind `ENGINES`): every namespace, `--die-with-parent`
     (Stop ends bubblewrap, and its sandbox, in a session of its own, must go with it: without it KWrite ran on
-    after Stop, tested), no capabilities, a new session, an environment built from scratch, `/usr` read-only, the
-    computer's `/etc` with what names the user or computer covered (`sandbox.identity`), the throwaway home at
+    after Stop, tested), no capabilities, a new session, an environment built from scratch, `/usr` read-only, an
+    `/etc` of its own holding only what programs read (`sandbox.app_etc`, below), the throwaway home at
     `/home/user`, the program read-only at `/app`, the display (on Wayland a socket the compositor marks as a
     sandbox's where it has the protocol; on X11 the X server's, with a warning, or Xephyr when ticked), no session
     D-Bus, keyring or agents, and the kernel keyring and crash-dump protections every start gets
@@ -1781,8 +1782,11 @@ drive they came from (its model, serial, size and WWN, `retire.identity`): anoth
     disks' UUIDs), the boot id and the rest of what `/proc` tells any program, and the page and the Box's guide
     say so. (WebKitGTK's sandbox also binds `/sys/block` and more of `/sys`, which a trial isn't given, since it
     would show the drives' serial numbers: its web pages don't load in a trial as it is, tested the same day.)
-    The graphics card when ticked (on by default: the owner's decision, so that a trial feels as the app would)
-    and sound when ticked (PulseAudio's socket, which gives a program what it gives the browser: the page lists it
+    The graphics card when ticked, off by default (the owner's decision of 2026-11-12, reversing the earlier
+    "on, so that a trial feels as the app would": the card's drivers, in the kernel and in the program, then handle
+    what the program sends them, which is the widest way out of this sandbox there is; the tick says what it gives
+    and what it costs, and the panel and the manual say first that a trial is a way to watch a program, not a
+    guarantee against one built to break out) and sound when ticked (PulseAudio's socket, which gives a program what it gives the browser: the page lists it
     under the tick, `soundRisks`, and the Box's guide in its help, both saying the sound server can be made to
     connect out past a trial's network; they said only "the microphone" until the 2026-10-17 review). Its
     command is `STAY`, a subreaper that waits for everything
@@ -1804,6 +1808,25 @@ drive they came from (its model, serial, size and WWN, `retire.identity`): anoth
     overlay of the package's `usr` over `/usr`, then starts the sandbox proper inside that view; the package's
     `opt` is bound at `/opt`. Bubblewrap 0.9 (Mint 22.3) has no overlay option of its own; this needs none
     (`probe_overlay` tries it first). Tested with Ubuntu's `hello` and `galculator` packages.
+  - **Its own /etc** (`sandbox.app_etc`, for a trial, a Box and View offline…): a tmpfs with `ETC_KEPT` (the
+    browser's list) and `ETC_APPS` as the computer has them, the sandbox's own `passwd`, `group`, `hostname`,
+    `hosts` and `machine-id`, the computer's time zone (so an app shows the times the user expects; the browser's
+    sandbox has UTC), pasta's resolver when the network is observed and no `resolv.conf` at all without a network,
+    then read-only. It was the computer's whole `/etc` with a list of what to cover over it, which missed, as such
+    a list always does (found in the review of 2026-11-12): `passwd-` and `group-`, the copies those files' editors
+    leave behind, 0644 on Mint and Arch, with the account's name and the user's full name; the time zone and
+    keyboard layout as separate files; `/etc/environment` and `profile.d`, where a proxy's password or a token put
+    there for every program lives; the package mirrors (apt's sources, `pacman.conf`, `yum.repos.d`: the country, a
+    company's own mirror); the display manager's settings, which name the account that logs in automatically; and
+    the app's own mount units in `/etc/systemd/system`, whose names hold the path of the user's home. `ETC_APPS`
+    adds what an app on trial needs beyond a browser: `dbus-1` (GTK and Qt apps start a session bus of their own),
+    `at-spi2`, XML catalogues, the magic files, `inputrc`, `terminfo`, `shells`, what names the distribution, and
+    LibreOffice's `/etc/libreoffice`. Tested on Mint 22.3 on a private Xvfb display with xed and xreader (GTK 3),
+    gnome-calculator, baobab and gnome-font-viewer (GTK 4) and LibreOffice Writer: each started and drew its window
+    as before (Writer opens no window on a bare Xvfb either way, checked against the computer's whole `/etc`).
+    The real paths of its folders are still in `/proc/self/mountinfo`'s root field (a Box's `home` under the user's
+    home, a disk trial's under the cache folder), which bubblewrap's bind mounts can't hide: the panel, the manual
+    and the Box's guide say so.
   - **Bind sources** (`sandbox.bind_source`, through `trial.package_part` and `trial.own_part`): bubblewrap, and the
     kernel for an overlay's lower folder, resolve a bind source on the computer, outside any sandbox, and tarfile's
     "tar" filter keeps members inside the folder but not where a link points. So a crafted .deb whose `./opt` was a

@@ -724,3 +724,58 @@ def test_a_package_linked_out_of_itself_is_refused_once_unpacked(host, tmp_path)
     with pytest.raises(trial.TrialError, match="opt folder is a link"):
         trial.prepare_file(host, src, "memory", run=unpacked)
     assert not list((host.root / "run/user/1000").glob("daprivacyscanner-trial/*")), "nothing of it is left"
+
+
+# ------------------------------------------------------------------ the sandbox's own /etc
+
+def _etc_tree(host):
+    """A computer's /etc with the leaks the review of 2026-11-12 found, and what apps need."""
+    etc = host.root / "etc"
+    for name in ("passwd", "group", "passwd-", "group-", "shadow", "hostname", "hosts", "machine-id", "environment",
+                 "nsswitch.conf", "ld.so.cache", "mime.types", "os-release", "timezone", "resolv.conf", "locale.conf",
+                 "pacman.conf", "inputrc", "magic", "shells", "lsb-release", "debian_version", "ca-certificates.conf"):
+        (etc / name).write_text(f"{name}\n")
+    for name in ("profile.d", "apt", "dbus-1", "at-spi2", "xml", "fonts", "gtk-3.0", "gtk-4.0", "xdg", "ssl",
+                 "sddm.conf.d", "systemd/system", "NetworkManager/system-connections", "libreoffice"):
+        (etc / name).mkdir(parents=True, exist_ok=True)
+    (etc / "systemd/system/home-alice-Ephemeral.mount").write_text("[Mount]\n")
+    zone = host.root / "usr/share/zoneinfo/Europe/Berlin"
+    zone.parent.mkdir(parents=True, exist_ok=True)
+    zone.write_text("")
+    (etc / "localtime").symlink_to("/usr/share/zoneinfo/Europe/Berlin")
+
+
+def test_the_sandboxs_etc_holds_only_what_programs_read(host, tmp_path):
+    """An allowlist, as the browser's /etc is (sandbox.app_etc): the list of what to cover over the computer's own
+    /etc missed passwd- and group- (the account's and the user's name, 0644 here), /etc/environment and profile.d
+    (a proxy's password, a token), the mirrors, the display manager's automatic login and the app's own mount units,
+    whose names hold the home's path (the review of 2026-11-12)."""
+    _etc_tree(host)
+    t = a_trial(tmp_path, argv=["/app/tool"])
+    p = parts(host, tmp_path)
+    a = trial.ENGINES["bubblewrap"].command(host, t, p)
+    assert ("/etc", "/etc") not in pairs(a, "--ro-bind"), "never the computer's whole /etc"
+    assert "/etc" in [a[i + 1] for i, x in enumerate(a) if x == "--tmpfs"]
+    assert ["--remount-ro", "/etc"] == [a[a.index("--remount-ro")], a[a.index("--remount-ro") + 1]]
+    inside = {dst for src, dst in pairs(a, "--ro-bind") + pairs(a, "--symlink")}
+    for name in ("nsswitch.conf", "ld.so.cache", "mime.types", "os-release", "dbus-1", "at-spi2", "xml", "fonts",
+                 "gtk-3.0", "gtk-4.0", "xdg", "ssl", "inputrc", "magic", "shells", "lsb-release", "libreoffice"):
+        assert f"/etc/{name}" in inside, name
+    for name in ("passwd-", "group-", "shadow", "environment", "profile.d", "apt", "locale.conf", "pacman.conf",
+                 "sddm.conf.d", "systemd", "systemd/system", "NetworkManager"):
+        assert f"/etc/{name}" not in inside, name
+    own = {dst: src for src, dst in pairs(a, "--ro-bind")}
+    for name in ("passwd", "group", "hostname", "hosts", "machine-id"):
+        assert own[f"/etc/{name}"] == str(p.etc[name]), name
+    links = {dst: src for src, dst in pairs(a, "--symlink")}
+    assert links["/etc/localtime"] == "/usr/share/zoneinfo/Europe/Berlin", "the user's own times"
+    assert "/etc/resolv.conf" not in inside, "no network, no resolver: not the computer's servers or search domain"
+
+
+def test_the_sandboxs_etc_names_pastas_resolver_when_the_network_is_observed(host, tmp_path):
+    _etc_tree(host)
+    t = a_trial(tmp_path, argv=["/app/tool"])
+    p = parts(host, tmp_path, resolv=sandbox.FORWARD_RESOLV, pasta="pasta", pcap=tmp_path / "packets")
+    a = trial.ENGINES["bubblewrap"].command(host, t, p)
+    assert (str(p.etc["resolv.conf"]), "/etc/resolv.conf") in pairs(a, "--ro-bind")
+    assert p.etc["resolv.conf"].read_text() == sandbox.FORWARD_RESOLV

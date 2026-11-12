@@ -262,6 +262,33 @@ def test_a_copy_a_viewer_has_mapped_is_held(host):
     assert (st.st_dev, st.st_ino) in V._held(host)
 
 
+def test_the_viewers_etc_holds_only_what_programs_read(host, tmp_path):
+    """As a trial's (sandbox.app_etc): the list of what to cover over the computer's own /etc missed passwd-,
+    /etc/environment, the mirrors and more (the review of 2026-11-12). A viewer opens a file a website gave the
+    browser."""
+    set_up(host)
+    etc = host.root / "etc"
+    etc.mkdir(parents=True, exist_ok=True)
+    for name in ("passwd", "group", "passwd-", "group-", "environment", "nsswitch.conf", "hostname", "hosts",
+                 "machine-id", "resolv.conf", "mime.types"):
+        (etc / name).write_text(name)
+    for name in ("profile.d", "apt", "dbus-1", "fonts", "NetworkManager"):
+        (etc / name).mkdir(parents=True, exist_ok=True)
+    own = tmp_path / "own"
+    own.mkdir()
+    copy = tmp_path / "stage"
+    copy.mkdir()
+    (copy / "report.pdf").write_bytes(PDF)
+    v = V.Viewer("Document Viewer", "xreader.desktop", ["/usr/bin/xreader", "/home/user/report.pdf"])
+    a = V.argv(host, v, copy / "report.pdf", "report.pdf", own, V.sandbox.Display("x11", [], {}))
+    inside = {dst for src, dst in pairs(a, "--ro-bind") + pairs(a, "--symlink")}
+    assert ("/etc", "/etc") not in pairs(a, "--ro-bind") and "/etc/dbus-1" in inside and "/etc/fonts" in inside
+    for name in ("passwd-", "group-", "environment", "profile.d", "apt", "NetworkManager", "resolv.conf"):
+        assert f"/etc/{name}" not in inside, name
+    own_files = {dst: src for src, dst in pairs(a, "--ro-bind")}
+    assert own_files["/etc/passwd"].endswith("/etc/passwd") and own_files["/etc/passwd"] != "/etc/passwd"
+
+
 def test_a_copy_replaced_by_a_link_isnt_given_to_the_viewer(host, tmp_path):
     """The copy is bound by itself, never through a link in its place (sandbox.bind_source), as trials' and Boxes'
     folders are (the review of 2026-11-12)."""
