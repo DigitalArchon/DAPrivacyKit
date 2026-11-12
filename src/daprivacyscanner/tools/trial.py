@@ -1713,7 +1713,7 @@ def _stay_of(pid: int) -> int | None:
     for name in names:
         if name.isdigit():
             try:
-                with open(f"/proc/{name}/stat") as f:
+                with open(f"/proc/{name}/stat", encoding="utf-8", errors="replace") as f:
                     kids.setdefault(int(f.read().rsplit(")", 1)[1].split()[1]), []).append(int(name))
             except (OSError, IndexError, ValueError):
                 continue
@@ -1724,7 +1724,7 @@ def _stay_of(pid: int) -> int | None:
             continue
         seen.add(p)
         try:
-            with open(f"/proc/{p}/status") as f:
+            with open(f"/proc/{p}/status", encoding="utf-8", errors="replace") as f:     # its name: any bytes
                 ns = next((ln.split()[1:] for ln in f if ln.startswith("NSpid:")), [])
             with open(f"/proc/{p}/cmdline", "rb") as f:
                 argv = f.read().split(b"\0")

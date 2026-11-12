@@ -35,7 +35,7 @@ def _started(pid: int) -> str:
     """When the process started (clock ticks since boot, /proc/PID/stat's 22nd field): with the boot id, what tells
     the process that wrote an entry from a later one given the same number. "" when it isn't running."""
     try:
-        text = Path(f"/proc/{pid}/stat").read_text()
+        text = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8", errors="replace")
     except OSError:
         return ""
     fields = text[text.rfind(")") + 2:].split()

@@ -1889,7 +1889,7 @@ class DeleteFiles(Action):
     def _mounted_under(path: Path) -> bool:
         """Something is mounted at or below `path` (a folder deleted whole must not reach into another filesystem)."""
         try:
-            text = Path(MOUNT_TABLE).read_text()
+            text = Path(MOUNT_TABLE).read_text(encoding="utf-8", errors="surrogateescape")
         except OSError:
             return True
         p = str(path).rstrip("/")

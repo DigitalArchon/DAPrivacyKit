@@ -162,7 +162,7 @@ def bind_users(host: Host, path: Path) -> list[str]:
     is mounted in this view. After a rebuild those would still show the old, removed folder."""
     try:
         st = os.stat(path, follow_symlinks=False)
-        own = _mountinfo(host.sys_path("/proc/self/mountinfo").read_text())
+        own = _mountinfo(host.sys_path("/proc/self/mountinfo").read_text(encoding="utf-8", errors="surrogateescape"))
         own_ns = os.readlink(host.sys_path("/proc/self/ns/mnt"))
     except OSError:
         return []
@@ -185,7 +185,7 @@ def bind_users(host: Host, path: Path) -> list[str]:
             if ns in seen_ns:
                 continue
             seen_ns.add(ns)
-            lines = _mountinfo((p / "mountinfo").read_text())
+            lines = _mountinfo((p / "mountinfo").read_text(encoding="utf-8", errors="surrogateescape"))
         except OSError:
             continue
         if any(d == dev and inside(r) for d, r, _ in lines):

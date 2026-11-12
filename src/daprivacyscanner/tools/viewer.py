@@ -522,7 +522,7 @@ def displays() -> dict[int, str]:
             continue
         try:
             os.kill(pid, 0)
-            with open(f"/proc/{pid}/stat") as f:
+            with open(f"/proc/{pid}/stat", encoding="utf-8", errors="replace") as f:
                 if f.read().rsplit(")", 1)[-1].split()[0] == "Z":
                     raise ProcessLookupError
         except (ProcessLookupError, PermissionError, OSError):
@@ -537,7 +537,7 @@ def launched() -> dict[int, str]:
     for pid in list(_LAUNCHED):
         try:
             os.kill(pid, 0)
-            with open(f"/proc/{pid}/stat") as f:
+            with open(f"/proc/{pid}/stat", encoding="utf-8", errors="replace") as f:
                 if f.read().rsplit(")", 1)[-1].split()[0] == "Z":
                     raise ProcessLookupError
         except (ProcessLookupError, PermissionError, OSError):
