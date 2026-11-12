@@ -62,6 +62,12 @@ ones appear; once your copy is more than three months old, the app says so at th
 address. To update, download the new AppImage and use it in place of the old one: what the app keeps
 (History, accepted findings, your settings) carries on.
 
+**Keep it in a folder of your own** (such as `~/Applications`). Scheduled scans, the Outbox, the right-click
+entries and Boxes start the AppImage from where it was when you set them up. The app refuses to set them up while
+it runs from a folder other accounts can write to (`/tmp`, a shared folder) or that belongs to another account:
+once the file was gone, someone else could put a program of their own there, and it would run as you. It says
+so; move the AppImage, start it from there and set them up again.
+
 **The window needs WebKitGTK 4.1.** Most desktops have it. If yours doesn't, the app doesn't start: it says
 what to install (in a message box when started from the menu). It never opens in your web browser by itself:
 there, any browser extension allowed on all sites could read the page, with your findings and file names, and

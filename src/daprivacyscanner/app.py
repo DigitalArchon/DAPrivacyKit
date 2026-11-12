@@ -326,7 +326,13 @@ def schedule(mode: str) -> int:
         notes = remove_made_dirs([d for d in made if d.startswith(str(unit_dir.parent))])
         print("Scheduled scans are off." + "".join(f"\n{n}." for n in notes))
         return 0
-    command = systemd_exec(scan_command() + ["--scan", "--notify", "--quiet"])
+    from .tools.integration import command_problem
+    program = scan_command()
+    why = command_problem(program, "the timer")      # not there, or where another account could put its own program
+    if why:
+        print(f"Scans are not scheduled. {why}", file=sys.stderr)
+        return 2
+    command = systemd_exec(program + ["--scan", "--notify", "--quiet"])
     wants = unit_dir / "timers.target.wants"
     had = {d for d in (unit_dir.parent, unit_dir, wants) if d.is_dir()}
     unit_dir.mkdir(parents=True, exist_ok=True)

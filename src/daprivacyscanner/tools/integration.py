@@ -10,7 +10,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from ..launch import desktop_exec, scan_command, shell_words, systemd_exec
+from ..launch import desktop_exec, scan_command, shell_words, systemd_exec, unsafe_place
 
 MARK = "Written by DA Privacy Kit. Revert it in the app's History to remove it."
 OUTBOX_UNIT = "daprivacyscanner-outbox"
@@ -82,3 +82,22 @@ def file_manager_entries(data_home: Path, command: list[str]) -> list[Entry]:
 
 def command_exists(command: list[str]) -> bool:
     return bool(command) and os.path.isfile(command[0]) and os.access(command[0], os.X_OK)
+
+
+def command_problem(command: list[str], what: str) -> str:
+    """Why `what` (the Outbox's units, the right-click entries, a Box's menu entry: what would start `command` later)
+    can't be set up ("" when it can): this copy of the app isn't there, or it is somewhere another account could put a
+    program of its own in its place (launch.unsafe_place: an AppImage run from /tmp or a shared folder), which `what`
+    would then run as this account. The command's program, and for `python -m` the package it imports."""
+    if not command_exists(command):
+        return f"This copy of the app can't be found where it runs from now, so {what} couldn't start it."
+    places = [command[0]]
+    if command[1:2] == ["-m"]:
+        places.append(str(Path(__file__).resolve().parents[1]))
+    for place in places:
+        why = unsafe_place(place)
+        if why:
+            return (f"{why} Once it is gone, another account could put a program of its own there, and {what} would "
+                    "run it as you. Move this copy of the app into a folder of your own (such as ~/Applications), start "
+                    "it from there, and set this up again.")
+    return ""

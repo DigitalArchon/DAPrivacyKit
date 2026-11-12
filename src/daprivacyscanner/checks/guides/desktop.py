@@ -436,8 +436,8 @@ def file_manager_actions(check, scan, outcome):
     acts = [WriteFile(e.path, lambda old, t=e.content: t, f"{e.manager}: write {e.path.name}", host.display(e.path), e.mode)
             for e in entries if read_text(host, e.path) != e.content]
     managers = sorted({e.manager for e in entries})
-    blockers = [] if I.command_exists(command) else [
-        "This copy of the app can't be found where it runs from now, so the menu entries couldn't start it."]
+    why = I.command_problem(command, "the menu entries")    # not there, or where another account could replace it
+    blockers = [why] if why else []
     return Guide(check.id, "Verify and Remove metadata in the right-click menu", "", [
         Step(f"Add the entries to {' and '.join(managers)}",
              "Right-click a file and choose \"Verify download…\" (for one file) or \"Remove metadata…\" (for one or "

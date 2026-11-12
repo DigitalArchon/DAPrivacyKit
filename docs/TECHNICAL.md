@@ -134,6 +134,14 @@ Programs the app runs get the host's environment (`hostenv.host_env`): the AppIm
 `GI_TYPELIB_PATH`, for its bundled typelibs) are given back as they were, so a host program never picks up
 the AppImage's libraries.
 
+What the app sets up to run later (the scheduled scan's timer, the Outbox's units, the right-click entries, a
+Box's menu entry) starts this copy of the app by its path (`launch.scan_command`). They are refused while that
+path, or a folder on it (along the path as given and along the real one), belongs to another account or can be
+written by others, a world-writable folder like `/tmp` whatever its sticky bit, or one its group can write unless
+that group is the account's own private one (`launch.unsafe_place`, `integration.command_problem`): once the
+file was gone another account could put its own program there, and the entry would run it as this user. The
+refusal says why and what to do (move the AppImage into a folder of one's own and set it up again).
+
 ---
 
 ## 2. The local web server

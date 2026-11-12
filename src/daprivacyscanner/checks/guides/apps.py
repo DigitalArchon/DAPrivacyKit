@@ -357,8 +357,9 @@ def metadata_outbox(check, scan, outcome):
     if acts or systemctl_state(host, "is-enabled", f"{I.OUTBOX_UNIT}.path", user=True) != "enabled":
         acts.append(UserUnitSet(f"{I.OUTBOX_UNIT}.path", True, "watch ~/Outbox from now on, and at every login"))
     blockers = [] if outbox.is_dir() or not outbox.exists() else ["~/Outbox exists but isn't a folder: rename it first."]
-    if not I.command_exists(command):
-        blockers.append("This copy of the app can't be found where it runs from now, so the Outbox couldn't start it.")
+    why = I.command_problem(command, "the Outbox")      # not there, or where another account could replace it
+    if why:
+        blockers.append(why)
     steps = [Step("Install mat2", "The Outbox uses mat2 to clean the files" + (": it is installed." if mat2 else "."),
                   commands=[] if mat2 else
                   [c for c in [install(scan, debian="mat2", fedora="mat2", arch="mat2", suse="mat2")] if c],
@@ -522,8 +523,9 @@ def boxes(check, scan, outcome):
     if read_text(host, launcher) != text:
         acts.append(WriteFile(launcher, lambda old, t=text: t, f"Write the menu entry “{box.name} (in its Box)”",
                               host.display(launcher), 0o644))
-    if not I.command_exists(command):
-        blockers.append("This copy of the app can't be found where it runs from now, so the menu entry couldn't start it.")
+    why = I.command_problem(command, "the menu entry")  # not there, or where another account could replace it
+    if why:
+        blockers.append(why)
     pasta = installed(host, "pasta")
     net_help = ("None: it reaches nothing. Its usual network: as Flatpak gives it; what it contacts isn't observed."
                 if kind == "flatpak" else

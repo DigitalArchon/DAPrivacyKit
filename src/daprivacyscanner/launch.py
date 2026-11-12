@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 import shlex
+import stat as _stat
 import sys
 
 
@@ -24,6 +25,62 @@ def scan_command(environ=os.environ, argv0: str | None = None) -> list[str]:
         return [argv0]
     found = shutil.which("daprivacyscanner")
     return [found] if found else [sys.executable, "-m", "daprivacyscanner"]
+
+
+def _own_group(gid: int, uid: int) -> bool:
+    """`gid` is the account's own group (a private group: its primary one, which no other account is in), so its
+    members being able to write a folder is the account alone writing it."""
+    import grp
+    import pwd
+    try:
+        me = pwd.getpwuid(uid)
+        g = grp.getgrgid(gid)
+    except KeyError:
+        return False
+    if gid != me.pw_gid or any(m != me.pw_name for m in g.gr_mem):
+        return False
+    try:
+        return not any(p.pw_gid == gid and p.pw_uid != uid for p in pwd.getpwall())
+    except OSError:
+        return False
+
+
+def _status(path: str, follow: bool) -> os.stat_result:
+    return os.stat(path) if follow else os.lstat(path)
+
+
+def unsafe_place(path: str, uid: int | None = None) -> str:
+    """Why a program at `path` isn't safe for a unit, a timer or a menu entry to run later ("" when it is): it, or a
+    folder it is in, belongs to another account or can be written by others (a folder anyone can write to, as /tmp,
+    whatever its sticky bit: once the file is gone, another account can make one of that name). Such entries run the
+    path as it is when they start, so whoever can put a file there would have it run as this account. Checked both
+    along the path as given (each link's owner) and along the real path."""
+    uid = os.getuid() if uid is None else uid
+    given = os.path.abspath(path)
+    real = os.path.realpath(given)
+
+    def chain(p: str) -> list[str]:
+        out = [p]
+        while p != "/":
+            p = os.path.dirname(p)
+            out.append(p)
+        return out
+    for p, follow in [(x, False) for x in chain(given)] + [(x, True) for x in chain(real)]:
+        try:
+            st = _status(p, follow)
+        except OSError:
+            return f"{p} can't be looked at, so it can't be told whether another account could replace {given}."
+        what = "it" if p in (given, real) else f"the folder {p}"
+        if st.st_uid not in (uid, 0):
+            return f"{given} is run from a place another account controls: {what} belongs to another account."
+        if _stat.S_ISLNK(st.st_mode):
+            continue                                    # a link's own mode means nothing; its folder is checked
+        if st.st_mode & 0o002:
+            return f"{given} is run from a place every account can write to: {what} can be changed by anyone."
+        if st.st_mode & 0o020 and not _own_group(st.st_gid, uid):
+            return (f"{given} is run from a place other accounts can write to: {what} can be changed by the members "
+                    "of its group.")
+    return ""
 
 
 def systemd_exec(argv: list[str]) -> str:

@@ -73,6 +73,7 @@ def test_scheduling_says_when_the_timer_couldnt_be_turned_on(tmp_path, monkeypat
     from daprivacyscanner import app
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
+    monkeypatch.setattr(app, "scan_command", lambda: [sys.executable])     # a program that is there, somewhere safe
     codes = {"enable": 1}
     monkeypatch.setattr(subprocess, "run", lambda argv, **kw: subprocess.CompletedProcess(argv, codes.get(argv[2], 0)))
     assert app.schedule("daily") == 1
@@ -89,6 +90,7 @@ def test_scheduling_off_removes_the_folders_it_made_and_keeps_others(tmp_path, m
     from daprivacyscanner import app
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
+    monkeypatch.setattr(app, "scan_command", lambda: [sys.executable])     # a program that is there, somewhere safe
     wants = tmp_path / "systemd/user/timers.target.wants"
 
     def run(argv, **kw):
@@ -118,6 +120,7 @@ def test_scheduling_off_without_a_timer_says_only_that_they_are_off(tmp_path, mo
     from daprivacyscanner import app
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
+    monkeypatch.setattr(app, "scan_command", lambda: [sys.executable])     # a program that is there, somewhere safe
     ran = []
     monkeypatch.setattr(subprocess, "run", lambda argv, **kw: ran.append(argv[2]) or subprocess.CompletedProcess(argv, 0))
     assert app.schedule("off") == 0

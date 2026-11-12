@@ -271,3 +271,94 @@ def test_an_answer_trickling_in_is_cut_off_at_its_timeout(tmp_path):
         assert r.status is None and "took longer" in r.error and time.monotonic() - t0 < 3
     finally:
         srv.close()
+
+
+# ------------------------------------------------------------------ launch.py: what lasting entries may run
+
+def _program(folder: Path, mode=0o755) -> Path:
+    folder.mkdir(parents=True, exist_ok=True)
+    p = folder / "DAPrivacyKit-0.1.0b8-x86_64.AppImage"
+    p.write_text("#!/bin/sh\n")
+    p.chmod(mode)
+    return p
+
+
+@pytest.fixture
+def safe_above(tmp_path, monkeypatch):
+    """pytest's own folders, above tmp_path, are in /tmp, which anyone may write to: seen as a home's folders are
+    (root's, 0755), so what the tests make below them decides."""
+    from daprivacyscanner import launch
+    real, above = launch._status, {str(p) for p in tmp_path.parents}
+
+    def status(p, follow):
+        st = real(p, follow)
+        if p in above:
+            return os.stat_result((stat.S_IFDIR | 0o755, st.st_ino, st.st_dev, st.st_nlink, 0, 0, st.st_size,
+                                   int(st.st_atime), int(st.st_mtime), int(st.st_ctime)))
+        return st
+    monkeypatch.setattr(launch, "_status", status)
+    tmp_path.chmod(0o755)
+
+
+def test_a_program_anyone_could_replace_isnt_put_into_lasting_entries(tmp_path, monkeypatch, safe_above):
+    """The timer, the Outbox's units, the right-click entries and a Box's menu entry run the AppImage's path as it is
+    when they start: run from /tmp or a shared folder, once the file was gone another account could put its own
+    program there, and it ran as this account. Refused, saying why and what to do."""
+    from daprivacyscanner import launch
+    from daprivacyscanner.tools import integration as I
+    mine = _program(tmp_path / "Applications")
+    tmp_path.chmod(0o755)
+    assert launch.unsafe_place(str(mine)) == "" and I.command_problem([str(mine)], "the timer") == ""
+    shared = tmp_path / "shared"
+    mine2 = _program(shared)
+    shared.chmod(0o1777)                                    # as /tmp: sticky, and anyone may add a file
+    why = I.command_problem([str(mine2)], "the timer")
+    assert "every account can write to" in why and f"the folder {shared}" in why
+    assert "the timer would run it as you" in why and "~/Applications" in why
+    loose = _program(tmp_path / "loose", 0o757)               # the file itself
+    assert "can be changed by anyone" in launch.unsafe_place(str(loose))
+    link = tmp_path / "Applications" / "app"                 # a link of the user's own, to a file in a shared folder
+    link.symlink_to(mine2)
+    assert "every account can write to" in launch.unsafe_place(str(link))
+    assert "belongs to another account" in launch.unsafe_place(str(mine), uid=os.getuid() + 1)
+    group = _program(tmp_path / "team")
+    (tmp_path / "team").chmod(0o775)
+    monkeypatch.setattr(launch, "_own_group", lambda gid, uid: False)
+    assert "members of its group" in launch.unsafe_place(str(group))
+    monkeypatch.setattr(launch, "_own_group", lambda gid, uid: True)    # a private group: the account alone
+    assert launch.unsafe_place(str(group)) == ""
+    assert "can't be found" in I.command_problem([str(tmp_path / "gone")], "the Outbox")
+
+
+def test_scheduling_refuses_a_program_another_account_could_replace(tmp_path, monkeypatch, capsys, safe_above):
+    import subprocess
+
+    from daprivacyscanner import app
+    shared = tmp_path / "shared"
+    image = _program(shared)
+    shared.chmod(0o1777)
+    tmp_path.chmod(0o755)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
+    monkeypatch.setattr(app, "scan_command", lambda: [str(image)])
+    ran = []
+    monkeypatch.setattr(subprocess, "run", lambda argv, **kw: ran.append(argv) or subprocess.CompletedProcess(argv, 0))
+    assert app.schedule("daily") == 2
+    err = capsys.readouterr().err
+    assert "Scans are not scheduled" in err and "every account can write to" in err
+    assert not (tmp_path / "config").exists() and ran == []
+
+
+def test_the_guides_block_entries_that_would_run_a_replaceable_program(cat, tmp_path, monkeypatch, safe_above):
+    from daprivacyscanner.runner import Runner
+    from daprivacyscanner.tools import integration as I
+    shared = tmp_path / "shared"
+    image = _program(shared)
+    shared.chmod(0o1777)
+    tmp_path.chmod(0o755)
+    monkeypatch.setattr(I, "program", lambda environ: [str(image)])
+    host = make_host(tmp_path, installed=("nemo", "mat2"))
+    for cid in ("desk.file_manager_actions", "app.metadata_outbox"):
+        _, guide = Runner(cat, host).plan_fix(cid)
+        blockers = [b for p in guide.plans for b in p.blockers]
+        assert any("every account can write to" in b for b in blockers), (cid, blockers)
