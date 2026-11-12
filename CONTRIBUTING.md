@@ -27,7 +27,8 @@ steps). It runs ruff and a check for programs started without a timeout, mypy, s
 scripts, and the whole suite on the dev venv and on Python 3.11, 3.12, 3.13 and 3.14 with exactly the packages the
 AppImage ships, the front-end test included (it fails, never skips, there), and coverage (the 3.12 run, branches,
 `.ci/coverage/html/index.html`). Every tool is pinned with hashes; the venvs are made under `.ci/` the first time,
-which takes a minute. `make quick` is the short version (lint, types and the dev venv's suite).
+which takes a minute (`uv python install 3.11 3.13 3.14` first, if uv doesn't have those Pythons yet). `make quick`
+is the short version (lint, types and the dev venv's suite); `JOBS=3 make check` runs three suites at once.
 `packaging/install-hooks.sh` makes git run `make check` before every push, if you want that.
 
 The linters came in after the code: what they found then is counted per file and rule in
