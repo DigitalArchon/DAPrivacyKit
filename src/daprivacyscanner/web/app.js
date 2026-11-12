@@ -995,8 +995,10 @@ function backupLine(en, st, rerender) {
 
 // the steps of a History entry, each with what it did (open: the details shown at once)
 function entrySteps(en, open = false, rerender = null) {
-  return h("ul", { class: "steps" }, en.steps.map(st => h("li", { class: `step ${st.reverted ? "reverted" : st.reversible ? "undo" : "gone"}` },
-    h("span", { class: "tag" }, st.reverted ? "reverted" : st.reversible ? "can be undone" : "permanent"),
+  // a step marked unknown was under way when the app stopped, or its answer from the administrator helper never came
+  return h("ul", { class: "steps" }, en.steps.map(st => h("li", { class: `step ${st.reverted ? "reverted" : st.unknown ? "fx"
+      : st.reversible ? "undo" : "gone"}` },
+    h("span", { class: "tag" }, st.reverted ? "reverted" : st.unknown ? "not known" : st.reversible ? "can be undone" : "permanent"),
     h("div", { class: "stepbody" }, h("span", { class: "steptext" }, st.text), backupLine(en, st, rerender),
       historyStepDetail(st, open)))));
 }
@@ -1593,19 +1595,36 @@ async function openHistory() {
 function historyEntry(en, rerender) {
   const when = new Date(en.applied * 1000).toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
   const msg = h("div", { class: "small" });
-  const revert = async (force) => {
+  // Revert anyway says first what it will do (a whole file put back over what was changed in it since, a setting set
+  // over its new value): nothing is forced without that having been read
+  const forceAfterAsking = async (does) => {
+    const ok = await confirmModal("Revert anyway?", [h("p", {}, "Reverting anyway does this:"),
+      h("ul", { class: "small" }, (does.length ? does : ["Puts back what was there before this fix, over what was changed since."])
+        .map(x => h("li", {}, x))),
+      h("p", { class: "small muted" }, "Leave it as it is if the change made since is one you want to keep.")], "Revert anyway");
+    if (ok) await revert({ force: true });
+  };
+  const revert = async (how = {}) => {
     try {
       if (en.needs_root && !S.adminActive) setStatus("Waiting for administrator authorization…", "busy");
-      const r = await api("POST", `/api/undo/${en.id}/revert`, { force });
+      const r = await api("POST", `/api/undo/${en.id}/revert`, how);
       if (en.needs_root) { S.adminActive = true; renderTop(); }
-      // what reverting did: a step changed since it was applied is left as it is, unless reverted anyway
-      setStatus(r.ok ? `Reverted: ${en.title}.` : r.conflict ? `Not reverted: ${en.title} has been changed since it was applied.`
-        : `Not everything could be reverted: ${en.title}.`, r.ok ? "done" : r.conflict ? "warned" : "failed");
+      // what reverting did: a step changed since it was applied is left as it is, unless reverted anyway; a later
+      // change of the same thing is reverted first, or this is left as it is
+      const blocked = (r.blocked_by || []).length > 0;
+      setStatus(r.ok ? `Reverted: ${en.title}.` : blocked ? `Not reverted: a later change of the same thing comes first.`
+        : r.conflict ? `Not reverted: ${en.title} has been changed since it was applied.`
+        : `Not everything could be reverted: ${en.title}.`, r.ok ? "done" : r.conflict || blocked ? "warned" : "failed");
       takeRecheck(r);
       msg.className = `small ${r.ok ? "okmsg" : "errmsg"}`;
       msg.replaceChildren(r.messages.join(" "));
+      if (blocked && !how.later_first) {
+        msg.append(" ", h("button", { class: "small", onclick: () => revert({ later_first: true }) },
+          r.blocked_by.length === 1 ? "Revert that one first, then this" : `Revert those ${r.blocked_by.length} first, then this`));
+      }
       if (r.conflict) {
-        msg.append(" ", h("button", { class: "small danger", onclick: () => revert(true) }, "Revert anyway"));
+        msg.append(" ", h("button", { class: "small danger", onclick: () => forceAfterAsking(r.force_does || []) },
+          "Revert anyway…"));
       }
       const fresh = await api("GET", "/api/undo");
       const keep = msg;
@@ -1620,12 +1639,18 @@ function historyEntry(en, rerender) {
       en.undone_since ? h("span", { class: "badge undone", title: "What this fixed is a problem again: something changed it back" },
         `changed back (found ${new Date(en.undone_since * 1000).toLocaleDateString([], { dateStyle: "medium" })})`) : null,
       h("span", { class: "spacer" }),
-      en.can_revert ? h("button", { class: "small", title: en.needs_root ? ROOT_NOTE : "", onclick: () => revert(false) },
+      en.can_revert ? h("button", { class: "small", title: en.needs_root ? ROOT_NOTE : "", onclick: () => revert({}) },
         en.needs_root && !S.adminActive ? "Revert (as administrator)" : "Revert") : null),
     en.via_text ? h("div", { class: "small muted" }, en.via_text) : null,
     en.state === "failed" ? h("div", { class: "small errmsg" }, `Failed: ${en.error || "the fix couldn't be applied"}`
       + (en.failed_step ? ` (at: ${en.failed_step})` : "") + ". The steps that had run were put back, as listed."
       + (en.can_revert ? " One couldn't be: revert it from here." : "")) : null,
+    en.state === "interrupted" ? h("div", { class: "small errmsg" }, "The app stopped while this was being applied (it "
+      + "was closed, ran out of memory, or the computer lost power). The steps listed were made"
+      + (en.can_revert ? ", and can be reverted from here" : "") + "; one marked “not known” may or may not have been: "
+      + "check it by hand.") : null,
+    en.state === "applying" ? h("div", { class: "small muted" }, "Being applied now, in this or another window of the "
+      + "app.") : null,
     entrySteps(en, false, rerender),
     h("div", { class: "msgslot" }, msg));
 }

@@ -887,9 +887,13 @@ def recent_hrefs(host: Host, xbel: Path) -> list[str]:
 
 
 def files_under(root: Path, limit: int = WALK_LIMIT, pattern: re.Pattern | None = None) -> tuple[list[Path], bool]:
-    """Every regular file under `root` (symlinks not followed), for a deletion plan; and whether
-    the walk stopped at `limit`."""
+    """Every regular file under `root` (symlinks not followed, never into another filesystem mounted inside: what
+    DeleteFiles leaves alone isn't listed as deleted), for a deletion plan; and whether the walk stopped at `limit`."""
     out, stack = [], [root]
+    try:
+        dev = os.stat(root).st_dev                  # the folder scandir lists (the root as given, as before)
+    except OSError:
+        return [], False
     while stack:
         d = stack.pop()
         try:
@@ -900,7 +904,8 @@ def files_under(root: Path, limit: int = WALK_LIMIT, pattern: re.Pattern | None 
             for e in it:
                 try:
                     if e.is_dir(follow_symlinks=False):
-                        stack.append(Path(e.path))
+                        if os.stat(e.path, follow_symlinks=False).st_dev == dev:
+                            stack.append(Path(e.path))
                     elif e.is_file(follow_symlinks=False) and (pattern is None or pattern.search(e.name)):
                         out.append(Path(e.path))
                         if len(out) >= limit:

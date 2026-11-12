@@ -60,11 +60,17 @@ def test_write_file_backup_restore_and_conflict(tmp_path):
     res = apply_plan(plan, host, log)
     assert f.read_text() == '{"a": 2}' and new.read_text() == "X=1\n"
     backups = list(log.backup_dir(res.entry_id).iterdir())
-    assert len(backups) == 1 and stat.S_IMODE(backups[0].stat().st_mode) == 0o600
-    new.write_text("X=1\nY=2\n")                                       # edited since
+    # the file as it was, and what each write put there (for a revert after an edit): all the user's alone
+    assert len(backups) == 3 and all(stat.S_IMODE(b.stat().st_mode) == 0o600 for b in backups)
+    assert len([b for b in backups if b.name.endswith(".after")]) == 2
+    new.write_text("X=1\nY=2\n")                                       # a line added since: only the fix's goes
+    f.write_text('{"a": 3}')                                           # the fix's own line changed since: a conflict
     results = revert_entry(log.get(res.entry_id), host, log)
-    assert [r.ok for r in results] == [False, True] and f.read_text() == '{"a": 1}' and new.exists()
+    assert [r.ok for r in results] == [True, False] and results[1].conflict and new.read_text() == "Y=2\n"
+    assert "whole of ~/settings.json" in results[1].force_does and f.read_text() == '{"a": 3}'
     assert log.get(res.entry_id)["state"] == "partly reverted"
+    [r] = revert_entry(log.get(res.entry_id), host, log, force=True)
+    assert r.ok and f.read_text() == '{"a": 1}' and log.get(res.entry_id)["state"] == "reverted"
 
 
 def test_what_is_already_back_as_it_was_is_no_conflict(tmp_path):

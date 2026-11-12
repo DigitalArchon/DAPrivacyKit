@@ -436,6 +436,17 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
     def undo_log(host: Host) -> UndoLog:
         return UndoLog.for_user(paths_of(host))
 
+    def reconcile(host: Host, log: UndoLog) -> int:
+        """History brought into line with the administrator helper's record of this user's changes, when the host has
+        administrator access (UndoLog.reconcile): a step whose answer never came settled, and a change no entry knows
+        of taken up. Quietly nothing with an older helper, or when it can't be asked."""
+        if host.privileged is None:
+            return 0
+        try:
+            return log.reconcile(host.privileged)
+        except OSError:
+            return 0
+
     def busy() -> JSONResponse:
         return JSONResponse({"error": "A scan or fix is already running."}, status_code=409)
 
@@ -1002,7 +1013,13 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
                     return JSONResponse({"error": problem, "declined": True}, status_code=403)
             log = undo_log(host)
             with changing(), (admin.hold() if host.privileged is not None else contextlib.nullcontext()):
+                await asyncio.to_thread(reconcile, host, log)
                 res = await asyncio.to_thread(apply_plan, plan, host, log, bool(body.get("confirm_irreversible")))
+                if res.blocked:
+                    # a program the plan needs closed was started since it was shown: nothing was changed, and the
+                    # same plan can be applied once it is closed
+                    plans[plan.id] = stored
+                    return JSONResponse({"error": res.error, "blocked": True}, status_code=409)
                 # with the checks the plan deals with too (br.start_script's makes br.shader_cache's fix possible), as a
                 # revert and the Easy fixes do
                 again = await refresh(host, plan.check_id, tuple(plan.also))
@@ -1089,6 +1106,7 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
             declined = await with_root(host) if any(p.needs_root for p in todo) else None
             log, out = undo_log(host), []
             with changing(), (admin.hold() if host.privileged is not None else contextlib.nullcontext()):
+                await asyncio.to_thread(reconcile, host, log)
                 for plan in todo:
                     if plan.needs_root and declined:
                         out.append({"check_id": plan.check_id, "title": plan.title, "ok": False, "error": declined,
@@ -1122,6 +1140,10 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
         host = host_now()
         log = undo_log(host)
         await asyncio.to_thread(log.expire_backups)
+        # with administrator access, and nothing else using the helper now (a fix, a scan, long work): what the helper
+        # recorded and History doesn't know, or didn't hear back about, is settled first
+        if host.privileged is not None and not scan_lock.locked() and not admin.held():
+            await asyncio.to_thread(reconcile, host, log)
         entries = await asyncio.to_thread(lambda: [UndoLog.summary(e, host) for e in reversed(log.entries())])
         # a log that couldn't be read is said, never shown as an empty History
         return {"entries": entries, "damaged": await asyncio.to_thread(log.damaged, host)}
@@ -1137,8 +1159,24 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
         gone = await asyncio.to_thread(log.drop_backups, entry_id)
         return {"dropped": gone, "entry": await asyncio.to_thread(lambda: UndoLog.summary(log.get(entry_id), host))}
 
+    def later_first(log: UndoLog, entry: dict) -> list[dict]:
+        """The entries to revert, in order, to revert this one after every later entry that changed the same settings
+        or files (and those that changed theirs again): newest first, this one last."""
+        order = {e["id"]: i for i, e in enumerate(log.entries())}
+        chain, todo = {entry["id"]: entry}, [entry]
+        while todo:
+            for b in log.blocking(todo.pop()):
+                if b["id"] not in chain and (e := log.get(b["id"])) is not None:
+                    chain[b["id"]] = e
+                    todo.append(e)
+        return sorted(chain.values(), key=lambda e: -order.get(e["id"], -1))
+
     @app.post("/api/undo/{entry_id}/revert", dependencies=[Depends(auth)])
     async def revert(entry_id: str, request: Request):
+        """Body {"force", "later_first"}. Reverting is refused while a later entry that changed the same settings or
+        files stands (its answer's `blocked_by`); with `later_first` those are reverted first, newest first, then this
+        one, stopping at the first that doesn't go back fully. A step changed since is a conflict, and the answer's
+        `force_does` says what reverting it anyway (`force`) would do."""
         body = await body_of(request)
         if scan_lock.locked():
             return busy()
@@ -1148,33 +1186,54 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
             entry = await asyncio.to_thread(log.get, entry_id)
             if entry is None:
                 return JSONResponse({"error": "No such fix in the history."}, status_code=404)
-            if UndoLog.needs_root(entry):
+            chain = await asyncio.to_thread(later_first, log, entry) if body.get("later_first") else [entry]
+            if any(UndoLog.needs_root(e) for e in chain):
                 problem = await with_root(host)
                 if problem:
                     return JSONResponse({"error": problem.replace("changed", "reverted"), "declined": True},
                                         status_code=403)
             with changing(), (admin.hold() if host.privileged is not None else contextlib.nullcontext()):
-                results = await asyncio.to_thread(revert_entry, entry, host, log, bool(body.get("force")))
-                again = await refresh(host, entry["check_id"], tuple(entry.get("also") or ()))
+                await asyncio.to_thread(reconcile, host, log)
+                results = []
+                for e in chain:
+                    fresh = log.get(e["id"])
+                    if fresh is None:
+                        continue
+                    done = await asyncio.to_thread(revert_entry, fresh, host, log,
+                                                   bool(body.get("force")) and fresh["id"] == entry_id)
+                    results += done
+                    if not all(r.ok for r in done):
+                        break                       # a later one that didn't go back stops the rest: said
+                checks = tuple(dict.fromkeys(c for e in chain for c in (e["check_id"], *(e.get("also") or ())) if c))
+                again = await refresh(host, checks[0], checks[1:]) if checks else {}
             undone = await recheck_undone(host)
             await persist(host)
             summary = await asyncio.to_thread(lambda: UndoLog.summary(log.get(entry_id), host))
+            reverted = [e["id"] for e in chain if (x := log.get(e["id"])) and x["state"] == "reverted"]
         return {"ok": all(r.ok for r in results), "conflict": any(r.conflict for r in results),
-                "messages": [r.message for r in results], "entry": summary, "undone": undone, **again}
+                "messages": [r.message for r in results],
+                "force_does": list(dict.fromkeys(r.force_does for r in results if r.conflict and r.force_does)),
+                "blocked_by": [b for r in results for b in r.blocked_by],
+                "reverted": reverted, "entry": summary, "undone": undone, **again}
 
     @app.post("/api/undo/forget", dependencies=[Depends(auth)])
     async def forget(request: Request):
         """Body {"everything": bool}. Without it: reverted entries, failed ones with nothing left to revert,
         and applied ones older than 90 days, go (with their file backups). Changes made stay as they are. With
-        everything, the saved last scan goes too (the page keeps showing it until a new one)."""
+        everything, the saved last scan goes too (the page keeps showing it until a new one). Not while a fix is
+        applied or reverted here (its backups are being written); one applied by another copy of the app is kept
+        (UndoLog.forget)."""
         body = await body_of(request)
-        host = make_host()
-        log = undo_log(host)
-        everything = bool(body.get("everything"))
-        with changing():
-            gone = await asyncio.to_thread(log.forget, everything)
-            if everything:
-                await asyncio.to_thread(forget_scans, paths_of(host))
+        if scan_lock.locked():
+            return busy()
+        async with scan_lock:
+            host = make_host()
+            log = undo_log(host)
+            everything = bool(body.get("everything"))
+            with changing():
+                gone = await asyncio.to_thread(log.forget, everything)
+                if everything:
+                    await asyncio.to_thread(forget_scans, paths_of(host))
         undone = await recheck_undone(host)
         # with the host, as GET /api/undo: History draws the entries left from this answer, Wi-Fi connections by name
         entries = await asyncio.to_thread(lambda: [UndoLog.summary(e, host) for e in reversed(log.entries())])

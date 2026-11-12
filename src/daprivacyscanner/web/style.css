@@ -315,7 +315,8 @@ details.stepdetail .files { margin: 0; padding-left: 18px; }
 .entry .ehead { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .badge.state-applied { color: var(--ok); }
 .badge.state-reverted, .badge.state-partly-reverted { color: var(--muted); }
-.badge.state-failed { color: var(--danger); }
+.badge.state-failed, .badge.state-interrupted { color: var(--danger); }
+.badge.state-applying { color: var(--muted); }
 .okmsg { color: var(--ok); }
 .errmsg { color: var(--warn); }
 

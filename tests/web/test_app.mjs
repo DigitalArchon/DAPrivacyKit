@@ -835,6 +835,44 @@ check(details[0].querySelectorAll(".cmd button").length >= 1, "the commands can 
 $$(".modal .buttons button").at(-1).click(); await tick();
 routes["GET /api/undo"] = () => ({ entries: [] });
 
+// History: a fix the app stopped part way through, a step of it not known; a revert refused for a later change of the
+// same thing, which can be reverted first; and a conflict says what Revert anyway does before it is done
+{ const posted = [];
+  routes["GET /api/undo"] = () => ({ entries: [{ id: "e2", check_id: "tel.location", title: "Turn off location services",
+    applied: 1790000000, state: "interrupted", undone_since: null, can_revert: true, needs_root: false, via_text: "",
+    steps: [{ text: "gsettings set a b c", reversible: true, reverted: false, as_root: false, commands: [], files: [],
+              lines: [], undo: "", revert_ran: [] },
+            { text: "Under way when the app stopped, so it may or may not have been made: x", reversible: false,
+              reverted: false, unknown: true, as_root: false, commands: [], files: [], lines: [], undo: "", revert_ran: [] }] }] });
+  routes["POST /api/undo/e2/revert"] = (body) => {
+    posted.push(body);
+    if (body.later_first || body.force) return { ok: true, conflict: false, messages: ["Put back."], force_does: [], blocked_by: [] };
+    return posted.length === 1
+      ? { ok: false, conflict: false, messages: ["Not reverted: “B”, applied after this, changed the same thing again."],
+          force_does: [], blocked_by: [{ id: "e3", title: "B", applied: 1, what: ["x"] }] }
+      : { ok: false, conflict: true, messages: ["~/x has been edited since"], blocked_by: [],
+          force_does: ["Puts back the whole of ~/x as it was before this fix: what was changed in it since is lost."] };
+  };
+  await window.openHistory(); await tick();
+  const entry = () => $(".modal .history .entry");
+  check(entry().querySelector(".badge.state-interrupted") && entry().textContent.includes("The app stopped while this was being applied"),
+        "an interrupted fix is said to be one");
+  check([...entry().querySelectorAll(".step .tag")].map(t => t.textContent).includes("not known"), "a step under way is marked not known");
+  const button = (label) => $$(".modal button").find(b => b.textContent === label);
+  button("Revert").click(); await tick(); await tick();
+  check(button("Revert that one first, then this"), "a revert refused for a later change offers to revert that one first");
+  button("Revert that one first, then this").click(); await tick(); await tick();
+  check(posted[1]?.later_first === true, "which reverts it first: " + JSON.stringify(posted[1]));
+  button("Revert").click(); await tick(); await tick();
+  button("Revert anyway…").click(); await tick();
+  check($$(".modal").at(-1).textContent.includes("Puts back the whole of ~/x as it was before this fix"),
+        "Revert anyway says what it does before doing it");
+  check(posted.length === 3, "nothing is forced before that is confirmed");
+  $$(".modal").at(-1).querySelectorAll(".buttons button")[1].click(); await tick(); await tick();
+  check(posted[3]?.force === true, "and confirmed, it is forced: " + JSON.stringify(posted[3]));
+  while ($$(".modal").length) { $$(".modal .buttons button").at(-1).click(); await tick(); }
+  routes["GET /api/undo"] = () => ({ entries: [] }); }
+
 // History's file couldn't be read: History says so, rather than looking empty, until Forget everything deletes it
 routes["GET /api/undo"] = () => ({ entries: [], damaged: "History's file couldn't be read, so it was kept aside (x)." });
 routes["POST /api/undo/forget"] = () => ({ forgotten: 0, entries: [], undone: [], damaged: "" });

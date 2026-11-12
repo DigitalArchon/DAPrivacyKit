@@ -58,6 +58,11 @@ class RevertResult:
     message: str = ""
     conflict: bool = False
     ran: list[str] = field(default_factory=list)        # what putting it back ran as root (the helper's answer)
+    # a conflict: what reverting anyway (force) would do, in words, said before the page offers it
+    force_does: str = ""
+    # entries applied after this one that changed the same settings or files and are still in place: reverting this
+    # one first would put back a value or a file over theirs, so it is refused until they are reverted
+    blocked_by: list[dict] = field(default_factory=list)
 
 
 CHANGED_LINES = 40                                      # lines of a file's change shown, the rest counted
@@ -79,6 +84,8 @@ def _shown(path: str) -> str:
 
 
 MOUNT_TABLE = "/proc/self/mounts"           # what DeleteFiles reads to keep out of other filesystems (tests replace it)
+# a folder opened as itself: never through a link, so what is done in it is done there and nowhere else
+_O_DIR = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 
 
 def make_writable(folder: Path) -> None:
@@ -93,14 +100,23 @@ def make_writable(folder: Path) -> None:
         return
     for _top, dirs, _files, dfd in os.fwalk(folder, follow_symlinks=False):
         for d in list(dirs):
+            # the folder itself, opened without following a link: os.chmod(dir_fd=) follows one, so a folder swapped for
+            # a link between the look and the change had what it points to made writable
             try:
-                st = os.stat(d, dir_fd=dfd, follow_symlinks=False)
-                if st.st_dev != dev or not stat.S_ISDIR(st.st_mode):
-                    dirs.remove(d)
-                elif stat.S_IMODE(st.st_mode) & 0o700 != 0o700:
-                    os.chmod(d, stat.S_IMODE(st.st_mode) | 0o700, dir_fd=dfd)
+                fd = os.open(d, _O_DIR, dir_fd=dfd)
             except OSError:
                 dirs.remove(d)
+                continue
+            try:
+                st = os.fstat(fd)
+                if st.st_dev != dev:
+                    dirs.remove(d)
+                elif stat.S_IMODE(st.st_mode) & 0o700 != 0o700:
+                    os.fchmod(fd, stat.S_IMODE(st.st_mode) | 0o700)
+            except OSError:
+                dirs.remove(d)
+            finally:
+                os.close(fd)
 
 
 def remove_made_dirs(dirs: list[str]) -> list[str]:
@@ -154,6 +170,81 @@ def changed_lines(old: str | None, new: str) -> list[str]:
     return out
 
 
+# ------------------------------------------------------------------ what must be closed when a plan is applied
+
+@dataclass(frozen=True)
+class InUse:
+    """A program that must not be running when a step is applied, as the plan's builder found it closed when it showed
+    the plan (its "Close X first" otherwise), and checked again just before the plan is applied (apply_plan's
+    precheck): a plan is applied up to 15 minutes after it was shown, and a program started meanwhile would have its
+    files deleted under it, or its settings written and then overwritten as it quits. `app`: its name as the user
+    knows it. Running means any of: a process of the user's own named in `names` (comm), one holding a file in a folder
+    of `held` (open, mapped or as its working folder: _util.holders), a lock link of `locks` there (Chromium's
+    SingletonLock), a Flatpak app of `flatpaks` running, or `test` (what else the builder looked at) answering True."""
+    app: str
+    names: tuple[str, ...] = ()
+    held: tuple[Path, ...] = ()
+    locks: tuple[Path, ...] = ()
+    flatpaks: tuple[str, ...] = ()
+    test: Callable[["Precheck"], bool] | None = field(default=None, compare=False)
+
+
+class Precheck:
+    """The machine as it is just before a plan is applied, for the steps' prechecks: the user's processes, what they
+    hold open and the Flatpak apps running, each read once for the plan."""
+
+    def __init__(self, host: Host):
+        self.host = host
+        self._own: set[str] | None = None
+        self._all: set[str] | None = None
+        self._open: list | None = None
+        self._flatpaks: set[str] | None = None
+
+    def processes(self, own: bool = True) -> set[str]:
+        from .checks._util import processes
+        if own:
+            if self._own is None:
+                self._own = processes(self.host, own=True)
+            return self._own
+        if self._all is None:
+            self._all = processes(self.host)
+        return self._all
+
+    def holders(self, folder: Path) -> set[str]:
+        from .checks._util import open_files
+        if self._open is None:
+            self._open = open_files(self.host)
+        try:
+            root = str(Path(folder).resolve()).rstrip("/") + "/"
+        except OSError:
+            return set()
+        return {name for name, paths in self._open if any(p.startswith(root) or p == root[:-1] for p in paths)}
+
+    def flatpaks(self) -> set[str]:
+        if self._flatpaks is None:
+            r = self.host.run_flatpak("ps", "--columns=application")
+            self._flatpaks = {ln.strip() for ln in r.stdout.splitlines() if ln.strip()} if r.ok else set()
+        return self._flatpaks
+
+    def busy(self, u: InUse) -> bool:
+        if u.names and self.processes() & set(u.names):
+            return True
+        if any(self.holders(d) for d in u.held):
+            return True
+        if any(os.path.islink(p) for p in u.locks):
+            return True
+        if u.flatpaks and self.flatpaks() & set(u.flatpaks):
+            return True
+        return bool(u.test(self)) if u.test is not None else False
+
+
+def guarded(actions: list, *uses: InUse) -> list:
+    """`actions`, each checked again for these programs just before it is applied (Action.unless)."""
+    for a in actions:
+        a.unless(*uses)
+    return actions
+
+
 # ------------------------------------------------------------------ actions
 
 class Action:
@@ -164,6 +255,32 @@ class Action:
     # order in a plan: 0 settings, 1 commands before deleting (stop a daemon), 2 deletions,
     # 3 commands after (start it again)
     phase: int = 0
+    # programs that must still be closed when this is applied (InUse), as they were when the plan was shown
+    in_use: tuple[InUse, ...] = ()
+
+    def unless(self, *uses: InUse) -> "Action":
+        """This step, refused when one of these programs runs by the time it is applied (precheck)."""
+        self.in_use = tuple(self.in_use) + tuple(uses)
+        return self
+
+    def precheck(self, pc: Precheck) -> list[str]:
+        """Why this step can't be applied now, as the plan would have said it ("Close CopyQ first"), read just before
+        the plan's first step (apply_plan), so that nothing is applied when one step couldn't be. [] when nothing stops
+        it."""
+        return [f"Close {u.app} first: it is running now, and this can't be done while it runs." for u in self.in_use
+                if pc.busy(u)]
+
+    def under_way(self) -> dict:
+        """The record kept in History while this step runs, written before it starts (apply_plan): if the app stops
+        part way (a crash, a power cut), History says this step was under way."""
+        return {"kind": UnderWay.kind, "step_kind": self.kind, "text": self.describe()}
+
+    @staticmethod
+    def resources(record: dict) -> list[str]:
+        """What this step changed, named so that two steps changing the same thing (one file, one setting) are known to:
+        reverting an entry while a later one that changed the same thing is still in place would put back a value or a
+        file over that change (UndoLog.blocking). [] for a step that changes nothing that stays."""
+        return [f"path:{record['path']}"] if isinstance(record.get("path"), str) else []
 
     def describe(self) -> str:
         """One line of the dry run: exactly what apply() does."""
@@ -214,13 +331,31 @@ class Action:
 
 
 ACTION_KINDS: dict[str, type[Action]] = {}
-IRREVERSIBLE_KINDS = frozenset({"delete", "clear", "command", "clear-command", "root-clear"})   # nothing to revert in the undo log
+# nothing to revert in the undo log (a step under way when the app stopped: what it did isn't known)
+IRREVERSIBLE_KINDS = frozenset({"delete", "clear", "command", "clear-command", "root-clear", "pending"})
 ROOT_KINDS = frozenset({"root"})                                                 # reverting needs the helper
 
 
 def action(cls):
     ACTION_KINDS[cls.kind] = cls
     return cls
+
+
+@action
+class UnderWay(Action):
+    """Not a step of a plan: what History keeps of a step while it runs (Action.under_way), replaced by its record once
+    it is done. One left in an entry means the app stopped part way through it, so it may or may not have been made."""
+    kind = "pending"
+    reversible = False
+
+    @staticmethod
+    def describe_record(record: dict, host: Host | None = None) -> str:
+        return (f"Under way when the app stopped, so it may or may not have been made: {record.get('text', '')}. Check "
+                "it by hand: the commands it runs are in the fix's dry run.")
+
+    @staticmethod
+    def revert(record: dict, ctx: FixContext, force: bool = False) -> RevertResult:
+        return RevertResult(False, "What it did isn't known: check it by hand")
 
 
 def bus_reload(host: Host) -> list[str]:
@@ -270,6 +405,13 @@ def _change(host: Host, *argv: str) -> str:
     out = _run(host, *argv)
     did(shell(argv))
     return out
+
+
+def _over(what: str, before, now, default: bool | None = False) -> str:
+    """What reverting a setting anyway does, in words, for the page to say before it offers it."""
+    back = "its default" if default or before is None else str(before)
+    return (f"Sets {what} back to {back}, over the value it has now ({now if now is not None else 'not set'}): a change "
+            "made since, by you or a program, is undone.")
 
 
 def _doing(fn):
@@ -332,10 +474,16 @@ class GSettingsSet(Action):
             if r.ok and now != record["after"] else None
 
     @staticmethod
+    def resources(record: dict) -> list[str]:
+        return [f"gsettings:{record['schema']}:{record['key']}"]
+
+    @staticmethod
     def revert(record: dict, ctx: FixContext, force: bool = False) -> RevertResult:
         now = ctx.host.run("gsettings", "get", record["schema"], record["key"]).stdout.strip()
         if now not in (record["after"], record["before"]) and not force:     # already back by hand: nothing to resolve
-            return RevertResult(False, f"{record['schema']} {record['key']} has changed since (now {now})", True)
+            return RevertResult(False, f"{record['schema']} {record['key']} has changed since (now {now})", True,
+                                force_does=_over(f"{record['schema']} {record['key']}", record["before"], now,
+                                                 record.get("was_default")))
         if record.get("was_default"):
             _change(ctx.host, "gsettings", "reset", record["schema"], record["key"])
             return RevertResult(True, f"{record['schema']} {record['key']} back to its default ({record['before']})")
@@ -390,10 +538,15 @@ class XfconfSet(Action):
                f"(the fix set {record['after']})" if now != record["after"] else None
 
     @staticmethod
+    def resources(record: dict) -> list[str]:
+        return [f"xfconf:{record['channel']}:{record['property']}"]
+
+    @staticmethod
     def revert(record: dict, ctx: FixContext, force: bool = False) -> RevertResult:
         now = XfconfSet._get(ctx.host, record["channel"], record["property"])
         if now not in (record["after"], record["before"]) and not force:
-            return RevertResult(False, f"{record['channel']} {record['property']} has changed since (now {now})", True)
+            return RevertResult(False, f"{record['channel']} {record['property']} has changed since (now {now})", True,
+                                force_does=_over(f"{record['channel']} {record['property']}", record["before"], now))
         if record["before"] is None:
             _change(ctx.host, "xfconf-query", "-c", record["channel"], "-p", record["property"], "-r")
             return RevertResult(True, f"{record['channel']} {record['property']} back to its default")
@@ -461,11 +614,16 @@ class KConfigSet(Action):
                f"(the fix set {record['after']})" if now != record["after"] else None
 
     @staticmethod
+    def resources(record: dict) -> list[str]:
+        return [f"kconfig:{record['path']}:{record['group']}:{record['key']}"]
+
+    @staticmethod
     def revert(record: dict, ctx: FixContext, force: bool = False) -> RevertResult:
         from . import ini
         now = ini.get(ini.parse(Host.read_file(Path(record["path"])) or "", kde=True), record["group"], record["key"])
         if now not in (record["after"], record["before"]) and not force:
-            return RevertResult(False, f"{record['file']} {record['key']} has changed since (now {now})", True)
+            return RevertResult(False, f"{record['file']} {record['key']} has changed since (now {now})", True,
+                                force_does=_over(f"{record['file']} {record['key']}", record["before"], now))
         base = [record["tool"], "--file", record["file"], "--group", record["group"], "--key", record["key"], "--notify"]
         if record["before"] is None:
             _change(ctx.host, *base, "--delete")
@@ -546,13 +704,25 @@ class PlasmaTraySet(Action):
         return f"{record['label']} is {now} in the system tray again" if now != record["after"] else None
 
     @staticmethod
+    def resources(record: dict) -> list[str]:
+        return [f"plasmatray:{record['plugin']}"]
+
+    @staticmethod
     def revert(record: dict, ctx: FixContext, force: bool = False) -> RevertResult:
         now = PlasmaTraySet._state(Path(record["path"]), record["plugin"], record["trays"])
         if now not in (record["after"], record["before"]) and not force:
-            return RevertResult(False, f"{record['label']} in the system tray has changed since (now {now})", True)
+            return RevertResult(False, f"{record['label']} in the system tray has changed since (now {now})", True,
+                                force_does=f"Turns {record['label']} {record['before']} in the system tray again, though "
+                                           f"it was turned {now} since.")
         if now != record["before"]:
             PlasmaTraySet._run_set(ctx.host, record["set"][record["before"]], record["trays"])
         return RevertResult(True, f"{record['label']} is {record['before']} in the system tray again")
+
+
+def COPYQ_IN_USE(path: Path) -> InUse:  # noqa: N802 - reads as the constant it is, per settings folder
+    """CopyQ rewrites copyq.conf and its commands as it runs and quits: its settings are written only while it is
+    closed (the plan's "Close CopyQ first"), checked again when they are."""
+    return InUse("CopyQ", names=("copyq",), held=(path.parent,))
 
 
 def copyq_tab_prop(text: str | None, tab: str, prop: str) -> str | None:
@@ -592,6 +762,11 @@ class CopyQCommand(Action):
 
     def __init__(self, path: Path, display: str, name: str, script: str, label: str):
         self.path, self.display, self.name, self.script, self.label = path, display, name, script, label
+        self.in_use = (COPYQ_IN_USE(path),)
+
+    @staticmethod
+    def resources(record: dict) -> list[str]:
+        return [f"copyq-command:{record['path']}:{record['name']}"]
 
     @staticmethod
     def _entries(text: str | None) -> list[dict[str, str]]:
@@ -653,7 +828,10 @@ class CopyQCommand(Action):
         if entry is None:
             return RevertResult(True, f"CopyQ's command \"{record['name']}\" was already removed")
         if _sha(ini.qsettings_value(entry.get("Command", "")).encode()) != record["script_sha"] and not force:
-            return RevertResult(False, f"CopyQ's command \"{record['name']}\" has been edited since", True)
+            return RevertResult(False, f"CopyQ's command \"{record['name']}\" has been edited since", True,
+                                force_does=f"Removes CopyQ's command \"{record['name']}\" with the edits made to it since"
+                                           + (", putting its older version back" if record.get("before") is not None
+                                              else "") + ".")
         entries = CopyQCommand._entries(text)
         at = entries.index(entry)
         if record.get("before") is not None:            # it replaced an older version: that comes back
@@ -679,6 +857,11 @@ class CopyQTabSet(Action):
 
     def __init__(self, path: Path, display: str, tab: str, prop: str, value: str, label: str):
         self.path, self.display, self.tab, self.prop, self.value, self.label = path, display, tab, prop, value, label
+        self.in_use = (COPYQ_IN_USE(path),)
+
+    @staticmethod
+    def resources(record: dict) -> list[str]:
+        return [f"copyq-tab:{record['path']}:{record['tab']}:{record['prop']}"]
 
     def describe(self) -> str:
         return f"{self.label} ({self.display})"
@@ -713,7 +896,8 @@ class CopyQTabSet(Action):
         old = Host.read_file(p)
         now = copyq_tab_prop(old, record["tab"], record["prop"])
         if now not in (record["after"], record["before"]) and not force:
-            return RevertResult(False, f"CopyQ's tab {record['tab']} {record['prop']} has changed since (now {now})", True)
+            return RevertResult(False, f"CopyQ's tab {record['tab']} {record['prop']} has changed since (now {now})", True,
+                                force_does=_over(f"CopyQ's tab {record['tab']} {record['prop']}", record["before"], now))
         new = copyq_set_tab_prop(old, record["tab"], record["prop"], record["before"])
         if record.get("created_file") and not new.strip():
             p.unlink()
@@ -734,6 +918,10 @@ class QSettingsSet(Action):
     def __init__(self, path: Path, display: str, group: str, key: str, value: str, label: str, by_hand: str = ""):
         self.path, self.display, self.group, self.key, self.value = path, display, group, key, value
         self.label, self.by_hand = label, by_hand
+
+    @staticmethod
+    def resources(record: dict) -> list[str]:
+        return [f"qsettings:{record['path']}:{record['group']}:{record['key']}"]
 
     def describe(self) -> str:
         return f"{self.label} ({self.display}: [{self.group}] {self.key}={self.value})"
@@ -780,7 +968,8 @@ class QSettingsSet(Action):
         old = Host.read_file(p)
         now = ini.qsettings_get(old, record["group"], record["key"])
         if now not in (record["after"], record["before"]) and not force:
-            return RevertResult(False, f"{record['display']}: {record['key']} has changed since (now {now})", True)
+            return RevertResult(False, f"{record['display']}: {record['key']} has changed since (now {now})", True,
+                                force_does=_over(f"{record['display']}: {record['key']}", record["before"], now))
         new = ini.qsettings_set(old, record["group"], record["key"], record["before"])
         if record.get("created_file") and not new.strip():
             p.unlink()
@@ -806,6 +995,10 @@ class SettingLines(Action):
                  new_file: str = "", by_hand: str = ""):
         self.path, self.display, self.label, self.entries = path, display, label, entries
         self.anchor, self.new_file, self.by_hand = anchor, new_file, by_hand
+
+    @staticmethod
+    def resources(record: dict) -> list[str]:
+        return [f"lines:{record['path']}:{e['pattern']}" for e in record["entries"]]
 
     def describe(self) -> str:
         return f"{self.label} ({self.display}: {len(self.entries)} line{'s' if len(self.entries) != 1 else ''})"
@@ -884,7 +1077,9 @@ class SettingLines(Action):
             i = SettingLines._find(text.split("\n"), e["pattern"])
             now = text.split("\n")[i] if i is not None else None
             if now not in (e["line"], e["before"]) and not force:
-                return RevertResult(False, f"{record['display']}: {e['line']} has changed since (now {now})", True)
+                return RevertResult(False, f"{record['display']}: {e['line']} has changed since (now {now})", True,
+                                    force_does=f"Puts the lines this fix set in {record['display']} back as they were "
+                                               "before it, over what they hold now: a change made since is undone.")
         for e in reversed(record["entries"]):
             text = SettingLines._put(text, e["pattern"], e["before"], record.get("anchor") or "")[0]
         if record.get("created_file") and text.strip() == (record.get("new_file") or "").strip():
@@ -908,6 +1103,10 @@ class KConfigLock(Action):
 
     def __init__(self, path: Path, display: str, group: str, label: str, phase: int = 4):
         self.path, self.display, self.group, self.label, self.phase = path, display, group, label, phase
+
+    @staticmethod
+    def resources(record: dict) -> list[str]:
+        return [f"kconfig-lock:{record['path']}:{record['group']}"]
 
     def describe(self) -> str:
         return f"{self.label} ({self.display}: [{self.group}][$i])"
@@ -997,6 +1196,10 @@ class NmSet(Action):
     def __init__(self, uuid_: str, name: str, prop: str, value: str):
         self.uuid, self.name, self.prop, self.value = uuid_, name, prop, value
 
+    @staticmethod
+    def resources(record: dict) -> list[str]:
+        return [f"nmcli:{record['uuid']}:{record['prop']}"]
+
     def describe(self) -> str:
         return f"{shell(['nmcli', 'connection', 'modify', self.uuid, self.prop, self.value])}   ({self.name})"
 
@@ -1044,7 +1247,9 @@ class NmSet(Action):
             return RevertResult(False, "That saved connection no longer exists")
         name = NmSet.name_of(ctx.host, record["uuid"])
         if r.stdout.strip() not in (record["after"], record["before"]) and not force:
-            return RevertResult(False, f"{name} {record['prop']} has changed since", True)
+            return RevertResult(False, f"{name} {record['prop']} has changed since", True,
+                                force_does=_over(f"{name}: {record['prop']}", record["before"] or "the default",
+                                                 r.stdout.strip() or "the default"))
         _change(ctx.host, "nmcli", "connection", "modify", record["uuid"], record["prop"], record["before"])
         return RevertResult(True, f"{name}: {record['prop']} back to {record['before'] or 'the default'}")
 
@@ -1063,6 +1268,10 @@ class BluetoothSet(Action):
 
     def __init__(self, what: str, value: str):
         self.what, self.value = what, value
+
+    @staticmethod
+    def resources(record: dict) -> list[str]:
+        return [f"bluetooth:{record['what']}"]
 
     def describe(self) -> str:
         return shell(["bluetoothctl", "system-alias" if self.what == "alias" else self.what, self.value])
@@ -1103,7 +1312,9 @@ class BluetoothSet(Action):
     def revert(record: dict, ctx: FixContext, force: bool = False) -> RevertResult:
         now = BluetoothSet._value(BluetoothSet._show(ctx.host), record["what"])
         if now not in (record["after"], record["before"]) and not force:
-            return RevertResult(False, f"Bluetooth {record['what']} has changed since", True)
+            return RevertResult(False, f"Bluetooth {record['what']} has changed since", True,
+                                force_does=f"Sets Bluetooth {record['what']} back to what it was before the fix, over "
+                                           "what it is now: a change made since is undone.")
         if record["what"] == "alias":
             if record.get("default_alias"):
                 _change(ctx.host, "bluetoothctl", "reset-alias")
@@ -1128,6 +1339,10 @@ class UserUnitSet(Action):
 
     def __init__(self, unit: str, enable: bool, why: str = ""):
         self.unit, self.enable, self.why = unit, enable, why
+
+    @staticmethod
+    def resources(record: dict) -> list[str]:
+        return [f"userunit:{record['unit']}"]
 
     def describe(self) -> str:
         return shell(["systemctl", "--user", "enable" if self.enable else "disable", "--now", self.unit]) + (
@@ -1173,7 +1388,8 @@ class UserUnitSet(Action):
     def revert(record: dict, ctx: FixContext, force: bool = False) -> RevertResult:
         now = UserUnitSet._state(ctx.host, record["unit"])
         if now not in (record["after"], record["before"]) and not force:     # already back by hand: no conflict
-            return RevertResult(False, f"{record['unit']} has been changed since (now {now})", True)
+            return RevertResult(False, f"{record['unit']} has been changed since (now {now})", True,
+                                force_does=_over(record["unit"], record["before"], now))
         if record["before"] in ("enabled", "disabled") and record["before"] != now:
             verb = "enable" if record["before"] == "enabled" else "disable"
             _change(ctx.host, "systemctl", "--user", verb, "--now", record["unit"])
@@ -1195,6 +1411,14 @@ def _read_bytes(p: Path) -> bytes | None:
         return None
 
 
+def _backup(ctx: "FixContext", name: str, data: bytes) -> Path:
+    """A copy kept in this entry's backups folder (0700, the copy 0600), named so no two collide."""
+    ctx.backups.mkdir(parents=True, exist_ok=True, mode=0o700)
+    path = ctx.backups / f"{uuid.uuid4().hex}-{name}"
+    _write_atomic(path, data, 0o600)
+    return path
+
+
 def _umask() -> int:
     """The process's umask, read without changing it (os.umask would, for every thread at once)."""
     try:
@@ -1204,37 +1428,138 @@ def _umask() -> int:
     return int(m.group(1), 8) if m else 0o022
 
 
+def fsync_dir(folder: Path) -> None:
+    """A folder's entries on the disk: a file renamed into it is there after a power cut too (ext4 orders this by
+    itself; XFS, f2fs and btrfs don't promise it). Best effort: a filesystem that can't is left as it is."""
+    try:
+        fd = os.open(folder, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
+# what a file keeps beside its contents, carried over to the copy written in its place: its SELinux label (a file
+# relabelled by the policy's default for a new file can stop a program reading it) and its ACLs
+KEPT_XATTRS = ("security.selinux", "system.posix_acl_access")
+
+
+def _keep_as_it_was(fd: int, p: Path, st: os.stat_result) -> None:
+    """The new copy of `p` (open as `fd`) given the old file's owner and group, where they differ and this account may
+    set them, and its SELinux label and ACLs, where it has them. Best effort: what can't be kept stays as new."""
+    try:
+        now = os.fstat(fd)
+        if (now.st_uid, now.st_gid) != (st.st_uid, st.st_gid):
+            os.fchown(fd, st.st_uid, st.st_gid)
+    except OSError:
+        pass
+    for name in KEPT_XATTRS:
+        try:
+            value = os.getxattr(p, name, follow_symlinks=False)
+        except OSError:
+            continue
+        try:
+            os.setxattr(fd, name, value)
+        except OSError:
+            pass
+
+
 def _write_atomic(p: Path, data: bytes, mode: int | None = None) -> None:
-    """Writes `p` whole, through a temporary file renamed over it. A link (a dotfiles manager's) stays a
-    link: the file it points to is written, as an editor would. The temporary file is the user's alone until
-    it has the final mode (a shell history being cleaned is never readable by others on the way), and one
-    left by an interrupted write is replaced, never followed."""
+    """Writes `p` whole, through a temporary file renamed over it, both on the disk before it counts (fsync of the file,
+    then of its folder): after a power cut the file is the old one or the new one, never empty, as it could be on XFS
+    or f2fs without. A link (a dotfiles manager's) stays a link: the file it points to is written, as an editor would.
+    An existing file keeps its mode, owner and SELinux label. The temporary file is the user's alone until it has the
+    final mode (a shell history being cleaned is never readable by others on the way), and one left by an interrupted
+    write is replaced, never followed."""
     if p.is_symlink():
         p = p.resolve()
+    made = made_dirs(p)
     p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_name(f".{p.name}.daprivacyscanner-tmp")
     try:
         tmp.unlink()
     except FileNotFoundError:
         pass
-    final = mode if mode is not None else (p.stat().st_mode & 0o7777 if p.exists() else None)
+    try:
+        st = os.stat(p)
+    except FileNotFoundError:
+        st = None
+    final = mode if mode is not None else (stat.S_IMODE(st.st_mode) if st is not None else None)
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
     try:
         with open(fd, "wb") as f:
             f.write(data)
-        if final is None:                       # a new file: what the umask gives, as any program would make it
-            final = 0o666 & ~_umask()
-        os.chmod(tmp, final)
+            f.flush()
+            if final is None:                   # a new file: what the umask gives, as any program would make it
+                final = 0o666 & ~_umask()
+            if st is not None:
+                _keep_as_it_was(f.fileno(), p, st)
+            os.fchmod(f.fileno(), final)
+            os.fsync(f.fileno())
         os.replace(tmp, p)
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
+    fsync_dir(p.parent)
+    for d in made:                              # a folder made on the way is an entry of its own folder
+        fsync_dir(Path(d).parent)
+
+
+def merge_back(before: str, after: str, now: str) -> str | None:
+    """`now` with one change (`before` → `after`) taken back and everything else in it kept: the lines a fix changed
+    in a file it doesn't own (~/.ssh/config, a shell's startup file, authorized_keys) put back as they were, while what
+    was changed in the file since stays. Each run of lines the fix changed must still be in `now` as the fix left it,
+    one after another; lines it removed go back between the same two lines they were between, which must still be
+    beside each other. None when that isn't so (a change since overlaps the fix's): the file can then only be put back
+    whole, which the page says before it offers it."""
+    import difflib
+    a, b, n = (t.splitlines(keepends=True) for t in (after, before, now))
+    where: dict[int, int] = {}                  # line of `after` -> the same line in `now`, while it is still there
+    for i, j, size in difflib.SequenceMatcher(None, a, n, autojunk=False).get_matching_blocks():
+        for k in range(size):
+            where[i + k] = j + k
+    edits = []
+    for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, a, b, autojunk=False).get_opcodes():
+        if tag == "equal":
+            continue
+        if i2 > i1:                             # the fix's own lines: still there, together
+            if any(k not in where for k in range(i1, i2)) or where[i2 - 1] - where[i1] != i2 - 1 - i1:
+                return None
+            start, end = where[i1], where[i2 - 1] + 1
+        else:                                   # lines the fix removed: between the same two lines as before
+            if i1 == 0 and i1 == len(a):
+                if n:
+                    return None
+                start = end = 0
+            elif i1 == 0:
+                if i1 not in where:
+                    return None
+                start = end = where[i1]
+                if start != 0:
+                    return None
+            elif i1 == len(a):
+                if i1 - 1 not in where:
+                    return None
+                start = end = where[i1 - 1] + 1
+            else:
+                if i1 - 1 not in where or i1 not in where or where[i1] != where[i1 - 1] + 1:
+                    return None
+                start = end = where[i1]
+        edits.append((start, end, b[j1:j2]))
+    for start, end, lines in sorted(edits, key=lambda e: e[0], reverse=True):
+        n[start:end] = lines
+    return "".join(n)
 
 
 @action
 class WriteFile(Action):
-    """Create or change a config file. The old content is backed up for the undo log; a file
-    that didn't exist is removed again on revert."""
+    """Create or change a config file. The old content is backed up for the undo log, and the new one beside it: a
+    file edited since (by the user, or by another program) has only the fix's lines put back (merge_back). A file that
+    didn't exist is removed again on revert, or keeps only what was added to it since."""
     kind = "file"
 
     @staticmethod
@@ -1306,20 +1631,24 @@ class WriteFile(Action):
             did(shell(["mkdir", d]))                   # _write_atomic makes them, outermost first
         backup = old_mode = None
         if old is not None:
-            ctx.backups.mkdir(parents=True, exist_ok=True, mode=0o700)
-            backup = ctx.backups / f"{uuid.uuid4().hex}-{self.path.name}"
-            _write_atomic(backup, old, 0o600)
+            backup = _backup(ctx, self.path.name, old)
             old_mode = real.stat().st_mode & 0o7777
+        # what the fix wrote, kept beside it: a revert after the file was edited since puts back only the fix's lines
+        after = _backup(ctx, self.path.name + ".after", new)
         _write_atomic(real, new, None if old is not None else self.mode)
         if self.then:
             ctx.host.run(*self.then)
             did(shell(self.then))
         display = self.display if real == self.path else f"{self.display} (→ {_shown(str(real))})"
         return {"kind": self.kind, "path": str(real), "display": display, "backup": str(backup) if backup else None,
-                "mode": old_mode, **({"then": self.then} if self.then else {}),
+                "after_backup": str(after), "mode": old_mode, **({"then": self.then} if self.then else {}),
                 "after_sha": _sha(new), "text": f"{self.text} ({display})",
                 "lines": list(self.lines) if self.lines is not None else changed_lines(old_text, new_text),
                 "dirs": dirs}
+
+    @staticmethod
+    def resources(record: dict) -> list[str]:
+        return [f"file:{record['path']}"]
 
     @staticmethod
     def changed_back(record: dict, host: Host) -> str | None:
@@ -1341,7 +1670,16 @@ class WriteFile(Action):
             return RevertResult(True, _with_notes(f"{record['display']} was already as it was before",
                                                   remove_made_dirs(record.get("dirs") or [])))
         if _sha(now) != record["after_sha"] and not force:
-            return RevertResult(False, f"{record['display']} has been edited since", True)
+            merged = WriteFile._merged(record, data, now)
+            if merged is not None:
+                return WriteFile._put_merged(record, ctx, p, merged)
+            does = (f"Puts back the whole of {record['display']} as it was before this fix: what was changed in it "
+                    "since, by you or a program, is lost." if record["backup"] else
+                    f"Deletes {record['display']}, which this fix made, with what was added to it since.")
+            if now is None:
+                return RevertResult(False, f"{record['display']} was deleted since", True, force_does=does)
+            return RevertResult(False, f"{record['display']} has been edited since, where this fix changed it too", True,
+                                force_does=does)
         if record["backup"]:
             # the file's own mode, also when it was removed since (a backup is 0600 and a new file gets the umask's)
             _write_atomic(p, data, None if p.exists() or record.get("mode") is None else record["mode"])
@@ -1357,10 +1695,112 @@ class WriteFile(Action):
         return RevertResult(True, _with_notes(f"{record['display']} removed", remove_made_dirs(record.get("dirs") or [])))
 
     @staticmethod
+    def _merged(record: dict, before: bytes | None, now: bytes | None) -> bytes | None:
+        """The file as it is now with only this fix's lines put back (merge_back), from the copy of what the fix wrote;
+        None when that can't be done (no such copy: an entry from before it was kept, or the changes overlap)."""
+        if now is None or not record.get("after_backup"):
+            return None
+        after = _read_bytes(Path(record["after_backup"]))
+        if after is None or _sha(after) != record["after_sha"]:
+            return None
+        dec = lambda b: (b or b"").decode("utf-8", errors="surrogateescape")  # noqa: E731
+        merged = merge_back(dec(before), dec(after), dec(now))
+        return None if merged is None else merged.encode("utf-8", errors="surrogateescape")
+
+    @staticmethod
+    def _put_merged(record: dict, ctx: FixContext, p: Path, merged: bytes) -> RevertResult:
+        kept = "what was changed in it since stays"
+        if not record["backup"] and not merged.strip():
+            p = p.resolve() if p.is_symlink() else p        # the file the fix made held only its lines, and still does
+            p.unlink()
+            did(shell(["rm", str(p)]))
+            WriteFile._then(record, ctx)
+            return RevertResult(True, _with_notes(f"{record['display']} removed", remove_made_dirs(record.get("dirs") or [])))
+        _write_atomic(p, merged)
+        did(f"# {record['path']}: the lines this fix changed put back as they were ({kept})")
+        WriteFile._then(record, ctx)
+        return RevertResult(True, f"{record['display']}: the lines this fix changed are back as they were; {kept}")
+
+    @staticmethod
     def _then(record: dict, ctx: FixContext) -> None:
         if record.get("then"):
             ctx.host.run(*record["then"])
             did(shell(record["then"]))
+
+
+def _open_way(base: str, names: list[str]) -> int:
+    """A descriptor of the folder `names` below `base` (opened as it is: the home's real path, or /), each name opened
+    without following a link: OSError when one is a link, missing or not a folder."""
+    fd = os.open(base, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        for name in names:
+            nxt = os.open(name, _O_DIR, dir_fd=fd)
+            os.close(fd)
+            fd = nxt
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def _remove_tree_at(dfd: int, name: str, dev: int) -> bool:
+    """The folder `name` in the folder open as `dfd`, with everything in it: each folder opened without following a
+    link, a link unlinked itself, nothing on another filesystem (a folder mounted there stays, and so its parents).
+    Whether all of it went."""
+    try:
+        fd = os.open(name, _O_DIR, dir_fd=dfd)
+    except OSError:
+        return False
+    ok = True
+    try:
+        if os.fstat(fd).st_dev != dev:
+            return False
+        for entry in os.listdir(fd):
+            try:
+                st = os.stat(entry, dir_fd=fd, follow_symlinks=False)
+                if stat.S_ISDIR(st.st_mode):
+                    ok = _remove_tree_at(fd, entry, dev) and ok
+                else:
+                    os.unlink(entry, dir_fd=fd)
+            except FileNotFoundError:
+                pass
+            except (OSError, RecursionError):
+                ok = False
+    except OSError:
+        ok = False
+    finally:
+        os.close(fd)
+    if ok:
+        try:
+            os.rmdir(name, dir_fd=dfd)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            return False
+    return ok
+
+
+def _tidy_at(fd: int, dev: int) -> None:
+    """Below the folder open as `fd`: links unlinked (never what they point to) and empty folders removed, deepest
+    first; files and other filesystems left."""
+    try:
+        names = os.listdir(fd)
+    except OSError:
+        return
+    for name in names:
+        try:
+            st = os.stat(name, dir_fd=fd, follow_symlinks=False)
+            if stat.S_ISLNK(st.st_mode):
+                os.unlink(name, dir_fd=fd)
+            elif stat.S_ISDIR(st.st_mode) and st.st_dev == dev:
+                sub = os.open(name, _O_DIR, dir_fd=fd)
+                try:
+                    _tidy_at(sub, dev)
+                finally:
+                    os.close(sub)
+                os.rmdir(name, dir_fd=fd)
+        except OSError:
+            continue
 
 
 @action
@@ -1456,23 +1896,63 @@ class DeleteFiles(Action):
         targets = (unescape_mount(ln.split()[1]) for ln in text.splitlines() if len(ln.split()) >= 2)
         return any(t == p or t.startswith(p + "/") for t in targets)
 
-    def _delete_whole(self, f: Path, root: Path) -> bool:
-        """One entry inside `root`, whole: a link unlinked, a folder removed with everything in it (shutil.rmtree, which
-        never follows a link and works through folder descriptors), a file unlinked."""
-        import shutil
-        parent = f.parent.resolve()
-        if not (parent == root or parent.is_relative_to(root)) or (parent / f.name) == root:
+    # How it deletes (the 2026-11-12 review): from a descriptor of the root folder, opened one name at a time without
+    # following a link, each folder below it opened the same way and checked to be on the root's own filesystem, each
+    # file unlinked by its name in its folder's descriptor (unlinkat). Checking a path and then deleting by the same
+    # path left a gap: a Flatpak app started after the plan was made could swap a folder of its own cache for a link to
+    # ~/.ssh between the two, and the listed names there were deleted. A folder swapped now is never followed: what is
+    # done in it is done in the folder that was opened. And nothing in another filesystem mounted inside is touched.
+
+    def under_way(self) -> dict:
+        # what the dry run says, without its size (a walk over every file, done for the dry run already)
+        n = len(self.files)
+        return {"kind": UnderWay.kind, "step_kind": self.kind,
+                "text": f"Delete {n} {'item' if self.whole else 'file'}{'s' if n != 1 else ''} of {self.label} in "
+                        f"{self.display_root}"}
+
+    def _way(self, home: Path) -> tuple[str, list[str]]:
+        """Where the root is opened from, and the names on the way: the home's real path for a root under the home
+        (the home itself may be a link: a home moved to another disk), else /."""
+        p, h = os.path.normpath(self.root), os.path.normpath(home)
+        if p == h or p.startswith(h.rstrip("/") + "/"):
+            rel = os.path.relpath(p, h)
+            return os.path.realpath(h), [] if rel == "." else rel.split("/")
+        return "/", [x for x in p.split("/") if x]
+
+    @staticmethod
+    def _down(fd: int, names, dev: int) -> int:
+        """A new descriptor of the folder `names` below the one open as `fd`: each opened without following a link and
+        on the filesystem `dev`, or OSError."""
+        cur = os.dup(fd)
+        try:
+            for name in names:
+                nxt = os.open(name, _O_DIR, dir_fd=cur)
+                os.close(cur)
+                cur = nxt
+                if os.fstat(cur).st_dev != dev:
+                    raise OSError(errno.EXDEV, "another filesystem")
+        except BaseException:
+            os.close(cur)
+            raise
+        return cur
+
+    def _delete_at(self, dfd: int, name: str, dev: int, folder: tuple[str, ...]) -> bool:
+        """One listed entry, by its name in its folder's descriptor: a regular file, or with `whole` anything (a link
+        unlinked, never followed; a folder with everything in it, on this filesystem only)."""
+        try:
+            st = os.stat(name, dir_fd=dfd, follow_symlinks=False)
+        except FileNotFoundError:
             return False
-        f = parent / f.name                                    # the entry itself, never what it links to
-        if f.is_symlink() or f.is_file():
-            f.unlink()
-            return True
-        if f.is_dir():
-            if self._mounted_under(f):
+        if st.st_dev != dev:                                    # a mount point
+            return False
+        if self.whole and stat.S_ISDIR(st.st_mode):
+            if self._mounted_under(Path(self.root, *folder, name)):
                 return False
-            shutil.rmtree(f)
-            return True
-        return False
+            return _remove_tree_at(dfd, name, dev)
+        if not self.whole and not stat.S_ISREG(st.st_mode):
+            return False
+        os.unlink(name, dir_fd=dfd)                             # never follows a link: a link put here is unlinked itself
+        return True
 
     def apply(self, ctx: FixContext) -> dict:
         from .checks._util import through_link
@@ -1484,58 +1964,94 @@ class DeleteFiles(Action):
                     "skipped": len(self.files),
                     "text": f"Deleted nothing of {self.label} in {self.display_root}: it is reached through a link, "
                             "and nothing is deleted through one"}
-        root = self.root.resolve()
+        base, way = self._way(ctx.host.home)
+        try:
+            rootfd = _open_way(base, way)
+        except OSError:
+            return {"kind": self.kind, "label": self.label, "root": self.display_root, "deleted": 0,
+                    "skipped": len(self.files),
+                    "text": f"Deleted nothing of {self.label} in {self.display_root}: it isn't there as a folder of its "
+                            "own any more (gone, or a link now)"}
         deleted = skipped = 0
-        dirs = set()
-        for f in self.files:
-            try:
-                if self.whole:
-                    if self._delete_whole(f, root):
-                        deleted += 1
-                    else:
-                        skipped += 1
-                    continue
-                parent = f.parent.resolve()
-                if not (parent == root or parent.is_relative_to(root)) or f.is_symlink() or not f.is_file():
+        try:
+            dev = os.fstat(rootfd).st_dev
+            groups: dict[tuple[str, ...], list[str]] = {}
+            top = os.path.normpath(self.root)
+            for f in self.files:
+                rel = os.path.relpath(os.path.normpath(f), top)
+                if rel in (".", "..") or rel.startswith("../"):
                     skipped += 1
                     continue
-                f.unlink()
-                deleted += 1
-                dirs.add(parent)
-            except FileNotFoundError:
-                skipped += 1
-            except OSError:
-                skipped += 1
-        if self.remove_root:            # symlinks (never their targets) and empty folders below the root, then the root
-            for d, dirnames, filenames in os.walk(root, topdown=False, followlinks=False):
-                for name in filenames + dirnames:
-                    p = Path(d) / name
-                    try:
-                        if p.is_symlink():
-                            p.unlink()
-                        elif p.is_dir():
-                            p.rmdir()
-                    except OSError:
-                        pass
-            try:
-                root.rmdir()
-            except OSError:
-                pass
-        for d in sorted(dirs if self.prune else (), key=lambda p: len(p.parts), reverse=True):  # tidy empty subfolders
-            while d != root and d.is_relative_to(root):
+                parts = tuple(rel.split("/"))
+                groups.setdefault(parts[:-1], []).append(parts[-1])
+            emptied = set()
+            for folder, names in groups.items():
                 try:
-                    d.rmdir()
+                    dfd = self._down(rootfd, folder, dev)
                 except OSError:
-                    break
-                d = d.parent
+                    skipped += len(names)
+                    continue
+                try:
+                    for name in names:
+                        try:
+                            ok = self._delete_at(dfd, name, dev, folder)
+                        except OSError:
+                            ok = False
+                        deleted, skipped = deleted + ok, skipped + (not ok)
+                finally:
+                    os.close(dfd)
+                emptied.add(folder)
+            if self.remove_root:        # links (never what they point to) and empty folders below the root, then the root
+                _tidy_at(rootfd, dev)
+                self._remove_root(base, way, rootfd)
+            elif self.prune:            # the subfolders the deletion left empty
+                self._prune(rootfd, emptied, dev)
+        finally:
+            os.close(rootfd)
         if not self.files and self.remove_root:
-            text = (f"Removed {self.display_root} ({self.label}), which held no files" if not os.path.lexists(root)
+            text = (f"Removed {self.display_root} ({self.label}), which held no files" if not os.path.lexists(self.root)
                     else f"{self.display_root} ({self.label}) holds no files, but something was added to it: it was left")
             return {"kind": self.kind, "label": self.label, "root": self.display_root, "deleted": 0, "skipped": skipped,
                     "text": text}
         return {"kind": self.kind, "label": self.label, "root": self.display_root, "deleted": deleted, "skipped": skipped,
                 "text": f"Deleted {deleted} {'item' if self.whole else 'file'}{'s' if deleted != 1 else ''} of {self.label} in {self.display_root}"
                         + (f" ({skipped} skipped)" if skipped else "")}
+
+    def _prune(self, rootfd: int, emptied: set, dev: int) -> None:
+        """Each folder a deletion emptied removed, then its folder while that is empty too, up to the root (kept)."""
+        tried = set()
+        for folder in sorted(emptied, key=len, reverse=True):
+            while folder and folder not in tried:
+                tried.add(folder)
+                try:
+                    pfd = self._down(rootfd, folder[:-1], dev)
+                except OSError:
+                    break
+                try:
+                    os.rmdir(folder[-1], dir_fd=pfd)            # only while empty; never a link (ENOTDIR)
+                except OSError:
+                    break
+                finally:
+                    os.close(pfd)
+                folder = folder[:-1]
+
+    @staticmethod
+    def _remove_root(base: str, way: list[str], rootfd: int) -> None:
+        """The root folder itself, once empty, by its name in its own folder, while that name is still this folder."""
+        if not way:
+            return                                              # the home (or /) is never removed
+        try:
+            pfd = _open_way(base, way[:-1])
+        except OSError:
+            return
+        try:
+            st, mine = os.stat(way[-1], dir_fd=pfd, follow_symlinks=False), os.fstat(rootfd)
+            if (st.st_dev, st.st_ino) == (mine.st_dev, mine.st_ino):
+                os.rmdir(way[-1], dir_fd=pfd)
+        except OSError:
+            pass
+        finally:
+            os.close(pfd)
 
     @staticmethod
     def revert(record: dict, ctx: FixContext, force: bool = False) -> RevertResult:
@@ -1679,57 +2195,128 @@ class ApplyResult:
     applied: list[str]
     error: str = ""
     rolled_back: list[str] = field(default_factory=list)
+    # refused before anything was changed, by what can change back (a program started since the plan was shown): the
+    # same plan can be applied again once it is closed
+    blocked: bool = False
+
+
+NOT_RECORDED = ("Nothing was changed: History's file couldn't be written ({why}), and the app makes no change it can't "
+                "record first (it is what puts the change back). Free some space in your home folder, then try again.")
+
+
+class NotRecorded(Exception):
+    """History's file couldn't be written part way through a plan: it stops there, and what it changed is put back."""
+
+    def __init__(self, why: str):
+        super().__init__(f"Stopped part way: History's file couldn't be written ({why}), and the app makes no change it "
+                         "can't record. What had been changed was put back. Free some space in your home folder, then "
+                         "try again.")
+
+
+def prechecks(plan: FixPlan, host: Host) -> list[str]:
+    """Why the plan can't be applied now, from each step's precheck, read once, before anything is changed: a
+    program the plan needs closed has been started since it was shown. A precheck that fails says so."""
+    pc, why = Precheck(host), []
+    for a in plan.actions:
+        try:
+            why += a.precheck(pc)
+        except Exception as e:  # noqa: BLE001 - unsure is a reason not to go on
+            why.append(f"Whether “{a.describe()}” can be done now couldn't be checked ({type(e).__name__}).")
+    return list(dict.fromkeys(why))
 
 
 def apply_plan(plan: FixPlan, host: Host, log: "UndoLog", confirmed_irreversible: bool = False) -> ApplyResult:
+    """Applies the plan's steps in order, recorded as they go (write-ahead, the owner's decision of 2026-11-12): the
+    History entry is written, and on the disk, before the first step, with the step under way; each step's record is
+    added as it completes; then the entry is marked applied, or failed with what was put back. The app stopped part way
+    (killed, out of memory, a power cut) leaves an entry History shows as interrupted, revertible for the steps it
+    records. A root step's change id is made here and recorded before the helper is asked, so one whose answer never
+    came is known by it and settled later (UndoLog.reconcile). Before any of it, every step's precheck."""
     if plan.blockers:
         return ApplyResult(False, None, [], "Can't apply: " + "; ".join(plan.blockers))
     if plan.irreversible and not confirmed_irreversible:
         return ApplyResult(False, None, [], "This fix deletes files permanently; confirm that first.")
+    why = prechecks(plan, host)
+    if why:
+        return ApplyResult(False, None, [], "Can't apply: " + " ".join(why), blocked=True)
     entry_id = uuid.uuid4().hex
+    extra = {"via": dict(plan.via) or {"fix": True}, "also": list(plan.also) or None}
+    try:
+        log.begin(entry_id, plan.check_id, plan.title, extra)
+    except OSError as e:
+        return ApplyResult(False, None, [], NOT_RECORDED.format(why=e.strerror or type(e).__name__))
     ctx = FixContext(host, log.backup_dir(entry_id))
     records: list[dict] = []
     failed_at = None
+
+    def record(now: list[dict]) -> None:
+        try:
+            log.progress(entry_id, now)
+        except OSError as e:
+            raise NotRecorded(e.strerror or type(e).__name__) from None
+
     try:
         for a in plan.actions:
             failed_at = a
+            record(records + [a.under_way()])
             rec, ran = _doing(lambda: a.apply(ctx))
             if ran and not rec.get("ran"):
                 rec["ran"] = ran
             records.append(rec)
-    except Exception as e:  # noqa: BLE001 - roll back whatever was changed, then report
-        error = f"{type(e).__name__}: {e}" if not isinstance(e, FixError) else str(e)
+            record(records)
+    except BaseException as e:  # roll back whatever was changed, then report (and an exit goes on once recorded)
+        error = (str(e) if isinstance(e, (FixError, NotRecorded)) else f"{type(e).__name__}: {e}")
         if isinstance(e, FixError) and e.record:       # the failing step had changed something: kept, and put back
             records.append(e.record)
-        rolled = []
-        for rec in reversed(records):
-            # each step that ran is put back, and what putting it back ran is kept with it, as a revert's is
-            try:
-                res, ran = _doing(lambda: ACTION_KINDS[rec["kind"]].revert(rec, ctx, force=True))
-            except Exception as e2:  # noqa: BLE001 - one step that can't be put back doesn't stop the others
-                res, ran = RevertResult(False, str(e2) if isinstance(e2, FixError) else f"{type(e2).__name__}: {e2}"), []
-            if rec["kind"] in IRREVERSIBLE_KINDS:
-                continue
-            rec["reverted"] = res.ok
-            if res.ok and (res.ran or ran):
-                rec["revert_ran"] = res.ran or ran
-            rolled.append(res.message if res.ok else f"NOT put back: {res.message}")
+        rolled = _roll_back(records, ctx)
         _drop_unrecorded(ctx.backups, records)
-        if records:
-            # the attempt changed something: History keeps it, as failed, with what each step did and what
-            # putting it back did, so the user can see what happened (and revert a step that couldn't be)
-            log.add(entry_id, plan.check_id, plan.title, records, state="failed",
-                    extra={"via": dict(plan.via) or {"fix": True}, "error": error, "also": list(plan.also) or None,
-                           "failed_step": failed_at.describe() if failed_at is not None else ""})
-            return ApplyResult(False, entry_id, [], error, rolled)
-        return ApplyResult(False, None, [], error, rolled)
-    if records and all(r.get("noop") for r in records):
-        # nothing needed changing (the helper found it already so): no History entry, which would be one with
-        # nothing to revert (live on Mint: CUPS's option applied again)
-        return ApplyResult(True, None, [r["text"] for r in records])
-    log.add(entry_id, plan.check_id, plan.title, records, extra={"via": dict(plan.via) or {"fix": True},
-                                                                 "also": list(plan.also) or None})
+        try:
+            if records:
+                # the attempt changed something: History keeps it, as failed, with what each step did and what
+                # putting it back did, so the user can see what happened (and revert a step that couldn't be)
+                log.finish(entry_id, "failed", records, {"error": error,
+                                                         "failed_step": failed_at.describe() if failed_at else ""})
+            else:
+                log.discard(entry_id)                   # an attempt that changed nothing leaves no entry
+        except OSError:
+            pass                                        # the entry stays as written so far: History shows it interrupted
+        if not isinstance(e, Exception):
+            raise
+        return ApplyResult(False, entry_id if records else None, [], error, rolled)
+    try:
+        if records and all(r.get("noop") for r in records):
+            # nothing needed changing (the helper found it already so): no History entry, which would be one with
+            # nothing to revert (live on Mint: CUPS's option applied again)
+            log.discard(entry_id)
+            _drop_unrecorded(ctx.backups, [])
+            return ApplyResult(True, None, [r["text"] for r in records])
+        log.finish(entry_id, "applied", records)
+    except OSError:
+        pass                                            # every step is recorded already; the entry reads interrupted
     return ApplyResult(True, entry_id, [r["text"] for r in records])
+
+
+def _roll_back(records: list[dict], ctx: FixContext) -> list[str]:
+    """Each step of a failed attempt put back, newest first, and what putting it back ran kept with it, as a revert's
+    is. A root step whose outcome isn't known (no answer came) is left for the helper's record to settle: asking it
+    again now would wait on the same helper."""
+    rolled = []
+    for rec in reversed(records):
+        if rec.get("outcome") == "unknown":
+            rolled.append("NOT put back yet: " + rec["text"] + ". History settles it the next time administrator "
+                          "access is given, from the helper's own record of its changes.")
+            continue
+        try:
+            res, ran = _doing(lambda: ACTION_KINDS[rec["kind"]].revert(rec, ctx, force=True))
+        except Exception as e2:  # noqa: BLE001 - one step that can't be put back doesn't stop the others
+            res, ran = RevertResult(False, str(e2) if isinstance(e2, FixError) else f"{type(e2).__name__}: {e2}"), []
+        if rec["kind"] in IRREVERSIBLE_KINDS:
+            continue
+        rec["reverted"] = res.ok
+        if res.ok and (res.ran or ran):
+            rec["revert_ran"] = res.ran or ran
+        rolled.append(res.message if res.ok else f"NOT put back: {res.message}")
+    return rolled
 
 
 def _drop_unrecorded(backups: Path, records: list[dict]) -> None:
@@ -1737,7 +2324,7 @@ def _drop_unrecorded(backups: Path, records: list[dict]) -> None:
     after taking its copy (ssh-keygen failing once the plain copy of known_hosts was taken) left one that neither
     History, its 7 days nor forgetting ever saw, kept for good when the attempt had no entry."""
     import shutil
-    named = {r["backup"] for r in records if r.get("backup")}
+    named = {r[k] for r in records for k in ("backup", "after_backup") if r.get(k)}
     try:
         found = list(backups.iterdir())
     except FileNotFoundError:
@@ -1767,6 +2354,21 @@ def _still_in(folder: str, records: list[dict]) -> str | None:
 
 
 def revert_entry(entry: dict, host: Host, log: "UndoLog", force: bool = False) -> list[RevertResult]:
+    """Puts the entry's steps back, newest first. Refused, changing nothing, while it is still being applied, or while
+    an entry applied after it changed one of the same settings or files and is still in place (UndoLog.blocking):
+    reverting out of order puts back an old value or a whole old file over that later change (a key trusted again
+    while the entry that removed it still reads applied), and Revert anyway doesn't lift this."""
+    from .undo import UndoLog
+    if UndoLog.applying(entry):
+        return [RevertResult(False, "It is being applied right now, in this or another window of the app: revert it "
+                                    "once that is done")]
+    later = log.blocking(entry)
+    if later:
+        names = "; ".join(f"“{b['title']}”" for b in later)
+        return [RevertResult(False, f"Not reverted: {names}, applied after this, changed the same "
+                                    f"{'thing' if sum(len(b['what']) for b in later) == 1 else 'things'} again and is "
+                                    "still in place. Reverting this first would put back what was there before over that "
+                                    "change. Revert the later one first, then this.", blocked_by=later)]
     ctx = FixContext(host, log.backup_dir(entry["id"]))
     results = []
     for rec in reversed(entry["records"]):
@@ -1867,6 +2469,10 @@ class ChmodPath(Action):
     def __init__(self, path: Path, mode: int, display: str):
         self.path, self.mode, self.display = path, mode, display
 
+    @staticmethod
+    def resources(record: dict) -> list[str]:
+        return [f"mode:{record['path']}"]
+
     def describe(self) -> str:
         cmd = shell(["chmod", f"{self.mode:o}", self.display])
         if self.path.is_symlink():
@@ -1909,7 +2515,8 @@ class ChmodPath(Action):
             return RevertResult(False, f"{record['display']} is a link: left as it is")
         now = stat.S_IMODE(st.st_mode)
         if now not in (record["after"], record["before"]) and not force:
-            return RevertResult(False, f"{record['display']}'s permissions have changed since (now {now:o})", True)
+            return RevertResult(False, f"{record['display']}'s permissions have changed since (now {now:o})", True,
+                                force_does=_over(f"{record['display']}'s permissions", f"{record['before']:o}", f"{now:o}"))
         os.chmod(p, record["before"])
         did(shell(["chmod", f"{record['before']:o}", record["path"]]))
         return RevertResult(True, f"{record['display']} back to mode {record['before']:o}")
@@ -1970,6 +2577,10 @@ class MakeDir(Action):
         if not record.get("created"):
             return []
         return [shell(["mkdir", "-m", f"{record.get('mode', 0o755):o}", record["path"]])]
+
+    @staticmethod
+    def resources(record: dict) -> list[str]:
+        return [f"dir:{record['path']}"] if record.get("created") else []
 
     @staticmethod
     def changed_back(record: dict, host: Host) -> str | None:
@@ -2054,6 +2665,10 @@ class CopyTree(Action):
         return None if p.is_dir() and not p.is_symlink() else f"{record['display']} is gone"
 
     @staticmethod
+    def resources(record: dict) -> list[str]:
+        return [f"tree:{record['path']}"]
+
+    @staticmethod
     def revert(record: dict, ctx: FixContext, force: bool = False) -> RevertResult:
         import shutil
         p, backup = Path(record["path"]), Path(record["backup"]) if record.get("backup") else None
@@ -2105,14 +2720,14 @@ class FileCommand(Action):
         dirs = made_dirs(self.path)
         backup = old_mode = None
         if old is not None:
-            ctx.backups.mkdir(parents=True, exist_ok=True, mode=0o700)
-            backup = ctx.backups / f"{uuid.uuid4().hex}-{self.path.name}"
-            _write_atomic(backup, old, 0o600)
+            backup = _backup(ctx, self.path.name, old)
             old_mode = self.path.stat().st_mode & 0o7777
         _change(ctx.host, *self.argv)
         after = _read_bytes(self.path)
+        kept = _backup(ctx, self.path.name + ".after", after) if after is not None else None
         dec = lambda b: None if b is None else b.decode("utf-8", errors="surrogateescape")  # noqa: E731
         return {"kind": self.kind, "path": str(self.path), "display": self.display, "backup": str(backup) if backup else None,
+                "after_backup": str(kept) if kept else None,
                 "mode": old_mode, "after_sha": _sha(after), "text": f"{self.text} ({shell(self.argv)})", "argv": self.argv,
                 "lines": changed_lines(dec(old), dec(after) or ""), "dirs": dirs}
 
@@ -2122,6 +2737,7 @@ class FileCommand(Action):
 
     revert = WriteFile.revert
     undo_hint = WriteFile.undo_hint
+    resources = WriteFile.resources
 
 
 @action
@@ -2156,9 +2772,7 @@ class HashKnownHosts(Action):
         old = _read_bytes(self.path)
         if old is None:
             raise FixError(f"{self.display} no longer exists")
-        ctx.backups.mkdir(parents=True, exist_ok=True, mode=0o700)
-        backup = ctx.backups / f"{uuid.uuid4().hex}-{self.path.name}"
-        _write_atomic(backup, old, 0o600)
+        backup = _backup(ctx, self.path.name, old)
         _change(ctx.host, "ssh-keygen", "-H", "-f", str(self.path))
         plain = self.path.with_name(self.path.name + ".old")
         try:
@@ -2166,9 +2780,14 @@ class HashKnownHosts(Action):
             did(shell(["rm", str(plain)]))
         except FileNotFoundError:
             pass
+        after = _read_bytes(self.path)
+        kept = _backup(ctx, self.path.name + ".after", after) if after is not None else None
         return {"kind": self.kind, "path": str(self.path), "display": self.display, "backup": str(backup),
+                "after_backup": str(kept) if kept else None,
                 "backup_expires": time.time() + self.BACKUP_DAYS * 86400, "mode": stat.S_IMODE(os.stat(self.path).st_mode),
-                "after_sha": _sha(_read_bytes(self.path)), "text": f"Hashed the server names in {self.display}"}
+                "after_sha": _sha(after), "text": f"Hashed the server names in {self.display}"}
+
+    resources = WriteFile.resources
 
     @staticmethod
     def ran(record: dict) -> list[str]:
@@ -2238,6 +2857,16 @@ class FirefoxPref(Action):
     def preview(self) -> list[str]:
         return [f'+ user_pref("{self.key}", {json.dumps(self.value)});']
 
+    def precheck(self, pc: Precheck) -> list[str]:
+        # the plan's "Close Firefox first", asked again just before the plan is applied, before anything is changed
+        why = [f"Close {self.label} first: it rewrites its settings as it exits."] \
+            if _profile_in_use(pc.host, self.profile) else []
+        return why + super().precheck(pc)
+
+    @staticmethod
+    def resources(record: dict) -> list[str]:
+        return [f"ffpref:{record['profile']}:{record['key']}"]
+
     def apply(self, ctx: FixContext) -> dict:
         path = self.profile / "prefs.js"
         if _profile_in_use(ctx.host, self.profile):
@@ -2269,7 +2898,9 @@ class FirefoxPref(Action):
         path = profile / "prefs.js"
         now = read_prefs(path).get(record["key"])
         if now not in (record["after"], record["before"]) and not force:
-            return RevertResult(False, f"{record['label']}: {record['key']} has changed since", True)
+            return RevertResult(False, f"{record['label']}: {record['key']} has changed since", True,
+                                force_does=_over(f"{record['label']}: {record['key']}", json.dumps(record["before"])
+                                                 if record["before"] is not None else None, json.dumps(now)))
         _write_atomic(path, set_pref(Host.read_file(path) or "", record["key"], record["before"]).encode())
         did(f'# {record["key"]} back to {json.dumps(record["before"]) if record["before"] is not None else "its default"} '
             f'in {record["profile"]}/prefs.js (with {record["label"]} closed)')
@@ -2307,12 +2938,43 @@ def _helper(ctx: FixContext):
     return ctx.host.privileged
 
 
+# what the helper's connection says when no answer came: the request may have been carried out all the same (the
+# app gives up after CHANGE_TIMEOUT while the helper finishes it; the helper killed part way)
+UNANSWERED = ("no answer from the helper", "the helper has exited")
+
+
 def _call(ctx: FixContext, request: str, args: dict):
     from .privileged import HelperError
     try:
         return _helper(ctx).call(request, args)
     except HelperError as e:
-        raise FixError(f"The administrator helper refused: {e}", data=getattr(e, "data", None)) from None
+        data = dict(getattr(e, "data", None) or {})
+        if str(e).startswith(UNANSWERED):
+            data["unanswered"] = True
+            raise FixError(f"The administrator helper didn't answer ({e}), so whether it made the change isn't known "
+                           "yet", data=data) from None
+        raise FixError(f"The administrator helper refused: {e}", data=data) from None
+
+
+def helper_changes(privileged) -> dict[str, dict] | None:
+    """The administrator helper's record of the calling user's changes, by change id ({"change_id", "state": intent,
+    applied, reverted or failed, "action", "time", "text"}): what History settles a step whose answer never came by, and
+    finds changes it has no entry for in. None from a helper that can't list them (an older one): nothing is settled."""
+    from .privileged import HelperError
+    if privileged is None:
+        return None
+    try:
+        r = privileged.call("list_changes", {})
+    except (HelperError, OSError):
+        return None
+    changes = r.get("changes") if isinstance(r, dict) else None
+    if not isinstance(changes, list):
+        return None
+    return {c["change_id"]: c for c in changes if isinstance(c, dict) and isinstance(c.get("change_id"), str)
+            and CHANGE_ID.match(c["change_id"]) and c.get("state") in ("intent", "applied", "reverted", "failed")}
+
+
+CHANGE_ID = re.compile(r"^[0-9a-f]{32}$")
 
 
 @action
@@ -2332,12 +2994,35 @@ class RootChange(Action):
     def __init__(self, request: str, args: dict, text: str, phase: int = 0):
         self.request, self.args, self.text = request, args, text
         self.phase = phase              # 3: only after the plan's deletions (a mount over a folder hides its files)
+        # the id the helper journals the change under, made here (under_way) and recorded before the helper is asked:
+        # a change whose answer never came is still known by it, and settled later (UndoLog.reconcile)
+        self.change_id: str | None = None
 
     def describe(self) -> str:
         return self.text
 
     def commands(self) -> list[str]:
         return planned_as_root(self.request, self.args)
+
+    def _resources(self) -> list[str]:
+        """What the request changes, by the arguments that name it (a unit, a setting, a drop-in): the files the helper
+        wrote are added from its answer."""
+        names = []
+        for k in ("unit", "name", "key", "target", "browser", "set", "mount"):
+            if isinstance(self.args.get(k), str):
+                names.append(self.args[k])
+        names += [u for u in self.args.get("units") or [] if isinstance(u, str)]
+        return [f"root:{self.request}:{n}" for n in names] or [f"root:{self.request}"]
+
+    @staticmethod
+    def resources(record: dict) -> list[str]:
+        return list(record.get("resources") or []) + [f"file:{p}" for p in record.get("files") or []]
+
+    def under_way(self) -> dict:
+        self.change_id = uuid.uuid4().hex
+        return {"kind": self.kind, "change_id": self.change_id, "outcome": "unknown", "request": self.request,
+                "text": f"{self.text} (under way)", "ran": [], "files": [], "lines": [], "dirs": [],
+                "resources": self._resources()}
 
     def preview(self) -> list[str]:
         from . import helper
@@ -2351,27 +3036,73 @@ class RootChange(Action):
 
     def apply(self, ctx: FixContext) -> dict:
         lines = self.preview()                          # what the drop-in will hold, read before it is written
+        cid = self.change_id or uuid.uuid4().hex
+        self.change_id = None                           # one id per request: applying the plan again makes another
+        resources = self._resources()
         try:
-            r = _call(ctx, self.request, self.args)
+            r = _call(ctx, self.request, {**self.args, "change_id": cid})
         except FixError as e:
-            if e.data.get("change_id"):                 # it changed something before failing, and the helper kept it
+            if e.data.get("unanswered"):
+                # the helper may have made it, under this id, after the app gave up waiting: kept as not known, and
+                # settled from the helper's record of its changes (UndoLog.reconcile, RootChange.revert)
+                e.record = {"kind": self.kind, "change_id": cid, "outcome": "unknown", "request": self.request,
+                            "text": f"{self.text} (no answer from the administrator helper: it may have been made)",
+                            "ran": [], "files": [], "lines": lines, "dirs": [], "resources": resources}
+            elif e.data.get("change_id"):               # it changed something before failing, and the helper kept it
                 e.record = {"kind": self.kind, "change_id": e.data["change_id"], "text": f"{self.text} (failed part way)",
-                            "ran": list(e.data.get("ran") or []), "files": [], "lines": [], "dirs": []}
+                            "ran": list(e.data.get("ran") or []), "files": [], "lines": [], "dirs": [],
+                            "resources": resources}
             raise
         warn = "; ".join(r.get("warnings") or [])
         if not r.get("changed"):
             return {"kind": self.kind, "change_id": None, "text": f"{self.text} (already so)", "noop": True}
-        return {"kind": self.kind, "change_id": r["change_id"],
+        return {"kind": self.kind, "change_id": r.get("change_id") or cid,
                 "text": self.text + (f" (warning: {warn})" if warn else ""),
                 "ran": list(r.get("ran") or []), "files": list(r.get("files") or []), "lines": lines,
-                "dirs": list(r.get("dirs") or [])}
+                "dirs": list(r.get("dirs") or []), "resources": resources}
+
+    @staticmethod
+    def settle(record: dict, change: dict | None) -> bool:
+        """A step whose outcome wasn't known (no answer came), settled from the helper's record of that change
+        (helper_changes): made, it can be reverted like any; never made, or failed, there is nothing to undo; reverted
+        already, it is marked so. One the helper began and didn't finish ("intent": it stopped part way) stays not
+        known: reverting it asks the helper, which puts back what it journalled. Returns whether the record changed."""
+        if record.get("outcome") != "unknown":
+            return False
+        state = (change or {}).get("state")
+        if state == "intent":
+            return False
+        if state == "applied":
+            record.pop("outcome")
+            record["text"] = record["text"].replace(" (under way)", "").replace(
+                " (no answer from the administrator helper: it may have been made)", "") + " (made, as the helper's record says)"
+        elif state == "reverted":
+            record["outcome"], record["reverted"] = "reverted", True
+        else:                                           # failed, or not in its record: never made
+            record["outcome"] = "not made"
+            record["text"] = record["text"].replace(" (under way)", "").replace(
+                " (no answer from the administrator helper: it may have been made)", "") + " (never made, as the helper's record says)"
+            record["change_id"] = None
+            record["noop"] = True
+        return True
 
     @staticmethod
     def revert(record: dict, ctx: FixContext, force: bool = False) -> RevertResult:
         if not record.get("change_id"):
             return RevertResult(True, "Nothing to undo")
+        if record.get("outcome") == "unknown":
+            # not known whether it was made: the helper's record says, first
+            changes = helper_changes(_helper(ctx))
+            if changes is not None and RootChange.settle(record, changes.get(record["change_id"])):
+                if not record.get("change_id") or record.get("reverted"):
+                    return RevertResult(True, "It was never made, as the administrator helper's record says: nothing to "
+                                              "put back" if not record.get("reverted") else "It was put back already")
         r = _call(ctx, "revert", {"change_id": record["change_id"], "force": force})
-        return RevertResult(bool(r.get("ok")), r.get("message", ""), bool(r.get("conflict")), list(r.get("ran") or []))
+        res = RevertResult(bool(r.get("ok")), r.get("message", ""), bool(r.get("conflict")), list(r.get("ran") or []))
+        if res.conflict:
+            res.force_does = ("Puts back what the administrator helper kept of the system files as they were before this "
+                              "fix, over what was changed in them since.")
+        return res
 
 
 def planned_as_root(request: str, args: dict) -> list[str]:

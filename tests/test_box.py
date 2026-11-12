@@ -400,9 +400,10 @@ def test_reverting_a_box_leaves_a_newer_copy_to_its_own_entry(tmp_path, host):
     reverting the later entry then made ~/Boxes/<name>/app again to put the old program in it."""
     from daprivacyscanner.fix import revert_entry
     log, f, one, two = _two_copies(tmp_path, host)
-    copy = revert_entry(log.get(one), host, log)[0]                    # the last step is put back first
-    assert copy.conflict and not copy.ok and "revert the later change first" in copy.message
-    assert (f / "app/bin/prog").read_text() == "v2"
+    # refused whole, changing nothing, while the later entry that changed the same copy stands (UndoLog.blocking)
+    [copy] = revert_entry(log.get(one), host, log)
+    assert not copy.ok and [b["id"] for b in copy.blocked_by] == [two] and "Revert the later one first" in copy.message
+    assert (f / "app/bin/prog").read_text() == "v2" and log.get(one)["state"] == "applied"
     assert all(r.ok for r in revert_entry(log.get(two), host, log)) and (f / "app/bin/prog").read_text() == "v1"
     assert all(r.ok for r in revert_entry(log.get(one), host, log)) and not (f / "app").exists()
     # and the Box's folders, which the first revert left while the newer copy stood in them, went with it: counted as
