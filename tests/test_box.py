@@ -104,7 +104,7 @@ def test_a_box_for_an_installed_app_is_set_up_and_reverted(cat, host, program):
     f = host.home / "Boxes/chat-app"
     assert stat.S_IMODE((f / "home").stat().st_mode) == 0o700 and stat.S_IMODE((f / "box.json").stat().st_mode) == 0o600
     box = B.read(host, "chat-app")
-    assert box.argv == ["/usr/bin/chat", "--flag"] and box.network == "off" and box.gpu and not box.sound
+    assert box.argv == ["/usr/bin/chat", "--flag"] and box.network == "off" and not box.gpu and not box.sound
     launcher = (host.home / ".local/share/applications/daprivacyscanner-box-chat-app.desktop").read_text()
     assert f"Exec={program} --box chat-app" in launcher and "Name=Chat App (in its Box)" in launcher and B.MARK in launcher
     o = detect(cat, "app.boxes", make_scan(host))

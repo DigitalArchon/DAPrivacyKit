@@ -432,6 +432,9 @@ def boxes(check, scan, outcome):
          "folders' real paths too: ~/Boxes/NAME in your home folder, which names your account. And an app in a Box "
          "can't use the desktop's password store, so it may "
          "ask you to sign in again or keep its login in its own home."),
+        ("What it may take", "Each run is held to at most 70% of this computer's memory and 1,024 processes, so an app "
+         "can't take the whole computer down with it, where systemd here allows that limit (the Tools panel says when "
+         "it doesn't). A Flatpak app runs in a group of Flatpak's own, which isn't limited."),
         ("Each run in numbers", "While a Box runs it is watched as a trial is, and what is kept is numbers: when, how "
          "long, how many files it wrote, how many were put in its Exchange folder, how many hosts it contacted and how "
          "many of those were new. No names of files "
@@ -496,7 +499,7 @@ def boxes(check, scan, outcome):
     from ...tools import seccomp
     guess = (getattr(cur, "nesting", None) if source == "trial" else
              seccomp.installed_reason(str(host.sys_path(argv[0]))) if kind == "installed" else None)
-    net0, gpu0, sound0 = (target.network, target.gpu, target.sound) if target is not None else ("off", True, False)
+    net0, gpu0, sound0 = (target.network, target.gpu, target.sound) if target is not None else ("off", False, False)
     nest0, real0 = (target.nesting, target.real_display) if target is not None else (bool(guess), False)
     network = Input.read(params, "network", "choice", net0, choices=nets)
     gpu = Input.read(params, "gpu", "bool", gpu0)
@@ -593,8 +596,10 @@ def boxes(check, scan, outcome):
                 Input("network", "Network", "choice", network, "off",
                       choices=[("off", "None")] + ([("on", "Its usual network")] if kind == "flatpak"
                                                     else [("observed", "Its own, observed")]), help=net_help),
-                Input("gpu", "The graphics card", "bool", gpu, True,
-                      help="So it draws as it would outside. Its drivers then handle what the app sends them."),
+                Input("gpu", "The graphics card", "bool", gpu, False,
+                      help="So it draws as it would outside, smoothly and with 3D. The cost: the card's drivers, in the "
+                           "kernel and in the app, then handle what the app sends them, which is where an app trying "
+                           "to break out would look first. Off, the processor does the drawing, as in a trial."),
                 Input("sound", "Sound", "bool", sound, False,
                       help="This computer's sound server, which runs outside the sandbox: with it the app could also "
                            "record from the microphone, read your user name, this computer's name and which other "
