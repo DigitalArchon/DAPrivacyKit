@@ -105,7 +105,9 @@ the runtime folder, and root runs that copy with the system's python3, which mus
   Lever and AppImageLauncher read it when the user asks them to update, fetch the latest release's `.zsync` (made
   by the build with the snapshot's `zsyncmake`, dated to the commit, its URL the file's own name, so it is
   reproducible too) and then only the blocks that changed, checked against it. The app itself never looks for
-  updates.
+  updates by itself: its own **Check for updates…** (`update.py`, only when the user clicks it) reads GitHub's API
+  for the latest release and takes its AppImage and `.asc` (not the `.zsync`), verified with the release key the
+  copy carries and asked its version (`--version`) before it replaces the copy at the same path.
 
 ## What is pinned, and where
 
@@ -172,16 +174,20 @@ could be anything else:
    `packaging/second-build.sh v<version> --record SHA256 ZSYNC_SHA256 "that machine"`.
 8. Sign: `DAPS_SIGNING_KEYS='<signing key fingerprint>!' packaging/sign-release.sh v<version>` (below).
 9. Attach the AppImage, its `.sha256`, its `.zsync` and the three `.asc` files to the release (the `.zsync` must be
-   on the latest release for AppImage updaters). Its notes end with the Verify section sign-release.sh prints:
+   on the latest release for AppImage updaters). Publish it as a release, neither a draft nor a pre-release, tagged
+   `v<version>`, with the AppImage and its `.asc` under exactly those names: Check for updates… in every copy takes
+   GitHub's latest release only in that form, and only with an `.asc` signature by a key that copy pins (during a
+   key change, the old key's too: docs/RELEASE-KEYS.md). Its notes end with the Verify section sign-release.sh prints:
    `gpg --verify` on the `.asc` with the key's fingerprint, `sha256sum -c` on the `.sha256`, the SHA-256 itself, and
    `packaging/verify-release.sh v<version>` for anyone who wants to rebuild it from the tag and compare.
 10. After publishing, run `packaging/verify-release.sh v<version>` yourself: it fetches the published checksum and
    builds the tag again, so what is on the release page is known to be what the tag builds to.
 
 The build writes the date of the release's commit into the package (`_built.py`, from `SOURCE_DATE_EPOCH`, so it
-doesn't break reproducibility). The app never looks for a newer version of itself; from that date it says, once
-its copy is more than 90 days old (`about.OLD_AFTER_DAYS`), that a newer one is probably out and where
-(`about.LINKS["releases"]`): at the top of the page, and in the text report, which also carries the version.
+doesn't break reproducibility). The app never looks for a newer version of itself by itself (Check for updates…
+asks only when clicked); from that date it says, once its copy is more than 90 days old (`about.OLD_AFTER_DAYS`),
+that a newer one is probably out and where (`about.LINKS["releases"]`): at the top of the page, with Check for
+updates…, and in the text report, which also carries the version.
 
 Signing: `DAPS_SIGNING_KEYS='<fingerprint>! [<fingerprint>!...]' packaging/sign-release.sh TAG` signs only
 `dist/release/TAG/` as step 6 built it: the tag verified again, `BUILD-INFO` of the tag's commit, the AppImage,

@@ -141,10 +141,14 @@ building, so the tag can't be moved to other code. Each release is built on two 
 byte, before it is signed.
 
 The app never looks for updates by itself. Once a copy is more than three months old it says so, with where
-the latest is. An AppImage updater (AppImageUpdate, Gear Lever, AppImageLauncher) can update it when you ask it
-to: the AppImage names the latest release's `.zsync`, which is signed like the rest, and the updater fetches
-only what changed and checks the result against it. Check the new copy's signature as above, or with the copy
-you have. Building and verifying are described in [packaging/README.md](packaging/README.md).
+the latest is. **Check for updates…** (in the welcome warning and on that note) asks only when you click it, and
+names the hosts first: it asks GitHub's API for the latest release, downloads a newer one's AppImage and `.asc`
+beside your copy, checks the signature against the release key your copy carries (only that key) and asks the new
+copy its version, then, once you confirm, puts it in place of yours at the same path, keeping the old copy beside
+it until the new one has started. An AppImage updater (AppImageUpdate, Gear Lever, AppImageLauncher) can update
+it too when you ask it to: the AppImage names the latest release's `.zsync`, which is signed like the rest, and
+the updater fetches only what changed and checks the result against it; check the new copy's signature as above,
+or with the copy you have. Building and verifying are described in [packaging/README.md](packaging/README.md).
 
 ### Removing it
 

@@ -45,8 +45,8 @@ tries fails). Never apply a fix to your own machine in a test.
 The design rules are in [docs/TECHNICAL.md](docs/TECHNICAL.md#design-rules) (the code's comments cite them by
 number), and the checks are [privacy-checks.yaml](privacy-checks.yaml) (read its header for the schema). In short:
 
-- **A scan never changes anything** and never goes online. Online tests run only when the user starts them, after
-  the app has named every host they contact.
+- **A scan never changes anything** and never goes online. Online tests, the browser download and Check for
+  updates… run only when the user starts them, after the app has named every host they contact.
 - **Root only through the helper** (`helper.py`, standard library only), which validates every argument itself and
   never writes content the app sends. The rest runs as the user.
 - **Every fix has a dry run that shows exactly what it does, and can be reverted from History**; deleting caches

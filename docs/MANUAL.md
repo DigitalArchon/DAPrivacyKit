@@ -57,10 +57,33 @@ Each release also has a `.sha256` file beside the AppImage. With both in one fol
 also be rebuilt from its source to the very same file, which shows it is what the source says it is:
 [packaging/README.md](../packaging/README.md) has the one command for that.
 
-**Updates.** The app never goes online to look for a newer version of itself. A release's page is where new
-ones appear; once your copy is more than three months old, the app says so at the top of the window, with the
-address. To update, download the new AppImage and use it in place of the old one: what the app keeps
-(History, accepted findings, your settings) carries on.
+**Updates.** The app never goes online by itself to look for a newer version of itself. Once your copy is more
+than three months old, it says so at the top of the window, with the address of the releases page. What the app
+keeps (History, accepted findings, your settings) carries on from one version to the next.
+
+**Check for updates…** (in the welcome warning, beside the version, and on that note) asks only when you click it,
+and says first who it contacts:
+
+1. **Check now** asks GitHub (`api.github.com`) which release is the latest. GitHub sees your address and that you
+   asked, as when you open the releases page in a browser; nothing else is sent.
+2. If a newer one is out, **Download and verify** gets its AppImage and signature from `github.com`, which hands
+   them over from its file servers (`release-assets.githubusercontent.com`), into a hidden folder beside your copy.
+   The signature is checked against Digital Archon's release key, which your copy carries (never your own GnuPG
+   keyring), and the new copy is asked its version (it is run once with `--version`). Anything that isn't verified,
+   isn't the release's version or isn't newer than yours is deleted at once. Stop ends it.
+3. **Replace this copy** (shown with the exact paths, and the commands that would do the same by hand) puts the new
+   one in place of yours: the same file, the same name and permissions, because scheduled scans, the Outbox, the
+   right-click entries and Boxes start the app by that path. The name keeps the old version number. Your old copy is
+   kept beside it, hidden (`.DAPrivacyKit-<old version>-x86_64.AppImage.<old version>.old`), until the new one has
+   started; the new one then removes it. Until then, the dialog's `mv -f …` command puts it back.
+4. **Restart now** starts the new copy and quits this one; **Later** leaves this one running, and the next start
+   is the new version.
+
+It refuses to replace a copy in a folder other accounts can write to or that belongs to another account (see
+below), and one you can't change (an administrator put it in `/opt`): download the new one from the releases page
+then. Run from the source, or from a package someone made, the dialog says how to update instead (`git pull`, or that
+package manager) and contacts nothing; a development build can't be updated this way. An AppImage updater
+(AppImageUpdate, Gear Lever, AppImageLauncher) can also update it when you ask it to.
 
 **Keep it in a folder of your own** (such as `~/Applications`). Scheduled scans, the Outbox, the right-click
 entries and Boxes start the AppImage from where it was when you set them up. The app refuses to set them up while
@@ -747,6 +770,7 @@ in the window, where each one is shown before it is made.
 | `daprivacyscanner --export FILE` | Writes everything the app keeps, for your backups, into a new file only you can read (never over a file that is there: "FILE (2)" instead). |
 | `daprivacyscanner --probe ADDRESS` | From another computer: which ports of ADDRESS answer. |
 | `daprivacyscanner --install-helper` / `--uninstall-helper` | Installs or removes the administrator helper. |
+| `daprivacyscanner --version` | Prints the version (`DA Privacy Kit <version>`) and exits. |
 
 With the AppImage, use `./DAPrivacyKit-*.AppImage` in place of `daprivacyscanner`.
 
@@ -759,7 +783,8 @@ entries and settings files it writes for you carry that name.
 
 | Where | What |
 |---|---|
-| `~/.local/state/daprivacyscanner/` | The last report, the summary of the last scan (statuses only), accepted findings, and History with its backups. |
+| `~/.local/state/daprivacyscanner/` | The last report, the summary of the last scan (statuses only), accepted findings, and History with its backups; after an update, until the new copy has started, which old copy it is to remove (`update.json`). |
+| Beside the AppImage | Only while an update is under way: the download, in a hidden `.DAPrivacyKit-update-…` folder (deleted if it isn't put in place, and when the app quits), and the old copy, hidden, until the new one has started. |
 | `~/.config/daprivacyscanner/` | Window preferences (`ui.json`) and online test settings (`online.json`). |
 | `/var/lib/daprivacyscanner/changes` | The helper's record of root changes, so they can be reverted. |
 

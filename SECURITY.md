@@ -38,8 +38,10 @@ Anything that breaks one of DA Privacy Kit's promises, for example:
   touching a file, unit, sysctl or policy that isn't on its lists, being led through a link to
   somewhere else, or being used by another account or program;
 - a scan that changes something, or that contacts the network;
-- an online test, or the browser download, contacting a host it didn't list first, following a
+- an online test, the browser download or Check for updates… contacting a host it didn't list first, following a
   redirect elsewhere, or sending more about the computer than it says;
+- Check for updates… putting in place a file the release key the copy carries didn't verify, an older version or
+  the same one, or replacing or removing anything but the AppImage it runs from and the old copy it kept;
 - a fix that changes something its dry run didn't show, that can't be reverted from History when
   it says it can, or a revert that overwrites or removes something that isn't the fix's;
 - secrets, file contents, account names or file names reaching a report, the undo log, a

@@ -162,6 +162,12 @@ are plenty), then sign with the subkey alone, and in a later release take 3AA5 o
 nothing it might sign after its key is retired is trusted by new copies. `sign-release.sh` checks every signature
 against the tag's own `docs/release-key.asc`, so it refuses a key the release doesn't pin.
 
+Check for updates… (from 0.1.0b9) depends on this too: a copy takes a new release only when its `.asc` holds a good
+signature by a key that copy pins, so a release signed by the new subkey alone can't update a copy that knows only
+3AA5; that copy says the download isn't verified, deletes it, and its user has to download the new one by hand and
+check it as the README says. Once 3AA5 is dropped from the signatures, such copies stop updating themselves, which
+is the point of the two windows above.
+
 ## If something goes wrong
 
 - **Token A lost, or stolen with its PIN**: on the offline machine, revoke subkey A (`gpg --edit-key "$N"`, `key 1`,

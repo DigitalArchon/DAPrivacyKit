@@ -89,7 +89,8 @@ carried out.
    Mint and Ubuntu, tested), never over a file there (the next free name, "NAME (2).txt", instead) nor through
    a link.
 10. **No network in a scan.** The app never phones home and a scan works offline. Online tests run only when the
-    user starts them, after naming every host each one contacts; the same for the one tool that downloads
+    user starts them, after naming every host each one contacts; the same for the one tool that downloads, and for
+    Check for updates…, the app's only look at a newer version of itself, never made by itself
     ([section 6](#6-network-access)).
 
 ### Tools
@@ -652,7 +653,64 @@ link-local ranges, `localhost`, a `.local` name: the router's UPnP description),
 (http to https there) or to one the call names on the https port, and never from https to http. A download reads
 what arrives as it arrives, and Stop shuts its connection down, so a stalled server doesn't hold Stop up; an
 online test's answer has its timeout as a whole. The test suite uses `FakeNet` and never goes online. The browser download (section 7) is the only tool that uses the network,
-also through `online.Net`, and only when the user starts it.
+also through `online.Net`, and only when the user starts it. Check for updates… (below) is the app's only look at
+a newer version of itself, also only when the user clicks it.
+
+### Check for updates…
+
+Code: `update.py`, the server's `/api/update*` routes, `openUpdate()` in app.js (the owner's decisions of
+2026-11-12). It never runs by itself: no timer, nothing at start-up, nothing in a scan. The dialog (from the welcome
+warning, beside the version, and from the old-copy note) gets `GET /api/update` first, which contacts nothing and
+says what this copy is (`situation`) and the hosts of each step, and names them before each runs, with the proxy
+warning the online tests give (it goes out directly, as they do).
+
+1. **Check** (`latest`): `GET https://api.github.com/repos/DigitalArchon/DAPrivacyKit/releases/latest` through
+   `online.Net` (https only, no proxy, the generic User-Agent, nothing about the computer; GitHub's 60 questions an
+   hour per address are said when it refuses). The answer is read strictly: the tag `v<version>` (PEP 440, compared
+   as PEP 440 orders versions, `update.version`; a local part refused), not a draft or a pre-release, and the assets
+   `DAPrivacyKit-<version>-x86_64.AppImage` and its `.asc` by exact name, each uploaded, its size capped (256 MB,
+   64 KB) and its address exactly `https://github.com/DigitalArchon/DAPrivacyKit/releases/download/<tag>/<name>`;
+   anything else, nothing is downloaded. GitHub's own SHA-256 of the asset (`digest`), when it gives one, is checked
+   after the download as a check against damage, never as trust.
+2. **Download** (`download`, a job of its own with progress and Stop): into a new hidden folder beside the running
+   AppImage (`$APPIMAGE`'s real path, `.DAPrivacyKit-update-<random>`, 0700: the same filesystem, so putting it in
+   place is one rename), through `online.Net.download` capped at the size the release gives, the signature first.
+   GitHub serves release assets by redirecting `github.com` to its file servers, `release-assets.githubusercontent.com`
+   (seen on 2026-11-12) or `objects.githubusercontent.com` (before 2025): those are the only redirects followed.
+   Refused before anything is contacted where the AppImage couldn't be replaced, and where there isn't room.
+3. **Verify** (`verify`): Verify a download on it with the `digitalarchon` project of `signing-keys.yaml` alone (its
+   pinned primaries, the subkeys they bind, a `role: successor`; never the user's keyring, never another project's
+   key): anything but *verified* by it, over the file itself, is refused and deleted; so is a signature dated in the
+   future. Then the version the file itself says it is (`read_version`): a file's name says nothing (an older
+   release, genuinely signed, renamed as the latest, passes the signature check), and its contents can't be read
+   without running it (a zstd squashfs, which Python's standard library can't read before 3.14), so the verified file
+   is run once with `--version`, as the user, under the host's environment (`APPIMAGE_EXTRACT_AND_RUN` passed on
+   when this copy runs with it), stdin from /dev/null, for at most 60 seconds. app.py prints `DA Privacy Kit
+   <version>` there before anything else runs (keep that line). It must be the release's version and newer than this
+   copy's: a downgrade, the same version, or a release before 0.1.0b9 (no `--version`) is refused and deleted.
+4. **Replace** (`replace`, once the user has seen `plan`: the exact paths, the commands that do the same by hand,
+   how to check it by hand and how to go back, and confirmed): refused where another account could change the file
+   or a folder it is in (`launch.unsafe_place`), where the file isn't the user's or its folder not writable by them,
+   when the running file has changed since the download began (another copy updated it), or the download since it
+   was verified (its SHA-256 again). The running file is kept beside it as `.<name>.<version>.old`, a hard link (two
+   renames on a filesystem without them, put back if the second fails), and the new one renamed over the path with
+   the running file's mode: the path stays, since timers, the Outbox's unit, the right-click entries and Boxes start
+   the AppImage by it; its name keeps the old version number, said. The record of what the new copy is to remove,
+   `$XDG_STATE_HOME/daprivacyscanner/update.json` (the path, the kept file's name, device, inode, size and time, the
+   two versions), is written then.
+5. **Restart now** (`restart`) starts the new copy (with `--browser` in browser mode), watched for 3 seconds: one that
+   stops at once is said, with the hand undo, and this copy stays; otherwise the page quits this one through Quit.
+   **Later** leaves it. The new copy's first page (`/api/state`, `finish_pending`) removes the kept file: the recorded
+   name, beside the AppImage, a plain file of the user's with the recorded device, inode, size and time, nothing
+   else; a file put there since is left alone. The old copy running again (Later, or put back by hand) removes
+   nothing.
+
+One copy at a time (`owner.hold("update")`, from the download until it is put in place or discarded); a download not
+put in place is deleted when its dialog closes and when the app quits, and hidden folders a copy that ended left go
+when the dialog opens while no copy holds the lock (`tidy`: only the names the app gives, the folder once empty).
+Not an AppImage (a source tree: `git -C <tree> pull --ff-only`; a package someone made: its package manager) and a
+development build (`about.dev_build`, or a `+dev` name or version) get how to update instead, and nothing is
+contacted. AppImage updaters can use the release's `.zsync` (packaging/README.md); the app itself doesn't.
 
 ---
 
@@ -2475,6 +2533,8 @@ drive they came from (its model, serial, size and WWN, `retire.identity`): anoth
 | `/run/systemd/system/<unit>.d/50-daprivacyscanner.conf` | `LogLevelMax=notice` for an open RAM disk's mount unit; for ~/TempBrowser's also `BindsTo=`/`Before=user@UID.service` (unmounted when the session has ended) | Root-owned; removed at the close, gone at reboot |
 | `~/TempBrowser`, `~/RAMDisk` | Tool data | In memory only |
 | `$XDG_CACHE_HOME/daprivacyscanner/browsers/` (0700) | Tor Browser's or Mullvad Browser's archive and signature, one per browser | Only when the download dialog's tick asks for it; deleted from the panel; on the disk, so it says the browser was set up here |
+| `$XDG_STATE_HOME/daprivacyscanner/update.json` (0600) | After Check for updates… put a new copy in place: the AppImage's path, the old copy's name and identity, the two versions | Until the new copy's first start, which removes the old copy and the record |
+| Beside the AppImage | `.DAPrivacyKit-update-<random>/` (0700): a release's AppImage and `.asc` while it is downloaded, verified and waiting for the user; `.<name>.<version>.old`: the old copy, after a replacement | The download goes when it is put in place, discarded, its dialog closed or the app quits; the old copy at the new one's first start |
 
 Tools keep nothing afterwards: no log, no history, nothing in reports or exports. The one exception is the
 browser's download, kept on the disk for next time when the user ticks it (section 7.4).
