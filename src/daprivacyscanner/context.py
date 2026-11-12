@@ -323,14 +323,43 @@ def detect_multi_user(host: Host) -> ContextValue:
         if len(f) < 7 or not f[2].isdigit():
             continue
         uid, shell = int(f[2]), f[6].strip()
-        if uid_min <= uid <= uid_max and uid != 65534 and not NO_LOGIN.search(shell):
+        # systemd-homed's accounts take UIDs 60001-60513, above login.defs' UID_MAX (60000 by default)
+        if (uid_min <= uid <= uid_max or HOMED_UIDS[0] <= uid <= HOMED_UIDS[1]) and uid != 65534 \
+                and not NO_LOGIN.search(shell):
             humans.append(f[0])
     humans = sorted(set(humans))
     ev = [Evidence.count("Accounts with a login shell", len(humans))]
     if humans:
         ev.append(Evidence.val("Accounts", ", ".join(humans)[:200]))
-    return ContextValue("multi_user", len(humans) > 1, ev,
-                        f"User accounts (UID {uid_min}-{uid_max}) with a login shell, from {source}")
+    how = f"User accounts (UID {uid_min}-{uid_max}, and systemd-homed's) with a login shell, from {source}"
+    remote = _network_accounts(host)
+    if remote and len(humans) <= 1:
+        # SSSD, LDAP, winbind and NIS don't list their accounts by default (sssd's enumerate = false): who else can log
+        # in isn't known here
+        ev.append(Evidence.val("Accounts also come from", ", ".join(remote)))
+        return ContextValue("multi_user", None, ev, how + f"; accounts also come from {', '.join(remote)}, which don't "
+                            "list them", notes=[Note("limitation", "Accounts from the network aren't listed",
+                                                     f"This computer also takes accounts from {', '.join(remote)} "
+                                                     "(/etc/nsswitch.conf), which don't list them: whether other "
+                                                     "people can log in here couldn't be told.")])
+    return ContextValue("multi_user", len(humans) > 1, ev, how)
+
+
+HOMED_UIDS = (60001, 60513)
+# nsswitch.conf's sources for passwd that take accounts from elsewhere, by what they are
+NETWORK_ACCOUNTS = {"sss": "SSSD (a directory such as Active Directory, FreeIPA or LDAP)", "ldap": "LDAP",
+                    "winbind": "Windows domain (winbind)", "nis": "NIS"}
+
+
+def _network_accounts(host: Host) -> list[str]:
+    """The sources of accounts beyond the computer's own that /etc/nsswitch.conf's passwd line names."""
+    try:
+        text = host.read_sys("/etc/nsswitch.conf") or ""
+    except Unreadable:
+        return []
+    m = re.search(r"^\s*passwd\s*:\s*(.*)$", text, re.M)
+    words = re.sub(r"\[[^\]]*\]", " ", m.group(1)).split() if m else []
+    return [NETWORK_ACCOUNTS[w] for w in dict.fromkeys(words) if w in NETWORK_ACCOUNTS]
 
 
 def _uid_range(host: Host) -> tuple[int, int]:

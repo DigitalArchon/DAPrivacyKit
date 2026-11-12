@@ -147,10 +147,27 @@ nobody:x:65534:65534:nobody:/nonexistent:/usr/sbin/nologin
     ("svc:x:1002:1002::/srv:/usr/sbin/nologin\n", False),
     ("guest:x:1003:1003::/home/guest:/bin/false\n", False),
     ("old:x:1004:1004::/home/old:\n", True),             # an empty shell field means /bin/sh
+    # systemd-homed's accounts sit above UID_MAX (60000): they were never counted
+    ("carol:x:60231:60231:Carol:/home/carol:/bin/bash\n", True),
+    ("x:x:60600:60600::/home/x:/bin/bash\n", False),      # past homed's range and UID_MAX: not an account of a person
 ])
 def test_multi_user(tmp_path, extra, expected):
     host = make_host(tmp_path, commands={"getent passwd": PASSWD + extra})
     assert detect_multi_user(host).value is expected
+
+
+@pytest.mark.parametrize("nsswitch, expected", [
+    ("passwd: files systemd sss\n", None),               # SSSD doesn't list its accounts: couldn't tell
+    ("passwd:         files [SUCCESS=return] ldap\n", None),
+    ("passwd: files systemd\n", False),
+])
+def test_multi_user_with_accounts_from_the_network(tmp_path, nsswitch, expected):
+    host = make_host(tmp_path, commands={"getent passwd": PASSWD}, files={"/etc/nsswitch.conf": nsswitch})
+    v = detect_multi_user(host)
+    assert v.value is expected and (expected is not None or v.notes[0].kind == "limitation")
+    host = make_host(tmp_path / "b", commands={"getent passwd": PASSWD + "bob:x:1001:1001::/home/bob:/bin/zsh\n"},
+                     files={"/etc/nsswitch.conf": nsswitch})
+    assert detect_multi_user(host).value is True            # two local ones settle it anyway
 
 
 def test_multi_user_falls_back_to_etc_passwd_and_login_defs(tmp_path):
