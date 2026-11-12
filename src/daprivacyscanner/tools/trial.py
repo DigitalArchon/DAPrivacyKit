@@ -768,7 +768,7 @@ def only_helpers():
     for p in os.listdir("/proc"):
         if p.isdigit() and int(p) not in (1, os.getpid()):
             try:
-                with open("/proc/" + p + "/comm") as f:
+                with open("/proc/" + p + "/comm", errors="replace") as f:
                     if f.read().strip() not in HELPERS:
                         return False
             except OSError:

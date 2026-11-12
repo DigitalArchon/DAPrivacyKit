@@ -13,6 +13,7 @@ from pathlib import Path
 from .. import ini, kwallet
 from ..host import Unreadable
 from ..model import Evidence, Note, Outcome
+from ..procnames import comm
 from ..privileged import HelperError
 from . import Check, Scan, register
 from ._util import (absent, children, chromium_dirs, chromium_profiles, failed, isdir, isfile, mode_of,
@@ -1681,7 +1682,7 @@ def ssh_agent(scan: Scan) -> SshAgent:
             try:
                 if host.root == Path("/") and p.stat().st_uid != host.uid:
                     continue
-                if (p / "comm").read_text().strip() != "ssh-agent":
+                if comm(p) != "ssh-agent":
                     continue
                 argv = (p / "cmdline").read_bytes().split(b"\0")
             except OSError:

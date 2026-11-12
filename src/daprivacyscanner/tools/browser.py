@@ -46,6 +46,7 @@ from pathlib import Path
 from typing import Callable
 
 from ..host import Host
+from ..procnames import comm
 from ..hostenv import host_env
 from . import owner, ramdisk, sandbox, transfer, wayland
 
@@ -1719,7 +1720,7 @@ def _procs(host: Host) -> dict[int, tuple[int, str]]:
                 continue
             status = (p / "status").read_text(errors="replace")
             ppid = int(re.search(r"^PPid:\s*(\d+)", status, re.M).group(1))
-            procs[int(p.name)] = (ppid, (p / "comm").read_text().strip())
+            procs[int(p.name)] = (ppid, comm(p))
         except (OSError, AttributeError, ValueError):
             continue
     return procs

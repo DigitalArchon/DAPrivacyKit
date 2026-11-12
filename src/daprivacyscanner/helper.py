@@ -5447,7 +5447,7 @@ def _journald_writes_to(prefix: str) -> bool:
         if not pid.isdigit():
             continue
         try:
-            with open(_p(f"/proc/{pid}/comm")) as f:
+            with open(_p(f"/proc/{pid}/comm"), errors="replace") as f:     # any account can name its process anything
                 if f.read().strip() != "systemd-journal":
                     continue
             fds = os.listdir(_p(f"/proc/{pid}/fd"))

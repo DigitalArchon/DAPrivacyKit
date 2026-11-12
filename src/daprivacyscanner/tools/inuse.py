@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..host import Host
+from ..procnames import comm
 
 CAMERA = re.compile(r"^/dev/video(\d+)$")
 ALSA_CAPTURE = re.compile(r"^/dev/snd/pcmC(\d+)D(\d+)c$")
@@ -132,7 +133,7 @@ def device_holders(host: Host) -> dict[str, list[Holder]]:
         if not held:
             continue
         try:
-            name = (p / "comm").read_text().strip()
+            name = comm(p)
         except OSError:
             continue
         for t in held:

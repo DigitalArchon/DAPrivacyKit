@@ -17,6 +17,7 @@ from typing import Iterable
 from ..host import FormatChanged, Host, Unreadable, unescape_mount
 from ..model import Evidence, Note, Outcome, Status
 from ..paths import Base, Location, PathResolver
+from ..procnames import comm
 
 # Walking a directory stops after this many entries: a scan must stay quick on a huge home.
 WALK_LIMIT = 50_000
@@ -370,7 +371,7 @@ def processes(host: Host, own: bool = False) -> set[str]:
             try:
                 if own and host.root == Path("/") and p.stat().st_uid != host.uid:
                     continue
-                out.add((p / "comm").read_text().strip())
+                out.add(comm(p))
             except OSError:
                 continue
     return out
@@ -388,7 +389,7 @@ def removed_while_running(host: Host, name: str) -> bool:
         try:
             if host.root == Path("/") and p.stat().st_uid != host.uid:
                 continue                                # another account's: its program can't be read
-            if (p / "comm").read_text().strip() != name:
+            if comm(p) != name:
                 continue
             exe = os.readlink(p / "exe")
         except OSError:
@@ -414,7 +415,7 @@ def open_files(host: Host) -> list[tuple[str, frozenset[str]]]:
         try:
             if host.root == Path("/") and p.stat().st_uid != host.uid:
                 continue                                # other users' processes can't be inspected anyway
-            name = (p / "comm").read_text().strip()
+            name = comm(p)
         except OSError:
             continue
         paths = set()

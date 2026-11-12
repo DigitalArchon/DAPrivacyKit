@@ -17,6 +17,7 @@ from .catalogue import CONTEXT_KEYS
 from .desktop import DesktopInfo, detect_desktop
 from .host import Host, Unreadable, unescape_mount
 from .model import Evidence, Note
+from .procnames import comm
 
 
 @dataclass
@@ -224,7 +225,7 @@ def _guest_agents(host: Host) -> list[str]:
         return []
     for p in procs:
         try:
-            name = (p / "comm").read_text().strip()
+            name = comm(p)
         except OSError:
             continue
         if name in GUEST_AGENTS:

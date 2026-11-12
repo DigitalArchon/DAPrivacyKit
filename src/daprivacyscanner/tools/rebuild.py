@@ -55,6 +55,7 @@ from typing import Callable
 
 from ..checks._util import children, holders, open_files
 from ..host import Host
+from ..procnames import comm
 from . import names as N
 from . import trimtest as T
 
@@ -111,7 +112,7 @@ def _user_pids(host: Host) -> list[Path]:
 
 def _comm(p: Path) -> str:
     try:
-        return (p / "comm").read_text().strip() or p.name
+        return comm(p) or p.name
     except OSError:
         return p.name
 

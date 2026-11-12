@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..host import Host, unescape_mount
+from ..procnames import comm
 
 NAME = "RAMDisk"
 BROWSER = "TempBrowser"                 # the browser in memory's (tools/browser.py)
@@ -359,7 +360,7 @@ def holders_on_device(host: Host, path: Path) -> dict[int, str]:
         try:
             if host.root == Path("/") and p.stat().st_uid != host.uid:
                 continue
-            name = (p / "comm").read_text().strip()
+            name = comm(p)
         except OSError:
             continue
         found = False
