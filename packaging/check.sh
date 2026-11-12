@@ -96,6 +96,15 @@ web_deps() {
     fi
 }
 
+# Each suite sees a runtime folder of its own (/run/user/UID as an empty tmpfs, in a bubblewrap namespace): fixture
+# hosts name their runtime folder as the machine would, and some of the code (tools/owner.py's locks) takes it as a
+# real path, so the suite wrote lock files into this computer's runtime folder and two suites at once refused each
+# other's starts. Without bubblewrap (or where AppArmor keeps it from making a namespace) the suites run one at a time.
+ISOLATE=()
+if command -v bwrap >/dev/null && bwrap --dev-bind / / --tmpfs "/run/user/$(id -u)" -- true 2>/dev/null; then
+    ISOLATE=(bwrap --dev-bind / / --tmpfs "/run/user/$(id -u)" --)
+fi
+
 suite() {  # step python [coverage]: the whole suite, the front-end test required, in a temporary folder of its own
     local step=$1 py=$2 cover=${3:-} tmp rc=0
     tmp="$(mktemp -d)"
@@ -103,7 +112,8 @@ suite() {  # step python [coverage]: the whole suite, the front-end test require
                DAPRIVACYSCANNER_NODE_PATH="$ROOT/tests/web/node_modules" PYTHONDONTWRITEBYTECODE=1)
     if [ -n "$cover" ]; then
         rm -rf "$CI/coverage" && mkdir -p "$CI/coverage"
-        env "${env[@]}" "$py" -m coverage run -m pytest -q -p no:cacheprovider --basetemp="$tmp/t" || rc=$?
+        "${ISOLATE[@]}" env "${env[@]}" "$py" -m coverage run -m pytest -q -p no:cacheprovider --basetemp="$tmp/t" \
+            || rc=$?
         "$py" -m coverage combine -q || rc=$?
         "$py" -m coverage report --sort=-miss > "$CI/coverage/report.txt" || rc=$?
         "$py" -m coverage html -q -d "$CI/coverage/html" || true
@@ -111,7 +121,7 @@ suite() {  # step python [coverage]: the whole suite, the front-end test require
              "(helper.py $(awk '$1 ~ /helper\.py$/ {print $NF}' "$CI/coverage/report.txt")); .ci/coverage/report.txt," \
              ".ci/coverage/html/index.html"
     else
-        env "${env[@]}" "$py" -m pytest -q -p no:cacheprovider --basetemp="$tmp/t" || rc=$?
+        "${ISOLATE[@]}" env "${env[@]}" "$py" -m pytest -q -p no:cacheprovider --basetemp="$tmp/t" || rc=$?
     fi
     rm -rf "$tmp"
     return $rc
@@ -194,6 +204,10 @@ for s in "${steps[@]}"; do
     esac
 done
 if [ ${#suites[@]} -gt 0 ]; then
+    if [ ${#ISOLATE[@]} -eq 0 ] && [ "$jobs" -gt 1 ]; then
+        echo "note: bubblewrap can't give each suite a runtime folder of its own here: one suite at a time"
+        jobs=1
+    fi
     echo "test suites (${suites[*]}), $jobs at a time: a few minutes each; logs in .ci/logs/"
     declare -A PIDS
     for s in "${suites[@]}"; do
