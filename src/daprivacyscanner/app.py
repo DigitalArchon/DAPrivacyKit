@@ -355,6 +355,14 @@ def schedule(mode: str) -> int:
     if not shutil.which("systemctl"):
         print("systemd's user manager isn't available here.", file=sys.stderr)
         return 2
+
+    def ctl(*args: str) -> subprocess.CompletedProcess:
+        """systemctl --user, given a minute: a user manager that doesn't answer is a failure (exit status 124, as
+        timeout(1) says it), never a command that waits for ever."""
+        try:
+            return subprocess.run(["systemctl", "--user", *args], check=False, env=host_env(), timeout=60)
+        except subprocess.TimeoutExpired:
+            return subprocess.CompletedProcess(["systemctl", "--user", *args], 124)
     made_mark = "# Folders made for this timer, removed with it while empty: "
     try:                                           # the folders an earlier --schedule made, kept across a new one
         earlier = [ln[len(made_mark):].strip() for ln in timer.read_text().splitlines() if ln.startswith(made_mark)]
@@ -363,11 +371,10 @@ def schedule(mode: str) -> int:
     if mode == "off":
         made = earlier
         if timer.exists():                         # else systemctl's "Unit file ... does not exist" came first
-            subprocess.run(["systemctl", "--user", "disable", "--now", f"{TIMER_UNIT}.timer"], check=False,
-                           env=host_env())
+            ctl("disable", "--now", f"{TIMER_UNIT}.timer")
         for p in (service, timer):
             p.unlink(missing_ok=True)
-        subprocess.run(["systemctl", "--user", "daemon-reload"], check=False, env=host_env())
+        ctl("daemon-reload")
         from .fix import remove_made_dirs
         notes = remove_made_dirs([d for d in made if d.startswith(str(unit_dir.parent))])
         print("Scheduled scans are off." + "".join(f"\n{n}." for n in notes))
@@ -386,8 +393,8 @@ def schedule(mode: str) -> int:
                        f"[Service]\nType=oneshot\nExecStart={command}\nNice=10\n")
     timer.write_text(f"[Unit]\nDescription=Run a DA Privacy Kit scan {mode}\n\n[Timer]\nOnCalendar={mode}\n"
                      "Persistent=true\nRandomizedDelaySec=1h\n\n[Install]\nWantedBy=timers.target\n")
-    subprocess.run(["systemctl", "--user", "daemon-reload"], check=False, env=host_env())
-    r = subprocess.run(["systemctl", "--user", "enable", "--now", f"{TIMER_UNIT}.timer"], check=False, env=host_env())
+    ctl("daemon-reload")
+    r = ctl("enable", "--now", f"{TIMER_UNIT}.timer")
     made = list(dict.fromkeys(earlier + [str(d) for d in (unit_dir.parent, unit_dir, wants) if d.is_dir() and d not in had]))
     if made:                                       # so that --schedule off removes them again
         with timer.open("a") as f:

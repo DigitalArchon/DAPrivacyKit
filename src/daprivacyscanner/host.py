@@ -102,7 +102,10 @@ class SystemRunner(CommandRunner):
                     out, err = p.communicate(timeout=timeout)
                 except subprocess.TimeoutExpired:
                     p.kill()
-                    p.communicate()
+                    try:                        # a child it started, still holding the pipes, mustn't hold the scan
+                        p.communicate(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        pass
                     return CommandResult(argv, TIMED_OUT, "", f"timed out after {timeout:g} s")
                 except BaseException:
                     p.kill()

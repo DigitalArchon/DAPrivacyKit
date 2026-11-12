@@ -1,3 +1,2 @@
 # packaging/ci/check_timeouts.py: calls without a timeout when the check came in, to burn down.
-src/daprivacyscanner/app.py::schedule 4
 src/daprivacyscanner/app.py::show_error 1
