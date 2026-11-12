@@ -16,6 +16,7 @@
 # Only committed files are built (the commit's tree, as git stores it), except by dev and lock; SOURCE_DATE_EPOCH
 # is the commit's time. The builder image is made from the Containerfile and pins.sh of what is built.
 set -euo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"         # verify-tag.sh is beside it
 cd "$(git rev-parse --show-toplevel)"
 mode="${1:-build}"
 ref="${2:-HEAD}"
@@ -34,8 +35,8 @@ fi
 if [ "$mode" = release ]; then
     if git rev-parse -q --verify "refs/tags/$ref" >/dev/null; then
         # a release's tag must be signed by a release key the app pins (docs/release-key.asc of this checkout)
-        packaging/verify-tag.sh "$ref" || { echo "Not building $ref: its tag isn't signed by a pinned release key." >&2
-                                            exit 1; }
+        "$HERE/verify-tag.sh" "$ref" || { echo "Not building $ref: its tag isn't signed by a pinned release key." >&2
+                                          exit 1; }
         kind="tag"
     else
         echo "Note: $ref is not a tag: built to try the release steps, it can't be signed." >&2

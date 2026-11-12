@@ -16,6 +16,7 @@
 # A fingerprint ending in "!" makes gpg use exactly that (sub)key: the signing subkey on the hardware token. The
 # private keys never leave the owner's keyring and token; nothing here goes online.
 set -euo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"         # verify-tag.sh is beside it
 cd "$(git rev-parse --show-toplevel)"
 check_only=0
 if [ "${1:-}" = --check ]; then check_only=1; shift; fi
@@ -23,7 +24,7 @@ if [ "${1:-}" = --check ]; then check_only=1; shift; fi
 tag="$1"
 die() { echo "Not signing: $*" >&2; exit 1; }
 
-packaging/verify-tag.sh "$tag" || die "$tag must be a tag signed by a pinned release key (git tag -s)."
+"$HERE/verify-tag.sh" "$tag" || die "$tag must be a tag signed by a pinned release key (git tag -s)."
 commit="$(git rev-parse "refs/tags/$tag^{commit}")"
 version="$(git show "$commit:pyproject.toml" | python3 -c 'import sys, tomllib; print(tomllib.load(sys.stdin.buffer)["project"]["version"])')"
 [ "$tag" = "v$version" ] || die "the tag $tag names version $version (a release's tag is v<version>)."

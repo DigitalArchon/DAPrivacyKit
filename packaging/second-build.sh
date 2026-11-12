@@ -41,7 +41,8 @@ else
     scp -q "$WORK/src.bundle" "$host:daprivacyscanner-second-build/src.bundle"
     echo "Building $ref ($commit) on $host: a fresh builder image and every download again, so a while."
     # shellcheck disable=SC2029
-    ssh "$host" "set -e; cd $remote && git clone -q src.bundle src && cd src && git checkout -q --detach $commit
+    ssh "$host" "set -e; cd $remote && git init -q src && cd src
+                 git fetch -q ../src.bundle refs/daprivacyscanner/second-build && git checkout -q --detach $commit
                  FRESH=1 DIST=\$HOME/daprivacyscanner-second-build/out packaging/build-appimage.sh build" \
         > "$WORK/remote.log" 2>&1 || { tail -30 "$WORK/remote.log" >&2; echo "The build on $host failed." >&2; exit 2; }
     # shellcheck disable=SC2029

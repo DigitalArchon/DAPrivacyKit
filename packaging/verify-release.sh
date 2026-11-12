@@ -20,10 +20,11 @@ RELEASES="https://github.com/DigitalArchon/DAPrivacyKit/releases/download"
 die() { echo "$*" >&2; exit 2; }
 [ $# -ge 1 ] && [ $# -le 2 ] || die "usage: $0 TAG [FILE.AppImage | FILE.sha256 | SHA256]"
 tag="$1"; given="${2:-}"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"         # verify-tag.sh is beside it
 cd "$(git rev-parse --show-toplevel 2>/dev/null)" || die "Run this from a clone of the repository."
 git rev-parse -q --verify "refs/tags/$tag" >/dev/null || die "There is no tag '$tag' here. Fetch the tags first: git fetch --tags"
 commit="$(git rev-parse --verify --quiet "refs/tags/$tag^{commit}")" || die "The tag '$tag' names no commit."
-rc=0; packaging/verify-tag.sh "$tag" || rc=$?
+rc=0; "$HERE/verify-tag.sh" "$tag" || rc=$?
 case "$rc" in
     0) ;;
     3) echo "Note: the tag $tag carries no signature (releases before 0.1.0b9). What follows ties the published" \

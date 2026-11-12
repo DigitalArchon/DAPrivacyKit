@@ -10,14 +10,14 @@ set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 [ $# -ge 1 ] && [ $# -le 2 ] || { echo "usage: $0 TAG [KEYS.asc]" >&2; exit 2; }
 tag="$1"; keys="${2:-docs/release-key.asc}"
-[ -f "$keys" ] || { echo "No key file $keys." >&2; exit 2; }
-command -v gpg >/dev/null || { echo "gpg is needed (gnupg)." >&2; exit 2; }
 git rev-parse -q --verify "refs/tags/$tag" >/dev/null || { echo "There is no tag '$tag' (git fetch --tags)." >&2; exit 2; }
 if [ "$(git cat-file -t "refs/tags/$tag")" != tag ] \
         || ! git cat-file tag "refs/tags/$tag" | grep -q -- '-----BEGIN PGP SIGNATURE-----'; then
     echo "The tag $tag is not signed." >&2
     exit 3
 fi
+[ -f "$keys" ] || { echo "No key file $keys." >&2; exit 2; }
+command -v gpg >/dev/null || { echo "gpg is needed (gnupg)." >&2; exit 2; }
 home="$(mktemp -d)"
 trap 'gpgconf --homedir "$home" --kill all >/dev/null 2>&1 || true; rm -rf "$home"' EXIT
 chmod 700 "$home"
