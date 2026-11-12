@@ -46,6 +46,39 @@ def _load(path: Path) -> dict:
     return data if isinstance(data, dict) else {}
 
 
+UNREADABLE = ".unreadable-"        # a file that couldn't be read, kept aside under its name, this and the time
+
+
+def _load_to_change(path: Path) -> dict:
+    """A file's data for a change made under the lock. One that is there but can't be parsed is kept aside, renamed and
+    never written over (accepted findings hold the user's own notes), and the change starts from nothing, as the undo
+    log does: before, the next change saved itself over it, and every other accepted finding was gone without a word.
+    One that can't be read at all (its permissions) raises: it isn't replaced either."""
+    try:
+        data = json.loads(path.read_text())
+    except FileNotFoundError:
+        return {}
+    except ValueError:
+        data = None
+    if isinstance(data, dict):
+        return data
+    stamp, n = time.strftime("%Y%m%d-%H%M%S"), 0
+    aside = path.with_name(f"{path.name}{UNREADABLE}{stamp}")
+    while os.path.lexists(aside):
+        n += 1
+        aside = path.with_name(f"{path.name}{UNREADABLE}{stamp}-{n}")
+    os.rename(path, aside)
+    return {}
+
+
+def kept_aside(path: Path) -> list[Path]:
+    """The copies of `path` kept aside as unreadable (_load_to_change)."""
+    try:
+        return sorted(path.parent.glob(f"{path.name}{UNREADABLE}*"))
+    except OSError:
+        return []
+
+
 @contextlib.contextmanager
 def locked(directory: Path):
     """One read-modify-write of a file in the state folder at a time: the window, a scheduled scan, the Outbox and
@@ -74,11 +107,26 @@ def write_json(path: Path, data: dict) -> None:
     try:
         with open(fd, "w") as f:
             json.dump(data, f, indent=1)
+            # on the disk before it replaces the old one: after a crash or a power cut the file is the old one or the
+            # new one, never an empty one (a rename can reach the disk before the data it names)
+            f.flush()
+            os.fsync(f.fileno())
         os.replace(tmp, path)
     except BaseException:
         with contextlib.suppress(FileNotFoundError):
             os.unlink(tmp)
         raise
+    # and the rename itself: the folder's entry
+    try:
+        dfd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    except OSError:
+        return
+    try:
+        os.fsync(dfd)
+    except OSError:                                 # a filesystem that can't sync a folder (some FUSE ones): it is saved
+        pass
+    finally:
+        os.close(dfd)
 
 
 # ------------------------------------------------------------------ baseline
@@ -258,11 +306,31 @@ class Accepted:
     def all(self) -> dict[str, dict]:
         return {k: v for k, v in _load(self.file).items() if isinstance(v, dict)}
 
+    def damaged(self, display=str) -> str:
+        """What the page says when the file couldn't be read: it is unreadable now, or copies were kept aside; ""."""
+        try:
+            data = json.loads(self.file.read_text())
+            unreadable = not isinstance(data, dict)
+        except FileNotFoundError:
+            unreadable = False
+        except (ValueError, OSError):
+            unreadable = True
+        said = []
+        if unreadable:
+            said.append(f"The list of findings you accepted, {display(self.file)}, can't be read, so they are shown "
+                        "again. It is kept as it is: accepting a finding starts a new list beside it.")
+        kept = kept_aside(self.file)
+        if kept:
+            said.append(f"The list of findings you accepted couldn't be read, so it was kept aside "
+                        f"({', '.join(display(k) for k in kept)}): only what you accepted since is hidden.")
+        return " ".join(said)
+
     def set(self, check_id: str, accept: bool, note: str = "", severity: int | None = None,
             reason: str = "") -> dict[str, dict]:
-        """Accepts (or un-accepts) a finding at its severity now, and what decided that severity."""
+        """Accepts (or un-accepts) a finding at its severity now, and what decided that severity. Raises OSError when
+        the list is there but can't be read: it is never written over then."""
         with locked(self.file.parent):
-            data = self.all()
+            data = {k: v for k, v in _load_to_change(self.file).items() if isinstance(v, dict)}
             if accept:
                 data[check_id] = {"note": note.strip()[:300], "when": time.time(), "severity": severity,
                                   "severity_reason": reason}

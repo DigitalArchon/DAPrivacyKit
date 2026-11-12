@@ -375,6 +375,7 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
             "dev": dev,
             "reads": about.READS, "never": about.NEVER,
             "accepted": Accepted(paths_of(host)).all(),
+            "accepted_damaged": Accepted(paths_of(host)).damaged(host.display),    # said, never an empty list alone
             "last_scan": (Baseline(paths_of(host)).load() or {}).get("taken"),
             "open_tool": pending_tool.pop("value", None),
             "presentation": await asyncio.to_thread(presentation_on, host),
@@ -496,9 +497,13 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
             return JSONResponse({"error": f"No check {cid}"}, status_code=404)
         result = ((app.state.report or {}).get("results") or {}).get(cid) or {}
         host = make_host()
-        data = await asyncio.to_thread(Accepted(paths_of(host)).set, cid, bool(body.get("accept")),
-                                       str(body.get("note") or ""), result.get("effective_severity"),
-                                       result.get("severity_reason", ""))
+        try:
+            data = await asyncio.to_thread(Accepted(paths_of(host)).set, cid, bool(body.get("accept")),
+                                           str(body.get("note") or ""), result.get("effective_severity"),
+                                           result.get("severity_reason", ""))
+        except OSError as e:                    # there but unreadable (its permissions): never written over
+            return JSONResponse({"error": f"The list of findings you accepted couldn't be changed: {e.strerror or e}."},
+                                status_code=400)
         undone = await asyncio.to_thread(recheck_undone, host)
         await asyncio.to_thread(persist, host)
         return {"accepted": data, "undone": undone}

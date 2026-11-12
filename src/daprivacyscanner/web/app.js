@@ -5310,6 +5310,7 @@ async function init() {
   if ((S.presentation?.lapsed || []).length) {
     toast(PRESENTATION_LAPSED, "error", 20000, { label: "Turn it on again", onclick: () => presentationRenew() });
   }
+  if (S.state.accepted_damaged) toast(S.state.accepted_damaged, "error", 20000);   // never an empty list without a word
   $("#quit-btn").classList.toggle("hidden", !S.state.can_quit);
   $("#drop-admin").addEventListener("click", dropAdmin);
   $("#scan-btn").addEventListener("click", scan);
