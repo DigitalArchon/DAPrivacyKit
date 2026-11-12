@@ -1006,8 +1006,9 @@ check($("#c-desk\\.file_manager_actions") === null, "set-ups (features) aren't l
 while ($$(".modal").length) { $$(".modal .buttons button").at(-1).click(); await tick(); }
 $("#tools-btn").click(); await tick(); await tick();
 check($$(".modal .toolcard").length === TOOL_COUNT, "the Tools panel shows every tool");
-check($$(".modal .toolgroup h4").map(e => e.textContent).join("|") === "Your files|Private browsing and memory|Apps|Disks and drives|Everyday",
-      "in four groups, each with its heading");
+check($$(".modal .toolgroup h3.group-head").map(e => e.textContent).join("|") === "Your files|Private browsing and memory|Apps|Disks and drives|Everyday"
+      && $$(".modal .toolgroup").every(g => g.getAttribute("aria-labelledby") === g.querySelector("h3")?.id),
+      "in four groups, each with its heading, which names the group for a screen reader");
 check($$(".modal .toolgroup .toolcard").every(c => c.querySelector(".toolicon svg path, .toolicon svg circle, .toolicon svg rect"))
       && new Set($$(".modal .toolgroup .toolicon svg").map(s => s.innerHTML)).size === TOOL_COUNT,
       "every tile has an icon of its own");
@@ -1023,8 +1024,8 @@ check(!$$(".modal .toolstate").length, "nothing open or missing: no tile shows a
   while ($$(".modal").length) { $$(".modal .buttons button").at(-1).click(); await tick(); }
   await window.openTools(); await tick(); await tick();
   const state = (id) => $(`.modal #tool-${id} .toolstate`);
-  check(state("verify")?.textContent === "Needs gpgv" && state("verify").title.includes("sudo apt install gpgv"),
-        "a tool missing its program says so on its tile, with the command as its tooltip");
+  check(state("verify")?.textContent === "Needs gpgv" && text(".modal #tool-verify .toolneeds") === "To install it: sudo apt install gpgv",
+        "a tool missing its program says so on its tile, with the command that installs it in view (not in a tooltip)");
   check(state("metadata")?.textContent === "Needs mat2 to clean", "Remove metadata says it can show but not clean without mat2");
   check(state("ramdisk")?.textContent === "Open · 512m" && state("browser")?.textContent === "~/TempBrowser open",
         "the RAM disks say when they are open");
@@ -1282,7 +1283,8 @@ const bridgeSelect = $(".modal .browser-tool .toolcard select");
 check(bridgeSelect && [...bridgeSelect.options].map(o => o.value).join() === "none,obfs4,snowflake,meek,custom",
       "Tor Browser's bridges are chosen in the panel");
 bridgeSelect.value = "custom"; bridgeSelect.dispatchEvent(new window.Event("change"));
-$(".modal .browser-tool .toolcard textarea").value = "obfs4 192.0.2.1:443 AB cert=x iat-mode=0";
+{ const area = $(".modal .browser-tool .toolcard textarea");            // typed: its input events keep it in the panel's state
+  area.value = "obfs4 192.0.2.1:443 AB cert=x iat-mode=0"; area.dispatchEvent(new window.Event("input")); }
 $$(".modal .browser-tool .toolcard button").find(b => b.textContent === "Save").click(); await tick(); await tick();
 check(toolBodies.bridges?.mode === "custom" && toolBodies.bridges.lines.startsWith("obfs4 192.0.2.1"),
       "bridges pasted are sent: " + JSON.stringify(toolBodies.bridges));
@@ -1650,8 +1652,22 @@ check(namesCalls.at(-1) === "check:Documents" && text(".modal .clean-result").in
   $$(".modal").at(-1).querySelector(".buttons button").click(); await tick();
   res.remove(); }
 $$(".modal").at(-1).querySelector(".buttons button").click(); await tick();
+// a click beside it that began inside it (a text selection dragged out) doesn't close it; a press and release beside it
+// asks first, as Close and Escape do: the list is shown once and kept nowhere
+{ const overlay = namesModal().parentElement, open = $$(".modal").length;
+  namesModal().querySelector(".names-list").dispatchEvent(new window.MouseEvent("mousedown", { bubbles: true }));
+  overlay.dispatchEvent(new window.MouseEvent("click", { bubbles: true })); await tick();
+  check($$(".modal").length === open && overlay.isConnected, "a drag from inside the list that ends beside it doesn't close it");
+  overlay.dispatchEvent(new window.MouseEvent("mousedown", { bubbles: true }));
+  overlay.dispatchEvent(new window.MouseEvent("click", { bubbles: true })); await tick();
+  const q = $$(".modal").at(-1);
+  check($$(".modal").length === open + 1 && q.textContent.includes("Close and forget the list?") && namesCalls.at(-1) !== "forget",
+        "a click beside it asks before the list is forgotten");
+  [...q.querySelectorAll(".buttons button")].find(b => b.textContent === "Keep it open").click(); await tick();
+  check($$(".modal").length === open && overlay.isConnected && !!$(".names-list"), "Keep it open keeps the list"); }
 namesModal().querySelector(".buttons button").click(); await tick();
-check(namesCalls.at(-1) === "forget" && !$(".names-list"), "closing it forgets them");
+[...$$(".modal").at(-1).querySelectorAll(".buttons button")].find(b => b.textContent === "Close and forget it").click(); await tick();
+check(namesCalls.at(-1) === "forget" && !$(".names-list"), "closing it, once confirmed, forgets them");
 $$(".modal .verdict button").find(b => b.textContent === "Test again…").click(); await tick(); await tick();
 check(trimJob === null && $$(".modal .trim button").some(b => b.textContent === "Start the test"), "Test again forgets it and starts over");
 while ($$(".modal").length) { $$(".modal .buttons button").at(-1).click(); await tick(); }
@@ -2464,9 +2480,15 @@ while ($$(".modal").length) { $$(".modal .buttons button").at(-1).click(); await
   [...$$(".modal").at(-1).querySelectorAll("button")].find(b => b.textContent === "Find them").click(); await tick(); await tick();
   const forgets = namesCalls.filter(c => c === "forget").length;
   check(text(".modal .trim-progress").includes("Reading the journal"), "(Deleted file names is listing them)");
-  await shut("GET /api/tools/names/job");
+  esc(); await tick();
+  // what a listing finds is kept nowhere, so closing it while it lists, or once it has listed, asks first
+  const question = $$(".modal").at(-1);
+  check($$(".modal").length === 2 && question.textContent.includes("Stop finding the names?")
+        && namesCalls.filter(c => c === "forget").length === forgets, "Escape while it lists asks first, and forgets nothing yet");
+  [...question.querySelectorAll(".buttons button")].find(b => b.textContent === "Stop and close").click(); await tick();
+  closedAt["GET /api/tools/names/job"] = calls.length;
   check(!$$(".modal").length && namesCalls.filter(c => c === "forget").length === forgets + 1,
-        "Escape closes Deleted file names, and the server is told to forget the listing");
+        "Stop and close closes Deleted file names, and the server is told to forget the listing");
   routes["GET /api/tools/names/clean"] = () => ({ job: { state: "running", steps: [{ label: "Rebuilding ~/Documents", state: "running" }] } });
   await window.openNamesPlan("/", ["Documents"], () => {}); await tick();
   $$(".modal").at(-1).querySelector("label.confirm input").click();
@@ -2682,6 +2704,72 @@ while ($$(".modal").length) { $$(".modal .buttons button").at(-1).click(); await
   await window.eval("dropAdmin")(); await tick();
   check($("#status-text").textContent.includes("dropped") && !S.adminActive, "a Drop that worked says so");
   window.fetch = fetch0; }
+
+// ------------------------------------------------------------------ drawn in place (the front-end review of 2026-11-12)
+// A panel drawn anew at every poll replaced its buttons: a click is a press and a release on the same element, so one
+// that came between the two was lost, the keyboard's focus went with the old button, and a "Stopping…" label set on
+// the button was drawn over. patch() keeps the nodes and brings them up to date.
+{ const doc = window.document, patch = window.eval("patch"), h = window.eval("h");
+  const box = doc.createElement("div"); doc.body.append(box);
+  let clicked = "";
+  const draw = (n, label) => patch(box, h("p", { key: "p" }, `${n} done`),
+    h("details", { key: "d" }, h("summary", {}, "More"), "text"),
+    h("input", { type: "text", key: "typed" }), h("input", { type: "checkbox", key: "ctl", checked: n > 1 }),
+    h("button", { key: "stop", onclick: () => { clicked = label; } }, label));
+  draw(1, "Stop");
+  const [p, det, typed, ctl, btn] = [...box.children];
+  btn.focus(); det.open = true; typed.value = "half typed";
+  draw(2, "Stopping…");
+  check(box.children[4] === btn && doc.activeElement === btn && btn.textContent === "Stopping…" && box.children[0] === p
+        && p.textContent === "2 done", "patch keeps the nodes in place, brings them up to date, and keeps the focus");
+  check(det.open && typed.value === "half typed", "an open <details> stays open, and what is typed in a field drawn without a value stays");
+  check(ctl.checked, "a control drawn with its state is set to it");
+  btn.click();
+  check(clicked === "Stopping…", "the button kept in place runs the handler it was last drawn with");
+  patch(box, h("button", { key: "other" }, "Other"), h("button", { key: "stop", onclick: () => {} }, "Stop"));
+  check(box.children[1] === btn && box.children[0].textContent === "Other", "keyed nodes are found where they moved to");
+  box.remove(); }
+
+{ // the online tests' strip, drawn every second: Stop now keeps the focus and its press
+  const S = window.eval("S"), now = Date.now() / 1000;
+  S.job = { state: "running", total: 3, results: {}, now, created: now, started: now, observe_seconds: 30, stopping: false,
+            current: { id: "net.dns_leak", title: "DNS leak", started: now } };
+  S.jobHidden = false; S.jobClock = 0;
+  window.renderOnlineStrip();
+  const stop = [...$$("#online-strip button")].find(b => b.textContent === "Stop now");
+  stop.focus();
+  stop.dispatchEvent(new window.MouseEvent("mousedown", { bubbles: true }));
+  window.renderOnlineStrip(); window.renderOnlineStrip();                  // the strip drawn again under the press
+  check([...$$("#online-strip button")].find(b => b.textContent === "Stop now") === stop && window.document.activeElement === stop,
+        "the online tests' Stop now is the same button after the strip is drawn again, with the focus still on it");
+  let stopped = null;
+  routes["POST /api/online/stop"] = (b) => { stopped = b; return { job: { ...S.job, stopping: true } }; };
+  stop.click(); await tick();
+  check(stopped?.now === true, "and its click, between two drawings, lands");
+  S.job = null; window.renderOnlineStrip(); delete routes["POST /api/online/stop"]; }
+
+{ // Remove metadata's progress, drawn every 400 ms: Stop says Stopping… until the job ends, and keeps the focus
+  let polls = 0, stops = 0;
+  const job = { kind: "read", state: "running", phase: "Reading", done: 2, total: 10, current: "a.jpg", paths: ["/home/a/x"],
+                hidden: false, selection: null, result: null, error: "" };
+  const job0 = routes["GET /api/tools/metadata/job"], stop0 = routes["POST /api/tools/metadata/stop"];
+  routes["GET /api/tools/metadata/job"] = () => ({ job: { ...job, done: 2 + Math.min(++polls, 7) } });
+  routes["POST /api/tools/metadata/stop"] = () => { stops++; return { job }; };
+  await window.openMetadata(null, []); await tick();
+  const stopBtn = () => [...$$(".modal .meta-slot button")].find(b => /^Stop/.test(b.textContent));
+  const first = stopBtn();
+  first?.focus();
+  await new Promise(r => setTimeout(r, 500));
+  check(first && stopBtn() === first && window.document.activeElement === first && text(".modal .meta-slot").includes("of 10"),
+        "Remove metadata's Stop is the same button, focused, as its progress moves on");
+  first.click(); await tick();
+  await new Promise(r => setTimeout(r, 500));
+  check(stops === 1 && stopBtn() === first && first.textContent === "Stopping…" && first.disabled,
+        "pressed, it says Stopping… and stays so as the progress is drawn again");
+  routes["GET /api/tools/metadata/job"] = () => ({ job: { ...job, state: "stopped", result: null } });
+  await new Promise(r => setTimeout(r, 500));
+  routes["GET /api/tools/metadata/job"] = job0; routes["POST /api/tools/metadata/stop"] = stop0;
+  while ($$(".modal").length) { $$(".modal").at(-1).querySelector(".buttons button").click(); await tick(); } }
 
 if (failures) { console.error(`${failures} front-end checks failed`); process.exit(1); }
 console.log("front-end: all checks passed");

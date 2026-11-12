@@ -34,17 +34,43 @@ const hasGuide = (spec) => spec.tier === "guided" || spec.tier === "feature";   
 
 const $ = (sel, root = document) => root.querySelector(sel);
 
+// An element's event handlers are kept on it (el._on), behind one listener per event type: patch(), which keeps an
+// element in place rather than replace it, hands it the handlers of the one drawn in its place.
+function dispatch(e) {
+  const f = e.currentTarget._on?.[e.type];
+  return f ? f.call(e.currentTarget, e) : undefined;
+}
+function on(el, type, fn) {
+  el.addEventListener(type, dispatch);           // the same listener twice is one
+  (el._on ||= {})[type] = fn;
+  return el;
+}
+
+// `key`: what patch() knows the element by among its siblings (an id does the same). `checked` and `value`, when given,
+// are the control's state as drawn: patch() sets a control kept in place to them, so they come from a variable, never
+// from the control alone; a control drawn without them keeps whatever the user did with it.
 function h(tag, attrs = {}, ...children) {
-  const el = document.createElement(tag);
+  const el = attrs?.ns ? document.createElementNS(attrs.ns, tag) : document.createElement(tag);
   for (const [k, v] of Object.entries(attrs || {})) {
+    if (k === "ns") continue;
+    if (k === "key") { el._key = v; continue; }
+    if (v !== undefined && v !== null) {
+      if (k === "checked" && el.tagName === "INPUT") { (el._ctl ||= {}).checked = !!v; el.checked = !!v; }
+      if (k === "value" && (el.tagName === "INPUT" || el.tagName === "TEXTAREA")) {
+        (el._ctl ||= {}).value = String(v);
+        if (el.tagName === "TEXTAREA") { el.value = String(v); continue; }
+      }
+    }
     if (v === undefined || v === null || v === false) continue;
-    if (k === "class") el.className = v;
+    if (k === "class") el.setAttribute("class", v);
     else if (k === "style") el.style.cssText = v;      // through CSSOM: the page's CSP refuses style attributes
-    else if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
+    else if (k.startsWith("on")) on(el, k.slice(2), v);
     else if (v === true) el.setAttribute(k, "");
     else el.setAttribute(k, v);
   }
-  for (const c of children.flat()) {
+  // flattened all the way: a list inside a list (a part of a panel that is a list itself) was drawn as
+  // "[object HTMLDivElement]" when only one level was
+  for (const c of children.flat(Infinity)) {
     if (c === null || c === undefined || c === false) continue;
     el.append(c instanceof Node ? c : document.createTextNode(String(c)));
   }
@@ -56,6 +82,99 @@ function fill(el, ...children) {
   el.replaceChildren(...children.flat(Infinity).filter(c => c !== null && c !== undefined && c !== false));
   return el;
 }
+
+/* patch(el, ...children): el comes to show what fill() would put in it, but the nodes already there are kept and
+   brought up to date in place: the control with the focus keeps it, a button keeps the press under way (a click is a
+   press and a release on the same element: a panel drawn anew between the two lost the click), a selection in a text
+   that didn't change stays, a <details> stays open or closed as the user left it, and what is typed in a field drawn
+   without a value stays. Siblings are matched by key (or id), else in order by tag (and class, where one matches): a
+   list whose rows come and go needs keys. What isn't matched is drawn new; the new nodes are built before anything is
+   replaced, so a failure while building leaves the old ones as they were. What the handlers of a patched tree change
+   must be the state it is drawn from (then draw again), never an element they captured: the element on the page is
+   the one kept, not the one just built. */
+const keyOf = (n) => n.nodeType === 1 ? (n._key ?? (n.id || null)) : null;
+const sameKind = (a, b) => a.nodeType === b.nodeType && (a.nodeType !== 1 || (a.namespaceURI === b.namespaceURI
+  && a.tagName === b.tagName && (a.tagName !== "INPUT" || a.type === b.type)));
+
+function patch(el, ...children) {
+  const next = children.flat(Infinity).filter(c => c !== null && c !== undefined && c !== false)
+    .map(c => c instanceof Node ? c : document.createTextNode(String(c)));
+  const focused = document.activeElement;
+  patchChildren(el, next);
+  // a kept control that had to move among its siblings loses the focus in some engines: given back
+  if (focused && focused !== document.activeElement && focused.isConnected && el.contains(focused)) focused.focus({ preventScroll: true });
+  return el;
+}
+
+function patchChildren(parent, next) {
+  const old = [...parent.childNodes];
+  const byKey = new Map();
+  for (const o of old) { const k = keyOf(o); if (k !== null) byKey.set(k, o); }
+  const used = new Set();
+  let from = 0;
+  const unkeyed = (i) => !used.has(old[i]) && keyOf(old[i]) === null;
+  const pick = (n) => {
+    const k = keyOf(n);
+    if (k !== null) { const o = byKey.get(k); return o && !used.has(o) && sameKind(o, n) ? o : null; }
+    for (let i = from; i < old.length; i++) {        // the same tag and class further on
+      if (unkeyed(i) && sameKind(old[i], n) && (n.nodeType !== 1 || old[i].getAttribute("class") === n.getAttribute("class"))) {
+        from = i + 1;
+        return old[i];
+      }
+    }
+    while (from < old.length && !unkeyed(from)) from++;
+    if (from < old.length && sameKind(old[from], n)) return old[from++];      // else the next one, if it is the same tag
+    return null;
+  };
+  const want = next.map(n => {
+    const o = pick(n);
+    if (!o) return n;
+    used.add(o);
+    morph(o, n);
+    return o;
+  });
+  for (const o of old) if (!used.has(o)) o.remove();
+  want.forEach((n, i) => { const at = parent.childNodes[i]; if (at !== n) parent.insertBefore(n, at || null); });
+}
+
+function morph(o, n) {
+  if (o.nodeType !== 1) { if (o.nodeValue !== n.nodeValue) o.nodeValue = n.nodeValue; return; }
+  const keep = (name) => name === "style" || (name === "open" && o.tagName === "DETAILS");     // CSSOM; the user's
+  for (const a of [...o.attributes]) if (!keep(a.name) && !n.hasAttribute(a.name)) o.removeAttribute(a.name);
+  for (const a of n.attributes) {
+    if (keep(a.name)) continue;
+    let v = a.value;
+    if (a.name === "class" && o.classList.contains("flash") && !n.classList.contains("flash")) v += " flash";   // reveal()'s
+    if (o.getAttribute(a.name) !== v) o.setAttribute(a.name, v);
+  }
+  if (o.style.cssText !== n.style.cssText) o.style.cssText = n.style.cssText;
+  o._on = n._on;
+  for (const t of Object.keys(n._on || {})) o.addEventListener(t, dispatch);
+  o._key = n._key;
+  if (n._ctl) {
+    for (const [k, v] of Object.entries(n._ctl)) if (o[k] !== v) o[k] = v;
+    o._ctl = n._ctl;
+  }
+  if (o.tagName === "TEXTAREA") return;          // its text is its value: the user's, or its _ctl's
+  patchChildren(o, [...n.childNodes]);
+}
+
+// a bar for how far something has got (0 to 1), told to a screen reader as a number
+function progressBar(frac, label) {
+  const pct = Math.round(Math.max(0, Math.min(frac, 1)) * 100);
+  return h("div", { class: "obar", key: "bar", role: "progressbar", "aria-label": label, "aria-valuemin": 0,
+    "aria-valuemax": 100, "aria-valuenow": pct }, h("div", { style: `width: ${pct}%` }));
+}
+
+/* A name that comes from outside the app (a file, a download, a deleted file's name, a program's menu entry, a command
+   made with one): shown isolated from the text around it (<bdi>, so a right-to-left name can't turn the sentence round),
+   with control characters and the invisible marks that reorder text (U+202E makes "gpj.exe" read as "exe.jpg") shown
+   as what they are, ⟨U+202E⟩, never obeyed. visibleText() is the same as text, for a title or a Copy button's label. */
+const HIDDEN_CHARS = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u00ad\u061c\u115f\u1160\u180e\u200b-\u200f\u2028-\u202e\u2060-\u2064\u2066-\u206f\u3164\ufeff\uffa0\ufff9-\ufffb]/g;
+const NAME_HIDDEN = new RegExp(`[\t\n\r]|${HIDDEN_CHARS.source}`, "g");   // a name has no lines either
+const shownAs = (c) => `⟨U+${c.codePointAt(0).toString(16).toUpperCase().padStart(4, "0")}⟩`;
+const visibleText = (s, lines = false) => String(s ?? "").replace(lines ? HIDDEN_CHARS : NAME_HIDDEN, shownAs);
+const nameText = (s, cls = "") => h("bdi", { class: `name${cls ? " " + cls : ""}` }, visibleText(s));
 
 const TOKEN_KEY = "daps-token";
 
@@ -81,6 +200,13 @@ function followAdmin(res) {
     S.adminActive = held === "1";
     if (S.state) renderTop();
   }
+}
+
+// an answer's own admin_active, where it has one: the same as its header says
+function takeAdmin(data) {
+  if (typeof data?.admin_active !== "boolean" || data.admin_active === S.adminActive) return;
+  S.adminActive = data.admin_active;
+  if (S.state) renderTop();
 }
 
 async function api(method, path, body, raw = false) {
@@ -888,7 +1014,11 @@ document.addEventListener("keydown", (e) => {
   else if (!e.shiftKey && at === last) { e.preventDefault(); first.focus(); }
 });
 
-function modal({ title, body, buttons = [], wide = false, cls = "", sticky = false, foot = null, onClose = null }) {
+// askFirst: () => null, or { title, text, yes } when closing would lose what can't be had back (a list of deleted file
+// names found at length): closing then asks first, however it is closed (its buttons, Escape, a click beside it),
+// unless close({ force: true }). close({ then }) runs `then` once it has closed, after the question if there was one.
+function modal({ title, body, buttons = [], wide = false, cls = "", sticky = false, foot = null, onClose = null,
+                 askFirst = null }) {
   const root = $("#modal-root");
   const heading = h("h2", { id: `modal-title-${++modalSeq}` }, title);
   // the body flattened all the way, as fill() does: h() flattens one level, and a list inside the body's list was drawn
@@ -898,8 +1028,18 @@ function modal({ title, body, buttons = [], wide = false, cls = "", sticky = fal
   const bar = h("div", { class: "buttons" });
   const opener = document.activeElement;
   const spot = focusSpot(opener);
-  const close = () => {
-    if (!overlay.isConnected) return;
+  let asking = false;
+  const close = (how = {}) => {
+    if (!overlay.isConnected || asking) return;
+    const q = how?.force ? null : askFirst?.();
+    if (q) {
+      asking = true;
+      confirmModal(q.title, h("p", {}, q.text), q.yes, "Keep it open").then((yes) => {
+        asking = false;
+        if (yes) close({ force: true, then: how?.then });
+      });
+      return;
+    }
     overlay.remove();
     const i = MODALS.indexOf(entry);
     if (i >= 0) MODALS.splice(i, 1);
@@ -911,17 +1051,23 @@ function modal({ title, body, buttons = [], wide = false, cls = "", sticky = fal
     if (back && back !== document.body && back.isConnected && !back.closest("[inert]")) back.focus();
     else if (below) below.box.focus();
     onClose?.();
+    if (typeof how?.then === "function") how.then();
   };
   for (const b of buttons) {
     const el = h("button", { class: b.kind || "", disabled: b.disabled }, b.label);
-    el.addEventListener("click", () => b.onclick ? b.onclick(close, el) : close());
+    on(el, "click", () => b.onclick ? b.onclick(close, el) : close());
     bar.append(el);
     if (b.ref) b.ref(el);
   }
   if (foot) bar.prepend(foot);
   box.append(bar);
-  // sticky: only its own buttons close it (the welcome warning must be read, not clicked away)
-  const overlay = h("div", { class: "overlay", onclick: (e) => { if (e.target === overlay && !sticky) close(); } }, box);
+  // sticky: only its own buttons close it (the welcome warning must be read, not clicked away). A click beside it closes
+  // it only when the press began beside it too: selecting text in it with a drag that ended outside it is a "click" on
+  // the overlay, which threw a panel away (a list of deleted file names, found at length)
+  let pressedBeside = false;
+  const overlay = h("div", { class: "overlay",
+    onmousedown: (e) => { pressedBeside = e.target === overlay; },
+    onclick: (e) => { if (e.target === overlay && pressedBeside && !sticky) close(); pressedBeside = false; } }, box);
   const entry = { overlay, box, close, sticky };
   if (!modalWatch) {                 // a dialog taken off the page any other way must not leave the page behind it inert
     modalWatch = new MutationObserver(modalBackground);
@@ -1973,19 +2119,24 @@ async function openTools() {
   try { data = await toolsInfo(); } catch (e) { toast(e.message, "error"); return; }
   const body = h("div", { class: "tools" });
   const reload = async () => { try { render(await toolsInfo()); } catch (e) { toast(e.message, "error"); } };
+  // drawn in place (patch) when it is brought up to date (a tool's dialog closed): the button that opened it keeps the
+  // focus. What is typed in a tile (the RAM disk's size) is the tile's state, drawn again by redraw().
+  const redraw = () => render(data);
   const render = (d) => {
     data = d;
     const groups = (d.groups || [{ id: "", title: "" }]).map(g => ({ ...g, tools: d.tools.filter(t => !g.id || t.group === g.id) }));
-    fill(body,
-      h("p", { class: "muted small" }, "Tools work on files you choose, only when you start them. Nothing is sent anywhere "
+    patch(body,
+      h("p", { class: "muted small", key: "about" }, "Tools work on files you choose, only when you start them. Nothing is sent anywhere "
         + "(the browser download names the servers it contacts before it starts), and nothing they show is kept."),
-      groups.filter(g => g.tools.length).map(g => h("section", { class: `toolgroup group-${g.id}` },
-        g.title ? h("h4", {}, g.title) : null,
+      groups.filter(g => g.tools.length).map(g => h("section", { class: `toolgroup group-${g.id}`, key: `group-${g.id}`,
+          "aria-labelledby": `toolgroup-${g.id}` },
+        g.title ? h("h3", { class: "group-head", id: `toolgroup-${g.id}` }, g.title) : null,
         // two or four tiles in rows of two, three in a row of three: no tile left alone on a row
-        h("div", { class: `toolgrid cols-${g.tools.length % 2 === 0 ? 2 : 3}` }, g.tools.map(t => toolCard(t, d, reload))))),
-      h("h4", {}, "Set-ups that last"),
-      h("p", { class: "muted small" }, "Each is set up step by step, and can be undone from History."),
-      h("div", { class: "features" }, d.features.map(id => featureRow(id, reload))));
+        h("div", { class: `toolgrid cols-${g.tools.length % 2 === 0 ? 2 : 3}`, role: "list" },
+          g.tools.map(t => toolCard(t, d, reload, redraw))))),
+      h("h3", { class: "group-head", key: "features-head" }, "Set-ups that last"),
+      h("p", { class: "muted small", key: "features-about" }, "Each is set up step by step, and can be undone from History."),
+      h("div", { class: "features", key: "features", role: "list" }, d.features.map(id => featureRow(id, reload))));
   };
   modal({ title: "Tools", wide: true, body, buttons: [{ label: "Close", kind: "primary" }] });
   render(data);
@@ -2036,10 +2187,10 @@ function toolIcon(id) {
 // what a tool's tile says of its state now: open, on, or what it needs installed (with the command as its tooltip)
 function toolStatus(t, data) {
   const v = data.verify || {}, m = data.metadata || {}, rd = data.ramdisk || {};
-  if (t.id === "verify" && !v.gpgv && !v.sqv) return { text: "Needs gpgv", kind: "warn", title: v.install || "" };
+  if (t.id === "verify" && !v.gpgv && !v.sqv) return { text: "Needs gpgv", kind: "warn", install: v.install || "" };
   if (t.id === "metadata") {
-    if (!m.mat2?.installed && !m.exiftool?.installed) return { text: "Needs mat2", kind: "warn", title: m.mat2?.install || "" };
-    if (!m.mat2?.installed) return { text: "Needs mat2 to clean", kind: "warn", title: m.mat2?.install || "" };
+    if (!m.mat2?.installed && !m.exiftool?.installed) return { text: "Needs mat2", kind: "warn", install: m.mat2?.install || "" };
+    if (!m.mat2?.installed) return { text: "Needs mat2 to clean", kind: "warn", install: m.mat2?.install || "" };
   }
   if (t.id === "ramdisk") {
     if (rd.other) return { text: "Unavailable", kind: "warn", title: `Something else (${rd.other}) is mounted on ~/RAMDisk` };
@@ -2056,12 +2207,15 @@ function toolStatus(t, data) {
   return null;
 }
 
-function toolCard(t, data, reload) {
+function toolCard(t, data, reload, redraw = () => {}) {
   const st = toolStatus(t, data);
-  const card = h("div", { class: "toolcard", id: `tool-${t.id}` },
+  const card = h("div", { class: "toolcard", id: `tool-${t.id}`, role: "listitem" },
     h("div", { class: "toolhead" }, toolIcon(t.id),
       h("div", { class: "tooltitle" }, h("b", {}, t.title), t.short ? h("div", { class: "small" }, t.short) : null),
-      st ? h("span", { class: `toolstate ${st.kind}`, title: [st.text, st.title].filter(Boolean).join(": ") }, st.text) : null),
+      st ? h("span", { class: `toolstate ${st.kind}` }, st.text) : null),
+    // what it needs installed, and the command that installs it, in view (it was only the state's tooltip)
+    st?.install ? h("div", { class: "small muted toolneeds" }, "To install it: ", h("code", {}, st.install)) : null,
+    st?.title ? h("div", { class: "small muted toolneeds" }, st.title) : null,
     t.short ? h("details", { class: "toolmore small" }, h("summary", {}, "More about it"), h("p", {}, t.text))
       : h("p", { class: "small" }, t.text));
   if (t.id === "verify") {
@@ -2069,7 +2223,7 @@ function toolCard(t, data, reload) {
   } else if (t.id === "metadata") {
     card.append(h("div", { class: "orow" }, h("button", { class: "primary small", onclick: () => openMetadata(data) }, t.button)));
   } else if (t.id === "ramdisk") {
-    card.append(ramdiskPanel(data.ramdisk, reload));
+    card.append(ramdiskPanel(data.ramdisk, reload, redraw));
   } else if (t.id === "browser") {
     card.append(h("div", { class: "orow" }, h("button", { class: "primary small", onclick: () => openBrowserTool(reload) }, t.button)));
   } else if (t.id === "trim") {
@@ -2112,20 +2266,34 @@ function featureRow(id, reload = null) {
       id === "app.boxes" && done ? "Add one…" : done ? "Review…" : "Set up…"));
 }
 
-// a path box with Choose… (the file dialog) and, for one file, the newest downloads to pick from
-function pathPicker(data, { multiple = false, onPick, label = "File" }) {
-  const input = h("input", { type: "text", class: "path", autocomplete: "off", placeholder: "/home/you/Downloads/file.iso, or ~/…",
-    spellcheck: "false" });
-  const choose = async (btn) => {
+// a path box with Choose… (the file dialog) and, for one file, the newest downloads to pick from. `draft` ({ value }):
+// in a panel drawn in place, where the path typed or chosen is kept (and `redraw` draws the panel again); without it,
+// the box itself holds it (`input`). Its label says what to put there; the example under it is no instruction.
+function pathPicker(data, { multiple = false, onPick, label = "File", draft = null, redraw = null, name = "" }) {
+  const id = name ? `path-${name}` : `path-${++modalSeq}`;          // a panel drawn in place needs it the same each time
+  const input = h("input", { type: "text", class: "path", autocomplete: "off", spellcheck: "false", id,
+    "aria-describedby": `${id}-hint`, value: draft ? draft.value : undefined,
+    oninput: draft ? (e) => { draft.value = e.currentTarget.value; } : undefined });
+  const choose = async (e) => {
+    const btn = e.currentTarget, shown = btn.parentElement.querySelector("input.path");
     btn.disabled = true;
     try {
       const r = await api("POST", "/api/tools/pick", { multiple });
-      if (r.unavailable) { toast("No file dialog here: type or paste the path.", "info"); input.focus(); return; }
-      if (r.paths.length) { input.value = r.paths.join("\n"); onPick?.(r.paths); }
-    } catch (e) { toast(e.message, "error"); } finally { btn.disabled = false; }
+      if (r.unavailable) { toast("No file dialog here: type or paste the path.", "info"); shown?.focus(); return; }
+      if (r.paths.length) {
+        if (shown) shown.value = r.paths.join("\n");
+        if (draft) draft.value = r.paths.join("\n");
+        onPick?.(r.paths);
+        redraw?.();
+      }
+    } catch (err) { toast(err.message, "error"); } finally { btn.disabled = false; }
   };
-  return { input, row: h("div", { class: "orow" }, h("span", { class: "small muted" }, label), input,
-    data.can_pick ? h("button", { class: "small", onclick: (e) => choose(e.target) }, "Choose…") : null) };
+  return { input, row: h("div", { class: "orow pathpick", key: "pathpick" },
+    h("label", { class: "small muted", for: id }, label), input,
+    data.can_pick ? h("button", { class: "small", onclick: choose }, "Choose…") : null,
+    h("div", { class: "small muted hint", id: `${id}-hint` }, data.can_pick ? "Choose it, or type or paste its full path "
+      + "(for example /home/you/Downloads/file.iso, or ~/…)." : "Type or paste its full path (for example "
+      + "/home/you/Downloads/file.iso, or ~/…).")) };
 }
 
 const VERDICT_CLASS = { verified: "ok", other_project: "warn", expired: "warn", signed: "info", intact: "warn", bad: "bad",
@@ -2328,22 +2496,24 @@ async function openMetadata(data, paths = []) {
     if (v) { addPaths([v]); typed.value = ""; }
   });
 
-  const progress = (job) => {
-    const stop = h("button", { class: "small", onclick: async () => {
-      stop.disabled = true; stop.textContent = "Stopping…";
-      try { await api("POST", "/api/tools/metadata/stop"); } catch (e) { toast(e.message, "error"); } } }, "Stop");
-    return h("div", { class: "trim-progress" },
-      h("div", { class: "orow" }, h("span", { class: "spinner on" }), h("b", {}, job.phase || "…"),
-        job.total ? h("span", { class: "small muted" }, `${job.done} of ${job.total}`) : null,
-        job.current ? h("span", { class: "small muted meta-current" }, job.current) : null),
-      job.total ? h("div", { class: "obar" }, h("div", { style: `width: ${Math.round(100 * job.done / job.total)}%` })) : null,
-      h("div", { class: "orow" }, stop));
-  };
+  // drawn in place at every answer (patch): Stop keeps its press and the keyboard's focus; that it was pressed is
+  // `stopping`, not the button's label
+  let stopping = false;
+  const progress = (job) => h("div", { class: "trim-progress", key: "progress" },
+    h("div", { class: "orow", key: "line" }, h("span", { class: "spinner on" }), h("b", {}, job.phase || "…"),
+      job.total ? h("span", { class: "small muted", key: "count" }, `${job.done} of ${job.total}`) : null,
+      job.current ? h("span", { class: "small muted meta-current", key: "current" }, nameText(job.current)) : null),
+    job.total ? progressBar(job.done / job.total, "Progress") : null,
+    h("div", { class: "orow", key: "stop" }, h("button", { class: "small", disabled: stopping || job.stopping, onclick: async () => {
+      stopping = true; patch(out, progress(job));
+      try { await api("POST", "/api/tools/metadata/stop"); } catch (e) { stopping = false; toast(e.message, "error"); } } },
+      stopping || job.stopping ? "Stopping…" : "Stop")));
   const follow = async (job) => {
     busy(true);
+    stopping = false;
     try {
       while (job && job.state === "running") {
-        fill(out, progress(job));
+        patch(out, progress(job));
         await new Promise(r => setTimeout(r, 400));
         if (!out.isConnected) return;          // closed: it goes on, and is shown when the dialog is opened again
         job = (await api("GET", "/api/tools/metadata/job")).job;
@@ -2504,29 +2674,28 @@ function metaFile(f) {
 
 // what opening a RAM disk runs as root (the helper does the same through system calls), following the
 // size and the programs box as they change
-function ramdiskOpenCommands(rd, sizeInput, noexec) {
-  const slot = h("div", {});
-  const show = () => {
-    const mb = parseInt(sizeInput.value, 10);
-    const cmds = ((noexec ? noexec() : true) ? rd.commands?.open : rd.commands?.open_exec) || [];
-    fill(slot, cmds.length ? [h("div", { class: "muted small" }, "Opening runs, as root:"),
-      commandBlock(cmds.map(c => Number.isFinite(mb) ? c.replace(/size=\d+M/, `size=${mb}M`) : c))] : null);
-  };
-  sizeInput.addEventListener("input", show);
-  sizeInput.addEventListener("change", show);
-  show();
-  return { slot, show };
+// what opening a RAM disk runs as root (the helper does the same through system calls), for the size and the
+// programs tick as they are now
+function ramdiskCommandsBlock(rd, mb, noexec) {
+  const cmds = (noexec ? rd.commands?.open : rd.commands?.open_exec) || [];
+  return cmds.length ? h("div", { key: "open-commands" }, h("div", { class: "muted small" }, "Opening runs, as root:"),
+    commandBlock(cmds.map(c => Number.isFinite(mb) ? c.replace(/size=\d+M/, `size=${mb}M`) : c))) : null;
 }
 
-function ramdiskPanel(rd, reload) {
-  const box = h("div", { class: "ramdisk" });
-  const notes = rd.notes.map(n => h("div", { class: "notebox risk small" }, n));
+// The RAM disk tool's tile, drawn with the Tools panel (redraw: the panel drawn again, in place): what is typed and
+// ticked, and Open while it waits, are in RAMDISK_UI, which outlives a drawing.
+const RAMDISK_UI = { size: null, noexec: true, busy: false };
+
+function ramdiskPanel(rd, reload, redraw = () => {}) {
+  const ui = RAMDISK_UI;
+  const notes = rd.notes.map((n, i) => h("div", { class: "notebox risk small", key: `note-${i}` }, n));
   if (rd.other) {
-    return fill(box, h("div", { class: "warnbox" }, `Something else (${rd.other}) is mounted on ~/RAMDisk, so the RAM disk can't be used there.`));
+    return h("div", { class: "ramdisk" }, h("div", { class: "warnbox" }, `Something else (${rd.other}) is mounted on ~/RAMDisk, `
+      + "so the RAM disk can't be used there."));
   }
   if (rd.open) {
     const pct = rd.total ? Math.round(rd.used / rd.total * 100) : 0;
-    return fill(box,
+    return h("div", { class: "ramdisk", key: "open" },
       h("div", { class: "orow" }, h("span", { class: "badge st-pass" }, "open"), h("code", {}, rd.path),
         h("span", { class: "small muted" }, `${fmtSize(rd.used)} of ${fmtSize(rd.total)} used (${pct}%), ${plural(rd.files, "file")}`)),
       h("div", { class: "small muted" }, (rd.noexec ? "Programs can't run from it. " : "Programs can run from it. ")
@@ -2536,24 +2705,24 @@ function ramdiskPanel(rd, reload) {
         h("button", { class: "small", onclick: async () => { try { await api("POST", "/api/tools/ramdisk/show"); } catch (e) { toast(e.message, "error"); } } }, "Show in the file manager"),
         h("button", { class: "small danger", onclick: () => closeRamdisk(rd, reload) }, "Close and overwrite…")));
   }
-  const size = h("input", { type: "number", class: "num", min: 50, max: rd.max_mb, value: Math.min(rd.default_mb, rd.max_mb) });
-  const noexec = h("input", { type: "checkbox", checked: true });
-  const cmds = ramdiskOpenCommands(rd, size, () => noexec.checked);
-  noexec.addEventListener("change", cmds.show);
-  const open = h("button", { class: "small primary" }, "Open");
-  open.addEventListener("click", async () => {
-    const mb = parseInt(size.value, 10);
+  const typed = ui.size ?? String(Math.min(rd.default_mb, rd.max_mb));
+  const mb = parseInt(typed, 10);
+  const size = h("input", { type: "number", class: "num", min: 50, max: rd.max_mb, value: typed,
+    oninput: (e) => { ui.size = e.currentTarget.value; redraw(); } });
+  const noexec = h("input", { type: "checkbox", checked: ui.noexec, onchange: (e) => { ui.noexec = e.currentTarget.checked; redraw(); } });
+  const open = h("button", { class: "small primary", disabled: ui.busy, onclick: async () => {
+    if (ui.busy) return;
     if (!(mb >= 50 && mb <= rd.max_mb)) { toast(`Choose a size from 50 to ${rd.max_mb} MB.`, "error"); return; }
-    open.disabled = true;
-    open.textContent = S.adminActive ? "Opening…" : "Waiting for authorization…";
+    ui.busy = true; redraw();
     try {
-      const r = await api("POST", "/api/tools/ramdisk/open", { size_mb: mb, noexec: noexec.checked });
-      S.adminActive = !!r.admin_active; renderTop();
+      takeAdmin(await api("POST", "/api/tools/ramdisk/open", { size_mb: mb, noexec: ui.noexec }));
+      ui.size = null;
       toast("~/RAMDisk is open: what you put in it stays in memory.", "ok");
-      await reload();
-    } catch (e) { toast(e.message, "error", 10000); open.disabled = false; open.textContent = "Open"; }
-  });
-  return fill(box,
+    } catch (e) { toast(e.message, "error", 10000); }
+    ui.busy = false;
+    await reload();
+  } }, ui.busy ? (S.adminActive ? "Opening…" : "Waiting for authorization…") : "Open");
+  return h("div", { class: "ramdisk", key: "closed" },
     h("div", { class: "orow" }, h("span", { class: "badge" }, "closed"),
       h("label", { class: "small" }, "Size ", size, " MB"),
       h("label", { class: "check small", title: "Safer: a program or script saved in it can't be started from there. Turn it off "
@@ -2563,7 +2732,7 @@ function ramdiskPanel(rd, reload) {
       + "access. Closing it here overwrites and deletes everything in it; restarting the computer ends it too (logging out "
       + "doesn't)."),
     leftoverNote(rd, reload, "tool"),
-    cmds.slot,
+    ramdiskCommandsBlock(rd, mb, ui.noexec),
     notes);
 }
 
@@ -2571,18 +2740,21 @@ function ramdiskPanel(rd, reload) {
 // back; without opening, this puts it back as it was (as you: no password).
 function leftoverNote(rd, reload, disk) {
   if (!rd.leftover) return null;
-  const btn = h("button", { class: "small" }, "Put the folder back");
-  btn.addEventListener("click", async () => {
-    btn.disabled = true;
+  const btn = h("button", { class: "small", disabled: LEFTOVER_BUSY.has(disk), onclick: async () => {
+    if (LEFTOVER_BUSY.has(disk)) return;
+    LEFTOVER_BUSY.add(disk);
     try {
       const r = await api("POST", "/api/tools/ramdisk/tidy", { disk });
       toast(r.done, "ok");
-      await reload();
-    } catch (e) { toast(e.message, "error", 10000); btn.disabled = false; }
-  });
-  return h("div", { class: "small muted" }, `An empty, read-only ${rd.path} folder is left from before a restart, which `
-    + "ended the RAM disk. Opening uses it again; or put it back as it was before (removed if the app made it).", " ", btn);
+    } catch (e) { toast(e.message, "error", 10000); }
+    LEFTOVER_BUSY.delete(disk);
+    await reload();
+  } }, "Put the folder back");
+  return h("div", { class: "small muted", key: `leftover-${disk}` }, `An empty, read-only ${rd.path} folder is left from before `
+    + "a restart, which ended the RAM disk. Opening uses it again; or put it back as it was before (removed if the app made it).",
+    " ", btn);
 }
+const LEFTOVER_BUSY = new Set();          // the disks whose folder is being put back (the button waits)
 
 function closeRamdisk(rd, reload) {
   const browserDisk = rd.name === "TempBrowser";
@@ -2983,10 +3155,11 @@ const INUSE_WHAT = { camera: "Camera", microphone: "Microphone", screen: "Screen
 async function openInuse() {
   const body = h("div", { class: "inuse" });
   const m = modal({ title: "Camera and microphone", wide: true, body, buttons: [{ label: "Close", kind: "primary" }] });
+  // drawn in place every few seconds (patch): a selection, the focus and the scroll position stay
   const tick = async () => {
     if (!m.box.isConnected) return;
-    try { fill(body, inuseView(await api("GET", "/api/tools/inuse"))); }
-    catch (e) { fill(body, h("div", { class: "warnbox bad" }, e.message)); }
+    try { patch(body, inuseView(await api("GET", "/api/tools/inuse"))); }
+    catch (e) { patch(body, h("div", { class: "warnbox bad", key: "error" }, e.message)); }
     if (m.box.isConnected) setTimeout(tick, 3000);
   };
   fill(body, h("div", { class: "orow" }, h("span", { class: "spinner on" }), "Looking…"));
@@ -2996,33 +3169,36 @@ async function openInuse() {
 function inuseView(d) {
   const active = d.streams.filter(s => s.active);
   const waiting = d.streams.filter(s => !s.active);
-  const streamRow = (s) => h("li", {},
+  const streamRow = (s) => h("li", { key: `s-${s.pid}-${s.what}-${s.source || ""}` },
     h("span", { class: `badge ${s.active ? "st-fail" : ""}` }, s.active ? "now" : s.state || "idle"), " ",
-    h("b", {}, s.app), ` is ${s.active ? "using" : "connected to"} ${s.what_title}`,
-    s.source ? h("span", { class: "muted" }, ` (${s.source})`) : null,
+    h("b", {}, nameText(s.app)), ` is ${s.active ? "using" : "connected to"} ${s.what_title}`,
+    s.source ? h("span", { class: "muted" }, " (", nameText(s.source), ")") : null,
     s.what === "playback" ? h("span", { class: "small muted" }, ": volume meters and recorders of the computer's own sound do this") : null);
-  const deviceRow = (x) => h("li", {},
+  const deviceRow = (x) => h("li", { key: `d-${x.kind}-${(x.nodes || []).join(",")}-${x.name}` },
     h("span", { class: `badge ${x.holders.length ? "st-fail" : "st-pass"}` }, x.holders.length ? "open" : "not in use"), " ",
-    h("b", {}, x.name),
-    x.holders.length ? `: ${x.holders.map(p => `${p.name} (process ${p.pid})`).join(", ")}` : null,
+    h("b", {}, nameText(x.name)),
+    x.holders.length ? `: ${x.holders.map(p => `${visibleText(p.name)} (process ${p.pid})`).join(", ")}` : null,
     !x.holders.length && x.via_server.length ? h("span", { class: "small muted" }, ` (held by ${x.via_server.join(", ")} for the programs listed above)`) : null);
   const cams = d.devices.filter(x => x.kind === "camera");
   const mics = d.devices.filter(x => x.kind === "microphone");
   return [
-    h("div", { class: `verdict ${d.using.length ? "warn" : "ok"}` },
-      h("div", { class: "vtitle" }, d.using.length ? `In use now: ${d.using.join(", ")}` : "Nothing is using the camera, a microphone or the screen right now."),
+    h("div", { class: `verdict ${d.using.length ? "warn" : "ok"}`, key: "verdict" },
+      h("div", { class: "vtitle" }, d.using.length ? `In use now: ${d.using.map(x => visibleText(x)).join(", ")}`
+        : "Nothing is using the camera, a microphone or the screen right now."),
       h("p", { class: "small" }, "Updated every few seconds while this is open. Nothing here stops or changes a program: to stop one, "
         + "use its own controls, or close it.")),
-    h("h4", {}, "Programs receiving sound or video"),
-    active.length || waiting.length ? h("ul", { class: "small inuse-list" }, [...active, ...waiting].map(streamRow))
-      : h("p", { class: "small muted" }, d.server ? `None (through ${d.server === "pipewire" ? "PipeWire" : "PulseAudio"}).` : "Couldn't be asked: no sound server answered."),
-    h("h4", {}, "Cameras"),
-    cams.length ? h("ul", { class: "small inuse-list" }, cams.map(deviceRow)) : h("p", { class: "small muted" }, "No camera is connected."),
-    mics.some(x => x.holders.length) ? [h("h4", {}, "Sound cards opened directly"),
-      h("ul", { class: "small inuse-list" }, mics.filter(x => x.holders.length).map(deviceRow))] : null,
-    mics.length && !mics.some(x => x.holders.length) ? h("p", { class: "small muted" },
+    h("h4", { key: "h-streams" }, "Programs receiving sound or video"),
+    active.length || waiting.length ? h("ul", { class: "small inuse-list", key: "streams" }, [...active, ...waiting].map(streamRow))
+      : h("p", { class: "small muted", key: "no-streams" }, d.server ? `None (through ${d.server === "pipewire" ? "PipeWire" : "PulseAudio"}).`
+        : "Couldn't be asked: no sound server answered."),
+    h("h4", { key: "h-cams" }, "Cameras"),
+    cams.length ? h("ul", { class: "small inuse-list", key: "cams" }, cams.map(deviceRow))
+      : h("p", { class: "small muted", key: "no-cams" }, "No camera is connected."),
+    mics.some(x => x.holders.length) ? [h("h4", { key: "h-mics" }, "Sound cards opened directly"),
+      h("ul", { class: "small inuse-list", key: "mics" }, mics.filter(x => x.holders.length).map(deviceRow))] : null,
+    mics.length && !mics.some(x => x.holders.length) ? h("p", { class: "small muted", key: "mics-free" },
       `${plural(mics.length, "sound card")} with a microphone input: none is opened by a program directly, past the sound server.`) : null,
-    d.notes.map(n => h("div", { class: "notebox small" }, n)),
+    d.notes.map((n, i) => h("div", { class: "notebox small", key: `note-${i}` }, n)),
   ];
 }
 
@@ -3041,6 +3217,15 @@ async function openBrowserTool(reloadTools) {
   const stopFollowing = () => { closed = true; clearTimeout(timer); reloadTools?.(); };
   modal({ title: "Tor or Mullvad Browser in memory", wide: true, body, buttons: [{ label: "Close", kind: "primary" }],
     onClose: stopFollowing });
+  // The panel is drawn in place (patch) whenever what it shows changes: what is typed and ticked here, and a button
+  // waiting for its answer, are in `ui` (never only in an element, which drawing again would set back), so a poll
+  // never takes them from under the user's hands. ui.run(key, fn): the button keyed `key` is busy until fn is done.
+  const ui = { pending: new Set(), size: null, bridges: {}, clean: {}, archive: "", render: () => render(),
+    run: (key, fn) => async (e) => {
+      if (ui.pending.has(key)) return;
+      ui.pending.add(key); render();
+      try { await fn(e); } finally { ui.pending.delete(key); if (!closed) render(); }
+    } };
   // After anything done here (a start above all), and for as long as a browser runs, the panel follows it: Tor's
   // progress, the browser ending (Start again), downloads arriving.
   let followUntil = 0;
@@ -3052,10 +3237,8 @@ async function openBrowserTool(reloadTools) {
     let d = null;
     try { d = await api("GET", "/api/tools/browser"); } catch { /* the next poll tries again */ }
     if (closed || !body.isConnected) return;
-    const el = document.activeElement;
-    const editing = el && body.contains(el) && /^(TEXTAREA|INPUT|SELECT)$/.test(el.tagName);
-    if (d && !editing && browserShown(d) !== browserShown(data)) { data = d; render(); return; }
-    follow();                                     // unchanged, or the user is typing here: not under their hands
+    if (d && browserShown(d) !== browserShown(data)) { data = d; render(); return; }
+    follow();
   };
   // a set-up running: drawn at every answer, as reload does, and asked again when one fails
   let lost = 0;
@@ -3071,13 +3254,17 @@ async function openBrowserTool(reloadTools) {
     if (data.job?.state === "running") timer = setTimeout(jobPoll, 1000);
     else if (data.browsers?.some(b => b.running || b.outbox?.on) || Date.now() < followUntil) timer = setTimeout(poll, 2000);
   };
+  // what to do first, then what stands in the way, then how it starts and the browsers themselves; the long
+  // explanations behind "More…" (nothing of them left out)
   const render = () => {
-    S.adminActive = !!data.admin_active; renderTop();
+    takeAdmin(data);
     const job = data.job;
-    fill(body, browserIntro(data), browserLeftOpen(data, reload), browserRamdisk(data, reload), browserSandbox(data, opts),
-      browserRisks(data, reload),
-      browserJob(job, data, reload),
-      job?.state === "running" ? null : browserCards(data, reload, opts), browserKept(data, reload), browserLimits(data));
+    patch(body, browserLead(data), browserLeftOpen(data, reload), browserRamdisk(data, reload, ui),
+      browserJob(job, data, reload, ui),
+      browserRisks(data, reload, ui),
+      browserSandbox(data, opts, ui),
+      job?.state === "running" ? null : browserCards(data, reload, opts, ui), browserKept(data, reload),
+      browserIntro(data), browserLimits(data));
     follow();
   };
   render();
@@ -3098,7 +3285,21 @@ function browserShown(d) {
       b.outbox.recent]])]);
 }
 
+// what the panel is for, in two sentences, above what to do; the rest of it in browserIntro, at the end
+function browserLead(data) {
+  return h("div", { class: "lead-box", key: "lead" },
+    h("p", {}, "Tor Browser or Mullvad Browser, run from a RAM disk of its own (~/TempBrowser): the browser and everything it "
+      + "writes stay in memory, and closing ~/TempBrowser overwrites all of it. ",
+      h("b", {}, "For one session, or a few over a day:"), " set it up, browse, then close ~/TempBrowser."),
+    data.platform ? null : h("div", { class: "warnbox" }, "Neither browser is made for this computer's processor."));
+}
+
 function browserIntro(data) {
+  return h("details", { class: "small more-about", key: "intro" }, h("summary", {}, "More about this tool: quitting, updates, logging out"),
+    h("div", { class: "more-body" }, browserIntroText(data)));
+}
+
+function browserIntroText(data) {
   return [h("p", { class: "small" }, "Tor Browser and Mullvad Browser keep no history, cookies or cache between sessions. "
     + "Run from a RAM disk of its own, ~/TempBrowser (separate from the RAM disk tool's ~/RAMDisk), the browser itself, and "
     + "everything it writes while it runs, stays in memory too: closing ~/TempBrowser overwrites and removes all of it."),
@@ -3115,8 +3316,7 @@ function browserIntro(data) {
       + "(aus1.torproject.org for Tor Browser, cdn.mullvad.net for Mullvad Browser) whether a newer version is out, "
       + "directly, as the download did; if one is, it won't start: save what you need from its Downloads, close "
       + "~/TempBrowser and set it up again. If it can't tell (the server blocked where you are), it starts only while its "
-      + "signature is less than 30 days old."),
-    data.platform ? null : h("div", { class: "warnbox" }, "Neither browser is made for this computer's processor.")];
+      + "signature is less than 30 days old.")];
 }
 
 // Why the last quit left ~/TempBrowser open (a viewer still using it, say): said once, by the copy that owns it now,
@@ -3124,7 +3324,7 @@ function browserIntro(data) {
 function browserLeftOpen(data, reload) {
   const lo = data.left_open;
   if (!lo || !data.ramdisk?.open) return null;
-  return h("div", { class: "notebox risk small left-open" },
+  return h("div", { class: "notebox risk small left-open", key: "left-open" },
     h("b", {}, `~/TempBrowser was left open when the app last quit (${fmtWhen(lo.when)}). `),
     `${lo.why.charAt(0).toUpperCase()}${lo.why.slice(1)}. Close it here when you no longer need what is in it.`,
     h("div", { class: "orow" }, h("button", { class: "small", onclick: async () => {
@@ -3133,73 +3333,89 @@ function browserLeftOpen(data, reload) {
     } }, "OK")));
 }
 
-function browserRamdisk(data, reload) {
+// `ui`: the panel's state (openBrowserTool): the size typed, and the Open button while it waits
+function browserRamdisk(data, reload, ui = BROWSER_UI) {
   const rd = data.ramdisk;
-  if (rd.other) return h("div", { class: "warnbox" }, `Something else (${rd.other}) is mounted on ~/TempBrowser.`);
+  if (rd.other) return h("div", { class: "warnbox", key: "ramdisk" }, `Something else (${rd.other}) is mounted on ~/TempBrowser.`);
   // not while a browser is being set up in it: closing would wipe the download or the unpacking under it
   const closeBtn = () => data.job?.state === "running"
     ? h("span", { class: "muted" }, "It can be closed once the set-up has finished or been stopped.")
     : h("button", { class: "small danger", onclick: () => closeRamdisk(rd, reload) }, "Close and overwrite…");
   if (rd.open && rd.noexec) {
-    return h("div", { class: "notebox risk small" }, h("b", {}, "~/TempBrowser doesn't allow programs to run. "),
+    return h("div", { class: "notebox risk small", key: "ramdisk" }, h("b", {}, "~/TempBrowser doesn't allow programs to run. "),
       "Close it (that overwrites what is in it) and open it again here, with programs allowed.",
       h("div", { class: "orow" }, closeBtn()));
   }
   if (rd.open) {
     const free = rd.total - rd.used;
-    return h("div", { class: "orow small" }, h("span", { class: "badge st-pass" }, "~/TempBrowser open"),
+    return h("div", { class: "orow small", key: "ramdisk" }, h("span", { class: "badge st-pass" }, "~/TempBrowser open"),
       h("span", { class: "muted" }, `${fmtSize(free)} free of ${fmtSize(rd.total)}; programs can run from it.`),
       free < data.min_mb * 0.5 * 1048576 ? h("span", { class: "errmsg" }, "That may be too little: a browser needs about 500 MB.") : null,
       closeBtn());
   }
   const want = Math.min(rd.max_mb, Math.max(data.min_mb, 1536));
-  const size = h("input", { type: "number", class: "num", min: data.min_mb, max: rd.max_mb, value: want });
-  const cmds = ramdiskOpenCommands(rd, size, () => false);
-  const open = h("button", { class: "small primary" }, "Open the RAM disk");
-  open.addEventListener("click", async () => {
-    const mb = parseInt(size.value, 10);
+  const typed = ui.size ?? String(want);
+  const mb = parseInt(typed, 10);
+  const busy = ui.pending.has("ramdisk-open");
+  const size = h("input", { type: "number", class: "num", min: data.min_mb, max: rd.max_mb, value: typed,
+    oninput: (e) => { ui.size = e.currentTarget.value; ui.render(); } });
+  const open = h("button", { class: "small primary", disabled: busy, onclick: ui.run("ramdisk-open", async () => {
     if (!(mb >= data.min_mb && mb <= rd.max_mb)) { toast(`Choose a size from ${data.min_mb} to ${rd.max_mb} MB.`, "error"); return; }
-    open.disabled = true;
-    open.textContent = S.adminActive ? "Opening…" : "Waiting for authorization…";
     try {
-      const r = await api("POST", "/api/tools/ramdisk/open", { size_mb: mb, noexec: false, disk: "browser" });
-      S.adminActive = !!r.admin_active;
+      takeAdmin(await api("POST", "/api/tools/ramdisk/open", { size_mb: mb, noexec: false, disk: "browser" }));
+      ui.size = null;
       await reload();
-    } catch (e) { toast(e.message, "error", 10000); open.disabled = false; open.textContent = "Open the RAM disk"; }
-  });
-  return h("div", { class: "notebox info small" }, h("b", {}, "First, open the browser's RAM disk, ~/TempBrowser. "),
+    } catch (e) { toast(e.message, "error", 10000); }
+  }) }, busy ? (S.adminActive ? "Opening…" : "Waiting for authorization…") : "Open the RAM disk");
+  return h("div", { class: "notebox info small", key: "ramdisk" }, h("b", {}, "First, open the browser's RAM disk, ~/TempBrowser. "),
     "Programs are allowed to run from it, so the browser can. It takes memory only for what is in it: about 500 MB for the "
     + "browser, more as you browse. Opening needs administrator access.",
-    h("div", { class: "orow" }, h("label", {}, "Size ", size, " MB"), open), cmds.slot, leftoverNote(rd, reload, "browser"));
+    h("div", { class: "orow" }, h("label", {}, "Size ", size, " MB"), open), ramdiskCommandsBlock(rd, mb, false),
+    leftoverNote(rd, reload, "browser"));
 }
+
+// a panel's state where none is given (a test drawing one part alone): nothing typed, nothing waiting
+const BROWSER_UI = { pending: new Set(), size: null, bridges: {}, clean: {}, archive: "", render: () => {},
+  run: (key, fn) => fn };
 
 // The sandbox: what it keeps the browser from, whether it can run here, its network, Landlock, and the
 // session's display. On X11 no sandbox keeps programs from each other's windows and keystrokes: said,
 // with the way to Wayland. On wlroots desktops (Sway, Hyprland…) Wayland itself lets any program
 // capture the screen and read the clipboard: said too.
-function browserSandbox(data, opts) {
+function browserSandbox(data, opts, ui = BROWSER_UI) {
   const sb = data.sandbox || {};
   const out = [];
   const guide = (id, label) => {
     const spec = S.state.catalogue.find(s => s.id === id);
     return spec ? h("button", { class: "small", onclick: () => openGuide(spec) }, label) : null;
   };
+  // the ticks are opts (the panel's), and the notes under them follow them as it is drawn again
+  const tick = (key) => (e) => { opts[key] = e.currentTarget.checked; ui.render(); };
   if (sb.available) {
-    const soundNote = h("div", { class: "notebox risk small sound-risks" }, h("b", {}, "What allowing sound gives away. "),
-      ...soundRisks());
-    soundNote.hidden = !(opts.sound && opts.sandbox);
-    const gpuNote = h("div", { class: "notebox risk small gpu-risks" }, h("b", {}, "What allowing the graphics card costs. "),
-      ...gpuRisks());
-    gpuNote.hidden = !(opts.gpu && opts.sandbox);
-    const notes = () => { soundNote.hidden = !(opts.sound && opts.sandbox); gpuNote.hidden = !(opts.gpu && opts.sandbox); };
-    const sandbox = h("input", { type: "checkbox", checked: opts.sandbox, onchange: (e) => {
-      opts.sandbox = e.target.checked; sound.disabled = !e.target.checked || !sb.sound; gpu.disabled = !e.target.checked || !sb.gpu;
-      notes(); } });
-    const sound = h("input", { type: "checkbox", checked: opts.sound, disabled: !opts.sandbox || !sb.sound,
-      onchange: (e) => { opts.sound = e.target.checked; notes(); } });
-    const gpu = h("input", { type: "checkbox", checked: opts.gpu, disabled: !opts.sandbox || !sb.gpu,
-      onchange: (e) => { opts.gpu = e.target.checked; notes(); } });
-    out.push(h("div", { class: "notebox info small" }, h("b", {}, "It runs in a sandbox. "),
+    const soundNote = h("div", { class: "notebox risk small sound-risks", key: "sound-risks", hidden: !(opts.sound && opts.sandbox) },
+      h("b", {}, "What allowing sound gives away. "), ...soundRisks());
+    const gpuNote = h("div", { class: "notebox risk small gpu-risks", key: "gpu-risks", hidden: !(opts.gpu && opts.sandbox) },
+      h("b", {}, "What allowing the graphics card costs. "), ...gpuRisks());
+    const sandbox = h("input", { type: "checkbox", checked: opts.sandbox, onchange: tick("sandbox") });
+    const sound = h("input", { type: "checkbox", checked: opts.sound, disabled: !opts.sandbox || !sb.sound, onchange: tick("sound") });
+    const gpu = h("input", { type: "checkbox", checked: opts.gpu, disabled: !opts.sandbox || !sb.gpu, onchange: tick("gpu") });
+    // the choices and what they cost first; what the sandbox keeps from the browser, at length, behind More…
+    out.push(h("div", { class: "notebox info small sandbox-box", key: "sandbox" }, h("b", {}, "It runs in a sandbox. "),
+      "The browser sees only its own folder in the RAM disk, never your files, keys or other programs. Tor Browser has "
+      + "no network but Tor's; Mullvad Browser " + (sb.pasta?.available ? (sb.pasta.lan_blocked ? "gets a network of its own, "
+        + "fenced off from your local network." : "gets a network of its own, which can still reach your local network.")
+        : "shares this computer's network (see the warning below)."),
+      h("div", { class: "orow", key: "ticks" }, h("label", {}, sandbox, " Run it in a sandbox"),
+        h("label", {}, sound, " Allow sound (it gives away more than sound: read why)",
+          sb.sound ? null : h("span", { class: "muted" }, " (no sound server was found)")),
+        h("label", {}, gpu, " Allow the graphics card (faster, but within a website's reach: read why)",
+          sb.gpu ? null : h("span", { class: "muted" }, " (no graphics card's device files were found)"))),
+      soundNote, gpuNote,
+      h("div", { class: "muted", key: "reader" }, "A screen reader or an input method (for Chinese, Japanese or Korean, say) "
+        + "can't reach a sandboxed browser: untick the sandbox if you need one. A browser that has run in the sandbox can't "
+        + "then be started without it (what a website left in it would run outside): close ~/TempBrowser and set it up again."),
+      h("details", { class: "more-about", key: "more" }, h("summary", {}, "More: what the sandbox keeps from it, and what it doesn't"),
+        h("div", { class: "more-body" },
       "The browser sees only its own folder in the RAM disk: not your home folder, your other programs, your keyring, "
       + "or your SSH and GPG keys, and not your name or this computer's (inside, it is \"user\" on \"localhost\"), nor "
       + "this computer's settings beyond what it needs to run (its clock is on UTC, as Tor Browser shows sites anyway). "
@@ -3247,20 +3463,12 @@ function browserSandbox(data, opts) {
         + "WebGL answers as drawing in software does, which differs in one value from what the graphics card would give "
         + "the browser outside the sandbox (with Intel graphics, or NVIDIA's driver on X11). With the card or without it, "
         + "the graphics drivers keep no cache of the shaders pages make them compile, so a website can't time one to tell "
-        + "it has been here before, under another site or after New Identity."),
-      h("div", { class: "orow" }, h("label", {}, sandbox, " Run it in a sandbox"),
-        h("label", { title: sb.sound ? "" : "No sound server was found" }, sound, " Allow sound (it gives away more than sound: read why)"),
-        h("label", { title: sb.gpu ? "" : "No graphics card's device files were found" }, gpu,
-          " Allow the graphics card (faster, but within a website's reach: read why)")),
-      soundNote, gpuNote,
-      h("div", { class: "muted" }, "A screen reader or an input method (for Chinese, Japanese or Korean, say) can't reach a "
-        + "sandboxed browser: untick the sandbox if you need one. A browser that has run in the sandbox can't then be "
-        + "started without it (what a website left in it would run outside): close ~/TempBrowser and set it up again.")));
+        + "it has been here before, under another site or after New Identity.")))));
     if (!sb.pasta?.available && sb.pasta?.apparmor) {
       // Ubuntu 24.04 and what is built on it: passt is there, but AppArmor's restriction on user namespaces stops pasta
       const profile = "sudo tee /etc/apparmor.d/pasta-userns >/dev/null <<'EOF'\nabi <abi/4.0>,\ninclude <tunables/global>\n\n"
         + "profile pasta /usr/bin/pasta{,.avx2} flags=(unconfined) {\n  userns,\n}\nEOF\nsudo apparmor_parser -r /etc/apparmor.d/pasta-userns";
-      out.push(h("div", { class: "notebox danger small" },
+      out.push(h("div", { class: "notebox danger small", key: "pasta" },
         h("b", {}, "Mullvad Browser shares this computer's network here: AppArmor stops passt."),
         `passt is installed, but AppArmor keeps it from the user namespace it works in (${sb.pasta.why.replace(/\.$/, "")}), as it `
         + "does bubblewrap until that has a profile. Until it can run, a website that got past the browser's own protections "
@@ -3271,7 +3479,7 @@ function browserSandbox(data, opts) {
         h("div", { class: "muted" }, "Turning the restriction off until the next restart (above) does the same for both. Tor "
           + "Browser isn't affected: it has no network but Tor's.")));
     } else if (!sb.pasta?.available) {
-      out.push(h("div", { class: "notebox danger small" },
+      out.push(h("div", { class: "notebox danger small", key: "pasta" },
         h("b", {}, "Install passt before you use Mullvad Browser here."),
         `Without it Mullvad Browser shares this computer's network${sb.pasta?.why ? ` (${sb.pasta.why.replace(/\.$/, "")})` : ""}, `
         + "and a website that got past the browser's own protections could:",
@@ -3289,7 +3497,7 @@ function browserSandbox(data, opts) {
     }
     if (!sb.landlock) {
       const shared = !sb.pasta?.available;
-      out.push(h("div", { class: `notebox ${shared ? "risk" : "info"} small` }, h("b", {}, "This kernel doesn't have Landlock's scopes (Linux 6.12). "),
+      out.push(h("div", { class: `notebox ${shared ? "risk" : "info"} small`, key: "landlock" }, h("b", {}, "This kernel doesn't have Landlock's scopes (Linux 6.12). "),
         "Landlock lets a sandbox keep whatever shares this computer's network from other programs' hidden (abstract) sockets, "
         + "such as XWayland's, through which a browser taken over by a website could read and type into other windows. "
         + "Here, Tor Browser has no network of its own, so it can't reach them"
@@ -3300,15 +3508,15 @@ function browserSandbox(data, opts) {
         h("div", { class: "orow" }, guide("kern.landlock", "How to get a kernel with it…"))));
     }
   } else {
-    out.push(h("div", { class: "notebox risk small" }, h("b", {}, "It can't run in a sandbox here. "),
+    out.push(h("div", { class: "notebox risk small", key: "nosandbox" }, h("b", {}, "It can't run in a sandbox here. "),
       `${sb.why || ""} It starts as an ordinary program, which can read your other files and reach the network directly. `
       + (sb.apparmor ? "" : "Installing bubblewrap (the bubblewrap package) lets the app keep it to its own folder.")));
-    if (sb.apparmor) out.push(browserAppArmor());
+    if (sb.apparmor) out.push(h("div", { key: "apparmor" }, browserAppArmor()));
   }
   if (sb.display === "x11") {
-    out.push(x11Display(sb, opts, "the browser", "sbx.x11_session", guide));
+    out.push(x11Display(sb, opts, "the browser", "sbx.x11_session", guide, false, ui.render));
   } else if (sb.display === "wayland" && sb.available) {
-    out.push(waylandNote(sb, WAYLAND_WHO.browser));
+    out.push(h("div", { key: "wayland" }, waylandNote(sb, WAYLAND_WHO.browser)));
   }
   return out;
 }
@@ -3318,19 +3526,21 @@ function browserSandbox(data, opts) {
 // a display of its own (Xephyr) wherever Xephyr is installed, unticked only by choice; without Xephyr, this display
 // only after the user ticks that it may, the risk named, with the command that installs Xephyr (sandbox.own_display:
 // the server refuses otherwise). `o`: the panel's options (nested, real_display); `who`: the words for it.
-function x11Display(sb, o, who, guideId, guide, flatpak = false) {
+// `redraw`: in a panel drawn in place (the browser's), the tick changes `o` and the panel is drawn again; without it the
+// warning under the tick is shown and hidden here
+function x11Display(sb, o, who, guideId, guide, flatpak = false, redraw = null) {
   const has = !!sb.xephyr?.available && !flatpak;
-  const risk = h("div", { class: "warnbox small" }, `On this display, ${who} could read what every other window shows `
-    + "and what you type into them, and type into them itself, even into a terminal: a website or program that got "
-    + "that far would get past the rest of the sandbox that way.");
-  const shown = () => { risk.hidden = has ? !!o.nested : !o.real_display; };
+  const hide = () => has ? !!o.nested : !o.real_display;
+  const risk = h("div", { class: "warnbox small", key: "x11-risk", hidden: hide() }, `On this display, ${who} could read what `
+    + "every other window shows and what you type into them, and type into them itself, even into a terminal: a website or "
+    + "program that got that far would get past the rest of the sandbox that way.");
+  const changed = () => { if (redraw) redraw(); else risk.hidden = hide(); };
   const box = has
-    ? h("input", { type: "checkbox", checked: !!o.nested, onchange: (e) => { o.nested = e.target.checked;
-        o.real_display = !e.target.checked; shown(); } })
-    : h("input", { type: "checkbox", checked: !!o.real_display, onchange: (e) => { o.real_display = e.target.checked;
-        shown(); } });
-  shown();
-  return h("div", { class: "notebox risk small" }, h("b", {}, "This is an X11 session. "),
+    ? h("input", { type: "checkbox", checked: !!o.nested, onchange: (e) => { o.nested = e.currentTarget.checked;
+        o.real_display = !e.currentTarget.checked; changed(); } })
+    : h("input", { type: "checkbox", checked: !!o.real_display, onchange: (e) => { o.real_display = e.currentTarget.checked;
+        changed(); } });
+  return h("div", { class: "notebox risk small", key: "x11" }, h("b", {}, "This is an X11 session. "),
     "X11 doesn't keep programs apart: any program you run can see what other windows show and what you type into "
     + "them, and type into them, a terminal included, which no sandbox stops by itself. A Wayland session keeps each "
     + "program to its own windows.",
@@ -3423,7 +3633,10 @@ function memoryNote(mem, rd, running = false) {
     + "it fills" + (tight ? ". That is more than is free now: close other programs first, or keep fewer tabs and downloads." : "."));
 }
 
-function browserRisks(data, reload) {
+// The boxes "Before you start", each what can put a session on the disk however the browser is run: the most serious
+// first and in view, under a line that names them all, the rest behind More (none left out). `rank`: how much of the
+// session it can put on the disk (swap and hibernation all of the browser's memory, crash dumps a crashed program's).
+function browserRisks(data, reload, ui = BROWSER_UI) {
   const r = data.risks || {};
   const sw = r.swap || {}, th = r.thumbnails || {};
   // a box goes once what it names is dealt with: the panel is drawn again when the guide or fix is closed
@@ -3432,21 +3645,23 @@ function browserRisks(data, reload) {
     return spec ? h("button", { class: "small", onclick: () => openGuide(spec, reload) }, label) : null;
   };
   const cmds = (list) => commandBlock(list);
-  const swapButton = (off, label) => h("button", { class: `small ${off ? "primary" : ""}`, onclick: async (e) => {
-    e.target.disabled = true;
-    e.target.textContent = S.adminActive ? (off ? "Turning it off…" : "Turning it on…") : "Waiting for authorization…";
-    try {
-      const res = await api("POST", "/api/tools/browser/swap", { off });
-      S.adminActive = !!res.admin_active;
-      const done = off ? res.swap?.off : res.swap?.on, failed = res.swap?.failed || [];
-      if (failed.length) toast(`Not ${off ? "turned off" : "turned on"}: ${failed.join("; ")}`, "error", 12000);
-      else toast(off ? `Swap is off for this session (${(done || []).join(", ")}).` : `Swap is back on (${(done || []).join(", ")}).`, "ok");
-      await reload();
-    } catch (err) { toast(err.message, "error", 12000); e.target.disabled = false; e.target.textContent = label; }
-  } }, label);
-  const out = [];
+  const swapBusy = ui.pending.has("swap");
+  const swapButton = (off, label) => h("button", { class: `small ${off ? "primary" : ""}`, disabled: swapBusy,
+    onclick: ui.run("swap", async () => {
+      try {
+        const res = await api("POST", "/api/tools/browser/swap", { off });
+        takeAdmin(res);
+        const done = off ? res.swap?.off : res.swap?.on, failed = res.swap?.failed || [];
+        if (failed.length) toast(`Not ${off ? "turned off" : "turned on"}: ${failed.join("; ")}`, "error", 12000);
+        else toast(off ? `Swap is off for this session (${(done || []).join(", ")}).` : `Swap is back on (${(done || []).join(", ")}).`, "ok");
+        await reload();
+      } catch (err) { toast(err.message, "error", 12000); }
+    }) }, swapBusy ? (S.adminActive ? (off ? "Turning it off…" : "Turning it on…") : "Waiting for authorization…") : label);
+  const out = [];               // [rank, what in a few words, the box]
+  const add = (rank, what, el) => out.push([rank, what, el]);
+  let paused = null;
   if (sw.on_disk?.length) {
-    out.push(h("div", { class: "notebox risk small" }, h("b", {}, "Before you start: swap reaches the disk here. "),
+    add(10, "swap reaches the disk", h("div", { class: "notebox risk small", key: "swap" }, h("b", {}, "Before you start: swap reaches the disk here. "),
       `${sw.on_disk.join(", ")}${sw.used_mb ? ` (${sw.used_mb} MB in use now)` : ""}. When memory runs short, the system `
       + "writes parts of it there, and the browser's memory (the pages you visit, what you type) can be among them. Swap "
       + "isn't cleared when the browser closes or ~/TempBrowser is overwritten: the RAM disk can't keep the browser out "
@@ -3460,14 +3675,14 @@ function browserRisks(data, reload) {
         + "erase what earlier sessions left there; only zram or encrypted swap does that, for the future."),
       memoryNote(r.memory, data.ramdisk, (data.browsers || []).some(b => b.running))));
   } else if (sw.paused?.length) {
-    out.push(h("div", { class: "notebox info small" }, h("b", {}, "Swap is off for this session. "),
+    paused = h("div", { class: "notebox info small", key: "swap-paused" }, h("b", {}, "Swap is off for this session. "),
       `It was turned off here (${sw.paused.join(", ")}): the browser's memory can't be written to the disk. Turn it back `
       + "on when you are done (it also comes back on at the next restart). That runs:", cmds(sw.on_commands || []),
       memoryNote(r.memory, data.ramdisk, (data.browsers || []).some(b => b.running)),
-      h("div", { class: "orow" }, swapButton(false, "Turn swap back on"))));
+      h("div", { class: "orow" }, swapButton(false, "Turn swap back on")));
   }
   if (th.in_memory === false) {
-    out.push(h("div", { class: "notebox risk small" }, h("b", {}, `Before you start: thumbnails are kept on the disk (${th.folder}). `),
+    add(3, "thumbnails are kept on the disk", h("div", { class: "notebox risk small", key: "thumbnails" }, h("b", {}, `Before you start: thumbnails are kept on the disk (${th.folder}). `),
       "If you open To upload or Downloads in your file manager, it makes thumbnails of the pictures, videos and documents "
       + "there and keeps them on the disk, each with the file's name and folder, long after ~/TempBrowser is gone. Keep "
       + "thumbnails in memory first, or don't open those folders in the file manager (Save… and Add a file to upload… "
@@ -3479,7 +3694,7 @@ function browserRisks(data, reload) {
   if (baloo?.on || ix.localsearch) {
     const what = [baloo?.on ? `KDE's file search (Baloo${baloo.contents ? "" : ", file names only"})` : null,
                   ix.localsearch ? `GNOME's ${ix.localsearch}` : null].filter(Boolean).join(" and ");
-    out.push(h("div", { class: "notebox risk small" }, h("b", {}, `Before you start: file search is on here (${what}). `),
+    add(baloo?.covers ? 6 : 4, "file search is on", h("div", { class: "notebox risk small", key: "indexing" }, h("b", {}, `Before you start: file search is on here (${what}). `),
       baloo?.on
         ? (baloo.covers ? "Baloo indexes ~/TempBrowser too (it doesn't skip a RAM disk in your home folder: tested): the "
             + "names of what you download and upload" + (baloo.contents ? ", and the words inside them," : "") + " go into "
@@ -3495,19 +3710,19 @@ function browserRisks(data, reload) {
           onclick: () => openGuideOption("desk.indexers", "baloo_off", reload) }, "Turn Baloo off and delete its index…") : null,
         guide("desk.indexers", "File search…"))));
   } else if (baloo?.index) {
-    out.push(h("div", { class: "notebox risk small" }, h("b", {}, "Before you start: Baloo's index is still on the disk. "),
+    add(2, "Baloo's index is still on the disk", h("div", { class: "notebox risk small", key: "baloo-index" }, h("b", {}, "Before you start: Baloo's index is still on the disk. "),
       "File search is off, but the index it made (names, and words inside your documents) is still there. Delete it.",
       h("div", { class: "orow" }, h("button", { class: "small", onclick: () => openGuideOption("desk.indexers", "baloo_off", reload) },
         "Delete Baloo's index…"))));
   }
   // the scan's own answer (context.detect_hibernation): true, false, or null when it couldn't be told
   if (r.hibernation === null) {
-    out.push(h("div", { class: "notebox risk small" }, h("b", {}, "Before you start: whether this computer can hibernate couldn't be told. "),
+    add(8, "it may be able to hibernate", h("div", { class: "notebox risk small", key: "hibernation" }, h("b", {}, "Before you start: whether this computer can hibernate couldn't be told. "),
       "If it can, hibernating writes all of memory to the disk, the browser's and ~/TempBrowser's included. Close the "
       + "browser and ~/TempBrowser before you hibernate.",
       h("div", { class: "orow" }, guide("enc.hibernate_unencrypted", "Hibernation…"))));
   } else if (r.hibernation) {
-    out.push(h("div", { class: "notebox risk small" }, h("b", {}, "Before you start: this computer can hibernate. "),
+    add(9, "it can hibernate", h("div", { class: "notebox risk small", key: "hibernation" }, h("b", {}, "Before you start: this computer can hibernate. "),
       "Hibernating writes all of memory to the disk: the browser's, and ~/TempBrowser's, though it is kept out of swap. "
       + "It stays there until it is overwritten, after the computer has woken up. Close the browser and ~/TempBrowser "
       + "before you hibernate (and before a sleep your system may turn into hibernation after a while), or turn "
@@ -3520,7 +3735,7 @@ function browserRisks(data, reload) {
                    + `website for every question it asks, at log level ${os.log_level}` : null,
                   os.database ? `its window keeps its list of connections in a file (${os.database}): every connection, `
                    + "with the website's name" : null].filter(Boolean);
-    out.push(h("div", { class: "notebox risk small" }, h("b", {}, "Before you start: OpenSnitch keeps a record on the disk. "),
+    add(5, "OpenSnitch keeps a record", h("div", { class: "notebox risk small", key: "opensnitch" }, h("b", {}, "Before you start: OpenSnitch keeps a record on the disk. "),
       `OpenSnitch is running, and ${kept.join("; and ")}. Mullvad Browser's connections are among them, named after `
       + "the sites (Tor Browser's are only Tor's relays). Its guide sets the log level to 3 and keeps the list in memory.",
       h("div", { class: "orow" }, guide("net.outgoing_firewall", "OpenSnitch…"))));
@@ -3528,7 +3743,7 @@ function browserRisks(data, reload) {
   const clip = S.report?.results?.["desk.clipboard_history"];
   const clipSpec = S.state.catalogue.find(s => s.id === "desk.clipboard_history");
   if (clip?.status === "fail" && clipSpec) {
-    out.push(h("div", { class: "notebox risk small" }, h("b", {}, "Before you start: clipboard history is saved to the disk. "),
+    add(7, "clipboard history is saved", h("div", { class: "notebox risk small", key: "clipboard" }, h("b", {}, "Before you start: clipboard history is saved to the disk. "),
       `${clip.summary} Whatever you copy in the browser, an address or a password, is kept there. The browser's own `
       + "display (X11 with a display of its own) keeps the clipboard to itself; otherwise turn the history off first "
       + "(as of the last scan).",
@@ -3536,7 +3751,7 @@ function browserRisks(data, reload) {
   }
   const cd = r.crash_dumps || {};
   if (cd.kept) {
-    out.push(h("div", { class: "notebox risk small" }, h("b", {}, "Before you start: this computer keeps crash dumps on the disk. "),
+    add(1, "crash dumps are kept", h("div", { class: "notebox risk small", key: "crash-dumps" }, h("b", {}, "Before you start: this computer keeps crash dumps on the disk. "),
       "When a program crashes, a copy of its memory is saved and kept for days: what it showed, what was typed into it, "
       + "and a record in the system's log of its command and the files it had open. The app starts the browser, and what "
       + "it opens files with, so that a crash leaves neither (as a shell would, with the commands below): only the "
@@ -3545,7 +3760,18 @@ function browserRisks(data, reload) {
       cmds(cd.start || []),
       h("div", { class: "orow" }, guide("enc.coredumps_retained", "Stop keeping crash dumps…"))));
   }
-  return out;
+  out.sort((a, b) => b[0] - a[0]);
+  if (!out.length) return paused;
+  const [first, ...rest] = out;
+  return h("section", { class: "before-start", key: "before-start", "aria-labelledby": "before-start-head" },
+    h("h3", { id: "before-start-head", class: "section-head" }, out.length === 1 ? "Before you start: one thing to deal with"
+      : `Before you start: ${out.length} things to deal with`),
+    h("p", { class: "small muted" }, "Each can put what you do in the browser on the disk, however it is run: "
+      + out.map(([, what]) => what).join("; ") + "."),
+    paused, first[2],
+    rest.length ? h("details", { class: "more-about", key: "more-risks" },
+      h("summary", {}, `More before you start (${rest.length}): ${rest.map(([, what]) => what).join("; ")}`),
+      h("div", { class: "more-body" }, rest.map(([, , el]) => el))) : null);
 }
 
 // Ubuntu 24.04 and later (and what is built on it) keep programs without an AppArmor profile of their own from the
@@ -3568,30 +3794,40 @@ function browserAppArmor() {
 
 // Tor Browser in the sandbox: how its tor connects (its own Connect page and bridge settings are off
 // there, since it doesn't start tor), and how far tor has got.
-function browserTor(b, reload) {
+function browserTor(b, reload, ui = BROWSER_UI) {
   const br = b.bridges || { mode: "none", builtin: [] };
   const names = { none: "Directly (no bridge)", obfs4: "Built-in bridge: obfs4", snowflake: "Built-in bridge: Snowflake",
     meek: "Built-in bridge: meek (Azure)", custom: "Bridges I have…" };
   const modes = ["none", ...["obfs4", "snowflake", "meek"].filter(m => br.builtin.includes(m)), "custom"];
-  const select = h("select", {}, modes.map(m => h("option", { value: m, selected: m === br.mode }, names[m])));
-  const lines = h("textarea", { rows: 3, class: "path", placeholder: "obfs4 192.0.2.1:443 1234…ABCD cert=… iat-mode=0", spellcheck: "false", autocomplete: "off" });
-  const linesRow = h("div", { style: br.mode === "custom" ? "" : "display:none" }, lines,
-    h("div", { class: "muted" }, br.mode === "custom" ? `${plural(br.count, "bridge")} set; paste others to replace them.` :
-      "Get bridges at bridges.torproject.org, by email to bridges@torproject.org, or from @GetBridgesBot on Telegram."));
-  select.addEventListener("change", () => { linesRow.style.display = select.value === "custom" ? "" : "none"; });
-  const save = h("button", { class: "small", onclick: async () => {
+  // what is chosen and pasted here, until saved: kept in the panel's state, so the panel following a running browser
+  // never takes it from under the user's hands (it did, unless the box had the focus)
+  const draft = ui.bridges[b.id] ||= { mode: br.mode, lines: "" };
+  const select = h("select", { "aria-label": "How to connect to Tor",
+    onchange: (e) => { draft.mode = e.currentTarget.value; ui.render(); } },
+    modes.map(m => h("option", { value: m, selected: m === draft.mode }, names[m])));
+  const hint = `bridge-hint-${b.id}`;
+  const lines = h("textarea", { rows: 3, class: "path", value: draft.lines, spellcheck: "false", autocomplete: "off",
+    "aria-describedby": hint, oninput: (e) => { draft.lines = e.currentTarget.value; } });
+  const linesRow = h("div", { key: "lines", hidden: draft.mode !== "custom" },
+    h("label", { class: "field" }, h("span", {}, "Bridge lines, one per line"), lines),
+    h("div", { class: "muted", id: hint }, "Each looks like: obfs4 192.0.2.1:443 1234…ABCD cert=… iat-mode=0. "
+      + (br.mode === "custom" ? `${plural(br.count, "bridge")} set; paste others to replace them.` :
+      "Get bridges at bridges.torproject.org, by email to bridges@torproject.org, or from @GetBridgesBot on Telegram.")));
+  const saving = ui.pending.has(`bridges:${b.id}`);
+  const save = h("button", { class: "small", disabled: saving, onclick: ui.run(`bridges:${b.id}`, async () => {
     try {
-      await api("POST", "/api/tools/browser/bridges", { browser: b.id, mode: select.value, lines: lines.value });
+      await api("POST", "/api/tools/browser/bridges", { browser: b.id, mode: draft.mode, lines: draft.lines });
       toast(b.running ? "Saved: restart Tor Browser to connect this way." : "Saved: Tor Browser connects this way when it starts.", "ok");
+      delete ui.bridges[b.id];
       await reload();
     } catch (e) { toast(e.message, "error", 10000); }
-  } }, "Save");
+  }) }, saving ? "Saving…" : "Save");
   const c = b.connection;
   const state = !c ? null : c.state === "connected" ? h("span", { class: "badge st-pass" }, "Tor connected")
     : c.state === "connecting" || c.state === "starting" ? h("span", { class: "badge st-warn" }, `Tor connecting ${c.progress}%`)
     : c.state === "failed" ? h("span", { class: "badge st-fail" }, "Tor couldn't start") : h("span", { class: "badge" }, "Tor stopped");
-  return h("div", { class: "small" },
-    h("div", { class: "orow" }, h("label", {}, "Connect to Tor ", select), save, b.running ? state : null),
+  return h("div", { class: "small", key: `tor-${b.id}` },
+    h("div", { class: "orow", key: "choose" }, h("label", {}, "Connect to Tor ", select), save, b.running ? state : null),
     linesRow,
     // tor's own words (its log, or what its sandbox wrote): quoted as tor's, never as the app's
     b.running && c && c.state !== "connected" && (c.summary || c.problem)
@@ -3603,13 +3839,16 @@ function browserTor(b, reload) {
 }
 
 // Files in and out: copied by the app, so the browser never sees your folders.
-function browserFiles(b, data, reload) {
+function browserFiles(b, data, reload, ui = BROWSER_UI) {
   const ups = b.uploads || [], downs = b.downloads || [];
   const showBtn = (which, label) => h("button", { class: "small", onclick: async () => {
     try { await api("POST", "/api/tools/browser/show", { browser: b.id, which }); } catch (e) { toast(e.message, "error"); } } }, label);
-  const clean = h("input", { type: "checkbox", checked: !!data.mat2, disabled: !data.mat2 });
-  const add = h("button", { class: "small" }, "Add a file to upload…");
-  add.addEventListener("click", async () => {
+  // the tick is the panel's (ui.clean), so the panel following the browser never ticks it again under the user
+  const cleaning = !!data.mat2 && (ui.clean[b.id] ?? true);
+  const clean = h("input", { type: "checkbox", checked: cleaning, disabled: !data.mat2,
+    onchange: (e) => { ui.clean[b.id] = e.currentTarget.checked; ui.render(); } });
+  const adding = ui.pending.has(`upload:${b.id}`);
+  const add = h("button", { class: "small", disabled: adding, onclick: ui.run(`upload:${b.id}`, async () => {
     let paths = [];
     if (data.can_pick) {
       try { const r = await api("POST", "/api/tools/pick", { multiple: true }); if (!r.unavailable) paths = r.paths; else paths = null; }
@@ -3617,16 +3856,15 @@ function browserFiles(b, data, reload) {
     } else paths = null;
     if (paths === null) { const p = await askPath("Which file?", "/home/you/Pictures/photo.jpg, or ~/…"); paths = p ? [p] : []; }
     if (!paths.length) return;
-    add.disabled = true;
     try {
-      const r = await api("POST", "/api/tools/browser/upload", { browser: b.id, paths, clean: clean.checked });
+      const r = await api("POST", "/api/tools/browser/upload", { browser: b.id, paths, clean: cleaning });
       for (const err of r.errors || []) toast(err, "error", 10000);
-      if (r.added?.length) toast(`Ready to upload: ${r.added.map(a => a.name).join(", ")}${clean.checked ? " (metadata removed)" : ""}.`, "ok");
+      if (r.added?.length) toast(`Ready to upload: ${r.added.map(a => visibleText(a.name)).join(", ")}${cleaning ? " (metadata removed)" : ""}.`, "ok");
       await reload();
-    } catch (e) { toast(e.message, "error", 10000); } finally { add.disabled = false; }
-  });
-  const save = async (f, btn) => {
-    if (f.warnings.length && !await confirmModal(`Save ${f.name}?`, [h("p", {}, "This file:"),
+    } catch (e) { toast(e.message, "error", 10000); }
+  }) }, adding ? "Adding…" : "Add a file to upload…");
+  const save = async (f) => {
+    if (f.warnings.length && !await confirmModal(["Save ", nameText(f.name), "?"], [h("p", {}, "This file:"),
       h("ul", {}, f.warnings.map(w => h("li", {}, w)))], "Save it")) return;
     let folder = null;
     if (data.can_pick) {
@@ -3635,13 +3873,12 @@ function browserFiles(b, data, reload) {
     }
     if (folder === undefined || !data.can_pick) folder = await askPath("Save it in which folder?", "/home/you/Documents, or ~/…");
     if (!folder) return;
-    btn.disabled = true;
     try {
       const r = await api("POST", "/api/tools/browser/save", { browser: b.id, name: f.name, check: f.check, folder });
-      toast(`Saved as ${r.saved}. It is a copy: the one in the RAM disk goes when the RAM disk is closed.`, "ok", 10000);
-    } catch (e) { toast(e.message, "error", 15000); if (e.data?.changed) await reload(); } finally { btn.disabled = false; }
+      toast(`Saved as ${visibleText(r.saved)}. It is a copy: the one in the RAM disk goes when the RAM disk is closed.`, "ok", 10000);
+    } catch (e) { toast(e.message, "error", 15000); if (e.data?.changed) await reload(); }
   };
-  return h("div", { class: "browser-files small" },
+  return h("div", { class: "browser-files small", key: `files-${b.id}` },
     h("div", {}, "These two folders are ordinary folders on your side: open them in your file manager like any other, and "
       + "drag files in to upload, or copy downloads out. The buttons below do the same with extra care. Opening a "
       + "download from the file manager (or, when the browser runs without its sandbox, from its own list of downloads) "
@@ -3660,56 +3897,64 @@ function browserFiles(b, data, reload) {
         const spec = S.state.catalogue.find(x => x.id === "desk.recent_files");
         return spec ? h("button", { class: "small", onclick: () => openGuide(spec) }, "Stop keeping recent files…") : null;
       })())) : null,
-    browserOutbox(b, data, reload, showBtn),
-    ups.length ? h("ul", {}, ups.map(u => h("li", {}, `${u.name} (${fmtSize(u.size)}) `,
-      h("button", { class: "small ghost", title: "Take it out of the browser's folder", onclick: async () => {
-        try { await api("POST", "/api/tools/browser/upload/remove", { browser: b.id, name: u.name }); await reload(); }
-        catch (e) { toast(e.message, "error"); } } }, "Remove")))) : null,
-    h("div", { class: "orow" }, add, h("label", { title: data.mat2 ? "" : "Install mat2 to remove metadata" }, clean,
-      " Remove metadata first"), showBtn("uploads", "Open the folder")),
+    browserOutbox(b, data, reload, showBtn, ui),
+    ups.length ? h("ul", { key: "uploads" }, ups.map(u => h("li", { key: `up-${u.name}` }, nameText(u.name), ` (${fmtSize(u.size)}) `,
+      h("button", { class: "small ghost", "aria-label": `Remove ${visibleText(u.name)}: take it out of the browser's folder`,
+        onclick: async () => {
+          try { await api("POST", "/api/tools/browser/upload/remove", { browser: b.id, name: u.name }); await reload(); }
+          catch (e) { toast(e.message, "error"); } } }, "Remove")))) : null,
+    h("div", { class: "orow", key: "add" }, add, h("label", {}, clean, " Remove metadata first",
+      data.mat2 ? null : h("span", { class: "muted" }, " (install mat2 to remove metadata)")), showBtn("uploads", "Open the folder")),
     h("h4", {}, "Downloads"),
     h("div", { class: "muted" }, `What the browser saves goes to ${b.downloads_folder}. Copy a file out with your file manager, `
       + "or with Save…, which copies it as a new file that can't run as a program and says first what it really is (by "
       + "its content, not its name): a program, a disk image, an archive, a document with macros. Don't open programs "
       + "from this folder. Opening a document from the web outside the browser can reveal your real address (it may "
       + "fetch things from the internet): View offline… opens it in your usual viewer with no network."),
-    downs.length ? h("ul", {}, downs.map(f => h("li", {}, `${f.name} (${fmtSize(f.size)}) `,
-      ["program", "disk image", "archive"].includes(f.kind) && f.what ? h("span", { class: "errmsg" }, `${f.what} `) : null,
-      f.warnings.length ? h("span", { class: "errmsg", title: f.warnings.join("; ") }, "⚠ ") : null,
-      h("button", { class: "small", onclick: (e) => save(f, e.target) }, "Save…"),
-      f.viewable ? h("button", { class: "small", onclick: (e) => viewOffline(b, f, e.target) }, "View offline…") : null)))
-      : h("div", { class: "muted" }, "Nothing yet."),
-    b.downloads_other ? h("div", { class: "muted" }, `${b.downloads_other} other ${b.downloads_other === 1 ? "thing isn't" : "things aren't"} `
+    downs.length ? h("ul", { key: "downloads" }, downs.map(f => {
+      const saving = ui.pending.has(`save:${b.id}:${f.name}`), viewing = ui.pending.has(`view:${b.id}:${f.name}`);
+      // what the app found in it, in words beside it (it was only a tooltip on a ⚠)
+      return h("li", { key: `dl-${f.name}` }, nameText(f.name), ` (${fmtSize(f.size)}) `,
+        ["program", "disk image", "archive"].includes(f.kind) && f.what ? h("span", { class: "errmsg" }, `${f.what} `) : null,
+        h("button", { class: "small", disabled: saving, onclick: ui.run(`save:${b.id}:${f.name}`, () => save(f)) },
+          saving ? "Saving…" : "Save…"),
+        f.viewable ? h("button", { class: "small", disabled: viewing, onclick: ui.run(`view:${b.id}:${f.name}`, () => viewOffline(b, f)) },
+          "View offline…") : null,
+        f.warnings.length ? h("div", { class: "errmsg dl-warnings" }, "⚠ ", f.warnings.join("; ")) : null);
+    }))
+      : h("div", { class: "muted", key: "no-downloads" }, "Nothing yet."),
+    b.downloads_other ? h("div", { class: "muted", key: "others" }, `${b.downloads_other} other ${b.downloads_other === 1 ? "thing isn't" : "things aren't"} `
       + "listed: downloads still in progress or being checked, folders, links, or files that can't be a real download "
       + "(larger than ~/TempBrowser, or made of empty space).") : null,
-    h("div", { class: "orow" }, showBtn("downloads", "Open the folder"), h("button", { class: "small ghost", onclick: reload }, "Refresh")));
+    h("div", { class: "orow", key: "dl-buttons" }, showBtn("downloads", "Open the folder"),
+      h("button", { class: "small ghost", onclick: () => reload() }, "Refresh")));
 }
 
 // The TempOutbox: a folder in ~/TempBrowser, outside the browser's sight, that cleans what the user copies into it
 // and passes the clean copy to To upload (tools/transfer.py). Where the permanent ~/Outbox is set up, that one.
-function browserOutbox(b, data, reload, showBtn) {
+function browserOutbox(b, data, reload, showBtn, ui = BROWSER_UI) {
   const o = b.outbox;
   if (!o) return null;
-  const turn = (on) => async (e) => {
-    e.target.disabled = true;
+  const turn = (on) => ui.run(`outbox:${b.id}`, async () => {
     try { await api("POST", "/api/tools/browser/outbox", { browser: b.id, on }); await reload(); }
-    catch (err) { toast(err.message, "error", 12000); e.target.disabled = false; }
-  };
+    catch (err) { toast(err.message, "error", 12000); }
+  });
+  const turning = ui.pending.has(`outbox:${b.id}`);
   if (!o.on && o.permanent) {
-    return h("div", { class: "notebox info small" }, h("b", {}, "Your Outbox. "),
+    return h("div", { class: "notebox info small", key: "outbox-permanent" }, h("b", {}, "Your Outbox. "),
       "You have the Outbox set up (~/Outbox): put a file in it, and copy the clean one from ~/Outbox/Cleaned into "
       + "To upload (drag it into the folder, or use Add a file to upload…). Files in ~/Outbox are on the disk, not in memory.",
       h("div", { class: "orow" }, showBtn("permanent", "Open ~/Outbox/Cleaned")));
   }
   if (!o.on) {
-    return h("div", { class: "small" }, h("div", { class: "orow" },
-      h("button", { class: "small", disabled: !o.mat2, title: o.mat2 ? "" : "Install mat2 to remove metadata",
-        onclick: turn(true) }, `Turn on the Outbox for ${b.name}`)),
+    return h("div", { class: "small", key: "outbox-off" }, h("div", { class: "orow" },
+      h("button", { class: "small", disabled: !o.mat2 || turning, onclick: turn(true) }, `Turn on the Outbox for ${b.name}`),
+      o.mat2 ? null : h("span", { class: "muted" }, "Install mat2 to remove metadata first.")),
       h("div", { class: "muted" }, `A folder, ${o.folder}, that removes the metadata of what you copy into it and passes `
         + "the clean copy to To upload."));
   }
   const recent = (o.recent || []).slice(0, 5);
-  return h("div", { class: "notebox info small" },
+  return h("div", { class: "notebox info small", key: "outbox-on" },
     h("b", {}, `Outbox: ${o.folder}`),
     h("div", {}, "Copy files into it with your file manager: the app removes their metadata (where a photo was taken, who "
       + "wrote a document) and puts the clean copy in To upload, out of the browser's sight until then; the original goes to "
@@ -3732,20 +3977,22 @@ function browserOutbox(b, data, reload, showBtn) {
       + "all arrived).") : null,
     o.partial ? h("div", { class: "muted" }, `${plural(o.partial, "file")} named as a copy still under way (.part, `
       + `.crdownload, a name ending in ~) ${o.partial === 1 ? "is" : "are"} left alone until renamed.`) : null,
-    recent.length ? h("ul", {}, recent.map(r => h("li", {}, r.what === "cleaned"
-      ? [h("code", {}, r.name), " → To upload", r.detail !== r.name ? ` as ${r.detail}` : "", h("span", { class: "okmsg" }, " (cleaned)")]
-      : [h("code", {}, r.name), " → Not cleaned: ", h("span", { class: "errmsg" }, r.detail)]))) : null,
-    o.not_cleaned.length ? h("div", { class: "errmsg" }, `In Not cleaned: ${o.not_cleaned.join(", ")}.`) : null,
-    o.permanent ? h("div", { class: "muted" }, "You also have the permanent Outbox (~/Outbox), on the disk.") : null,
-    h("div", { class: "orow" }, showBtn("outbox", "Open the Outbox"),
-      h("button", { class: "small ghost", title: "Removes the folder (refused while it holds files)", onclick: turn(false) },
-        "Turn it off")));
+    recent.length ? h("ul", { key: "recent" }, recent.map(r => h("li", {}, r.what === "cleaned"
+      ? [h("code", {}, nameText(r.name)), " → To upload", r.detail !== r.name ? [" as ", nameText(r.detail)] : "",
+        h("span", { class: "okmsg" }, " (cleaned)")]
+      : [h("code", {}, nameText(r.name)), " → Not cleaned: ", h("span", { class: "errmsg" }, r.detail)]))) : null,
+    o.not_cleaned.length ? h("div", { class: "errmsg", key: "not-cleaned" }, "In Not cleaned: ",
+      o.not_cleaned.flatMap((n, i) => [i ? ", " : "", nameText(n)]), ".") : null,
+    o.permanent ? h("div", { class: "muted", key: "permanent" }, "You also have the permanent Outbox (~/Outbox), on the disk.") : null,
+    h("div", { class: "orow", key: "outbox-buttons" }, showBtn("outbox", "Open the Outbox"),
+      h("button", { class: "small ghost", disabled: turning, onclick: turn(false) }, "Turn it off"),
+      h("span", { class: "muted" }, "Turning it off removes the folder; it is refused while the folder holds files.")));
 }
 
 // View offline…: a document or picture from the browser opened in the usual viewer for it, in a sandbox
 // with no network, so it can't fetch anything (tools/viewer.py). The page names the viewer and shows the
 // command it runs first.
-async function viewOffline(b, f, btn) {
+async function viewOffline(b, f) {
   let plan, answer;
   try {
     answer = await api("POST", "/api/tools/browser/view", { browser: b.id, name: f.name, open: false });
@@ -3766,8 +4013,8 @@ async function viewOffline(b, f, btn) {
       + "and type into them itself, even into a terminal.",
       !plan.flatpak && answer.xephyr_install ? commandBlock([answer.xephyr_install]) : null,
       h("div", { class: "orow" }, h("label", {}, anyway, " Open it on this display anyway")));
-  const ok = await confirmModal(`Open ${f.name} with no network?`, [
-    h("p", {}, `It opens in ${plan.app}, your usual app for this kind of file, `
+  const ok = await confirmModal(["Open ", nameText(f.name), " with no network?"], [
+    h("p", {}, "It opens in ", nameText(plan.app), ", your usual app for this kind of file, "
       + (plan.flatpak ? "in Flatpak's own sandbox with what it usually asks for taken away (the network, your folders, "
         + "sound, your other programs)" : "inside a sandbox with no network")
       + ": the file can't fetch anything, so opening it can't reveal your address. It gets a copy of this one file, "
@@ -3781,27 +4028,33 @@ async function viewOffline(b, f, btn) {
     commandBlock([plan.command]),
   ], "Open it");
   if (!ok) return;
-  btn.disabled = true;
   try {
     const r = await api("POST", "/api/tools/browser/view", { browser: b.id, name: f.name, open: true, check: f.check,
                                                               real_display: x11 && !own && anyway.checked });
-    toast(`${f.name} is opening in ${r.viewer.app}, with no network.`, "ok");
-  } catch (e) { toast(e.message, "error", 15000); } finally { btn.disabled = false; }
+    toast(`${visibleText(f.name)} is opening in ${visibleText(r.viewer.app)}, with no network.`, "ok");
+  } catch (e) { toast(e.message, "error", 15000); }
 }
 
-function askPath(title, placeholder) {
+// a path typed or pasted, where there is no file chooser; null when cancelled (however the dialog closes)
+function askPath(title, example) {
   return new Promise((resolve) => {
-    const input = h("input", { type: "text", class: "path", placeholder, spellcheck: "false", autocomplete: "off" });
-    modal({ title, body: [input], buttons: [{ label: "Cancel", onclick: (close) => { close(); resolve(null); } },
-      { label: "OK", kind: "primary", onclick: (close) => { close(); resolve(input.value.trim() || null); } }] });
+    const hint = h("div", { class: "small muted", id: `hint-${++modalSeq}` }, `Type or paste the full path, for example ${example}`);
+    const input = h("input", { type: "text", class: "path", spellcheck: "false", autocomplete: "off", "aria-describedby": hint.id,
+      onkeydown: (e) => { if (keyIs(e, "Enter", 13)) { e.preventDefault(); ok(); } } });
+    let ok = () => {};
+    const m = modal({ title, body: [h("label", { class: "field" }, h("span", { class: "small" }, "Path"), input), hint],
+      onClose: () => resolve(null), buttons: [{ label: "Cancel" },
+        { label: "OK", kind: "primary", onclick: (close) => { resolve(input.value.trim() || null); close(); } }] });
+    ok = () => { resolve(input.value.trim() || null); m.close(); };
     input.focus();
   });
 }
 
-function confirmModal(title, body, yes) {
-  return new Promise((resolve) => modal({ title, body, buttons: [
-    { label: "Cancel", onclick: (close) => { close(); resolve(false); } },
-    { label: yes, kind: "primary", onclick: (close) => { close(); resolve(true); } }] }));
+// true when `yes` is pressed; false for the other button, Escape or a click beside it (however it closes)
+function confirmModal(title, body, yes, no = "Cancel") {
+  return new Promise((resolve) => modal({ title, body, onClose: () => resolve(false), buttons: [
+    { label: no, onclick: (close) => { resolve(false); close(); } },
+    { label: yes, kind: "primary", onclick: (close) => { resolve(true); close(); } }] }));
 }
 
 // What the sound server's socket gives a browser a website took over (tested from a sandbox holding only that
@@ -3844,9 +4097,10 @@ function gpuRisks() {
 // runs; sent with a download and with an archive the user picked (the server uses it for Mullvad Browser only)
 const browserSetup = { vpn: true };
 
-function mullvadVpnTick() {
-  const box = h("input", { type: "checkbox", checked: browserSetup.vpn, onchange: () => { browserSetup.vpn = box.checked; } });
-  return h("div", { class: "small vpnsetup" }, h("label", { class: "check" }, box, h("b", {}, "Set it up for Mullvad VPN")),
+function mullvadVpnTick(redraw = () => {}) {
+  const box = h("input", { type: "checkbox", checked: browserSetup.vpn,
+    onchange: (e) => { browserSetup.vpn = e.currentTarget.checked; redraw(); } });
+  return h("div", { class: "small vpnsetup", key: "vpnsetup" }, h("label", { class: "check" }, box, h("b", {}, "Set it up for Mullvad VPN")),
     h("p", { class: "muted" }, "Its extension then sends every website through Mullvad's proxy in Zurich, which is "
       + "reachable only inside Mullvad VPN's tunnel: with Mullvad VPN not connected, no page loads until you turn the "
       + "proxy off in the extension. Its permissions are granted, so it doesn't ask when first opened, and secure DNS is "
@@ -3865,15 +4119,17 @@ function mullvadVpnNote(vpn) {
     + "without the VPN, turn it back on in Settings, Privacy & Security, DNS over HTTPS (Max Protection, Mullvad's own).");
 }
 
-function browserCards(data, reload, opts = { sandbox: true, sound: false, nested: false, gpu: false, real_display: false }) {
+function browserCards(data, reload, opts = { sandbox: true, sound: false, nested: false, gpu: false, real_display: false },
+                      ui = BROWSER_UI) {
   const rd = data.ramdisk;
   const usable = rd.open && !rd.noexec && !rd.other;
   const cards = data.browsers.map(b => {
     let action;
+    const starting = ui.pending.has(`start:${b.id}`);
     if (b.running) action = h("span", { class: "badge st-pass" }, "running");
     else if (b.installed && !b.release) action = browserRemove(b, reload);
     else if (b.installed) {
-      action = h("button", { class: "small primary", onclick: async (e) => {
+      action = h("button", { class: "small primary", disabled: starting, onclick: ui.run(`start:${b.id}`, async () => {
         if (b.release?.check_due && !await confirmModal(`Check for a newer ${b.name} first?`, [
           h("p", {}, `This copy was set up more than a day ago, so starting it first asks ${b.release.host} which `
             + "version is the latest, directly (not through Tor), as the download did: the server sees this computer's "
@@ -3885,7 +4141,6 @@ function browserCards(data, reload, opts = { sandbox: true, sound: false, nested
             + "behind Tor. A website that got past the browser's own protections could then:"),
           h("ul", {}, soundRisks(true).map(t => h("li", {}, t))),
           h("p", {}, "The last one undoes what Tor is for. Start it without sound unless you need it.")], "Start with sound")) return;
-        e.target.disabled = true;
         try {
           // what the panel showed of the sandbox: a start that would fall short of it is refused by the server
           const sb = data.sandbox || {};
@@ -3900,16 +4155,16 @@ function browserCards(data, reload, opts = { sandbox: true, sound: false, nested
             + `${r.started?.nested ? ", in a display of its own" : ""}`
             + `${r.started?.sandboxed && r.started?.gpu ? ", with the graphics card" : ""}.`, "ok");
           await reload();
-        } catch (err) { toast(err.message, "error", 10000); e.target.disabled = false; }
-      } }, `Start ${b.name}`);
+        } catch (err) { toast(err.message, "error", 10000); }
+      }) }, starting ? "Starting…" : `Start ${b.name}`);
     } else {
       const k = (data.kept?.copies || []).find(c => c.browser === b.id);
       action = [h("button", { class: "small", disabled: !usable || !b.available, onclick: () => browserDownload(b, data, reload) }, "Download…"),
         k ? h("button", { class: "small", disabled: !usable || !b.available, onclick: () => browserFromKept(b, k, data, reload) },
           `Set up from the kept copy (version ${k.version}, kept ${fmtDay(k.kept)})…`) : null];
     }
-    const vpnSetup = b.id === "mullvad" ? (b.installed ? mullvadVpnNote(b.release?.vpn) : mullvadVpnTick()) : null;
-    return h("div", { class: "toolcard" }, h("b", {}, b.name), h("p", { class: "small" }, b.about),
+    const vpnSetup = b.id === "mullvad" ? (b.installed ? mullvadVpnNote(b.release?.vpn) : mullvadVpnTick(ui.render)) : null;
+    return h("div", { class: "toolcard", key: `card-${b.id}` }, h("b", {}, b.name), h("p", { class: "small" }, b.about),
       h("p", { class: "small" }, b.security === "safest"
         ? [h("b", {}, "It starts at the Safest security level, set by the app: "), "JavaScript is off on most sites and "
           + "more is turned off, which stops most of what an attack on the browser would need. If a site needs more, "
@@ -3944,19 +4199,22 @@ function browserCards(data, reload, opts = { sandbox: true, sound: false, nested
         await reload();
       } }, "OK")) : null,
       vpnSetup,
-      h("div", { class: "orow" }, action),
-      b.installed && b.tor && data.sandbox?.available ? browserTor(b, reload) : null,
-      b.installed ? browserFiles(b, data, reload) : null);
+      h("div", { class: "orow", key: "action" }, action),
+      b.installed && b.tor && data.sandbox?.available ? browserTor(b, reload, ui) : null,
+      b.installed ? browserFiles(b, data, reload, ui) : null);
   });
-  const picker = pathPicker(data, { label: "Or an archive you downloaded (its .asc signature beside it)" });
-  const use = h("button", { class: "small", disabled: !usable }, "Check and unpack");
-  use.addEventListener("click", async () => {
-    const path = picker.input.value.trim();
+  // the archive's path, typed or chosen: the panel's (ui.archive), so a poll never clears it
+  const draft = { get value() { return ui.archive; }, set value(v) { ui.archive = v; } };
+  const picker = pathPicker(data, { label: "Or an archive you downloaded (its .asc signature beside it)", draft,
+    redraw: ui.render, name: "browser-archive" });
+  const unpacking = ui.pending.has("archive");
+  const use = h("button", { class: "small", disabled: !usable || unpacking, onclick: ui.run("archive", async () => {
+    const path = ui.archive.trim();
     if (!path) { toast("Choose the .tar.xz archive first.", "error"); return; }
-    try { await api("POST", "/api/tools/browser/get", { archive: path, vpn: browserSetup.vpn }); await reload(); }
+    try { await api("POST", "/api/tools/browser/get", { archive: path, vpn: browserSetup.vpn }); ui.archive = ""; await reload(); }
     catch (e) { toast(e.message, "error", 10000); }
-  });
-  return [h("div", { class: "toolgrid" }, cards), h("div", { class: "small" }, picker.row,
+  }) }, "Check and unpack");
+  return [h("div", { class: "toolgrid", key: "cards" }, cards), h("div", { class: "small", key: "archive" }, picker.row,
     h("div", { class: "muted" }, "Checking it first asks the project's server (aus1.torproject.org, or cdn.mullvad.net) "
       + "which version is the latest, directly, and refuses an older archive. Where that server can't be reached (blocked "
       + "where you are, say, and the archive came from GetTor or a mirror), it accepts one whose signature was made in the "
@@ -4023,9 +4281,9 @@ function browserFromKept(b, k, data, reload) {
 function browserKept(data, reload) {
   const copies = data.kept?.copies || [];
   if (!copies.length) return null;
-  return h("div", { class: "notebox small browser-kept" }, h("b", {}, "Kept downloads, on the disk "),
+  return h("div", { class: "notebox small browser-kept", key: "kept" }, h("b", {}, "Kept downloads, on the disk "),
     `(${data.kept.folder}): they say that the browser was set up on this computer.`,
-    h("ul", {}, copies.map(c => h("li", {}, `${c.name} ${c.version}, kept ${fmtDay(c.kept)} (${fmtSize(c.size)}) `,
+    h("ul", {}, copies.map(c => h("li", { key: `kept-${c.browser}` }, `${c.name} ${c.version}, kept ${fmtDay(c.kept)} (${fmtSize(c.size)}) `,
       h("button", { class: "small", onclick: () => deleteKept(c, data, reload) }, "Delete…")))));
 }
 
@@ -4093,21 +4351,29 @@ function browserDownload(b, data, reload, old = null) {
   } }] });
 }
 
-function browserJob(job, data, reload) {
+function browserJob(job, data, reload, ui = BROWSER_UI) {
   if (!job) return null;
-  const dismiss = h("button", { class: "small", onclick: async () => { await api("POST", "/api/tools/browser/dismiss"); await reload(); } }, "OK");
+  const dismiss = h("button", { class: "small", onclick: async () => {
+    try { await api("POST", "/api/tools/browser/dismiss"); } catch (e) { toast(e.message, "error"); }
+    await reload();
+  } }, "OK");
   if (job.state === "running") {
+    // drawn in place every second: Stop keeps its press and the focus; "Stopping…" is the server's or ui.pending's
     const frac = job.total ? Math.min(1, job.done / job.total) : null;
-    return h("div", { class: "trim-progress" },
-      h("div", { class: "orow" }, h("b", {}, job.name), h("span", { class: "small" }, job.phase || "…"),
-        job.total ? h("span", { class: "small muted" }, `${fmtSize(job.done)} of ${fmtSize(job.total)}`) : null),
-      frac != null ? h("div", { class: "obar" }, h("div", { style: `width: ${Math.round(frac * 100)}%` })) : null,
-      h("div", { class: "orow" }, h("button", { class: "small", disabled: job.stopping,
-        onclick: async () => { await api("POST", "/api/tools/browser/stop"); await reload(); } }, job.stopping ? "Stopping…" : "Stop")));
+    const stopping = job.stopping || ui.pending.has("stop-setup");
+    return h("div", { class: "trim-progress", key: "setup" },
+      h("div", { class: "orow", key: "phase" }, h("b", {}, job.name), h("span", { class: "small" }, job.phase || "…"),
+        job.total ? h("span", { class: "small muted", key: "count" }, `${fmtSize(job.done)} of ${fmtSize(job.total)}`) : null),
+      frac != null ? progressBar(frac, `Setting up ${job.name}`) : null,
+      h("div", { class: "orow", key: "stop" }, h("button", { class: "small", disabled: stopping,
+        onclick: ui.run("stop-setup", async () => {
+          try { await api("POST", "/api/tools/browser/stop"); } catch (e) { toast(e.message, "error"); }
+          await reload();
+        }) }, stopping ? "Stopping…" : "Stop")));
   }
   if (job.state === "done") {
     const v = job.verdict || {};
-    return h("div", { class: "notebox info small" },
+    return h("div", { class: "notebox info small", key: "setup-done" },
       h("b", {}, `${job.name}${job.version ? " " + job.version : ""} is in the RAM disk. `),
       `${v.title || "Verified"}: signed by ${v.signer || "Tor Browser Developers"} (${(v.fingerprint || "").replace(/(.{4})/g, "$1 ").trim()}).`,
       job.warning ? h("div", { class: "warnbox small" }, job.warning) : null,
@@ -4119,7 +4385,7 @@ function browserJob(job, data, reload) {
   // tick ticked), or the old one deleted, which every set-up from it would refuse again
   const b = job.newer ? (data.browsers || []).find(x => x.id === job.browser) : null;
   const old = b && job.source === "kept" ? (data.kept?.copies || []).find(c => c.browser === b.id) : null;
-  return h("div", { class: job.state === "failed" ? "warnbox" : "notebox info small" }, job.error || "Stopped.",
+  return h("div", { class: job.state === "failed" ? "warnbox" : "notebox info small", key: "setup-ended" }, job.error || "Stopped.",
     h("div", { class: "orow" }, b ? h("button", { class: "small primary", onclick: () => browserDownload(b, data, reload, old) },
       `Download ${b.name} ${job.newer}…`) : null,
       old ? h("button", { class: "small", onclick: () => deleteKept(old, data, reload) }, "Delete the old copy…") : null,
@@ -4127,7 +4393,7 @@ function browserJob(job, data, reload) {
 }
 
 function browserLimits(data) {
-  return h("div", { class: "small muted" }, h("b", {}, "What this doesn't cover: "),
+  return h("div", { class: "small muted", key: "limits" }, h("b", {}, "What this doesn't cover: "),
     "what you copy (a clipboard manager keeps it: see the clipboard check), files you copy out with Save… (they leave "
     + "memory then), and what websites and your network can see while you browse. "
     + (data.ramdisk.noswap === false && data.ramdisk.open ? "This kernel can't keep ~/TempBrowser out of swap. " : "")
@@ -4174,11 +4440,19 @@ async function openTrial(reloadTools) {
       take(r);
     }, 1500);
   };
+  // while it runs, drawn in place at every answer (patch), in a part of its own: End the trial keeps its press and the
+  // focus, and "Ending…" is `ui.ending`. The other states are drawn once each.
+  const ui = { ending: false };
   const render = () => {
     const t = data.trial;
+    if (t?.state === "running") {
+      patch(body, h("div", { class: "trial-state", key: "running" }, trialRunning(t, ui, call, render)));
+      follow();
+      return;
+    }
+    ui.ending = false;
     if (!t) fill(body, trialChoose(data, call));
     else if (t.state === "ready") fill(body, trialReady(data, t, call));
-    else if (t.state === "running") { fill(body, trialRunning(t, call)); follow(); }
     else fill(body, trialResult(t, call, data.status));
   };
   render();
@@ -4400,21 +4674,26 @@ function hostsTable(hosts) {
       h("td", {}, x.ports.join(", ") + (x.more_ports ? ", and more" : "")), h("td", {}, `${x.connections}`), h("td", {}, fmtSize(x.sent)), h("td", {}, fmtSize(x.received))))));
 }
 
-function trialRunning(t, call) {
+function trialRunning(t, ui, call, render) {
   const live = t.live || {};
-  const stop = h("button", { class: "primary" }, "End the trial");
-  stop.addEventListener("click", () => call("/api/tools/trial/stop", {}, stop, "Ending…"));
+  const stop = h("button", { class: "primary", disabled: ui.ending, onclick: async () => {
+    ui.ending = true;
+    render();
+    if (!await call("/api/tools/trial/stop", {})) { ui.ending = false; render(); }
+  } }, ui.ending ? "Ending…" : "End the trial");
   return [
-    h("p", {}, h("b", {}, `${t.name} is running in its sandbox`), t.started ? ` (${fmtMinutes(Math.max(0, t.now - t.started))}).` : ".",
+    h("p", { key: "what" }, h("b", {}, nameText(t.name), " is running in its sandbox"),
+      t.started ? ` (${fmtMinutes(Math.max(0, t.now - t.started))}).` : ".",
       " Use it as you would; close it, or end the trial here, to see what it did."),
-    h("div", { class: "small muted" }, trialHow(t.how)), trialUnmarked(t.how),
-    h("div", { class: "tally" },
+    h("div", { class: "small muted", key: "how" }, trialHow(t.how)), trialUnmarked(t.how),
+    h("div", { class: "tally", key: "tally", "aria-live": "off" },
       h("span", {}, h("b", {}, `${live.written ?? 0}`), " files written"),
       h("span", {}, h("b", {}, `${live.decoys ?? 0}`), " decoys looked at"),
       live.hosts ? h("span", {}, h("b", {}, `${live.hosts.length}`), " hosts contacted") : null),
-    live.decoys_seen?.length ? [h("div", { class: "warnbox" }, "It is looking at decoy files:"), decoyList(live.decoys_seen)] : null,
-    live.hosts?.length ? hostsTable(live.hosts) : null,
-    h("div", { class: "orow" }, stop)];
+    live.decoys_seen?.length ? [h("div", { class: "warnbox", key: "decoys-head" }, "It is looking at decoy files:"),
+      h("div", { key: "decoys" }, decoyList(live.decoys_seen))] : null,
+    live.hosts?.length ? h("div", { key: "hosts" }, hostsTable(live.hosts)) : null,
+    h("div", { class: "orow", key: "stop" }, stop)];
 }
 
 function trialResult(t, call, st = {}) {
@@ -4483,6 +4762,10 @@ async function openBoxes() {
   const spec = S.state.catalogue.find(s => s.id === "app.boxes");
   let lost = 0, following = false;                   // following: a Box was running at the last answer
   const again = () => { clearTimeout(timer); if (!closed) timer = setTimeout(load, 3000); };
+  // drawn in place at every answer (patch); a button pressed, waiting for its answer, is in `pending`
+  const pending = new Set();
+  let boxes = [];
+  const draw = () => patch(body, boxesBody(boxes, spec, load, pending, draw));
   const load = async () => {
     let data;
     try { data = await api("GET", "/api/tools/boxes"); } catch (e) {
@@ -4490,32 +4773,37 @@ async function openBoxes() {
       return;
     }
     lost = 0;
-    fill(body, boxesBody(data.boxes, spec, load));
+    boxes = data.boxes;
+    draw();
     following = data.boxes.some(b => b.running);
     if (following) again(); else clearTimeout(timer);
   };
   await load();
 }
 
-function boxesBody(boxes, spec, reload) {
-  const act = (path, b, btn, after) => async () => {
-    btn.disabled = true;
-    try { await api("POST", path, { box: b.slug }); after?.(); setTimeout(reload, 1200); }
-    catch (e) { toast(e.message, "error", 10000); btn.disabled = false; }
+function boxesBody(boxes, spec, reload, pending = new Set(), draw = () => {}) {
+  const act = (path, b, what, after) => async () => {
+    const key = `${what}:${b.slug}`;
+    if (pending.has(key)) return;
+    pending.add(key); draw();
+    try { await api("POST", path, { box: b.slug }); after?.(); setTimeout(() => { pending.delete(key); reload(); }, 1200); }
+    catch (e) { toast(e.message, "error", 10000); pending.delete(key); draw(); }
   };
+  const busy = (what, b) => pending.has(`${what}:${b.slug}`);
   const when = (t) => new Date(t * 1000).toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
   return [
-    h("p", { class: "small muted" }, "Each app here runs in a sandbox with a home folder of its own in ~/Boxes. It starts "
+    h("p", { class: "small muted", key: "about" }, "Each app here runs in a sandbox with a home folder of its own in ~/Boxes. It starts "
       + "from the menu too, as “NAME (in its Box)”. To remove one, revert it in History."),
     boxes.length ? boxes.map(b => {
-      const start = h("button", { class: "small primary", disabled: b.running || !!b.problem }, b.running ? "Running" : "Start");
-      start.addEventListener("click", act("/api/tools/boxes/start", b, start, () => toast(`${b.name} is starting in its Box.`, "ok")));
-      const show = h("button", { class: "small" }, "Open its Exchange folder");
-      show.addEventListener("click", act("/api/tools/boxes/show", b, show));
-      const clear = h("button", { class: "small ghost" }, "Forget its runs");
-      clear.addEventListener("click", act("/api/tools/boxes/clear", b, clear));
-      return h("div", { class: "box-card" },
-        h("div", { class: "orow" }, h("b", {}, b.name), h("span", { class: "small muted" },
+      const start = h("button", { class: "small primary", disabled: b.running || !!b.problem || busy("start", b),
+        onclick: act("/api/tools/boxes/start", b, "start", () => toast(`${visibleText(b.name)} is starting in its Box.`, "ok")) },
+        b.running ? "Running" : busy("start", b) ? "Starting…" : "Start");
+      const show = h("button", { class: "small", disabled: busy("show", b), onclick: act("/api/tools/boxes/show", b, "show") },
+        "Open its Exchange folder");
+      const clear = h("button", { class: "small ghost", disabled: busy("clear", b), onclick: act("/api/tools/boxes/clear", b, "clear") },
+        "Forget its runs");
+      return h("div", { class: "box-card", key: `box-${b.slug}` },
+        h("div", { class: "orow" }, h("b", {}, nameText(b.name)), h("span", { class: "small muted" },
           `${BOX_NET[b.network]} · ${b.gpu ? "the graphics card" : "no graphics card"}${b.sound ? " · sound" : ""}`),
           h("span", { class: "spacer" }), start, show),
         h("div", { class: "small muted" }, "Its home: ", h("code", {}, `${b.folder}/home`), ". Files go in and out through ",
@@ -4590,12 +4878,17 @@ async function openKeeps() {
     render();
   };
   const follow = () => { clearTimeout(timer); if (!closed) timer = setTimeout(ask, 2000); };
+  // while it watches, drawn in place at every answer (patch): End keeps its press and the focus ("Ending…" is ui.ending)
+  const ui = { ending: false };
   const render = () => {
     const job = data.job;
-    S.adminActive = !!data.admin_active; renderTop();
+    takeAdmin(data);
     if (job && ["asking", "running", "ending"].includes(job.state)) {
-      fill(body, keepsProgress(job, reload, data.ends_after)); follow(); return;
+      patch(body, h("div", { class: "keeps-state", key: "watching" }, keepsProgress(job, reload, data.ends_after, ui, render)));
+      follow();
+      return;
     }
+    ui.ending = false;
     if (job && job.state === "done" && job.result) { fill(body, keepsResult(job, reload, data.ends_after)); return; }
     fill(body, keepsStart(data, job, reload));
   };
@@ -4636,40 +4929,41 @@ function keepsStart(data, job, reload) {
     h("div", { class: "orow" }, btn)];
 }
 
-function keepsProgress(job, reload, after) {
-  const stop = h("button", { class: "primary", disabled: job.stopping || job.state !== "running" },
-    job.stopping || job.state === "ending" ? "Ending…" : "End the watch and show what it did");
-  stop.addEventListener("click", async () => {
-    stop.disabled = true; stop.textContent = "Ending…";
-    try { await api("POST", "/api/tools/keeps/stop"); await reload(); } catch (e) { toast(e.message, "error"); }
-  });
-  if (job.state === "asking") return [h("p", {}, `Waiting for administrator access to watch ${job.app}…`)];
+function keepsProgress(job, reload, after, ui = { ending: false }, render = () => {}) {
+  const ending = ui.ending || job.stopping || job.state === "ending";
+  const stop = h("button", { class: "primary", disabled: ending || job.state !== "running", onclick: async () => {
+    ui.ending = true;
+    render();
+    try { await api("POST", "/api/tools/keeps/stop"); await reload(); }
+    catch (e) { ui.ending = false; render(); toast(e.message, "error"); }
+  } }, ending ? "Ending…" : "End the watch and show what it did");
+  if (job.state === "asking") return [h("p", { key: "asking" }, "Waiting for administrator access to watch ", nameText(job.app), "…")];
   const c = job.counts || {};
   const since = job.started ? fmtMinutes(Math.max(0, job.now - job.started)) : "";
   const left = job.ends_at ? fmtMinutes(Math.max(0, job.ends_at - job.now)) : "";
   return [
-    h("p", {}, h("b", {}, `Watching ${job.app}`), since ? ` for ${since}. ` : ". ",
+    h("p", { key: "what" }, h("b", {}, "Watching ", nameText(job.app)), since ? ` for ${since}. ` : ". ",
       "Use it as you normally do, with everything you usually do in it, then end the watch here."),
-    h("div", { class: "notebox risk small" }, "Administrator access is held until you end the watch: end it as soon as "
-      + `is practical. It ends on its own ${fmtMinutes(after)} after ${job.app} closes, or after you close this panel, `
+    h("div", { class: "notebox risk small", key: "admin" }, "Administrator access is held until you end the watch: end it as soon as "
+      + `is practical. It ends on its own ${fmtMinutes(after)} after ${visibleText(job.app)} closes, or after you close this panel, `
       + "and what it saw is kept here."),
-    h("div", { class: "tally" },
+    h("div", { class: "tally", key: "tally" },
       h("span", {}, h("b", {}, `${c.files ?? 0}`), " files touched by the app"),
       h("span", {}, h("b", {}, `${c.others ?? 0}`), " written by your other programs meanwhile"),
       h("span", { class: "muted" }, `${c.events ?? 0} events seen`)),
-    job.closed ? h("div", { class: "notebox info" }, `${job.app} has closed. End the watch to see what it did; otherwise it `
-      + `ends on its own${left ? ` in ${left}` : ""}, what it saw kept here.`) : null,
-    job.absent ? h("div", { class: "warnbox" }, `${job.app} doesn't seem to have started, or it handed over to a copy `
-      + "that was already running, which isn't watched. End the watch, close the app everywhere, and try again."
+    job.closed ? h("div", { class: "notebox info", key: "closed" }, nameText(job.app), " has closed. End the watch to see what it "
+      + `did; otherwise it ends on its own${left ? ` in ${left}` : ""}, what it saw kept here.`) : null,
+    job.absent ? h("div", { class: "warnbox", key: "absent" }, nameText(job.app), " doesn't seem to have started, or it handed "
+      + "over to a copy that was already running, which isn't watched. End the watch, close the app everywhere, and try again."
       + (left ? ` Otherwise the watch ends on its own in ${left}.` : "")) : null,
-    job.quiet ? h("div", { class: "warnbox" }, `${job.app} is running but hasn't opened a single file of yours or of its `
-      + "own: it may have handed over to a copy that was already running (a window elsewhere, or one in the background), "
-      + "which isn't watched. If so, end the watch, close the app everywhere, and try again.") : null,
-    c.overflow ? h("div", { class: "warnbox" }, "The computer was too busy for every event to be recorded: some of what "
-      + "happened is missing.") : null,
-    (job.not_watched || []).length ? h("div", { class: "small muted" }, "Not watched: "
-      + job.not_watched.map(([m, why]) => `${m} (${why})`).join("; ") + ".") : null,
-    h("div", { class: "orow" }, stop)];
+    job.quiet ? h("div", { class: "warnbox", key: "quiet" }, nameText(job.app), " is running but hasn't opened a single file of "
+      + "yours or of its own: it may have handed over to a copy that was already running (a window elsewhere, or one in the "
+      + "background), which isn't watched. If so, end the watch, close the app everywhere, and try again.") : null,
+    c.overflow ? h("div", { class: "warnbox", key: "overflow" }, "The computer was too busy for every event to be recorded: "
+      + "some of what happened is missing.") : null,
+    (job.not_watched || []).length ? h("div", { class: "small muted", key: "unwatched" }, "Not watched: "
+      + job.not_watched.map(([m, why]) => `${visibleText(m)} (${why})`).join("; ") + ".") : null,
+    h("div", { class: "orow", key: "stop" }, stop)];
 }
 
 // folders with counts, by kind; `named`: a trial's own files may be listed under their folder
@@ -4783,10 +5077,17 @@ async function openTrim() {
     clearTimeout(timer);
     if (!closed) timer = setTimeout(ask, 2000);
   };
+  // while it runs, drawn in place at every answer (patch): Stop keeps its press and the focus ("Stopping…" is ui.stopping)
+  const ui = { stopping: false };
   const render = () => {
     const job = data.job;
-    S.adminActive = !!data.admin_active; renderTop();
-    if (job && (job.state === "asking" || job.state === "running")) { fill(body, trimProgress(job)); follow(); return; }
+    takeAdmin(data);
+    if (job && (job.state === "asking" || job.state === "running")) {
+      patch(body, h("div", { class: "trim-state", key: "running" }, trimProgress(job, ui, render)));
+      follow();
+      return;
+    }
+    ui.stopping = false;
     if (job && job.state === "done" && job.result) { fill(body, trimResult(job.result, reload)); return; }
     fill(body, trimStart(data, job, async (mount, btn) => {
       btn.disabled = true;
@@ -4854,13 +5155,14 @@ function trimGuideButton(id) {
     h("span", { class: "small muted" }, "A guide for this machine.")) : null;
 }
 
-function trimProgress(job) {
+function trimProgress(job, ui = { stopping: false }, render = () => {}) {
   const now = job.now;
-  const stop = h("button", { class: "small", disabled: job.stopping }, job.stopping ? "Stopping…" : "Stop");
-  stop.addEventListener("click", async () => {
-    stop.disabled = true; stop.textContent = "Stopping…";
-    try { await api("POST", "/api/tools/trim/stop"); } catch (e) { toast(e.message, "error"); }
-  });
+  const stopping = ui.stopping || job.stopping;
+  const stop = h("button", { class: "small", disabled: stopping, onclick: async () => {
+    ui.stopping = true;
+    render();
+    try { await api("POST", "/api/tools/trim/stop"); } catch (e) { ui.stopping = false; render(); toast(e.message, "error"); }
+  } }, stopping ? "Stopping…" : "Stop");
   const about = (s) => s < 60 ? "under a minute" : `about ${fmtMinutes(s)}`;
   let remaining = 0, ifNeeded = 0;
   const rows = (job.steps || []).map(st => {
@@ -4878,7 +5180,7 @@ function trimProgress(job) {
       const what = st.id === "wait" ? fmtMinutes(st.total) : st.total ? fmtSize(st.total) : "";
       right = [frac != null ? `${Math.round(frac * 100)}% of ${what}` : `${fmtMinutes(elapsed)} so far`,
         left != null ? `${about(left)} left` : ""].filter(Boolean).join(", ");
-      if (frac != null) bar = h("div", { class: "obar" }, h("div", { style: `width: ${Math.round(frac * 100)}%` }));
+      if (frac != null) bar = progressBar(frac, st.label);
       if (left != null) remaining += left;
     } else if (st.estimate != null) {
       right = about(st.estimate) + (st.optional ? ", if needed" : "");
@@ -4886,7 +5188,7 @@ function trimProgress(job) {
     } else if (st.optional) {
       right = "if needed";
     }
-    return h("div", { class: `trim-step ${st.state}` },
+    return h("div", { class: `trim-step ${st.state}`, key: `step-${st.id}` },
       h("div", { class: "trim-step-row" },
         h("span", { class: "trim-step-mark" }, st.state === "running" ? h("span", { class: "spinner on" })
           : st.state === "done" ? "✓" : st.state === "skipped" ? "–" : ""),
@@ -4895,17 +5197,17 @@ function trimProgress(job) {
       bar);
   });
   const started = job.steps?.some(s => s.state !== "pending");
-  return h("div", { class: "trim-progress" },
-    job.state === "asking" || !started ? h("div", { class: "orow" }, h("span", { class: "spinner on" }),
+  return h("div", { class: "trim-progress", key: "progress" },
+    job.state === "asking" || !started ? h("div", { class: "orow", key: "phase" }, h("span", { class: "spinner on" }),
       h("b", {}, job.state === "asking" ? "Waiting for authorization…" : job.phase || "Starting")) : null,
-    rows.length ? h("div", { class: "trim-steps" }, rows) : null,
-    started ? h("div", { class: "small" }, h("b", {}, `${about(remaining)} left`),
-      ifNeeded ? h("span", { class: "muted" }, `, plus ${about(ifNeeded)} if the last pass is needed`) : null,
-      h("span", { class: "muted" }, ". Estimates come from the disk's size until a pass has been read, then from how "
+    rows.length ? h("div", { class: "trim-steps", key: "steps" }, rows) : null,
+    started ? h("div", { class: "small", key: "left" }, h("b", {}, `${about(remaining)} left`),
+      ifNeeded ? h("span", { class: "muted", key: "if" }, `, plus ${about(ifNeeded)} if the last pass is needed`) : null,
+      h("span", { class: "muted", key: "how" }, ". Estimates come from the disk's size until a pass has been read, then from how "
         + "fast this disk read.")) : null,
-    h("div", { class: "small muted" }, `Testing ${job.mount}. Started ${job.started ? fmtMinutes(now - job.started) + " ago" : "just now"}. `
+    h("div", { class: "small muted", key: "where" }, `Testing ${job.mount}. Started ${job.started ? fmtMinutes(now - job.started) + " ago" : "just now"}. `
       + "You can close this window: the test goes on, and opening it again shows where it is."),
-    h("div", { class: "orow" }, stop));
+    h("div", { class: "orow", key: "stop" }, stop));
 }
 
 function trimResult(r, reload) {
@@ -4948,9 +5250,17 @@ async function openNames(mount = null) {
   let data;
   try { data = await api("GET", "/api/tools/names"); } catch (e) { toast(e.message, "error"); return; }
   const body = h("div", { class: "trim names" });
-  let timer = null, closed = false, chosen = null;
+  let timer = null, closed = false, chosen = null, stage = "start", stopping = false;
   const forget = () => { closed = true; clearTimeout(timer); api("POST", "/api/tools/names/forget").catch(() => {}); };
-  const m = modal({ title: "Deleted file names", wide: true, body, buttons: [{ label: "Close", kind: "primary" }], onClose: forget });
+  // the list is shown once and kept nowhere, and finding it again reads the folders' records and the journal (on btrfs
+  // the whole disk): closing the panel, by a click beside it or Escape too, asks first while a list is shown or found
+  const askFirst = () => stage === "list"
+    ? { title: "Close and forget the list?", text: "The list of deleted file names isn't kept anywhere: closing this "
+        + "panel forgets it, and seeing it again means finding the names again.", yes: "Close and forget it" }
+    : stage === "listing" ? { title: "Stop finding the names?", text: "Closing this panel stops the search, and what it "
+        + "found so far is forgotten.", yes: "Stop and close" } : null;
+  const m = modal({ title: "Deleted file names", wide: true, body, buttons: [{ label: "Close", kind: "primary" }], onClose: forget,
+    askFirst });
   const closeAll = m.close;
   const usable = data.targets.filter(t => !t.blocked);
   chosen = (usable.find(t => t.mount === mount) || usable[0])?.mount;
@@ -4968,23 +5278,27 @@ async function openNames(mount = null) {
     let r;
     try { r = await api("GET", "/api/tools/names/job"); } catch (e) { fill(body, h("div", { class: "warnbox bad" }, e.message), startView()); return; }
     const job = r.job;
+    stage = job?.state === "done" ? "list" : job && (job.state === "asking" || job.state === "running") ? "listing" : "start";
     if (!job) { fill(body, h("div", { class: "warnbox" }, "Nothing to show: it was stopped."), startView()); return; }
-    S.adminActive = true; renderTop();
     if (job.state === "asking" || job.state === "running") {
+      // drawn in place at every answer (patch): Stop keeps its press and the focus ("Stopping…" is `stopping`)
       const frac = job.total ? Math.min(job.done / job.total, 1) : 0;
-      const stop = h("button", { class: "small", onclick: (e) => {
-        e.target.disabled = true; e.target.textContent = "Stopping…";
-        api("POST", "/api/tools/names/forget").catch(() => {});
-      } }, "Stop");
-      fill(body, h("div", { class: "trim-progress" },
-        h("div", { class: "orow" }, h("span", { class: "spinner on" }), h("b", {}, job.state === "asking" ? "Waiting for authorization…" : job.phase || "Working"),
-          job.total ? h("span", { class: "small muted" }, `${Math.round(frac * 100)}%`) : null),
-        job.total ? h("div", { class: "obar" }, h("div", { style: `width: ${Math.round(frac * 100)}%` })) : null,
-        h("div", { class: "orow" }, stop)));
+      const progress = () => h("div", { class: "trim-progress", key: "listing" },
+        h("div", { class: "orow", key: "phase" }, h("span", { class: "spinner on" }),
+          h("b", {}, job.state === "asking" ? "Waiting for authorization…" : job.phase || "Working"),
+          job.total ? h("span", { class: "small muted", key: "pct" }, `${Math.round(frac * 100)}%`) : null),
+        job.total ? progressBar(frac, "Finding deleted file names") : null,
+        h("div", { class: "orow", key: "stop" }, h("button", { class: "small", disabled: stopping, onclick: () => {
+          stopping = true;
+          patch(body, progress());
+          api("POST", "/api/tools/names/forget").catch(() => {});
+        } }, stopping ? "Stopping…" : "Stop")));
+      patch(body, progress());
       timer = setTimeout(poll, 1000);
       return;
     }
-    if (job.state !== "done") { fill(body, h("div", { class: "warnbox bad" }, job.error || "It stopped."), startView()); return; }
+    stopping = false;
+    if (job.state !== "done") { stage = "start"; fill(body, h("div", { class: "warnbox bad" }, job.error || "It stopped."), startView()); return; }
     fill(body, namesList(job.result, job.trimmed, { start, closeAll }));
   };
 
@@ -5254,9 +5568,9 @@ async function openNamesPlan(mount, folders, relist, rebuild = [], clearJournal 
     try { j = (await api("GET", "/api/tools/names/clean")).job; } catch (e) { fill(body, h("div", { class: "warnbox bad" }, e.message)); return; }
     if (!j) { fill(body, h("div", { class: "warnbox" }, "Nothing to show.")); return; }
     if (j.state === "asking" || j.state === "running") {
-      fill(body, h("div", { class: "trim-progress" },
-        j.state === "asking" ? h("div", { class: "orow" }, h("span", { class: "spinner on" }), h("b", {}, "Waiting for authorization…")) : null,
-        h("div", { class: "trim-steps" }, (j.steps || []).map(st => h("div", { class: `trim-step ${st.state}` },
+      patch(body, h("div", { class: "trim-progress", key: "cleaning" },          // drawn in place at every answer
+        j.state === "asking" ? h("div", { class: "orow", key: "asking" }, h("span", { class: "spinner on" }), h("b", {}, "Waiting for authorization…")) : null,
+        h("div", { class: "trim-steps", key: "steps" }, (j.steps || []).map((st, i) => h("div", { class: `trim-step ${st.state}`, key: `step-${i}` },
           h("div", { class: "trim-step-row" },
             h("span", { class: "trim-step-mark" }, st.state === "running" ? h("span", { class: "spinner on" }) : st.state === "done" ? "✓" : ""),
             h("span", { class: st.state === "running" ? "" : "muted" }, st.label),
@@ -5272,8 +5586,8 @@ async function openNamesPlan(mount, folders, relist, rebuild = [], clearJournal 
     el.disabled = true;
     el.textContent = S.adminActive ? "Working…" : "Waiting for authorization…";
     try {
+      // the badge follows what each answer says (X-Admin-Active): access may still be being asked for here
       await api("POST", "/api/tools/names/clean", { mount, folders: ok.map(f => f.rel), rebuild, not_synced: true });
-      S.adminActive = true; renderTop();
       follow();
     } catch (e) { toast(e.message, "error", 10000); el.disabled = false; el.textContent = `Clean ${plural(ok.length, "folder")}`; }
   }
@@ -5571,23 +5885,36 @@ function renderOnlineStrip() {
       + (job.winding_down ? "; it is still finishing in the background" : ""));
   }
   el.className = `ostrip ${kind}`;
-  fill(el,
-    h("div", { class: "orow" },
-      jobRunning() && S.jobLost < 3 ? h("span", { class: "spinner on" }) : null,
-      h("b", {}, line), extra.length ? h("span", { class: "muted" }, extra.join(" · ")) : null,
-      h("span", { class: "spacer" }),
-      jobRunning() && job.state === "running" && !job.stopping
-        ? h("button", { class: "small", onclick: () => stopJob(false), title: "The test running now finishes and its result is kept; the rest don't run" }, "Stop after this test") : null,
-      jobRunning() ? h("button", { class: "small danger", onclick: () => stopJob(true),
-        title: "Cancels the test running now and discards its result; results of tests already finished are kept" }, "Stop now") : null,
-      !jobRunning() && done ? h("button", { class: "small", onclick: () => setSource(S.source === "online" ? "all" : "online") },
+  // drawn in place every second (patch): a Stop pressed as the strip is drawn again still gets its click, and keeps the
+  // keyboard's focus; what is being asked for is S.jobStop, not the button's own label
+  const asking = S.jobStop;
+  patch(el,
+    h("div", { class: "orow", key: "line" },
+      jobRunning() && S.jobLost < 3 ? h("span", { class: "spinner on", key: "spin" }) : null,
+      h("b", { key: "text" }, line), extra.length ? h("span", { class: "muted", key: "extra" }, extra.join(" · ")) : null,
+      h("span", { class: "spacer", key: "spacer" }),
+      jobRunning() && job.state === "running" && !job.stopping && asking !== "now"
+        ? h("button", { class: "small", key: "after", disabled: !!asking, onclick: () => stopJob(false),
+            title: "The test running now finishes and its result is kept; the rest don't run" },
+          asking === "after" ? "Stopping…" : "Stop after this test") : null,
+      jobRunning() ? h("button", { class: "small danger", key: "now", disabled: asking === "now", onclick: () => stopJob(true),
+        title: "Cancels the test running now and discards its result; results of tests already finished are kept" },
+        asking === "now" ? "Stopping…" : "Stop now") : null,
+      !jobRunning() && done ? h("button", { class: "small", key: "source", onclick: () => setSource(S.source === "online" ? "all" : "online") },
         S.source === "online" ? "Show all results" : "Show only online results") : null,
-      !jobRunning() ? h("button", { class: "small ghost", title: "Hide this bar (the results stay)", onclick: () => { S.jobHidden = true; renderOnlineStrip(); } }, "Hide") : null),
-    jobRunning() ? h("div", { class: "obar" }, h("div", { style: `width: ${Math.round(Math.min(frac, 1) * 100)}%` })) : null);
+      !jobRunning() ? h("button", { class: "small ghost", key: "hide", title: "Hide this bar (the results stay)",
+        onclick: () => { S.jobHidden = true; renderOnlineStrip(); } }, "Hide") : null),
+    jobRunning() ? h("div", { class: "obar", key: "bar", role: "progressbar", "aria-label": "Online tests",
+        "aria-valuemin": 0, "aria-valuemax": 100, "aria-valuenow": Math.round(Math.min(frac, 1) * 100) },
+      h("div", { style: `width: ${Math.round(Math.min(frac, 1) * 100)}%` })) : null);
 }
 
 async function stopJob(now) {
+  if (S.jobStop) return;
+  S.jobStop = now ? "now" : "after";
+  renderOnlineStrip();
   try { onJob((await api("POST", "/api/online/stop", { now })).job); } catch (e) { toast(e.message, "error"); }
+  finally { S.jobStop = null; renderOnlineStrip(); }
 }
 
 async function dropAdmin() {

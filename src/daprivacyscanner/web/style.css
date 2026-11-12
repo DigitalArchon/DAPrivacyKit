@@ -435,9 +435,22 @@ button.warn { color: var(--warn); border-color: var(--warn); }
 .toolgroup.group-apps { --g: var(--teal); }
 .toolgroup.group-drives { --g: var(--warn); }
 .toolgroup.group-everyday { --g: var(--ok); }
-.toolgroup h4 { margin: 4px 0 8px; display: flex; align-items: center; gap: 8px; font-size: 13px; letter-spacing: .03em;
-  text-transform: uppercase; color: var(--muted); }
-.toolgroup h4::before { content: ""; width: 10px; height: 10px; border-radius: 3px; background: var(--g); }
+.toolgroup .group-head, .tools > .group-head { margin: 4px 0 8px; display: flex; align-items: center; gap: 8px; font-size: 13px;
+  letter-spacing: .03em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+.toolgroup .group-head::before { content: ""; width: 10px; height: 10px; border-radius: 3px; background: var(--g); }
+.toolneeds code { font-family: var(--mono); }
+/* the long explanations of a panel, behind "More…": nothing of them left out, nothing of them in the way */
+details.more-about > summary { color: var(--accent); font-size: 12.5px; padding: 2px 0; }
+details.more-about[open] > summary { margin-bottom: 4px; }
+.more-body { display: flex; flex-direction: column; gap: 6px; }
+.lead-box p { margin: 0; font-size: 13.5px; }
+.before-start { display: flex; flex-direction: column; gap: 6px; border: 1px solid var(--warn); border-radius: 8px; padding: 8px 10px; }
+.section-head { margin: 0; font-size: 13px; color: var(--warn); }
+.dl-warnings { font-size: 12px; margin: 2px 0 4px; }
+label.field { display: flex; flex-direction: column; gap: 3px; }
+.pathpick .hint { flex-basis: 100%; }
+/* a name from outside the app, isolated from the text around it (app.js nameText) */
+bdi.name { unicode-bidi: isolate; }
 .toolcard { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; background: var(--panel-2);
   display: flex; flex-direction: column; gap: 6px; }
 .toolcard p { margin: 0; }
