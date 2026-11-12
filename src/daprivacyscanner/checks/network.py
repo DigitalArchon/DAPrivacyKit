@@ -585,6 +585,52 @@ class FirewallOff(Check):
 # ------------------------------------------------------------------ Wi-Fi
 
 RANDOM_MACS = ("stable", "random", "stable-ssid")
+# DHCPv6's identifier: "lease" (NetworkManager's default) keeps the one in a lease file, else makes one from the
+# machine id, the same on every network; ll and llt are made from the current hardware address (random when it is);
+# the stable ones per network (from connection.stable-id); a value of its own is the same everywhere
+# (nm-settings-nmcli(5), ipv6.dhcp-duid)
+DUID_PER_NETWORK = ("ll", "llt", "stable-ll", "stable-llt", "stable-uuid")
+# DHCPv4's client identifier: mac is the current hardware address (NetworkManager's internal client's default), stable
+# per network, none sends none; perm-mac is the permanent one; duid and ipv6-duid come from the DUID
+CLIENT_ID_OK = ("mac", "stable", "none")
+NO_DHCPV6 = ("ignore", "disabled", "link-local", "manual")
+IWD_CONF = "/etc/iwd/main.conf"
+
+
+def iwd_randomisation(host: Host) -> tuple[str, bool]:
+    """(iwd's [General] AddressRandomization: disabled, its default, once or network; whether it randomises the
+    address while scanning: unless [Scan] DisableMacAddressRandomization=true), from /etc/iwd/main.conf
+    (iwd.config(5))."""
+    try:
+        conf = ini.parse(host.read_sys(IWD_CONF) or "")
+    except Unreadable:
+        conf = {}
+    mode = (ini.get(conf, "General", "AddressRandomization") or "disabled").strip().lower()
+    return mode, ini.truthy(ini.get(conf, "Scan", "DisableMacAddressRandomization")) is not True
+
+
+def dhcp_identifiers(host: Host, cfg: dict | None, uuids: list[str], kind: str) -> tuple[list[str], list[str], str, str]:
+    """(connections whose DHCPv6 DUID is the same on every network, those whose DHCPv4 client ID is, the defaults in
+    words) of saved connections of a kind ("wifi"). DHCPv6 counts on connections whose IPv6 can use it."""
+    duid_default = ((nm_default(cfg or {}, "ipv6.dhcp-duid", kind)[0]) or "lease").lower()
+    cid_default = ((nm_default(cfg or {}, "ipv4.dhcp-client-id", kind)[0]) or "").lower()
+    backend = (ini.get(cfg or {}, "main", "dhcp") or "internal").strip().lower()
+    same_duid, same_cid = [], []
+    for uuid in uuids:
+        v = nm_get(host, uuid, "connection.id", "ipv6.dhcp-duid", "ipv6.method", "ipv4.dhcp-client-id")
+        name = v["connection.id"] or uuid
+        duid = (v["ipv6.dhcp-duid"].strip().lower() or duid_default)
+        global_duid = duid not in DUID_PER_NETWORK
+        if global_duid and v["ipv6.method"].strip().lower() not in NO_DHCPV6:
+            same_duid.append(name)
+        cid = v["ipv4.dhcp-client-id"].strip().lower() or cid_default or ("mac" if backend == "internal" else "")
+        if cid and cid not in CLIENT_ID_OK and (cid == "perm-mac" or cid not in ("duid", "ipv6-duid") or global_duid):
+            same_cid.append(name)
+    duid_text = (f"{duid_default} (from NetworkManager's settings)" if duid_default != "lease" else
+                 "lease (NetworkManager's default: made from the machine id, the same on every network)")
+    cid_text = cid_default or ("mac (the current hardware address)" if backend == "internal" else
+                               f"left to {backend}")
+    return same_duid, same_cid, duid_text, cid_text
 
 
 @register
@@ -602,42 +648,85 @@ class MacPermanent(Check):
         cfg = nm_config_read(host)
         default, where = nm_default(cfg or {}, "wifi.cloned-mac-address", "wifi")
         default = default or ""
+        backend = (nm_default(cfg or {}, "wifi.backend", "wifi", "device")[0] or "wpa_supplicant").lower()
+        iwd = backend == "iwd"
         scan_rand = (nm_default(cfg or {}, "wifi.scan-rand-mac-address", "wifi", "device")[0] or "").lower()
         ev = [Evidence.val("Default for Wi-Fi", NM_UNREAD if cfg is None else (
                   (f"{default} (from NetworkManager's [{where}] section)" if where != "connection" else default)
-                  if default else "not set (the hardware address)")),
-              Evidence.val("Random address while scanning for networks", NM_UNREAD if cfg is None else
-                           "no" if scan_rand in ("no", "false", "0") else "yes (default)")]
+                  if default else "not set (the hardware address)"))]
+        iwd_mode, iwd_scan = iwd_randomisation(host) if iwd else ("", True)
+        if iwd:
+            ev.append(Evidence.val("Wi-Fi backend", f"iwd, with AddressRandomization={iwd_mode} ({IWD_CONF})"))
+            ev.append(Evidence.val("Random address while scanning for networks", "yes (iwd's own)" if iwd_scan else
+                                   "no (iwd's DisableMacAddressRandomization=true)"))
+        else:
+            ev.append(Evidence.val("Random address while scanning for networks", NM_UNREAD if cfg is None else
+                                   "no" if scan_rand in ("no", "false", "0") else "yes (default)"))
         permanent = []
         for uuid in wifi:
             v = nm_get(host, uuid, "connection.id", "802-11-wireless.cloned-mac-address")
             value = v["802-11-wireless.cloned-mac-address"] or "default"
             effective = default if value == "default" and default else value
-            # one that follows a default that couldn't be read uses what isn't known
-            if effective in ("preserve", "permanent") or (cfg is not None and effective in ("default", "")):
+            # one that follows a default that couldn't be read uses what isn't known; with iwd, NetworkManager's
+            # random and stable addresses apply only where iwd's own AddressRandomization is "network"
+            if effective in ("preserve", "permanent") or (cfg is not None and effective in ("default", "")) or \
+                    (iwd and iwd_mode != "network"):
                 permanent.append(v["connection.id"])
             # under a label of its own, never as the label: the saved report leaves the names out (NOT_KEPT_LABELS)
             ev.append(Evidence.val("Saved Wi-Fi network", f"{v['connection.id'] or uuid} ({value})"))
+        same_duid, same_cid, duid_text, cid_text = dhcp_identifiers(host, cfg, wifi, "wifi")
+        ev += [Evidence.val("DHCPv6 identifier (DUID) by default", NM_UNREAD if cfg is None else duid_text),
+               Evidence.val("DHCPv4 client identifier by default", NM_UNREAD if cfg is None else cid_text)]
         problems = []
-        if permanent:
+        if iwd and iwd_mode != "network":
+            problems.append(f"Wi-Fi goes through iwd here, whose AddressRandomization is {iwd_mode}: every network sees "
+                            + ("the same random address until iwd restarts" if iwd_mode == "once" else
+                               "the device's permanent MAC address") + ", whatever NetworkManager is set to")
+        elif permanent:
             problems.append(f"{len(permanent)} of {len(wifi)} saved Wi-Fi network{'s use' if len(wifi) > 1 else ' uses'} "
                             "the device's permanent MAC address")
-        if cfg is not None and default not in RANDOM_MACS:
+        if cfg is not None and default not in RANDOM_MACS and not (iwd and iwd_mode != "network"):
             problems.append("networks joined from now on will too (no default is set for new connections)" if permanent
                             else "networks joined from now on will use the device's permanent MAC address (no default "
                                  "is set for new connections)")
-        if scan_rand in ("no", "false", "0"):
-            problems.append("scanning for networks uses the permanent address (wifi.scan-rand-mac-address=no), "
-                            "which is what trackers see most")
+        if not iwd and scan_rand in ("no", "false", "0") or iwd and not iwd_scan:
+            problems.append("scanning for networks uses the permanent address (" +
+                            ("iwd's DisableMacAddressRandomization=true" if iwd else "wifi.scan-rand-mac-address=no")
+                            + "), which is what trackers see most")
+        notes = []
+        if same_cid and cfg is not None:
+            notes.append(Note("risk", "The same DHCP client identifier on every network",
+                              f"{len(same_cid)} saved Wi-Fi network{'s send' if len(same_cid) > 1 else ' sends'} a DHCPv4 "
+                              "client identifier set to the permanent hardware address or a fixed value: networks "
+                              "can recognise this computer by it, whatever its MAC address. nmcli connection modify "
+                              "NAME ipv4.dhcp-client-id stable makes it one per network."))
+        if iwd:
+            notes.append(Note("info", "iwd decides the address",
+                              f"NetworkManager hands Wi-Fi to iwd here (wifi.backend=iwd): its per-network and random "
+                              f"addresses apply only with [General] AddressRandomization=network in {IWD_CONF}, and "
+                              "wifi.scan-rand-mac-address doesn't apply (iwd randomises scans itself). To set it: "
+                              f"sudo mkdir -p /etc/iwd, then add AddressRandomization=network under [General] in "
+                              f"{IWD_CONF}, and restart iwd (sudo systemctl restart iwd)."))
+        duid_note = Note("risk", "The same DHCPv6 identifier on every network",
+                         "On a network that hands out IPv6 addresses by DHCPv6 (some offices, universities and "
+                         "providers; most home and public Wi-Fi don't), NetworkManager sends an identifier made from "
+                         "this computer's machine id, the same everywhere, whatever its hardware address. "
+                         "ipv6.dhcp-duid=stable-uuid makes it one per network: nmcli connection modify NAME "
+                         "ipv6.dhcp-duid stable-uuid, or for every network a NetworkManager drop-in with "
+                         "[connection] ipv6.dhcp-duid=stable-uuid.", ("net.hostname_broadcast",))
         unread = "What the saved networks that follow NetworkManager's default use, and networks joined from now on, " \
                  "isn't known: its settings couldn't be read (NetworkManager --print-config failed)."
+        # the DHCP identifiers are said with the address, as risks: the guide changes the address, and a check failing
+        # again right after its own fix would say nothing useful
+        if same_duid and cfg is not None:
+            notes.insert(0, duid_note)
         if problems:
             text = "; ".join(problems)
-            return failed(text[0].upper() + text[1:] + ".", *ev[:22], notes=[
-                Note("limitation", "NetworkManager's settings couldn't be read", unread)] if cfg is None else [])
+            return failed(text[0].upper() + text[1:] + ".", *ev[:24], notes=notes + ([
+                Note("limitation", "NetworkManager's settings couldn't be read", unread)] if cfg is None else []))
         if cfg is None:
-            return unknown(unread, *ev[:22])
-        return passed("Wi-Fi networks, saved and new, use a random or per-network MAC address.", *ev[:22])
+            return unknown(unread, *ev[:24], notes=notes)
+        return passed("Wi-Fi networks, saved and new, use a random or per-network MAC address.", *ev[:24], notes=notes)
 
 
 @register
@@ -802,6 +891,23 @@ def dhcp_hostname_elsewhere(host: Host, virt: str | None = None) -> list[str]:
     return out
 
 
+# names many computers have: distributions' own and generic words (a hostname made only of these and the device words
+# identifies no one), on top of _util's GENERIC_NAMES
+COMMON_HOSTNAME_WORDS = frozenset({
+    "cachyos", "omarchy", "endeavouros", "endeavour", "garuda", "opensuse", "suse", "tumbleweed", "leap", "pop", "popos",
+    "nixos", "archlinux", "elementary", "zorin", "neon", "kde", "gnome", "void", "gentoo", "alpine", "rocky", "alma",
+    "almalinux", "centos", "rhel", "silverblue", "kinoite", "bazzite", "aurora", "bluefin", "steamdeck", "localdomain",
+    "linuxmint", "lmde", "deepin", "solus", "mx", "antix", "pc", "laptop", "notebook", "box", "host", "machine", "my"})
+
+
+def common_hostname(hostname: str) -> bool:
+    """Whether a hostname is one many computers share: made only of generic words ("fedora", "localhost", "ubuntu-pc").
+    Anything else, digits included ("t14-7q2", "fedora-2"), sets it apart."""
+    from ._util import GENERIC_NAMES, _WORDS
+    words = [w.lower() for part in re.split(r"[^A-Za-z0-9]+", hostname) for w in _WORDS.findall(part)]
+    return bool(words) and all(w in GENERIC_NAMES or w in COMMON_HOSTNAME_WORDS for w in words)
+
+
 @register
 class HostnameBroadcast(Check):
     id = "net.hostname_broadcast"
@@ -847,6 +953,7 @@ class HostnameBroadcast(Check):
                 any(s.port == 5355 and s.wildcard for s in scan.context.listeners or []):
             channels.append("LLMNR")
         ev.append(Evidence.val("Announced via", ", ".join(channels) or "nothing found"))
+        common = common_hostname(hostname)
         if named and channels:
             return failed(f"The hostname contains your name and is announced via {', '.join(channels)}.", *ev)
         if named and dhcp is not None and dhcp[1] is None:
@@ -854,7 +961,17 @@ class HostnameBroadcast(Check):
                            "NetworkManager's settings couldn't be read (NetworkManager --print-config failed).", *ev)
         if named:
             return passed("The hostname contains your name, but it doesn't seem to be announced.", *ev)
-        return passed("The hostname doesn't contain your name.", *ev)
+        if channels and not common:
+            # a name few others have is a label networks can know this computer by, whatever its hardware address
+            return warned(f"The hostname {hostname!r} is announced via {', '.join(channels)}: a name few computers "
+                          "share, it lets the networks you join recognise this computer from visit to visit, even with "
+                          "a random hardware address.", *ev,
+                          notes=[Note("info", "Recognised across networks", "Networks can tell a computer apart by its "
+                                      "hardware address, its DHCP identifiers and the name it sends; a random address "
+                                      "hides the first only.", ("net.mac_permanent",))])
+        if common:
+            return passed(f"The hostname is a common one ({hostname}), and doesn't contain your name.", *ev)
+        return passed("The hostname doesn't contain your name, and doesn't seem to be announced.", *ev)
 
 
 @register

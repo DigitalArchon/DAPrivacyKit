@@ -1422,6 +1422,14 @@ checks:
         app''s [connection] default'
       - 'NetworkManager --print-config [device*] wifi.scan-rand-mac-address, searched the same way (default yes; no =
         the permanent address while scanning; Ubuntu and Mint set no in NetworkManager.conf)'
+      - '[device*] wifi.backend=iwd: NetworkManager''s random and stable addresses apply only where iwd''s own [General]
+        AddressRandomization (/etc/iwd/main.conf) is network (its default is disabled: the permanent address; once: one
+        random address until iwd restarts), and wifi.scan-rand-mac-address doesn''t apply (iwd randomises scans unless
+        [Scan] DisableMacAddressRandomization=true; nm-device-iwd.c). CachyOS installs iwd but leaves it off'
+      - 'DHCP identifiers, a risk note: ipv6.dhcp-duid (default lease: a DUID made from the machine id, the same on
+        every network that uses DHCPv6; ll, llt and the stable ones aren''t), per connection where ipv6.method can use
+        DHCPv6; ipv4.dhcp-client-id perm-mac or a fixed value (mac, NetworkManager''s internal client''s default,
+        follows the address). Notes only: the guide changes the address, not these'
     fix: >
       Every network, including those joined later: a NetworkManager drop-in of the helper's own
       (/etc/NetworkManager/conf.d/99-daprivacyscanner-mac.conf) setting the default for Wi-Fi to "stable" (a random
@@ -1444,10 +1452,14 @@ checks:
     title: Identifying hostname broadcast via DHCP and mDNS
     category: network
     severity: 4
+    # a name few computers share, sent on every network, is a risk (2): one with your name in it is the problem
+    warn_lower: 2
     scope: user
     tier: guided
     detect:
       - 'hostnamectl hostname; compare with the user''s name from getent passwd (GECOS)'
+      - 'A hostname made of anything but common words (the distributions'' names, localhost, pc, laptop...) is one
+        few computers share: announced, a risk (networks recognise the computer by it, whatever its MAC address)'
       - 'nmcli -g ipv4.dhcp-send-hostname,ipv6.dhcp-send-hostname connection show <id>: -1 (NetworkManager 1.52 and
         later, by NetworkManager --version, else by a connection showing -1) takes the default from NetworkManager''s
         [connection*] sections (as for wifi.cloned-mac-address, per kind: Wi-Fi, wired); yes/no only (older) has
