@@ -2402,9 +2402,10 @@ function leftoverNote(rd, reload, disk) {
 
 function closeRamdisk(rd, reload) {
   const browserDisk = rd.name === "TempBrowser";
-  modal({ title: `Close ${rd.path || "~/RAMDisk"}?`, body: [
-    h("p", {}, `Every file in ${rd.path || "~/RAMDisk"} (${plural(rd.files, "file")}) is overwritten with zeros where it lies in memory, `
-      + "deleted, and the RAM disk is unmounted. This can't be undone."
+  let m = null;
+  m = modal({ title: `Close ${rd.path || "~/RAMDisk"}?`, body: [
+    h("p", {}, `Every file still in ${rd.path || "~/RAMDisk"} (${plural(rd.files, "file")}) is overwritten with zeros where it lies `
+      + "in memory, deleted, and the RAM disk is unmounted. This can't be undone."
       + (browserDisk ? " The browser goes with it: downloading it again takes a few minutes." : "")),
     // the TempOutboxes' originals and what couldn't be cleaned: maybe the user's only copy, deleted with the rest
     (rd.outbox_files || []).length ? h("div", { class: "warnbox small outbox-files" },
@@ -2414,7 +2415,16 @@ function closeRamdisk(rd, reload) {
         `${f.folder}: ${plural(f.files, "file")}${f.waiting ? " waiting to be cleaned" : ""}`)))) : null,
     h("div", { class: "small" }, h("b", {}, "What this doesn't reach: "), "copies other programs made of these files (an "
       + "editor's autosave, the clipboard, a browser's cache), thumbnails and the recent-files list (see the checks for "
-      + "them), the files' names" + (rd.noswap ? "" : ", and anything swapped to disk") + "."),
+      + "them), the files' names, what programs keep in their own memory" + (rd.noswap ? "" : ", anything swapped to disk")
+      + ", and files deleted or replaced while it was open: a program that saves by writing a new copy and putting it in "
+      + "place of the old one (as " + (browserDisk ? "the browser does with its session every few seconds" : "most editors and "
+      + "browsers do") + ") leaves the old copy's memory freed as it was, not overwritten."),
+    // only the kernel clears memory as it is freed: init_on_free (kern.init_on_free, a check of its own)
+    rd.init_on_free
+      ? h("div", { class: "small" }, "This kernel clears memory as it is freed (init_on_free), so those freed copies were "
+        + "cleared too.")
+      : h("div", { class: "small" }, "Clearing freed memory is the kernel's job, with its init_on_free setting, which isn't "
+        + "turned on here: ", checkChip("kern.init_on_free", () => m?.close()), " says how to turn it on."),
     h("div", { class: "small" }, h("b", {}, "The system's log: "), "the app keeps systemd from noting there that the RAM "
       + "disk was opened or closed, but the log, kept on the disk, has a line each time administrator access is given to "
       + "the app (when, not what for)."),

@@ -7,9 +7,13 @@ Opening and unmounting need root (the helper's ramdisk_open and ramdisk_close). 
 done here, as the user: the status, the check that no program is using it (never closing a program:
 "Close X first"), and the overwrite. Overwriting is what rule 8 allows here and nowhere else on a
 filesystem: a tmpfs's files live in memory pages that writing replaces in place, not on a disk that
-moves writes elsewhere. It covers the files' contents, on the RAM disk's own device only, never
-through a link. It can't reach copies made elsewhere (programs that read a file, thumbnails, the
-clipboard), file names, or pages swapped to disk before noswap existed; the page says so."""
+moves writes elsewhere. It covers the contents of the files still there when it closes, on the RAM
+disk's own device only, never through a link. It can't reach what was deleted or replaced while it was
+open (a save that writes a new copy and renames it over the old one, as the browser's session store does
+every few seconds, frees the old copy's pages as they are, unzeroed: only the kernel's init_on_free
+clears freed memory), what programs hold in their own memory, copies made elsewhere (programs that read
+a file, thumbnails, the clipboard), file names, or pages swapped to disk before noswap existed; the page
+says so."""
 
 from __future__ import annotations
 
@@ -47,11 +51,13 @@ class Status:
     other: str = ""                 # something else is mounted there
     leftover: bool = False          # closed, and its empty folder is still there (after a reboot, or a logout)
     notes: list[str] = field(default_factory=list)
+    init_on_free: bool = False      # the kernel clears freed memory: what the overwrite can't reach is cleared too
 
     def to_dict(self, home: Path) -> dict:
         return {"path": "~/" + self.path.name, "name": self.path.name, "full_path": str(self.path), "open": self.open, "size": self.size,
                 "noexec": self.noexec, "noswap": self.noswap, "used": self.used, "total": self.total,
-                "files": self.files, "other": self.other, "leftover": self.leftover, "notes": self.notes}
+                "files": self.files, "other": self.other, "leftover": self.leftover, "notes": self.notes,
+                "init_on_free": self.init_on_free}
 
 
 def _mounts(host: Host) -> list[list[str]]:
@@ -168,7 +174,21 @@ def status(host: Host, name: str = NAME) -> Status:
         except OSError:
             st.leftover = False
     st.notes = memory_notes(host, st)
+    st.init_on_free = init_on_free(host)
     return st
+
+
+def init_on_free(host: Host) -> bool:
+    """Whether the kernel clears memory as it is freed: init_on_free on its command line (the last one counts, as
+    the kernel reads it; kstrtobool's yes words), which reaches what the overwrite can't, the pages of files deleted
+    or replaced while the RAM disk was open. A kernel built with it on by default isn't told here (the check
+    kern.init_on_free reads that too): rare, and then the page says less than is true, never more."""
+    try:
+        cmdline = host.read_sys("/proc/cmdline") or ""
+    except Exception:  # noqa: BLE001 - unreadable: not known to be on
+        return False
+    found = re.findall(r"(?:^|\s)init_on_free=(\S*)", cmdline)
+    return bool(found) and found[-1].lower() in ("1", "y", "yes", "on")
 
 
 def _count(path: Path) -> int:
@@ -299,10 +319,9 @@ def memory_notes(host: Host, st: Status) -> list[str]:
     elif hibernation is None:
         notes.append("Whether this computer can hibernate couldn't be told. If it can, hibernating writes all of "
                      "memory, this folder included, to the disk: close it before hibernating.")
-    cmdline = host.read_sys("/proc/cmdline") or ""
-    if re.search(r"\binit_on_free=1\b", cmdline):
-        notes.append("The kernel clears memory as it is freed (init_on_free=1), so even pages the overwrite can't "
-                     "reach are cleared when it is closed.")
+    if init_on_free(host):
+        notes.append("The kernel clears memory as it is freed (init_on_free), so the pages of files deleted or replaced "
+                     "while it is open are cleared too, not only what is left in it when it is closed.")
     return notes
 
 

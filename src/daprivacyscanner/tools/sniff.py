@@ -8,7 +8,9 @@ Read-only, from an open file descriptor (never a path that could be swapped), at
   RAR, gzip, xz, bzip2, zstd, cabinet, tar), PDF, HTML and SVG, old Office (OLE2), pictures;
 - inside a ZIP-based file, its index: Android apps and Java programs, Office (OOXML) and OpenDocument files,
   EPUB, and for an archive the programs it holds;
-- macros: OOXML's vbaProject.bin, OLE2's _VBA_PROJECT stream, OpenDocument's Basic and Scripts folders; in a
+- macros: OOXML's VBA project (vbaProject.bin, or a part of any name by its content type or the relationship to
+  it), Excel 4.0 macro sheets and ActiveX controls (from [Content_Types].xml and the .rels parts, each read
+  bounded), OLE2's _VBA_PROJECT stream, OpenDocument's Basic and Scripts folders; in a
   PDF, JavaScript, /Launch and embedded files (a PDF's objects can be compressed, so finding none proves
   nothing, and the page never says it is safe).
 Then the name: a program or launcher whose name says otherwise is named as such ("its name says pdf"), and
@@ -117,6 +119,36 @@ def _zip_index(f) -> tuple[int, int] | None:
         return None
 
 
+OOXML_PART = 256 * 1024                # what is read of [Content_Types].xml and of each relationships part, unpacked
+OOXML_RELS = 200                       # relationships parts read at most
+# what in an Office (OOXML) file's content types or relationships says it holds code, whatever its parts are named:
+# the VBA project (a part of any name, found by its content type or the relationship to it), the macro-enabled main
+# parts, Excel 4.0 (XLM) macro sheets, and ActiveX controls (ECMA-376 and [MS-OFFMACRO2], [MS-XLSX], [MS-OI29500])
+OOXML_MACROS = {
+    "vba": (b"application/vnd.ms-office.vbaproject", b"/relationships/vbaproject", b"macroenabled",
+            b"application/vnd.ms-excel.addin.macroenabled"),
+    "xlm": (b"application/vnd.ms-excel.macrosheet", b"application/vnd.ms-excel.intlmacrosheet",
+            b"/relationships/xlmacrosheet", b"/relationships/xlintlmacrosheet"),
+    "activex": (b"application/vnd.ms-office.activex", b"/relationships/activexcontrol"),
+}
+
+
+def _ooxml_parts(z: zipfile.ZipFile, names: list[str]) -> bytes:
+    """An Office file's content types and relationships, lower-cased, read bounded (at most OOXML_PART of each, as
+    unpacked, from OOXML_RELS relationships parts): what its parts are, by type rather than by name. A VBA project
+    renamed (word/vbaProject.bin is only the usual name) was found by neither, and macro sheets not at all."""
+    out = []
+    wanted = [n for n in names if n.lower() == "[content_types].xml"] + \
+        [n for n in names if n.lower().endswith(".rels")][:OOXML_RELS]
+    for n in wanted:
+        try:
+            with z.open(n) as part:
+                out.append(part.read(OOXML_PART).lower())
+        except (zipfile.BadZipFile, OSError, KeyError, ValueError, RuntimeError, NotImplementedError, EOFError):
+            continue
+    return b"\n".join(out)
+
+
 def _zip(fd: int, name: str) -> Inspection:
     try:
         with os.fdopen(os.dup(fd), "rb") as f:
@@ -136,6 +168,7 @@ def _zip(fd: int, name: str) -> Inspection:
                 if "mimetype" in names:
                     with z.open("mimetype") as m:             # its first bytes only: a huge entry isn't unpacked
                         mimetype = m.read(100).decode("ascii", "replace").strip()
+                office = _ooxml_parts(z, names) if any(n.lower() == "[content_types].xml" for n in names) else b""
     except (zipfile.BadZipFile, OSError, KeyError, ValueError, RuntimeError, NotImplementedError, EOFError):
         return Inspection("archive", "a ZIP archive")
     lower = [n.lower() for n in names]
@@ -145,8 +178,15 @@ def _zip(fd: int, name: str) -> Inspection:
         return Inspection("program", "a Java program")
     if "[content_types].xml" in lower:
         ins = Inspection("document", "an Office document", viewable=True)
-        if any(n.endswith("vbaproject.bin") for n in lower):
+        found = {k for k, marks in OOXML_MACROS.items() if any(m in office for m in marks)}
+        if any(n.endswith("vbaproject.bin") for n in lower) or "vba" in found:
             ins.warnings.append("contains macros (programs that run in the office suite): open it with macros "
+                                "turned off, or not at all")
+        if "xlm" in found:
+            ins.warnings.append("contains Excel 4.0 macro sheets (old-style macros, which run in the spreadsheet even "
+                                "where newer macros are blocked): open it with macros turned off, or not at all")
+        if "activex" in found:
+            ins.warnings.append("contains ActiveX controls (programs the office suite can start): open it with them "
                                 "turned off, or not at all")
         return ins
     if mimetype.startswith("application/vnd.oasis.opendocument"):

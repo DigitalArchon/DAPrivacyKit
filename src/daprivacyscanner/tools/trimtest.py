@@ -771,10 +771,24 @@ def result_view(t: Target, begin: dict, files: list[TestFile], passes: dict, sta
             headline = ("Inconclusive: none of the deleted test data could be read back, but parts of the disk that "
                         "were readable before the trim couldn't be read after it, so deleted data there couldn't be "
                         "checked.")
+        elif data_left == 0 and drive_discards is None:
+            # the kernel's counters couldn't be read: whether the trim reached the drive, or the blocks were
+            # overwritten meanwhile, can't be told (a pass needs the first, as a clean rescan with none is inconclusive)
+            verdict = "inconclusive"
+            headline = ("Inconclusive: none of the deleted test data could be read back, but whether TRIM reached the "
+                        "drive couldn't be seen, so it may have been overwritten rather than trimmed.")
         elif data_left == 0:
             verdict = "pass"
             headline = ("TRIM works on this drive: none of the deleted test data could be read back." if fill else
                         "None of the deleted test data could be read back after TRIM.")
+        elif fill and drive_discards and data_left < data_total:
+            # some blocks survive a trim that reached the drive: usually ones at the edges of what was freed, smaller
+            # than the drive's own unit, which it ignores (the explanation says so): not "isn't clearing" outright
+            verdict = "fail"
+            headline = ((f"TRIM cleared most of the deleted test data, but not all: {data_left} of {data_total} blocks "
+                         "could still be read back.") if data_left * 2 <= data_total else
+                        (f"TRIM cleared only part of the deleted test data: {data_left} of {data_total} blocks could "
+                         "still be read back."))
         elif fill or drive_discards == 0:
             verdict = "fail"
             headline = (f"TRIM isn't clearing deleted data here: {data_left} of {data_total} deleted test blocks could "
@@ -882,6 +896,10 @@ def meaning(t: Target, verdict: str, behaviour: str | None, fill: bool, data_lef
         out.append(f"This drive {BEHAVIOUR[behaviour]}, so data that survives may be a TRIM that didn't arrive or a "
                    "drive that still returns old data after it. Either way, deleted data could be read back from it "
                    "during the test" + (" by someone with your encryption key." if t.encrypted else "."))
+    elif verdict == "inconclusive" and drive_discards is None:
+        out.append("The kernel counts the discards that reach each drive (in /sys/block, since Linux 4.18), and those "
+                   "counts couldn't be read here, so the test can't tell whether its trim reached the drive. The deleted "
+                   "test data was gone, but blocks that were overwritten rather than trimmed look the same. " + when)
     out.append("What TRIM doesn't protect against: someone examining the flash chips themselves (or using the "
                "maker's diagnostic modes), which can still hold data the controller has dropped"
                + (", if they also have your encryption key." if t.encrypted else

@@ -1225,7 +1225,10 @@ it (counted among the things not listed), so a slow file never holds every serve
 - disk images (ISO 9660 and UDF at 32 KiB, DMG, qcow2, VHDX, VMDK, or by name): never presented as safe,
   since opening one mounts it;
 - archives: their contents aren't checked, but a ZIP's programs are listed;
-- macros: OOXML `vbaProject.bin`, OLE2 `_VBA_PROJECT`, OpenDocument Basic/Scripts, macro-format names; in a
+- macros: OOXML's VBA project (`vbaProject.bin`, or a part of any name by its content type or the relationship
+  to it, from `[Content_Types].xml` and the `.rels` parts, each read bounded: 256 KB of each, 200 parts), Excel 4.0
+  macro sheets and ActiveX controls the same way, OLE2 `_VBA_PROJECT`, OpenDocument Basic/Scripts, macro-format
+  names; in a
   PDF, JavaScript, `/Launch` and embedded files. Finding none proves nothing (a PDF's objects can be
   compressed), and the page never calls a file safe;
 - documents that can fetch from the internet when opened (PDF, office, HTML, SVG…): named, with View
@@ -1391,8 +1394,13 @@ Also said on the page, since the sandbox can't cover them (found in the review o
    restored otherwise (from the state in /run, or after a reboot from the folder's own attribute).
 
 Overwriting is meaningful here (rule 8's exception) because a tmpfs's files are memory pages that a write
-replaces in place. It doesn't reach copies other programs made (thumbnails, recent-file records, the
-clipboard), file names, or pages swapped out where `noswap` wasn't available; the page says so.
+replaces in place: the files still there when it closes. It doesn't reach what was deleted or replaced while it
+was open (a save that writes a new copy and renames it over the old one, as the browser's session store does every
+few seconds, frees the old copy's pages unzeroed), what programs hold in their own memory, copies other programs
+made (thumbnails, recent-file records, the clipboard), file names, or pages swapped out where `noswap` wasn't
+available; the close dialog says so, and that clearing freed memory is the kernel's `init_on_free` (the
+`kern.init_on_free` check's chip, or, where the command line turns it on, `ramdisk.init_on_free`, that those
+pages were cleared too).
 
 ---
 
@@ -1519,7 +1527,9 @@ Question: once deleted data on an SSD has been trimmed, can it still be read bac
    |---|---|---|
    | none | received no discards | inconclusive: the data was probably overwritten, not trimmed |
    | none | parts readable at the baseline unreadable now | inconclusive: deleted data could hide there |
+   | none | its discard counters couldn't be read | inconclusive: whether the trim reached it can't be seen |
    | none | otherwise | **pass** |
+   | some, not all | reports zeros or 0xFF, and discards reached it | **fail**, headed "TRIM cleared most of the deleted test data, but not all" (or "only part of"): usually blocks at the edges of what was freed, smaller than the drive's own unit |
    | some | reports zeros or 0xFF, or received no discards | **fail** |
    | some | promises nothing about trimmed blocks | inconclusive |
 
