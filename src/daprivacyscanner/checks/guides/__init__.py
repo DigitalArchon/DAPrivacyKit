@@ -136,13 +136,123 @@ def mozilla_open(scan: Scan, only=("Firefox", "LibreWolf", "Thunderbird")) -> li
     return names
 
 
-def remote_session(scan: Scan) -> set[str]:
-    """How the user reached this session from another machine, when they did: "xrdp" (xrdp-sesman
-    sets XRDP_SESSION in the session), "ssh" (ssh sets SSH_CONNECTION), possibly both. Turning off
-    the service that carries the session would cut it mid-step, so such an option is blocked."""
+@dataclass(frozen=True)
+class RemoteProgram:
+    name: str                               # what remote_session() calls it
+    label: str                              # as the user knows it
+    ports: tuple[str, ...]                  # where it takes connections by default ("5900/tcp", "47998-48000/udp")
+    # "fixed": it always listens there, so nothing there means it isn't taking connections; "any": its port can be
+    # changed (x11vnc -rfbport, a VNC display number); "relay": it reaches out to its maker's servers and needs no
+    # incoming connection, unless it listens for direct ones too
+    how: str
+
+
+VNC = ("5900-5909/tcp",)
+# remote access programs by process name (comm, at most 15 characters: gnome-remote-desktop-daemon is
+# "gnome-remote-de", as is its configuration daemon; RealVNC's vncserver-x11-core is "vncserver-x11-c")
+REMOTE_PROGRAMS = {
+    **{comm: RemoteProgram("vnc", f"VNC ({comm})", VNC, "any")
+       for comm in ("x11vnc", "wayvnc", "krfb", "x0vncserver", "w0vncserver", "Xvnc", "Xtigervnc", "Xtightvnc",
+                    "vncserver-x11", "vncserver-x11-c")},
+    "gnome-remote-de": RemoteProgram("gnome-remote-desktop", "GNOME Remote Desktop", ("3389/tcp",), "fixed"),
+    "nxd": RemoteProgram("nomachine", "NoMachine", ("4000/tcp", "4000/udp"), "any"),
+    "nxserver.bin": RemoteProgram("nomachine", "NoMachine", ("4000/tcp", "4000/udp"), "any"),
+    "nxnode.bin": RemoteProgram("nomachine", "NoMachine", ("4000/tcp", "4000/udp"), "any"),
+    "sunshine": RemoteProgram("sunshine", "Sunshine", ("47984/tcp", "47989/tcp", "47990/tcp", "48010/tcp",
+                                                       "47998-48000/udp", "48002/udp", "48010/udp"), "fixed"),
+    "rustdesk": RemoteProgram("rustdesk", "RustDesk", ("21118/tcp",), "relay"),
+    "anydesk": RemoteProgram("anydesk", "AnyDesk", ("7070/tcp",), "relay"),
+    "teamviewerd": RemoteProgram("teamviewer", "TeamViewer", ("5938/tcp",), "relay"),
+    "TeamViewer": RemoteProgram("teamviewer", "TeamViewer", ("5938/tcp",), "relay"),
+}
+
+
+@dataclass(frozen=True)
+class RemoteAccess:
+    """A way this machine is being used from another one, now: this session's own (SSH, xrdp, from the session's
+    environment), or a remote desktop program running here. `ports`: the incoming ports it needs ("22/tcp"), which a
+    firewall turned on must let in; `unknown`: it needs some, and which couldn't be told."""
+    name: str
+    label: str
+    ports: tuple[str, ...] = ()
+    unknown: bool = False
+    session: bool = False                   # this session came in through it
+
+
+def _in_range(port: int, proto: str, spec: str) -> bool:
+    numbers, p = spec.split("/")
+    lo, _, hi = numbers.partition("-")
+    return p == proto and int(lo) <= port <= int(hi or lo)
+
+
+def _reachable(listeners) -> list:
+    """Listening sockets other machines can reach: not only on loopback."""
+    return [s for s in listeners or [] if not (s.interface == "lo" or s.host_part.startswith("127.")
+                                               or s.host_part in ("[::1]", "::1"))]
+
+
+def _xrdp_port(scan: Scan) -> str | None:
+    text = read_text(scan.host, scan.host.sys_path("/etc/xrdp/xrdp.ini")) or ""
+    m = re.search(r"^\s*port\s*=\s*(?:tcp://[^:]*:)?(\d+)\s*$", text, re.M | re.I)
+    return f"{m.group(1)}/tcp" if m else None
+
+
+def remote_access(scan: Scan) -> list[RemoteAccess]:
+    """Every way this machine is used from elsewhere now, with the incoming ports each needs. SSH: the port this
+    session came in on (SSH_CONNECTION's fourth field; 22 when only SSH_TTY says so). xrdp: its listener, else the
+    port in xrdp.ini. A remote desktop program running here: its own listening sockets (ss names a process for the
+    user's own sockets only), else what listens on its usual ports; a program that needs incoming connections and
+    runs as another account, with nothing on its usual ports, may listen elsewhere: `unknown`. One that goes through
+    its maker's relay servers (TeamViewer, AnyDesk, RustDesk) needs no incoming port unless it listens for direct
+    connections."""
     env = scan.host.environ
-    return ({"xrdp"} if env.get("XRDP_SESSION") else set()) | \
-        ({"ssh"} if env.get("SSH_CONNECTION") or env.get("SSH_TTY") else set())
+    out: list[RemoteAccess] = []
+    reach = _reachable(scan.context.listeners)
+    if env.get("SSH_CONNECTION") or env.get("SSH_TTY") or env.get("SSH_CLIENT"):
+        # SSH_CONNECTION: "client address, client port, server address, server port"; SSH_CLIENT, the older one,
+        # has no server address
+        conn, client = (env.get("SSH_CONNECTION") or "").split(), (env.get("SSH_CLIENT") or "").split()
+        port = conn[3] if len(conn) == 4 else client[2] if len(client) == 3 else "22"
+        out.append(RemoteAccess("ssh", "SSH", (f"{port if port.isdigit() else '22'}/tcp",), session=True))
+    procs, own = processes(scan.host), processes(scan.host, own=True)
+    if env.get("XRDP_SESSION") or "xrdp" in procs:
+        ports = sorted({f"{s.port}/{s.proto}" for s in reach if s.process == "xrdp"}) \
+            or ([f"{s.port}/tcp" for s in reach if s.proto == "tcp" and s.port == 3389][:1]) or [_xrdp_port(scan)]
+        known = [p for p in ports if p]
+        out.append(RemoteAccess("xrdp", "xrdp (remote desktop)", tuple(known), unknown=not known,
+                                session=bool(env.get("XRDP_SESSION"))))
+    seen: dict[str, RemoteAccess] = {}
+    for comm, prog in REMOTE_PROGRAMS.items():
+        if comm not in procs:
+            continue
+        mine = sorted({f"{s.port}/{s.proto}" for s in reach if s.process == comm})
+        usual = sorted({f"{s.port}/{s.proto}" for s in reach for spec in prog.ports if _in_range(s.port, s.proto, spec)})
+        ports = mine or usual
+        # the user's own program shows its sockets: none means it takes no connections. Another account's (a
+        # system service) doesn't, and one whose port can be changed may be listening elsewhere; on its usual port
+        # on loopback only, it is reached through a tunnel (SSH's), which needs nothing more
+        local = any(_in_range(s.port, s.proto, spec) for s in scan.context.listeners or [] for spec in prog.ports)
+        unknown = not ports and ((prog.how == "any" and comm not in own and not local)
+                                 or (scan.context.listeners is None and prog.how != "relay"))
+        prev = seen.get(prog.name)
+        if prev is not None:
+            ports = sorted(set(prev.ports) | set(ports))
+            unknown = (prev.unknown or unknown) and not ports
+        seen[prog.name] = RemoteAccess(prog.name, prog.label if prev is None else prev.label, tuple(ports), unknown)
+    return out + list(seen.values())
+
+
+def remote_session(scan: Scan) -> set[str]:
+    """How this machine is used from another one now: "ssh" (ssh sets SSH_CONNECTION in this session), "xrdp" (this
+    session is xrdp's: xrdp-sesman sets XRDP_SESSION), and the remote desktop programs running here ("vnc",
+    "gnome-remote-desktop", "nomachine", "sunshine", "rustdesk", "anydesk", "teamviewer"). Turning off the service
+    that carries the session, or a firewall that doesn't let it in, would cut it mid-step, so such an option is
+    blocked, or keeps it open (remote_access gives the ports)."""
+    return {r.name for r in remote_access(scan) if r.session or r.name not in ("ssh", "xrdp")}
+
+
+def remote_ports_text(remote: list[RemoteAccess]) -> str:
+    return ", ".join(f"{r.label} ({', '.join(r.ports)})" for r in remote if r.ports)
 
 
 def ff_prefs(check: Check, scan: Scan, label: str, prefs: dict | Callable, side_effects=(), only=("Firefox", "LibreWolf"),

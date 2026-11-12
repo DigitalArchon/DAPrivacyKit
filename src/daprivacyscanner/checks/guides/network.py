@@ -9,7 +9,8 @@ from ... import network as net
 from ...fix import BluetoothSet, Command, GSettingsSet, NmSet, RootChange, WriteFile, bus_reload, shell
 from ...guide import Guide, Option, Step
 from .._util import human_size, installed, isfile, processes, read_text, removed_while_running, systemctl_state
-from . import guide, option, evidence, unit_exists, service_off, dropin, flathub_install, install, remove, remote_session
+from . import (guide, option, evidence, unit_exists, service_off, dropin, flathub_install, install, remove, remote_access,
+               remote_ports_text, remote_session)
 
 
 LLMNR_DROPIN = "/etc/systemd/resolved.conf.d/60-daprivacyscanner-llmnr.conf"
@@ -241,6 +242,33 @@ SSHD_DROPIN = "/etc/ssh/sshd_config.d/10-daprivacyscanner.conf"
 SSHD_KEYS = {"PasswordAuthentication": "no", "KbdInteractiveAuthentication": "no", "PermitRootLogin": "no"}
 
 
+def _keys_only_blockers(scan) -> list[str]:
+    """Keys only, while this session came in over SSH: refused when this account has no key that could log in, or
+    once the connection closes nobody could get back in over SSH with a password, this user included."""
+    if "ssh" not in remote_session(scan):
+        return []
+    from ..auth import authorized_keys
+    if authorized_keys(scan.host):
+        return []
+    return ["You are connected over SSH now, and this account has no key in ~/.ssh/authorized_keys: with passwords "
+            "off you couldn't log in again once this connection closes. Add your key first, from the computer you "
+            "connect from (ssh-copy-id you@this-machine), log in with it, then come back here."]
+
+
+def _keys_only_effects(scan) -> list[str]:
+    effects = ["Check you can log in with a key first (ssh -o PasswordAuthentication=no you@this-machine): passwords "
+               "stop working for everyone.", "Root can no longer log in over SSH."]
+    if "ssh" in remote_session(scan):
+        from ..auth import authorized_keys
+        effects.insert(0, "You are connected over SSH now: before you close this connection, log in again from a "
+                          "second terminal with your key (ssh -o PasswordAuthentication=no you@this-machine). If that "
+                          "fails, revert this from History while you are still connected.")
+        if all(k.restricted for k in authorized_keys(scan.host)):
+            effects.insert(1, "Every key in ~/.ssh/authorized_keys is limited (from=, command= or restrict): make sure "
+                              "one of them lets you in from where you connect.")
+    return effects
+
+
 def _firewall_step(scan, listeners) -> Step:
     """What the firewall in use does about these ports. With none, net.firewall_off's guide; with one that lets them in
     (Fedora Workstation's own zone opens every port from 1025 to 65535, and SSH), that, with the commands."""
@@ -302,9 +330,8 @@ def exposed_services(check, scan, outcome):
         still = [str(v) for v in evidence(outcome, "SSH password logins") if str(v).lower().startswith("yes")]
         if not in_place:
             opts.append(option(check, "Keep SSH, but only with keys", [dropin("sshd", SSHD_KEYS, SSHD_DROPIN)],
-                               side_effects=["Check you can log in with a key first (ssh -o PasswordAuthentication=no "
-                                             "you@this-machine): passwords stop working for everyone.",
-                                             "Root can no longer log in over SSH."]))
+                               side_effects=_keys_only_effects(scan),
+                               blockers=_keys_only_blockers(scan)))
             # as the scan read sshd's settings: it said passwords could be tried where they were turned off already
             off = any(str(v).lower().startswith("no") for v in evidence(outcome, "SSH password logins"))
             text, cmds = ("Anyone who can reach port 22 can try passwords." if still else
@@ -420,6 +447,122 @@ def docker_bypass(check, scan, outcome):
                  ])
 
 
+FIREWALLD_CONF = "/etc/firewalld/firewalld.conf"
+FIREWALLD_DIRS = ("/etc/firewalld", "/usr/lib/firewalld")      # the administrator's files first, then the package's
+
+
+def _firewalld_file(scan, kind: str, name: str) -> tuple[bool, str | None]:
+    """(could be read, the text) of a zone or service file of firewalld's: /etc/firewalld's copy where there is one,
+    else the package's. Not read: /etc/firewalld is root's alone on Fedora (0750), and a copy there would win."""
+    from ...host import Unreadable
+    if not re.fullmatch(r"[A-Za-z0-9_.+-]+", name):
+        return False, None
+    for d in FIREWALLD_DIRS:
+        try:
+            text = scan.host.read_file(scan.host.sys_path(f"{d}/{kind}/{name}.xml"))
+        except Unreadable:
+            return False, None
+        if text is not None:
+            return True, text
+    return True, None
+
+
+def _firewalld_service_ports(scan, name: str, seen: set) -> list[str] | None:
+    import xml.etree.ElementTree as ET
+    ok, text = _firewalld_file(scan, "services", name)
+    if not ok or text is None or name in seen:
+        return None if not ok or text is None else []
+    seen.add(name)
+    try:
+        root = ET.fromstring(text)
+    except ET.ParseError:
+        return None
+    out = [f"{p.get('port')}/{p.get('protocol')}" for p in root.iter("port")]
+    for inc in root.iter("include"):
+        more = _firewalld_service_ports(scan, inc.get("service") or "", seen)
+        if more is None:
+            return None
+        out += more
+    return out
+
+
+def firewalld_default_zone(scan) -> tuple[str | None, list[str] | None]:
+    """(the default zone, what it lets in as port/proto ranges, ["*"] for every port) from firewalld's files, as it
+    would start; (zone or None, None) when that can't be read (firewalld's settings are root's alone on Fedora)."""
+    import xml.etree.ElementTree as ET
+    from ...host import Unreadable
+    try:
+        conf = scan.host.read_file(scan.host.sys_path(FIREWALLD_CONF))
+    except Unreadable:
+        return None, None
+    m = re.search(r"^\s*DefaultZone\s*=\s*(\S+)\s*$", conf or "", re.M)
+    zone = m.group(1) if m else "public"                  # firewalld's own default
+    ok, text = _firewalld_file(scan, "zones", zone)
+    if not ok or text is None:
+        return zone, None
+    try:
+        root = ET.fromstring(text)
+    except ET.ParseError:
+        return zone, None
+    if (root.get("target") or "").upper() == "ACCEPT":
+        return zone, ["*"]
+    lets = [f"{p.get('port')}/{p.get('protocol')}" for p in root.findall("port")]
+    for svc in root.findall("service"):
+        ports = _firewalld_service_ports(scan, svc.get("name") or "", set())
+        if ports is None:
+            return zone, None
+        lets += ports
+    return zone, lets
+
+
+def _covered(need: str, lets: list[str]) -> bool:
+    if lets == ["*"]:
+        return True
+    numbers, proto = need.split("/")
+    lo, _, hi = numbers.partition("-")
+    for spec in lets:
+        try:
+            n, p = spec.split("/")
+            a, _, b = n.partition("-")
+            if p == proto and int(a) <= int(lo) and int(hi or lo) <= int(b or a):
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+def _firewalld_remote(scan, remote) -> tuple[list[str], list[str]]:
+    """(blockers, commands) for turning firewalld on while this machine is used from another one: refused unless its
+    default zone lets in what that remote access needs, with the commands that let it in first and then start it
+    (firewall-offline-cmd, which changes firewalld's settings while it isn't running)."""
+    if not remote:
+        return [], []
+    keep = list(dict.fromkeys(p for r in remote for p in r.ports))
+    unknown = [r.label for r in remote if r.unknown]
+    zone, lets = firewalld_default_zone(scan)
+    missing = keep if lets is None else [p for p in keep if not _covered(p, lets)]
+    if not missing and not unknown:
+        return [], []
+    used = remote_ports_text(remote) or " and ".join(unknown)
+    if unknown:
+        why = (f"This machine is being used remotely through {' and '.join(unknown)}, and the port it takes connections "
+               "on couldn't be found")
+    elif lets is None:
+        why = (f"This machine is being used remotely ({used}), and firewalld's settings, which say what its default "
+               "zone lets in, can only be read as administrator")
+    else:
+        why = (f"This machine is being used remotely ({used}), and firewalld's default zone, {zone}, doesn't let "
+               f"{', '.join(missing)} in")
+    blockers = [why + ": starting firewalld could cut that connection off. Let it in first with the commands below, "
+                "then start firewalld with them (or from the machine itself)."]
+    cmds = ["sudo firewall-offline-cmd --get-default-zone", "sudo firewall-offline-cmd --list-all     # what it lets in"]
+    cmds += [f"sudo firewall-offline-cmd --add-port={p}" for p in missing]
+    if unknown:
+        cmds.append("sudo firewall-offline-cmd --add-port=PORT/tcp     # the port your remote desktop listens on")
+    cmds.append("sudo systemctl enable --now firewalld")
+    return blockers, cmds
+
+
 @guide("net.firewall_off")
 def firewall_off(check, scan, outcome):
     host = scan.host
@@ -449,20 +592,37 @@ def firewall_off(check, scan, outcome):
         if unit:
             effects.append("ufw.service isn't set to start at boot here: without it ufw's rules are gone after a "
                            "restart, so it is turned on too, and turned off again by a revert.")
-        opts = [option(check, "Turn on ufw", [RootChange("ufw_enable", {"allow": []}, "ufw --force enable" + unit)],
-                       side_effects=effects + ([f"These stop being reachable: {', '.join(s.label() for s in exposed)}."]
-                                               if exposed else []), recommended=not exposed)]
-        if exposed:
-            allow = [f"{s.port}/{s.proto}" for s in exposed][:20]
+        # used from another machine now (SSH, a remote desktop): what that needs is let in by every option, or the
+        # option is refused when it can't be told
+        remote = remote_access(scan)
+        keep = list(dict.fromkeys(p for r in remote for p in r.ports))
+        unknown = [r.label for r in remote if r.unknown]
+        blocked = [f"This machine is being used remotely through {' and '.join(unknown)}, and the port it takes "
+                   "connections on couldn't be found: turning ufw on could cut that connection off. Do it from the "
+                   "machine itself, or let its port in first (sudo ufw allow PORT/tcp)."] if unknown else []
+        kept = ([f"It keeps letting in what remote access here uses ({remote_ports_text(remote)}), so the connection "
+                 "isn't cut."] if keep else [])
+        plain = (f"ufw allow {', '.join(keep)}, then ufw --force enable" if keep else "ufw --force enable") + unit
+        cut = [s for s in exposed if f"{s.port}/{s.proto}" not in keep]
+        opts = [option(check, "Turn on ufw, still allowing your remote access" if keep else "Turn on ufw",
+                       [RootChange("ufw_enable", {"allow": keep[:20]}, plain)],
+                       side_effects=effects + kept + ([f"These stop being reachable: {', '.join(s.label() for s in cut)}."]
+                                                      if cut else []),
+                       blockers=blocked, recommended=not cut)]
+        if cut:
+            allow = list(dict.fromkeys([*keep, *(f"{s.port}/{s.proto}" for s in exposed)]))[:20]
             opts.append(option(check, "Turn on ufw, still allowing " + ", ".join(s.label() for s in exposed),
                                [RootChange("ufw_enable", {"allow": allow},
                                            f"ufw allow {', '.join(allow)}, then ufw --force enable" + unit)],
-                               side_effects=effects, recommended=True))
+                               side_effects=effects + kept, blockers=blocked, recommended=True))
         steps.append(Step("Turn on ufw", options=opts))
     elif firewalld_first:
+        remote = remote_access(scan)
+        blocked, cmds = _firewalld_remote(scan, remote)
         steps.append(Step("Turn on firewalld", options=[option(check, "Start and enable firewalld", [RootChange(
             "set_service", {"unit": "firewalld.service", "enable": True, "start": True},
-            "systemctl enable --now firewalld")], recommended=True)],
+            "systemctl enable --now firewalld")], recommended=True, blockers=blocked)],
+            commands=cmds,
             side_effects=["Fedora Workstation's default zone still allows ports 1025-65535; for a stricter one: "
                           "sudo firewall-cmd --set-default-zone=public"]
             + (["ufw is installed too: leave it off. Two firewalls with different defaults get in each other's way."]

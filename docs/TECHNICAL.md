@@ -381,6 +381,19 @@ makes rpm keep their packages' new versions as `.rpmnew`, so that option has no 
 login off is blocked while an account it logs in has a locked or empty password (`passwd -S` for one's own,
 the helper's /etc/shadow reading for another's).
 
+An option that would cut the connection the machine is used through from another one is refused or keeps it
+open (`guides.remote_access`, `remote_session`): this session's SSH (SSH_CONNECTION, its server port) and xrdp
+(XRDP_SESSION), and the remote desktop programs running here by process name (VNC servers, GNOME Remote Desktop,
+NoMachine, Sunshine, and TeamViewer, AnyDesk and RustDesk, which go through their makers' relays and need no
+incoming port unless they listen), each with the ports it listens on (its own sockets, else its usual ports). The
+SSH server and xrdp can't be turned off from inside their own session; SSH keys only, over SSH, needs a key in
+`~/.ssh/authorized_keys` and says to log in with it from a second terminal before closing the connection; turning
+ufw on lets the remote ports in (ufw_enable's allow list); firewalld is started only when its default zone, read
+from its files (`/etc/firewalld` first, then `/usr/lib/firewalld`), lets them in, else the step gives the
+`firewall-offline-cmd --add-port` commands that do so first. A remote desktop program of another account's whose
+port can't be told refuses both firewalls. Saved Wi-Fi networks someone set to the hardware address are an option
+of their own in net.mac_permanent's guide, never part of its Easy fix.
+
 An online test's guide is never built by running the test: `Runner.plan_fix(stored=…)` takes the result the
 report keeps and `Outcome.from_dict` turns it back into the outcome the guide reads (the issuer seen, the
 ports forwarded, the resolver answering); the server passes the kept result for `scope: online` checks and
