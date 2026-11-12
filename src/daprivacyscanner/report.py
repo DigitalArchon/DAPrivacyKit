@@ -463,7 +463,7 @@ def changes_of(entries: list[dict], catalogue: Catalogue, host: Host | None) -> 
         spec = catalogue.checks.get(e["check_id"])
         at = lambda t: time.strftime("%Y-%m-%d %H:%M", time.localtime(t))  # noqa: E731
         out.append({"id": e["id"], "check_id": e["check_id"], "check": spec.title if spec else e["check_id"],
-                    "title": e["title"], "applied": e["applied"], "applied_at": at(e["applied"]), "state": e["state"],
+                    "title": e["title"], "applied": e["applied"], "applied_at": at(e["applied"]), "state": UndoLog.state_of(e),
                     "reverted_at": at(e["reverted"]) if e.get("reverted") else "", "via": UndoLog.via_text(e),
                     "error": e.get("error", ""), "failed_step": e.get("failed_step", ""), "steps": steps})
     return out

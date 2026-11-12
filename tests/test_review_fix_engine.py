@@ -81,6 +81,14 @@ def test_an_entry_whose_process_is_gone_reads_interrupted_and_reverts_what_it_re
     assert log.get(res.entry_id)["state"] == "reverted"
 
 
+def test_export_everything_calls_an_interrupted_entry_so(cat, tmp_path):
+    from daprivacyscanner.report import changes_of
+    host, gs, log = setup(tmp_path)
+    log.add("e" * 32, "desk.recent_files", "t", [], state="applying",
+            extra={"owner": {"pid": 2 ** 22 + 7, "started": "1", "boot": "x"}})
+    assert [c["state"] for c in changes_of(log.entries(), cat, host)] == ["interrupted"]
+
+
 def test_an_entry_being_applied_by_a_live_process_is_neither_reverted_nor_forgotten(tmp_path):
     host, gs, log = setup(tmp_path)
     log.begin("a" * 32, "desk.recent_files", "t")
