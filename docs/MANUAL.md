@@ -258,7 +258,10 @@ DAPrivacyKit-report-*date* (or DAPrivacyKit-everything-*date*), never over a fil
 where the disk keeps permissions (the app says when it doesn't).
 
 - **Redact** removes your name, the computer's name, account and network names, addresses, and paths in
-  your home folder, so you can share the report for help.
+  your home folder, so you can share the report for help. A path in a folder of your own goes whole, whatever its
+  names (`~/[redacted]`); in a program's hidden folder the program's folders stay, for what they say, and the rest
+  goes from the first name a person chose (`~/.var/app/org.example.Notes/data/[redacted]`). Read it before you
+  post it all the same: a name that runs on like a sentence may be cut where the sentence seems to go on.
 - **Export everything…** also includes accepted findings and every change in History, with everything
   History shows: what each step ran and wrote, how to undo it by hand, what reverting ran, where the change
   came from, and failed attempts. Keep it with your backups. It never includes the backed-up files themselves.

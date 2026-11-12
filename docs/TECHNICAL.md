@@ -70,7 +70,12 @@ carried out.
    filesystems it promises what it can't keep. Encryption is what protects deleted data. Two exceptions, where
    overwriting does what it says: a RAM disk's files are overwritten before it is closed (its pages are memory),
    and Retire a drive gives, and never runs, the commands that overwrite a whole hard disk.
-9. **Exports.** A report can be exported as text or JSON, redacted for sharing. What the app keeps between runs
+9. **Exports.** A report can be exported as text or JSON, redacted for sharing (`report.Redactor`: a path under the
+   home folder goes whole, wherever it appears: one the report names as a path is replaced exactly, longest first; one
+   in a sentence is taken to its quote, to what is on the disk, or to the last word with a "/" and on through its last
+   name's words up to a word a sentence goes on with; in a folder of the user's own nothing after `~/` stays, in a
+   dot-folder the programs' folders stay up to the first name with a space, a character beyond letters, digits and
+   `._+@-`, or anything in a trash folder's files). What the app keeps between runs
    is the least that does the job ([section 14](#14-what-the-app-stores)), and "Export everything" hands all of
    it over. An export is a file readable by the user alone (0600), whether `--export` writes it or the window's
    Save… does (the app writes it itself: a download the window's WebKitGTK writes has the umask's mode, 0664 on
@@ -1943,7 +1948,7 @@ drive they came from (its model, serial and size, `retire.identity`): another dr
 
 | Where | What | Notes |
 |---|---|---|
-| `$XDG_STATE_HOME/daprivacyscanner/` (0700) | `last-report.json`, `last-scan.json` (baseline), `accepted.json`, `undo.json` and file backups (an `undo.json` that couldn't be read, kept aside), and `.lock`, the folder's lock file | Never holds deleted paths or Wi-Fi network names; the last report is saved without the entries of what starts at login (the baseline keeps hashes of them) and without the addresses and lookup names the online tests saw or the Wi-Fi networks a check names |
+| `$XDG_STATE_HOME/daprivacyscanner/` (0700) | `last-report.json`, `last-scan.json` (baseline), `accepted.json`, `undo.json` and file backups (an `undo.json` or `accepted.json` that couldn't be read, kept aside under its name, `.unreadable-` and the time), and `.lock`, the folder's lock file; each written to a temporary file, synced, renamed into place, its folder synced | Never holds deleted paths or Wi-Fi network names; the last report is saved without the entries of what starts at login (the baseline keeps hashes of them) and without the addresses and lookup names the online tests saw or the Wi-Fi networks a check names |
 | `$XDG_CONFIG_HOME/daprivacyscanner/` | `ui.json` (welcome dismissed), `online.json` (endpoints) | |
 | `/var/lib/daprivacyscanner/changes` | The helper's journal of root changes | Root-owned |
 | `/run/daprivacyscanner/` | RAM disk state, swap state | Gone at reboot |

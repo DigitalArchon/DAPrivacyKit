@@ -362,3 +362,86 @@ def test_the_guides_block_entries_that_would_run_a_replaceable_program(cat, tmp_
         _, guide = Runner(cat, host).plan_fix(cid)
         blockers = [b for p in guide.plans for b in p.blockers]
         assert any("every account can write to" in b for b in blockers), (cid, blockers)
+
+
+# ------------------------------------------------------------------ report.py: redacting paths with spaces
+
+def _redactor(tmp_path, **kw):
+    from daprivacyscanner.report import Redactor
+    host = make_host(tmp_path, env={"USER": "user"}, files={"/proc/sys/kernel/hostname": "mint-box\n"}, **kw)
+    return host, Redactor(host)
+
+
+@pytest.mark.parametrize("text, shown", [
+    # a folder of the user's own: everything after ~/, however its names run
+    ("~/Documents/Taxes 2024/Smith family.kdbx is readable by every account",
+     "~/[redacted] is readable by every account"),
+    ("~/Documents/Taxes 2024/Smith family.kdbx", "~/[redacted]"),
+    ("Saved in ~/Documents/Taxes 2024. Move it.", "Saved in ~/[redacted]. Move it."),
+    ("~/Pictures/Holiday in Crete (12 files)", "~/[redacted] (12 files)"),
+    ("~/Documents/My Passport backup/report.pdf, ~/.ssh/id_rsa", "~/[redacted], ~/.ssh/id_rsa"),
+    ("rm -f '~/Documents/Taxes 2024/x.kdbx' and then", "rm -f '~/[redacted]' and then"),
+    ("+ export PATH=~/bin:$PATH", "+ export PATH=~/[redacted]:$PATH"),
+    ("files in ~/x and ~/.cache/thumbnails/large", "files in ~/[redacted] and ~/.cache/thumbnails/large"),
+    # a dot-folder: the programs' folders stay, from the first name a person chose on it goes
+    ("~/.var/app/org.example.Notes/data/Client Jones/notes.txt is readable",
+     "~/.var/app/org.example.Notes/data/[redacted] is readable"),
+    ("~/.local/share/Trash/files/Taxes.pdf", "~/.local/share/Trash/files/[redacted]"),
+    ("~/.local/share/notes/Smith über.md", "~/.local/share/notes/[redacted]"),
+    ("kwriteconfig6 --file ~/.config/kdeglobals --group General --key X true",
+     "kwriteconfig6 --file ~/.config/kdeglobals --group General --key X true"),
+    ("~/.config/user/settings", "~/.config/[redacted]/settings"),        # the account's name, as anywhere
+])
+def test_paths_with_spaces_are_redacted_whole(tmp_path, text, shown):
+    """The redaction took a path to its first space: "~/Documents/Taxes 2024/Smith family.kdbx" went out as
+    "~/[redacted] 2024/Smith family.kdbx", in a report meant for a public issue tracker; and nothing in a dot-folder
+    was redacted, a folder named after a client in an app's data included."""
+    _, r = _redactor(tmp_path)
+    assert r.text(text) == shown
+    assert r.text(text.replace("~", str(r.home), 1)) == shown
+
+
+def test_what_is_on_the_disk_and_what_the_report_names_is_redacted_exactly(tmp_path):
+    """A folder whose name has words a sentence goes on with ("Bob and Alice") is taken whole when it is on the disk,
+    or when the report names it as a path (evidence) anywhere: then a summary naming it, which the words alone
+    couldn't tell, is redacted the same."""
+    host, r = _redactor(tmp_path, home_files={"Documents/Bob and Alice/notes.txt": "x"})
+    assert r.text("~/Documents/Bob and Alice/notes.txt is readable") == "~/[redacted] is readable"
+    report = {"results": {"x.y": {"summary": "~/Projects/Me and You/keys.txt is world-readable", "notes": [],
+                                  "evidence": [{"kind": "path", "label": "Readable by others",
+                                                "value": f"{host.home}/Projects/Me and You/keys.txt"},
+                                               {"kind": "value", "label": "~/Work/In and Out", "value": "3 files"}]}}}
+    out = r.report(report)["results"]["x.y"]
+    assert out["summary"] == "~/[redacted] is world-readable"
+    assert out["evidence"][0]["value"] == "~/[redacted]" and out["evidence"][1]["label"] == "~/[redacted]"
+    assert r.text("In ~/Work/In and Out, 3 files") == "In ~/[redacted], 3 files"
+
+
+def test_a_redacted_export_names_nothing_the_user_named(cat, tmp_path):
+    from daprivacyscanner.fix import FixPlan, WriteFile, apply_plan
+    from daprivacyscanner.report import export, export_all
+    from daprivacyscanner.undo import UndoLog
+    host, _ = _redactor(tmp_path, home_files={"Documents/Taxes 2024/Smith family.kdbx": "A=1\n"})
+    target = host.home / "Documents/Taxes 2024/Smith family.kdbx"
+    log = UndoLog(host.home / ".local/state/daprivacyscanner")
+    assert apply_plan(FixPlan("auth.screen_lock", "Change it", [
+        WriteFile(target, lambda old: old + "B=2\n", "Add B", host.display(target))]), host, log).ok
+    secret = ("Taxes", "Smith", "family", "Client", "Jones", "Crete")
+    report = {"started": 1, "context": {"values": {}, "desktop": {"label": "GNOME"}}, "results": {
+        "auth.screen_lock": {"status": "fail", "effective_severity": 7, "kind": "finding", "is_finding": True,
+                             "summary": "~/Documents/Taxes 2024/Smith family.kdbx is readable by every account.",
+                             "notes": [{"kind": "info", "title": "Where", "text":
+                                        "~/.var/app/org.example.Notes/data/Client Jones/notes.txt and "
+                                        "~/Pictures/Holiday in Crete"}],
+                             "evidence": [{"kind": "path", "label": "Readable", "value":
+                                           f"{host.home}/Documents/Taxes 2024/Smith family.kdbx"}]}}}
+    entries = log.entries()
+    assert "Smith family" in export_all(report, cat, entries, {}, "text", host, False)
+    target.unlink()                     # gone since: the words alone decide, and the report's own paths
+    for fmt in ("text", "json"):
+        out = export(report, cat, fmt, host, True, {})
+        assert not any(w in out for w in secret), out
+        everything = export_all(report, cat, entries, {}, fmt, host, True)
+        assert not any(w in everything for w in secret), everything
+        if fmt == "json":
+            assert "org.example.Notes/data/[redacted]" in out

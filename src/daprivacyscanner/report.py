@@ -75,6 +75,28 @@ def saved_network_names(host: Host) -> list[str]:
     return [n.replace("\\:", ":") for n in r.stdout.splitlines() if n.strip() and n != "lo"]
 
 
+# Paths under the home folder, redacted (Redactor.path):
+# - in a folder of the user's own (Documents, Pictures, Desktop, a project's folder): everything after ~/ ("~/[redacted]"),
+#   since every name there is one the user chose;
+# - in a dot-folder (programs' settings, data and caches): its folders are kept, for what they say about which program
+#   keeps what, up to the first name a person rather than a program chose (one with a space, or a character beyond
+#   letters, digits and . _ + @ -, or anything in a trash folder's files), which goes with everything after it:
+#   ~/.var/app/org.example.Notes/data/Client Jones/notes.txt -> ~/.var/app/org.example.Notes/data/[redacted].
+PLAIN_PART = re.compile(r"^\.?[A-Za-z0-9][A-Za-z0-9._+@-]*$")
+USER_CONTENT = {("Trash", "files"), ("Trash", "info"), ("Trash", "expunged")}
+# where a path in a sentence ends: a line's end, a bracket or a quote, a separator (":" ",", ";"), or the next path
+_PATH_END = re.compile(r"[\n()\[\]{}\"`<>|:,;]| (?=~/|/)")
+# words a sentence goes on with after a path ("~/x.kdbx is readable by every account"), as written: lower-case, so a
+# name in title case ("What Is Left") isn't cut at one. Only these: a word missing here leaves more of the sentence
+# redacted, one too many leaves the rest of a name readable ("Holiday in Crete"). A word starting with "-" is a
+# command's option ("--file ~/.config/kdeglobals --group General").
+_STOP_WORDS = frozenset("""is isn't are aren't was wasn't were weren't has hasn't have haven't had hadn't holds keeps
+    keep stays stay contains lists names says shows gets got can can't cannot could couldn't would wouldn't will won't
+    should shouldn't may might must does doesn't do don't did didn't which that""".split())
+_LINKING = frozenset("and or to into from in as than nor".split())     # between two paths
+_EXTENSION = re.compile(r"\.[A-Za-z0-9]{1,10}$")
+
+
 class Redactor:
     def __init__(self, host: Host, chosen: Iterable[str] = ()):
         """`chosen`: names the user gave things (key files, wallets: evidence marked `named`), replaced wherever
@@ -83,8 +105,115 @@ class Redactor:
         self.login, self.words = user_names(host)
         self.hostname = (host.read_sys("/proc/sys/kernel/hostname") or "").strip()
         self.home = str(host.home)
+        self._home = re.compile(re.escape(self.home.rstrip("/")) + r"(?![\w.-])")     # not /home/user in /home/username
         self._base = [self.hostname, self.login, *self.words, *saved_network_names(host)]
+        self.known: list[str] = []          # whole paths a report names (add_paths), replaced first, longest first
         self._set_names(chosen)
+
+    # ------------------------------------------------------------------ paths under home
+
+    @staticmethod
+    def path(p: str) -> str:
+        """A path under home ("~/…") redacted whole, by the rule above."""
+        if p in ("~", "~/") or not p.startswith("~/"):
+            return p
+        rest = p[2:]
+        if not rest.startswith("."):
+            return "~/[redacted]"
+        parts, kept = rest.split("/"), []
+        for i, part in enumerate(parts):
+            if part == "" and i == len(parts) - 1:          # a trailing slash
+                kept.append(part)
+                continue
+            if not PLAIN_PART.match(part) or tuple(kept[-2:]) in USER_CONTENT:
+                return "~/" + "/".join(kept + ["[redacted]"])
+            kept.append(part)
+        return p
+
+    def _exists(self, p: str) -> bool:
+        try:
+            os.lstat(self.home + p[1:])
+            return True
+        except (OSError, ValueError):
+            return False
+
+    def _extent(self, s: str, i: int) -> int:
+        """Where the path that starts at s[i] ("~/") ends in a sentence. A quoted one at its quote; else what is on
+        the disk (the longest stretch up to a word's end that names a file or folder there); else up to the last word
+        with a "/" in it (a folder's name can have spaces), and on through the words of its last name, up to a word a
+        sentence goes on with (_STOP_WORDS), an option, or a name with an extension."""
+        quote = s[i - 1] if i > 0 and s[i - 1] in "'\"" else ""
+        if quote:
+            j = s.find(quote, i)
+            return j if j > 0 else len(s)
+        m = _PATH_END.search(s, i + 2)
+        window = s[i:m.start() if m else len(s)]
+        ends = [k for k, c in enumerate(window) if c == " "] + [len(window)]
+        for k in reversed(ends):
+            cand = window[:k].rstrip(" .")
+            if len(cand) > 2 and self._exists(cand):
+                return i + len(cand)
+        words = window.split(" ")
+        if m is not None and m.group(0) == " " and len(words) > 1 and words[-1] in _LINKING:
+            words.pop()                                 # "~/x and ~/y": the word between two paths is the sentence's
+        n = max(k for k, w in enumerate(words) if "/" in w) + 1
+        while n < len(words) and not words[n - 1].endswith(".") and not _EXTENSION.search(words[n - 1]):
+            w = words[n]
+            if not w or w.strip(".!?") in _STOP_WORDS or w[0] in "-'\"=[":
+                break
+            n += 1
+        cand = " ".join(words[:n]).rstrip(" ")
+        if cand.endswith(".") and s[i + len(cand):i + len(cand) + 1] in ("", " ", "\n"):
+            cand = cand[:-1]                            # the sentence's full stop
+        return i + len(cand)
+
+    def paths_in(self, s: str) -> str:
+        """Every path under home in `s` redacted: the report's own whole paths first (add_paths: exactly, however
+        their names run), then any other, found by _extent."""
+        if self.known and "~/" in s:
+            # each where it is that path itself: not the start of a longer one ("~/a b" in "~/a b/c")
+            s = re.sub("(?<![\\w.~-])(" + "|".join(map(re.escape, self.known)) + ")(?![/\\w])",
+                       lambda m: self.path(m.group(1)), s)
+        out, i = [], 0
+        while True:
+            j = s.find("~/", i)
+            if j < 0:
+                out.append(s[i:])
+                break
+            if s[j + 2:j + 3] == "[" or (j > 0 and (s[j - 1].isalnum() or s[j - 1] in "_-.~")):
+                out.append(s[i:j + 2])
+                i = j + 2
+                continue
+            end = self._extent(s, j)
+            out.append(s[i:j])
+            out.append(self.path(s[j:end]))
+            i = end
+        return "".join(out)
+
+    def whole_path(self, s: str) -> bool:
+        """`s` (home already ~), a value or a label, is one path from start to end: it starts with ~/ and holds nothing
+        that would end a path in a sentence (a separator, bracket or quote: "~/x (3 files)"), or is on the disk as it
+        is. Its spaces and words are its names then ("~/Documents/Bob and Alice")."""
+        return s.startswith("~/") and (not _PATH_END.search(s) or self._exists(s))
+
+    def add_paths(self, report: dict | None) -> None:
+        """The whole paths `report` names (evidence of the kind path, and labels, values and inventory entries that
+        are a path from start to end), so a sentence that names one is redacted exactly, however its names run."""
+        found = set(self.known)
+        for r in ((report or {}).get("results") or {}).values():
+            for e in r.get("evidence") or []:
+                for key in ("label", "value"):
+                    v = e.get(key)
+                    if isinstance(v, str):
+                        v = self._home.sub("~", v)
+                        if v.startswith("~/") and (e.get("kind") == "path" and key == "value" or self.whole_path(v)):
+                            found.add(v)
+            for v in r.get("items") or []:
+                if isinstance(v, str):
+                    v = self._home.sub("~", v)
+                    if self.whole_path(v):
+                        found.add(v)
+        self.known = sorted((p for p in found if self.path(p) != p), key=len, reverse=True)
 
     def _set_names(self, chosen: Iterable[str]) -> None:
         # longest first, so "alice-laptop" goes before "alice"
@@ -99,15 +228,26 @@ class Redactor:
             self._set_names(found)
 
     def text(self, s: str) -> str:
+        """Prose (a summary, a note, a command line): every path under home in it redacted (paths_in), then names,
+        hardware and network addresses, UUIDs, drive labels and browser profiles."""
         if not isinstance(s, str) or not s:
             return s
-        s = s.replace(self.home, "~")
+        return self._rest(self.paths_in(self._home.sub("~", s)))
+
+    def value(self, s):
+        """A value or label: one that is a path from start to end is redacted as one (whole_path), however its names
+        run; anything else as prose."""
+        if not isinstance(s, str) or not s:
+            return s
+        t = self._home.sub("~", s)
+        return self._rest(self.path(t)) if self.whole_path(t) else self.text(s)
+
+    def _rest(self, s: str) -> str:
         for n in self.names:
             s = n.sub("[redacted]", s)
         s = MAC.sub("[mac]", s)
         s = UUID.sub("[uuid]", s)
         s = replace_addresses(s, "[ipv4]", "[ipv6]")
-        s = re.sub(r"~/(?!\.)[^\s,;:)]+", "~/[redacted]", s)      # a path to a document, not to a dot-folder
         whole = _WHOLE_MOUNT.fullmatch(s.strip())
         s = f"{whole.group(1)}[drive]{whole.group(2) or ''}" if whole else _MOUNT.sub(r"\1[drive]", s)
         s = FF_PROFILE.sub(r"\1[profile]", s)
@@ -119,8 +259,10 @@ class Redactor:
         if NAMED_LABELS.match(str(e.get("label", ""))):
             out["value"] = "[redacted]" if e.get("value") not in (None, "", True, False) else e.get("value")
         elif isinstance(out.get("value"), str):
-            out["value"] = self.text(out["value"])
-        out["label"] = self.text(str(out["label"]))
+            v = self._home.sub("~", out["value"])
+            # evidence of the kind path is a path whole, whatever is in its names
+            out["value"] = self._rest(self.path(v)) if e.get("kind") == "path" and v.startswith("~/") else self.value(v)
+        out["label"] = self.value(str(out["label"]))
         return out
 
     def result(self, r: dict) -> dict:
@@ -135,11 +277,12 @@ class Redactor:
             if key in r:
                 out[key] = self.text(r[key])
         if "items" in r:
-            out["items"] = [self.text(i) for i in r["items"]]
+            out["items"] = [self.value(i) for i in r["items"]]
         return out
 
     def report(self, report: dict) -> dict:
         self.add_names(report)
+        self.add_paths(report)
         out = json.loads(json.dumps(report))
         out["results"] = {k: self.result(v) for k, v in report.get("results", {}).items()}
         ctx = out.get("context", {})
@@ -336,7 +479,8 @@ def export_all(report: dict | None, catalogue: Catalogue, entries: list[dict], a
     if redact:
         red = Redactor(host)
         red.add_names(report)
-        changes = _deep(changes, red.text)
+        red.add_paths(report)
+        changes = _deep(changes, red.value)         # a record's path whole, a step's words and commands as prose
         accepted = _deep(accepted, red.text)
         report = red.report(report) if report else None
     if fmt == "json":
