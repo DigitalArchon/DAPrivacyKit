@@ -83,14 +83,29 @@ def mac_permanent(check, scan, outcome):
         if (default != mode and not shadowed) or scan_off:
             acts.append(dropin("nm-mac", {**({} if shadowed else {"connection:wifi.cloned-mac-address": mode}),
                                           "device:wifi.scan-rand-mac-address": "yes"}, MAC_DROPIN))
-        # a saved network that sets the hardware address itself doesn't follow the default
-        acts += [NmSet(uuid, name, "802-11-wireless.cloned-mac-address", mode)
-                 for uuid, name, value in saved if value in ("preserve", "permanent")]
         opts.append(option(check, label, acts, detail=detail, recommended=rec, side_effects=effects,
                            key="stable" if mode == "stable" else ""))
+    # a saved network that sets the hardware address itself doesn't follow the default. Someone set it so, perhaps on
+    # purpose (a network that lets in only known devices, an address the router reserves): an option of its own,
+    # never part of the Easy fix, which changes nothing a person chose
+    kept = [(uuid, name) for uuid, name, value in saved if value in ("preserve", "permanent")]
+    if kept:
+        follow = default if default in RANDOM_MACS else "stable"
+        n = len(kept)
+        opts.append(option(
+            check, f"Also give the {n} saved network{'s' if n != 1 else ''} set to the hardware address a made-up one "
+                   f"({follow})", [NmSet(uuid, name, "802-11-wireless.cloned-mac-address", follow) for uuid, name in kept],
+            detail=f"{n} saved Wi-Fi network{'s are' if n != 1 else ' is'} set to keep the hardware address "
+                   f"({', '.join(name for _, name in kept[:5])}{' and more' if n > 5 else ''}), which the default "
+                   "doesn't change. That may have been done on purpose: a network that lets in only known devices "
+                   "(MAC filtering), or one where the router reserves an address for this machine, then needs the new "
+                   "address added. Leave this if so.",
+            side_effects=[f"Each of these networks sees a made-up address ({follow}) from the next time it connects.",
+                          "Revert it from History, or set the network back to its hardware address in its settings "
+                          "(Wi-Fi → the network → Identity → Cloned address), if it stops letting this machine in."]))
     text = ("The default for new connections is set for the whole machine, and scanning for networks uses random "
-            "addresses too. Saved networks that use the default follow it; those set to the hardware address are "
-            "changed one by one.")
+            "addresses too. Saved networks that use the default follow it; those set to the hardware address keep it "
+            "unless you change them too, with their own option.")
     if shadowed:
         text += (f" Networks joined from now on take NetworkManager's [{where}] section: {default}"
                  + (", already a made-up address for each network." if default in RANDOM_MACS else

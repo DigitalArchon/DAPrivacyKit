@@ -291,14 +291,36 @@ def test_mac_guide_sets_the_default_for_every_network(cat, tmp_path, monkeypatch
     assert o.status is Status.FAIL and "joined from now on will too" in o.summary and "scanning" in o.summary
     g = build(cat, host, "net.mac_permanent")
     plan = options(g)["A random address for each network, kept for it (stable)"]
-    assert [a.kind for a in plan.actions] == ["root", "nmcli"] and plan.actions[1].name == "Office"
+    # the default alone: a network someone set to its hardware address is theirs to change (finding 9 of the
+    # 2026-11-12 review: the Easy fix overrode them), with an option of its own
+    assert [a.kind for a in plan.actions] == ["root"] and g.keyed("stable") == [plan]
+    saved = options(g)["Also give the 1 saved network set to the hardware address a made-up one (stable)"]
+    assert [(a.kind, a.name) for a in saved.actions] == [("nmcli", "Office")]
+    assert "MAC filtering" in next(o for o in g.steps[0].options if o.plan is saved).detail
     log, res = apply(host, plan)
-    assert nm.connections["u2"]["802-11-wireless.cloned-mac-address"] == "stable"
-    assert nm.connections["u1"]["802-11-wireless.cloned-mac-address"] == ""        # follows the default
-    assert detect(cat, "net.mac_permanent", make_scan(host)).status is Status.PASS
-    revert(host, log, res)
     assert nm.connections["u2"]["802-11-wireless.cloned-mac-address"] == "permanent"
+    assert nm.connections["u1"]["802-11-wireless.cloned-mac-address"] == ""        # follows the default
+    g = build(cat, host, "net.mac_permanent")
+    assert not g.steps[0].done and g.keyed("stable") == []                   # the Easy part is done
+    saved = options(g)["Also give the 1 saved network set to the hardware address a made-up one (stable)"]
+    log2, res2 = apply(host, saved)
+    assert nm.connections["u2"]["802-11-wireless.cloned-mac-address"] == "stable"
+    assert detect(cat, "net.mac_permanent", make_scan(host)).status is Status.PASS
+    revert(host, log2, res2)
+    assert nm.connections["u2"]["802-11-wireless.cloned-mac-address"] == "permanent"
+    revert(host, log, res)
     assert not (host.root / "etc/NetworkManager/conf.d/99-daprivacyscanner-mac.conf").exists()
+
+
+def test_mac_saved_networks_follow_the_default_chosen(cat, tmp_path, monkeypatch, system):
+    host, nm = nm_world(tmp_path, monkeypatch, system, {
+        "u2": {"type": "802-11-wireless", "connection.id": "Office", "802-11-wireless.cloned-mac-address": "preserve"}})
+    g = build(cat, host, "net.mac_permanent")
+    log, res = apply(host, options(g)["A new random address at every connection (random)"])
+    g = build(cat, host, "net.mac_permanent")
+    saved = options(g)["Also give the 1 saved network set to the hardware address a made-up one (random)"]
+    assert [a.value for a in saved.actions] == ["random"]
+    revert(host, log, res)
 
 
 def test_mac_dropin_keeps_the_distributions_driver_exceptions(cat, tmp_path, monkeypatch, system):

@@ -1360,8 +1360,9 @@ checks:
       Every network, including those joined later: a NetworkManager drop-in of the helper's own
       (/etc/NetworkManager/conf.d/99-daprivacyscanner-mac.conf) setting the default for Wi-Fi to "stable" (a random
       address per network, kept for it) or "random" (a new one at every connection), and random addresses while
-      scanning; the saved networks that set the hardware address themselves are changed too. Wired networks are a
-      separate, optional drop-in (ethernet.cloned-mac-address). Note captive portal and MAC filtering side effects.
+      scanning. Saved networks that set the hardware address themselves (permanent, preserve: perhaps on purpose,
+      for MAC filtering) are an option of their own, following the default, never part of the Easy fix. Wired
+      networks are a separate, optional drop-in (ethernet.cloned-mac-address). Note captive portal and MAC filtering side effects.
       A later file wins over every section of earlier ones, driver-specific ones included (man NetworkManager.conf),
       so the drivers NetworkManager's own files exempt (no-mac-addr-change.conf: wl, eagle_sdio, and any this
       machine's files add) are exempted again at the top of the app's file, with match-device sections, and keep
