@@ -81,7 +81,7 @@ def test_helper_runs_standalone_in_isolated_mode():
     p = subprocess.run([sys.executable, "-I", HELPER], input='{"id": 1, "action": "hello"}\n',
                        capture_output=True, text=True, timeout=20, cwd="/")
     reply = json.loads(p.stdout)
-    assert reply == {"id": 1, "ok": True, "result": {"version": helper.PROTOCOL, "uid": os.geteuid()}}
+    assert reply == {"id": 1, "ok": True, "result": {"version": helper.PROTOCOL, "uid": os.geteuid(), "mode": "session"}}
 
 
 # ------------------------------------------------------------------ starting it
@@ -100,13 +100,13 @@ def fake_pkexec(tmp_path, monkeypatch, body: str):
 def test_declined(tmp_path, monkeypatch):
     fake_pkexec(tmp_path, monkeypatch, "echo 'Error executing command as another user: Request dismissed' >&2\nexit 126\n")
     with pytest.raises(HelperDeclined):
-        PkexecHelper.start(timeout=10)
+        PkexecHelper.start(timeout=10, argv=privileged.fallback_command(), mode="install")
 
 
 def test_no_polkit_agent(tmp_path, monkeypatch):
     fake_pkexec(tmp_path, monkeypatch, "echo 'Error executing command as another user: No authentication agent found.' >&2\nexit 127\n")
     with pytest.raises(HelperUnavailable, match="authentication agent") as e:
-        PkexecHelper.start(timeout=10)
+        PkexecHelper.start(timeout=10, argv=privileged.fallback_command(), mode="install")
     assert not isinstance(e.value, HelperDeclined)
 
 
@@ -114,14 +114,30 @@ def test_no_polkit_agent(tmp_path, monkeypatch):
 def test_a_helper_that_is_not_root_is_refused(tmp_path, monkeypatch):
     fake_pkexec(tmp_path, monkeypatch, 'exec "$@"\n')           # runs the helper as this user
     with pytest.raises(HelperUnavailable, match="did not start as root"):
-        PkexecHelper.start(timeout=20)
+        PkexecHelper.start(timeout=20, argv=privileged.fallback_command(), mode="install")
+
+
+def test_a_session_needs_the_installed_helper(tmp_path, monkeypatch):
+    """Never the fallback for a session: its file is the user's to change. Without the installed helper (or with one
+    of another version) there is no session, and the message says to install it."""
+    fake_pkexec(tmp_path, monkeypatch, 'exec "$@"\n')
+    monkeypatch.setattr(privileged, "installed_helper", lambda: None)
+    with pytest.raises(privileged.HelperNotInstalled, match="isn't installed"):
+        PkexecHelper.start(timeout=10)
+    installed = tmp_path / "daprivacyscanner-helper"
+    installed.write_text("#!/usr/bin/python3 -I\nPROTOCOL = 3\n")
+    monkeypatch.setattr(privileged, "installed_helper", lambda: installed)
+    with pytest.raises(privileged.HelperNotInstalled, match="another version"):
+        PkexecHelper.start(timeout=10)
 
 
 def test_talks_to_a_running_helper(tmp_path, monkeypatch):
-    fake_pkexec(tmp_path, monkeypatch, 'exec "$@"\n')
-    proc = subprocess.Popen(["pkexec", sys.executable, "-I", HELPER], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE, text=True, bufsize=1)
-    h = PkexecHelper(proc, privileged.helper_command())
+    import socket
+    mine, theirs = socket.socketpair()
+    proc = subprocess.Popen([sys.executable, "-I", HELPER], stdin=theirs.fileno(), stdout=theirs.fileno(),
+                            stderr=subprocess.PIPE)
+    theirs.close()
+    h = PkexecHelper(proc, [sys.executable, HELPER], mine)
     try:
         if os.geteuid() != 0:
             with pytest.raises(privileged.HelperError, match="changes need root"):
@@ -143,7 +159,8 @@ def test_installed_helper_must_be_root_owned(tmp_path, monkeypatch):
     monkeypatch.setattr(privileged, "INSTALLED_HELPER", fake)
     if os.geteuid() != 0:
         assert privileged.installed_helper() is None                  # owned by this user: not trusted
-        assert privileged.helper_command()[1:3] == [privileged.SYSTEM_PYTHON, "-I"]
+        with pytest.raises(privileged.HelperNotInstalled):
+            privileged.helper_command()
 
 
 # ------------------------------------------------------------------ an installed helper from another version
@@ -175,7 +192,8 @@ SURFACES = {4: "afe8f5a5be1c5b48", 5: "87c08bf809a1a000", 6: "f74cc3bd8d4bdd5f",
             27: "2df0660e730b9b6a",                             # 27: install_self installs the code read at start; ramdisk_open's answer
             28: "eeefe6d32bd215ed",                             # 28: set_service takes units together and records a partial failure; reverts say what they put back; the SecureBoot variable's right GUID; clear_journal_files; SafeBrowsingProtectionLevel
             29: "eeefe6d32bd215ed",                             # 29: the watch: a bounded queue, renames, mounts in the home and during it, its folders removed however it ends; the RAM disks' mount unit out of the journal, a restart's record kept
-            30: "eeefe6d32bd215ed"}                             # 30: the watch's child runs the code read at start, its folders its own, its words numbered, network shares not watched, its tallies bounded; deleted folders named only when the caller could have opened them, btrfs entries older than their folder left out, a crafted journal map refused; mount points' escapes all undone; the traffic monitor writes to a file; snapper/Timeshift limits only lowered; set_service's unit names checked as text
+            30: "eeefe6d32bd215ed",                             # 30: the watch's child runs the code read at start, its folders its own, its words numbered, network shares not watched, its tallies bounded; deleted folders named only when the caller could have opened them, btrfs entries older than their folder left out, a crafted journal map refused; mount points' escapes all undone; the traffic monitor writes to a file; snapper/Timeshift limits only lowered; set_service's unit names checked as text
+            31: "ea730406d87f56f0"}                                  # 31: a socket pair, bounded lines, idle end, keepalive, cancel; consent for what can't be undone or reaches others' data; install-only fallback; units only their directions; intent journal with the app's change ids, list_changes; mounts through the folder opened; btrfs blocks tied to their chunks
 
 
 def test_changing_what_the_helper_does_bumps_its_protocol():
@@ -229,6 +247,6 @@ def test_a_copy_that_cant_be_made_is_said_not_raised(monkeypatch):
     def fail():
         raise PermissionError(13, "Permission denied")
     monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/pkexec")
-    monkeypatch.setattr(privileged, "helper_command", fail)
+    monkeypatch.setattr(privileged, "fallback_command", fail)
     with pytest.raises(privileged.HelperUnavailable, match="where root can read it"):
-        privileged.PkexecHelper.start()
+        privileged.install_helper()

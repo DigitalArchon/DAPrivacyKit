@@ -3,6 +3,7 @@ helper runs from a private copy root can read, and it can install itself root-ow
 has no source tree to run packaging/install-helper.sh from). The build itself is
 packaging/build-appimage.sh; packaging/test-appimage.sh smoke-tests the result."""
 
+import hashlib
 import json
 import os
 import stat
@@ -48,16 +49,20 @@ def test_from_an_appimage_the_helper_runs_from_a_private_copy(tmp_path, monkeypa
     (tmp_path / "run").mkdir()
     monkeypatch.setattr(helper, "__file__", str(src))
     monkeypatch.setattr(privileged, "installed_helper", lambda: None)
-    cmd = privileged.helper_command()
+    cmd = privileged.fallback_command()
     copy = tmp_path / "run/daprivacyscanner/helper.py"
-    assert cmd == ["pkexec", privileged.SYSTEM_PYTHON, "-I", str(copy)]
+    # run by the loader, which checks the copy against the hash of what the app read from its own package
+    assert cmd == ["pkexec", privileged.SYSTEM_PYTHON, "-I", "-c", privileged.LOADER, str(copy),
+                   hashlib.sha256(b"PROTOCOL = 7\n").hexdigest()]
     assert copy.read_text() == "PROTOCOL = 7\n" and stat.S_IMODE(copy.parent.stat().st_mode) == 0o700
 
 
 def test_from_a_source_tree_the_helper_runs_where_it_is(monkeypatch):
     monkeypatch.delenv("APPDIR", raising=False)
     monkeypatch.setattr(privileged, "installed_helper", lambda: None)
-    assert privileged.helper_command()[-1] == str(Path(helper.__file__).resolve())
+    cmd = privileged.fallback_command()
+    assert cmd[-2] == str(Path(helper.__file__).resolve())
+    assert cmd[-1] == hashlib.sha256(Path(helper.__file__).read_bytes()).hexdigest()
 
 
 @pytest.fixture

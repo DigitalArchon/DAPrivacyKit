@@ -48,6 +48,7 @@ def system_root(tmp_path, monkeypatch):
     system = FakeSystem()
     monkeypatch.setattr(helper, "RUN", system)
     monkeypatch.setattr(helper, "CALLER", (*ME, "/home/alice"))
+    system.mounts(monkeypatch, r)
     return r, system
 
 
@@ -488,13 +489,15 @@ def test_reverting_an_in_memory_folder_still_held_says_it_stays_in_memory(system
     r, calls = gvfs_root(system_root, monkeypatch)
     res = helper_call("mount_tmpfs", target="gvfs-metadata", size_mb=50)
     path = "/home/alice/.local/share/gvfs-metadata"
-    (r / "proc").mkdir(exist_ok=True)
-    (r / "proc/mounts").write_text(f"tmpfs {path} tmpfs rw 0 0\n")     # gvfsd-metadata started again, holds it
+    name = "home-alice-.local-share-gvfs\\x2dmetadata.mount"
+    system_root[1].busy.add(name)                                      # gvfsd-metadata started again, holds it
     rv = helper_call("revert", change_id=res["change_id"])
     assert rv["ok"] and "Put back" not in rv["message"]
     assert rv["message"].startswith(f"{path} stays in memory until the next restart, with its mount unit removed")
     assert ["pkill", "-TERM", "-x", "-u", str(ME[0]), "gvfsd-metadata"] in calls     # stopped first, as applying does
-    assert any(c[:2] == ["systemctl", "stop"] for c in calls)                        # and tried once more
+    assert [u[0] for u in system_root[1].umount_calls] == [path, path]               # and tried once more
+    assert ["systemctl", "disable", name] in calls                                    # systemd unmounts nothing itself
+    system_root[1].busy.discard(name)
     # its failed state is cleared, so the system isn't left "degraded" by a unit whose file is gone
     assert ["systemctl", "reset-failed", "home-alice-.local-share-gvfs\\x2dmetadata.mount"] in calls
     # unmounted: said so

@@ -21,6 +21,7 @@ def root(tmp_path, monkeypatch):
     monkeypatch.setattr(helper, "ROOT", str(r))
     system = FakeSystem()
     monkeypatch.setattr(helper, "RUN", system)
+    system.mounts(monkeypatch, r)
     return r
 
 
@@ -357,7 +358,11 @@ def test_mount_tmpfs_writes_its_own_mount_unit_mounts_and_reverts(root, caller):
     folder = root / "home/alice/.cache/thumbnails"
     assert folder.is_dir() and stat.S_IMODE(folder.stat().st_mode) == 0o700             # created for the user
     name = "home-alice-.cache-thumbnails.mount"
-    assert helper.RUN.calls[-2:] == [["systemctl", "daemon-reload"], ["systemctl", "enable", "--now", name]]
+    # mounted by the helper itself, on the folder it opened (/proc/self/fd/N), then the unit enabled: systemd takes the
+    # mount up as its unit, and never looks the path up while the user's programs run
+    assert helper.RUN.calls[-2:] == [["systemctl", "daemon-reload"], ["systemctl", "enable", name]]
+    assert helper.RUN.mount_calls == [("/home/alice/.cache/thumbnails", helper.MS_NOSUID | helper.MS_NODEV | helper.MS_NOEXEC,
+                                      f"size=200M,mode=0700,uid={ME[0]},gid={ME[1]}")]
     assert name in helper.RUN.mounted
     assert not (root / "etc/fstab").exists()                                          # fstab is never touched
     journal = json.loads((root / f"var/lib/daprivacyscanner/changes/{r['change_id']}.json").read_text())
@@ -369,7 +374,10 @@ def test_mount_tmpfs_writes_its_own_mount_unit_mounts_and_reverts(root, caller):
     assert rv["ok"] and not (root / UNIT).exists() and name not in helper.RUN.mounted
     assert not folder.exists() and "rmdir /home/alice/.cache/thumbnails" in rv["ran"]   # the helper made it: it goes
     calls = [c for c in helper.RUN.calls if c[1:2] != ["is-failed"]]                 # reads aside
-    assert calls.index(["systemctl", "disable", "--now", name]) < len(calls) - 1 and calls[-1] == ["systemctl", "daemon-reload"]
+    assert calls.index(["systemctl", "disable", name]) < len(calls) - 1 and calls[-1] == ["systemctl", "daemon-reload"]
+    # unmounted through the folder above it, opened as applying opened it, never by its path
+    assert helper.RUN.umount_calls == [("/home/alice/.cache/thumbnails", helper.UMOUNT_NOFOLLOW)]
+    assert "umount /home/alice/.cache/thumbnails" in rv["ran"]
 
 
 def test_the_folder_is_the_callers_never_the_requests(root, caller):

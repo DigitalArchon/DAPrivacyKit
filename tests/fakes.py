@@ -226,6 +226,49 @@ class FakeSystem:
         code, out, err = self(argv)
         return CommandResult(tuple(argv), code, out, err)
 
+    def mounts(self, monkeypatch, root):
+        """The helper's own mount(2) and umount2(2) for its folders in memory (it mounts through the folder it opened,
+        /proc/self/fd/N, and unmounts through the one above it): the mount table under `root` changes as the kernel's
+        would, and the unit of that path is mounted (systemd takes the mount up as it)."""
+        import errno
+        import os
+
+        from daprivacyscanner import helper
+        base = os.path.realpath(root)
+
+        def logical(target):
+            return os.path.realpath(target)[len(base):]
+
+        def mount(target, flags, options):
+            path = logical(target)
+            os.makedirs(os.path.join(base, "proc"), exist_ok=True)
+            with open(os.path.join(base, "proc/mounts"), "a") as f:
+                f.write(f"tmpfs {path} tmpfs rw,{options} 0 0\n")
+            name = helper.unit_name(path)
+            self.mounted.add(name)
+            self.units.setdefault(name, ["disabled", "inactive"])[1] = "active"
+            self.mount_calls.append((path, flags, options))
+            return 0
+
+        def umount(target, flags=8):
+            path = logical(target)
+            name = helper.unit_name(path)
+            self.umount_calls.append((path, flags))
+            if name in self.busy and not flags & 2:
+                return errno.EBUSY
+            p = os.path.join(base, "proc/mounts")
+            lines = open(p).read().splitlines() if os.path.exists(p) else []
+            with open(p, "w") as f:
+                f.writelines(ln + "\n" for ln in lines if ln.split()[1:2] != [path])
+            self.mounted.discard(name)
+            if name in self.units:
+                self.units[name][1] = "inactive"
+            return 0
+        self.mount_calls, self.umount_calls = [], []
+        monkeypatch.setattr(helper, "MOUNT", mount)
+        monkeypatch.setattr(helper, "UMOUNT", umount)
+        return self
+
 
 class FakeUserSystemctl:
     """`systemctl --user` for the units of the user's own session: show, is-enabled, enable/disable --now."""

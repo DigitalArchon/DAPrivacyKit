@@ -81,7 +81,7 @@ Nothing is installed.
 ```sh
 chmod +x DAPrivacyKit-*.AppImage
 ./DAPrivacyKit-*.AppImage
-./DAPrivacyKit-*.AppImage --install-helper    # once, recommended: the administrator helper
+./DAPrivacyKit-*.AppImage --install-helper    # once: the administrator helper, for what needs root
 ```
 
 It runs on Ubuntu 24.04 / Mint 22, Debian 13, and current Fedora, Arch and CachyOS. It is made for and
@@ -154,9 +154,9 @@ python3 -m venv --system-site-packages .venv     # system PyGObject for the WebK
 .venv/bin/python -m pytest
 ```
 
-From a source tree the helper runs the copy in `src/`, which is only as safe as that directory, and the
-password prompt names python3 (the app points this out). `sudo packaging/install-helper.sh` installs a
-root-owned copy with its own polkit action instead; `--uninstall` removes it.
+Administrator access always goes through the installed, root-owned helper: from a source tree, install it with
+`sudo packaging/install-helper.sh` (`--uninstall` removes it) or `.venv/bin/daprivacyscanner --install-helper`,
+whose prompt names python3, since it runs the copy in `src/`, checked by its SHA-256, only to install itself.
 
 The catalogue of checks is [privacy-checks.yaml](privacy-checks.yaml); the rules the design is held to open
 [docs/TECHNICAL.md](docs/TECHNICAL.md#design-rules).

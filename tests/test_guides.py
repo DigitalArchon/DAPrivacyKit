@@ -913,6 +913,7 @@ def home_on_the_system(tmp_path, system, monkeypatch):
     (d / "gone.png").write_bytes(png((home / "deleted.jpg").as_uri()))
     rooted(host, system, monkeypatch)
     monkeypatch.setattr(helper, "CALLER", (os.geteuid(), os.getegid(), "/home/alice"))
+    system.mounts(monkeypatch, host.root)          # the helper mounts through the folder it opened
     return host, d
 
 

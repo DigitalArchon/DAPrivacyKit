@@ -82,16 +82,24 @@ the link the terminal shows instead).
 | Fedora | `webkit2gtk4.1` |
 | Arch, CachyOS | `webkit2gtk-4.1` |
 
-**Install the administrator helper, once (recommended).** Some checks and fixes need root (for example,
-reading disk encryption settings or turning on the firewall). The app never runs as root; it asks a
-small helper to do those few things, and you approve each session with your password. Install the helper
-so the password prompt names the app rather than "python3":
+**Install the administrator helper, once.** Some checks and fixes need root (for example, reading disk
+encryption settings or turning on the firewall). The app never runs as root; it asks a small helper to do
+those few things, and you approve each session with your password. Until the helper is installed, nothing
+runs as administrator: scans leave out what needs it, and fixes that need it can't be applied.
 
 ```sh
 ./DAPrivacyKit-*.AppImage --install-helper
 ```
 
-You can also do this from the app when it offers. `--uninstall-helper` removes it.
+You can also do this from the app when it offers. That one password prompt names "/usr/bin/python3": it runs
+this version's helper, checked by its fingerprint first, to install itself. After that the prompt names DA
+Privacy Kit. `--uninstall-helper` removes it.
+
+A few things ask for your password again, every time, because they can't be undone or reach beyond your own
+account: deleting system logs, crash dumps or snapshots, watching every account's network traffic in the online
+tests, showing names of deleted files that may be other accounts', removing the helper, and putting back a remote
+access service (such as SSH) when you revert the fix that turned it off. The prompt says which. If you don't give
+it, nothing is done.
 
 **The first time it starts,** a short notice explains what the app is and isn't. Tick *Don't show this
 again* to hide it. Click the app's name at the top left to read it again.
@@ -741,7 +749,11 @@ and `/var/lib/daprivacyscanner`, and delete the AppImage.
 
 ## 13. Troubleshooting
 
-**The password prompt says "python3".** The helper isn't installed root-owned. Run `--install-helper`.
+**The password prompt says "python3".** That is the prompt for installing the helper (it runs this version's
+copy, checked first, to install itself). Once it is installed, the prompt names DA Privacy Kit.
+
+**"The administrator helper isn't installed" (or "is from another version").** Install this version's: from the
+note at the top of the window, or `--install-helper`.
 
 **The app says it needs WebKitGTK 4.1 and doesn't start.** Install it; see section 1.
 

@@ -44,8 +44,8 @@ from .host import Host
 from .jobs import Job, Jobs, Quitting, in_thread
 from .jobs import view as job_view
 from .paths import PathResolver
-from .privileged import (HelperDeclined, HelperError, HelperUnavailable, PkexecHelper, Privileged, installed_helper,
-                         installed_helper_stale)
+from .privileged import (HelperDeclined, HelperError, HelperNotInstalled, HelperUnavailable, PkexecHelper, Privileged,
+                         installed_helper, installed_helper_stale)
 from .privileged import install_helper as install_helper_root
 from .runner import Runner
 from .undo import UndoLog
@@ -106,16 +106,35 @@ def default_open_url(url: str) -> None:
                      stderr=subprocess.DEVNULL, start_new_session=True)
 
 
+def _busy(helper) -> bool:
+    """Whether the helper has a request in hand (one that can't say is taken as idle)."""
+    return bool(getattr(helper, "busy", lambda: False)())
+
+
+KEEPALIVE_EVERY = 60.0           # seconds between the helper's keep-alives while long work holds the access
+# the helper's requests a tool's Stop (or closing its panel) cancels while one is in hand
+TRIM_REQUESTS = frozenset({"trim_scan", "trim_fstrim"})
+NAMES_REQUESTS = frozenset({"names_step", "names_result", "names_orphans", "names_check", "names_folder",
+                            "names_fstrim"})
+ADMIN_TICK = 5.0                 # seconds between the session timer's looks
+
+
 class AdminSession:
     """Administrator access, once granted: the helper keeps running so one polkit prompt covers
     a scan and the fixes that follow. It ends when the user drops it, quits, after ADMIN_IDLE
-    seconds unused, or right after a scan that found nothing a root fix could act on."""
+    seconds unused (a timer of its own looks every ADMIN_TICK: the access ended only when the page asked before,
+    and stayed while it was idle), or right after a scan that found nothing a root fix could act on. While work
+    holds it (hold()), the timer keeps the helper from ending itself for being idle (it ends after HELPER_IDLE without
+    a request), and never closes it under a request in hand."""
 
-    def __init__(self, start: Callable[[], Privileged], idle: float = ADMIN_IDLE):
-        self.start, self.idle = start, idle
+    def __init__(self, start: Callable[[], Privileged], idle: float = ADMIN_IDLE, tick: float = ADMIN_TICK,
+                 keepalive: float = KEEPALIVE_EVERY):
+        self.start, self.idle, self.tick, self.keepalive_every = start, idle, tick, keepalive
         self.helper: Privileged | None = None
         self.last_used = 0.0
+        self.last_ping = 0.0
         self.holds = 0                   # long work using it (the TRIM test): no idle end, no drop after a scan
+        self.claims = 0                  # each request that asked for access (get with prompt): a scan's drop checks it
         self.lock = threading.Lock()
         self.changed = threading.Condition(self.lock)
         # a request is asking for access (the prompt is up): the lock isn't held meanwhile, so active() and drop(),
@@ -123,6 +142,8 @@ class AdminSession:
         # prompt stands (it did: up to five minutes, with the event loop stuck behind it)
         self.starting = False
         self.failure: Exception | None = None       # why the attempt failed, for the requests that waited on it
+        self._timer: threading.Thread | None = None
+        self._wake = threading.Event()
 
     def active(self) -> bool:
         with self.lock:
@@ -131,11 +152,34 @@ class AdminSession:
 
     def _expire(self) -> None:
         if self.helper is not None and (not self.helper.alive() or (
-                not self.holds and time.monotonic() - self.last_used > self.idle)):
+                not self.holds and not _busy(self.helper) and time.monotonic() - self.last_used > self.idle)):
             # closed in a thread of its own: close() waits up to 5 s for a helper still answering a request, and this
             # runs on the event loop (active(), from the page's polling), which was held up for as long
-            threading.Thread(target=self.helper.close, name="helper-close", daemon=True).start()
-            self.helper = None
+            helper, self.helper = self.helper, None
+            threading.Thread(target=helper.close, name="helper-close", daemon=True).start()
+
+    def _start_timer(self) -> None:
+        """Under the lock: the timer, while there is a helper."""
+        if self._timer is None or not self._timer.is_alive():
+            self._wake.clear()
+            self._timer = threading.Thread(target=self._run_timer, name="admin-timer", daemon=True)
+            self._timer.start()
+
+    def _run_timer(self) -> None:
+        while True:
+            if self._wake.wait(self.tick):              # a tick, then a look (drop() wakes it at once)
+                self._wake.clear()
+            with self.lock:
+                self._expire()
+                helper, held = self.helper, self.holds > 0
+                if helper is None:
+                    self._timer = None
+                    return
+                ping = held and time.monotonic() - self.last_ping >= self.keepalive_every
+                if ping:
+                    self.last_ping = time.monotonic()
+            if ping:
+                getattr(helper, "keepalive", lambda: None)()   # outside the lock: it waits for the helper's answer
 
     def get(self, prompt: bool) -> Privileged | None:
         """The running helper; with `prompt`, asks for administrator access if there is none
@@ -143,6 +187,8 @@ class AdminSession:
         every request that asks while it is up: the others wait for its answer, and share a refusal."""
         with self.lock:
             self._expire()
+            if prompt:
+                self.claims += 1                # someone is about to use it: a scan finishing now leaves it
             if self.helper is not None or not prompt:
                 return self._use()
             if self.starting:
@@ -172,13 +218,39 @@ class AdminSession:
     def _use(self) -> Privileged | None:
         if self.helper is not None:
             self.last_used = time.monotonic()
+            self._start_timer()
         return self.helper
 
     def drop(self) -> None:
         with self.lock:
             helper, self.helper = self.helper, None
+        self._wake.set()
         if helper is not None:
             helper.close()          # with the lock released: active(), on the event loop, waited for it otherwise
+
+    def claimed(self) -> int:
+        """How many requests have asked for access so far (drop_unless_claimed's mark)."""
+        with self.lock:
+            return self.claims
+
+    def drop_unless_claimed(self, mark: int) -> bool:
+        """The access dropped, as drop() does, unless something has asked for it since `mark` (claimed()), work holds
+        it, or a request is in hand: a scan that found nothing to fix as root closed the helper under the TRIM test,
+        which had asked for it and was about to hold it. Whether it was dropped."""
+        with self.lock:
+            helper = self.helper
+            if helper is None or self.claims != mark or self.holds or _busy(helper):
+                return False
+            self.helper = None
+        self._wake.set()
+        helper.close()
+        return True
+
+    def cancel(self, actions) -> bool:
+        """Stops the helper's request in hand if it is one of `actions` (the user stopped it, or closed its panel)."""
+        with self.lock:
+            helper = self.helper
+        return bool(getattr(helper, "cancel", lambda a: False)(actions)) if helper is not None else False
 
     def held(self) -> bool:
         with self.lock:
@@ -186,10 +258,11 @@ class AdminSession:
 
     @contextlib.contextmanager
     def hold(self):
-        """While long work uses the access: it doesn't end when idle, and a scan doesn't drop it.
-        The user's Drop still ends it (the work then stops)."""
+        """While long work uses the access: it doesn't end when idle, and a scan doesn't drop it; the helper gets a
+        keep-alive every KEEPALIVE_EVERY seconds. The user's Drop still ends it (the work then stops)."""
         with self.lock:
             self.holds += 1
+            self.last_ping = time.monotonic()
         try:
             yield
         finally:
@@ -339,11 +412,14 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
 
     async def with_root(host: Host) -> str | None:
         """Gives the host administrator access, asking for it if needed (the prompt on a thread of its own: it can
-        stand for minutes). Returns why not, or None."""
+        stand for minutes). Returns why not, or None. Without the helper installed (or with one from another version)
+        nothing can ask: the answer says to install it, and the page offers that."""
         try:
             host.privileged = await in_thread(admin.get, True, name="admin-prompt")
         except HelperDeclined:
             return "Administrator access was declined, so nothing was changed."
+        except HelperNotInstalled as e:
+            return f"{e} Nothing was changed."
         except HelperUnavailable as e:
             return f"Administrator access isn't available: {e} Nothing was changed."
         return None
@@ -572,9 +648,12 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
                     granted["granted"] = True
                 except HelperUnavailable as e:
                     granted["message"] = str(e)
+                    granted["install_helper"] = isinstance(e, HelperNotInstalled)
             else:
                 host.privileged = await asyncio.to_thread(admin.get, False)
-            report = await asyncio.to_thread(Runner(catalogue, host).scan)
+            mark = admin.claimed()                    # anything asking for the access after this keeps it
+            with admin.hold() if host.privileged is not None else contextlib.nullcontext():
+                report = await asyncio.to_thread(Runner(catalogue, host).scan)
             new = {**report.to_dict(), "admin": granted}
             new["changes"] = await asyncio.to_thread(Baseline(paths_of(host)).record, new)
             old = app.state.report
@@ -588,10 +667,11 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
             app.state.report = new
             await recheck_undone(host)
             await persist(host)
-            if host.privileged is not None and not admin.held() and not any(needs_root_to_fix(catalogue, dict(r, id=cid))
+            if host.privileged is not None and not any(needs_root_to_fix(catalogue, dict(r, id=cid))
                                                        for cid, r in new["results"].items()):
-                await asyncio.to_thread(admin.drop)   # nothing to fix as root: don't keep root around
-                granted["dropped"] = True
+                # nothing to fix as root: don't keep root around, unless something asked for it meanwhile (a tool
+                # between its with_root and its hold) or holds it
+                granted["dropped"] = await asyncio.to_thread(admin.drop_unless_claimed, mark)
         return {**app.state.report, "admin_active": admin.active()}
 
     # ------------------------------------------------------------ accepted findings and export
@@ -851,6 +931,7 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
         if job is not None and job["state"] in ("starting", "asking", "running"):
             job["cancel"] = True
             if body.get("now"):
+                admin.cancel({"observe_traffic"})        # the traffic watch, up to minutes long, ends now too
                 job["abort"] = True
                 job["cancelled"] = job["current"]["title"] if job["current"] else None
                 job["state"], job["current"], job["finished"] = "stopped", None, time.time()
@@ -911,13 +992,16 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
             plans[plan.id] = stored
             return busy()
         async with scan_lock:
+            # the access as it is now, never the one the plan was made with: that helper may have ended since (the
+            # rescan below used a dead one), or access been given since
+            host.privileged = admin.get(prompt=False)
             if plan.needs_root:
                 problem = await with_root(host)
                 if problem:
                     plans[plan.id] = stored
                     return JSONResponse({"error": problem, "declined": True}, status_code=403)
             log = undo_log(host)
-            with changing():
+            with changing(), (admin.hold() if host.privileged is not None else contextlib.nullcontext()):
                 res = await asyncio.to_thread(apply_plan, plan, host, log, bool(body.get("confirm_irreversible")))
                 # with the checks the plan deals with too (br.start_script's makes br.shader_cache's fix possible), as a
                 # revert and the Easy fixes do
@@ -1001,9 +1085,10 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
         todo = sorted((p for p, _ in stored), key=lambda p: order.index(p.check_id))
         host = stored[0][1]
         async with scan_lock:
+            host.privileged = admin.get(prompt=False)       # the access as it is now, not as it was at the dry run
             declined = await with_root(host) if any(p.needs_root for p in todo) else None
             log, out = undo_log(host), []
-            with changing():
+            with changing(), (admin.hold() if host.privileged is not None else contextlib.nullcontext()):
                 for plan in todo:
                     if plan.needs_root and declined:
                         out.append({"check_id": plan.check_id, "title": plan.title, "ok": False, "error": declined,
@@ -1068,7 +1153,7 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
                 if problem:
                     return JSONResponse({"error": problem.replace("changed", "reverted"), "declined": True},
                                         status_code=403)
-            with changing():
+            with changing(), (admin.hold() if host.privileged is not None else contextlib.nullcontext()):
                 results = await asyncio.to_thread(revert_entry, entry, host, log, bool(body.get("force")))
                 again = await refresh(host, entry["check_id"], tuple(entry.get("also") or ()))
             undone = await recheck_undone(host)
@@ -1881,7 +1966,8 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
         except ValueError as e:
             job["state"], job["error"] = "failed", str(e)
         except HelperError as e:
-            job["state"], job["error"] = "failed", f"The helper refused: {e}"
+            job["state"], job["error"] = ("stopped", "Stopped.") if e.data.get("stopped") or job["cancel"] else (
+                "failed", f"The helper refused: {e}")
         except OSError as e:
             job["state"], job["error"] = "failed", f"The test files couldn't be written or removed: {e.strerror or e}"
         except Exception as e:  # noqa: BLE001 - shown on the page rather than spin forever
@@ -1926,6 +2012,7 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
         job = app.state.trim_job
         if job is not None and job["state"] in ("asking", "running"):
             job["cancel"] = True
+            admin.cancel(TRIM_REQUESTS)
         return {"job": trim_view(job)}
 
     @app.post("/api/tools/trim/dismiss", dependencies=[Depends(auth)])
@@ -1983,7 +2070,8 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
         except ValueError as e:
             job["state"], job["error"] = "failed", str(e)
         except HelperError as e:
-            job["state"], job["error"] = "failed", f"The helper refused: {e}"
+            job["state"], job["error"] = ("stopped", "Stopped.") if e.data.get("stopped") or job["cancel"] else (
+                "failed", f"The helper refused: {e}")
         except Exception as e:  # noqa: BLE001
             job["state"], job["error"] = "failed", f"{type(e).__name__}: {e}"
         finally:
@@ -2035,6 +2123,7 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
                 if job["state"] not in ("asking", "running"):
                     setattr(app.state, attr, None)
         app.state.names_listed = None
+        admin.cancel(NAMES_REQUESTS)
         h = admin.get(prompt=False) if admin.active() else None
         if h is not None and not trim_running():
             try:
@@ -2228,8 +2317,10 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
         had_admin = admin.active()
         token, began = job["id"][:12], None
         units = appwatch.units(entry, token)
+        mark = None
         try:
             problem = await with_root(host)
+            mark = admin.claimed()                  # anything asking for the access after this keeps it when this ends
             if problem:
                 job["state"], job["error"] = "failed", problem.replace("Nothing was changed.", "Nothing was started.")
                 return
@@ -2315,9 +2406,10 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
             job["state"], job["error"] = "failed", f"{type(e).__name__}"
         finally:
             job["finished"] = time.time()
-            # administrator access was for the watch: given up as soon as it ends, unless something else has it
-            if not had_admin and not admin.held():
-                await asyncio.to_thread(admin.drop)
+            # administrator access was for the watch: given up as soon as it ends, unless something else has it (holds
+            # it, or has asked for it since)
+            if not had_admin and mark is not None:
+                await asyncio.to_thread(admin.drop_unless_claimed, mark)
 
     @app.get("/api/tools/keeps", dependencies=[Depends(auth)])
     async def tools_keeps(request: Request):

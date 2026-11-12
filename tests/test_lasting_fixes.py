@@ -49,6 +49,7 @@ def root(tmp_path, monkeypatch, system):
     r = tmp_path / "root"
     r.mkdir()
     monkeypatch.setattr(helper, "ROOT", str(r))
+    system.mounts(monkeypatch, r)
     return r
 
 
@@ -182,7 +183,8 @@ def test_ephemeral_until_logout_is_bound_to_the_users_session_manager(root, syst
     r = call("mount_tmpfs", target="ephemeral", size_mb=1000, until="logout")
     unit = (root / "etc/systemd/system/home-alice-Ephemeral.mount").read_text().splitlines()
     manager = f"user@{ME[0]}.service"
-    for line in ("DefaultDependencies=no", f"BindsTo={manager}", f"After=local-fs.target {manager}",
+    # mounted before the manager starts anything of the user's, unmounted after it has stopped every program of theirs
+    for line in ("DefaultDependencies=no", f"BindsTo={manager}", "After=local-fs.target", f"Before={manager}",
                  f"WantedBy={manager}", "Conflicts=umount.target"):
         assert line in unit, line
     assert any(ln.startswith("Options=") and ",noexec," in ln for ln in unit)
@@ -195,8 +197,7 @@ def test_ephemeral_revert_refuses_while_it_holds_files(root, system, alice):
     folder = alice / "Ephemeral"
     folder.chmod(0o700)                                   # as the mounted tmpfs is
     (folder / "draft.odt").write_text("x")
-    (root / "proc").mkdir()
-    (root / "proc/mounts").write_text("tmpfs /home/alice/Ephemeral tmpfs rw 0 0\n")
+    assert (root / "proc/mounts").read_text().startswith("tmpfs /home/alice/Ephemeral tmpfs ")   # the helper mounted it
     rv = call("revert", change_id=r["change_id"])
     assert rv["conflict"] and "still has files" in rv["message"]
     assert call("revert", change_id=r["change_id"], force=True)["ok"]

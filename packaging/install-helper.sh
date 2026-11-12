@@ -3,6 +3,7 @@
 # what runs as root can't be changed by anything running as you. Run it with sudo from the
 # source tree: sudo packaging/install-helper.sh   (and with --uninstall to remove it).
 set -eu
+umask 022                  # whatever the caller's: the folder and files below are root's, readable by all
 
 DEST=/usr/libexec/daprivacyscanner
 HELPER="$DEST/daprivacyscanner-helper"

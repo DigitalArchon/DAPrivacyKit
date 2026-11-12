@@ -790,19 +790,82 @@ def dir_item(name, typ=1, transid=7):
     return struct.pack("<QBQQHHB", 300, 1, 0, transid, 0, len(name), typ) + name
 
 
-def btrfs_leaf(owner, items, stale=(), node=16384):
+CHUNK_UUID = bytes(range(64, 80))
+SYS_AT, SYS_LEN = 512 << 10, 256 << 10          # the system chunk (the chunk tree's root at its start), as it lies
+META_AT, META_LEN = 1 << 20, 3 << 20            # the metadata chunk: tree blocks go here, and only here
+DATA_AT = 768 << 10                             # a data chunk: files' contents
+
+
+def checksum(b, kind=0):
+    if kind == 1:
+        b[0:8] = helper.xxhash64(bytes(b[32:])).to_bytes(8, "little")
+    elif kind == 2:
+        import hashlib
+        b[0:32] = hashlib.sha256(bytes(b[32:])).digest()
+    else:
+        b[0:4] = helper._crc32c(bytes(b[32:])).to_bytes(4, "little")
+    return bytes(b)
+
+
+def btrfs_leaf(owner, items, stale=(), node=16384, at=0, chunk_uuid=CHUNK_UUID, csum=0):
     """A leaf of the `owner` tree holding DIR_INDEX items (folder inode, name[, the transaction that made the
-    entry: 7]), and stale headers past them pointing at stale data in its free space; crc32c checksum."""
+    entry: 7]), and stale headers past them pointing at stale data in its free space; `at`: the logical address it
+    says it has (where it is written, the chunks mapping one to one); crc32c checksum (`csum`: btrfs's kind)."""
     b = bytearray(node)
     b[32:48], b[88:96], b[96:100], b[100] = FSID, owner.to_bytes(8, "little"), len(items).to_bytes(4, "little"), 0
+    b[48:56], b[64:80] = at.to_bytes(8, "little"), chunk_uuid
     off = node - 101
     for i, (ino, name, *transid) in enumerate(list(items) + list(stale)):
         data = dir_item(name, transid=transid[0] if transid else 7)
         off -= len(data) + (64 if i >= len(items) else 0)
         b[101 + off:101 + off + len(data)] = data
         struct.pack_into("<QBQII", b, 101 + 25 * i, ino, helper.BTRFS_DIR_INDEX, i + 2, off, len(data))
-    b[0:4] = helper._crc32c(bytes(b[32:])).to_bytes(4, "little")
-    return bytes(b)
+    return checksum(b, csum)
+
+
+def chunk_item(length, kind, offset, devid=1, stripes=1):
+    """A btrfs_chunk: one stripe (two for DUP) on this device, logical address = where it lies."""
+    out = struct.pack("<QQQQIIIHH", length, 2, 65536, kind, 65536, 65536, 4096, stripes, 0)
+    return out + b"".join(struct.pack("<QQ", devid, offset) + bytes(16) for _ in range(stripes))
+
+
+CHUNKS = ((SYS_AT, SYS_LEN, helper.BTRFS_BG_SYSTEM), (DATA_AT, 256 << 10, helper.BTRFS_BG_DATA),
+          (META_AT, META_LEN, helper.BTRFS_BG_METADATA))
+
+
+def btrfs_superblock(nodesize=16384, sector=4096, csum=0, incompat=0):
+    """A superblock naming its bootstrap (system) chunk and the chunk tree's root in it."""
+    sb = bytearray(4096)
+    sb[0x20:0x30], sb[0x40:0x48] = FSID, b"_BHRfS_M"
+    sb[0x58:0x60] = SYS_AT.to_bytes(8, "little")
+    sb[0x90:0x94], sb[0x94:0x98] = sector.to_bytes(4, "little"), nodesize.to_bytes(4, "little")
+    sb[0xbc:0xc4], sb[0xc4:0xc6], sb[0xc7] = incompat.to_bytes(8, "little"), csum.to_bytes(2, "little"), 0
+    sb[0xc9:0xd1] = (1).to_bytes(8, "little")
+    array = struct.pack("<QBQ", 256, helper.BTRFS_CHUNK_ITEM, SYS_AT) + chunk_item(SYS_LEN, helper.BTRFS_BG_SYSTEM, SYS_AT)
+    sb[0xa0:0xa4], sb[0x32b:0x32b + len(array)] = len(array).to_bytes(4, "little"), array
+    return bytes(sb)
+
+
+def chunk_tree(node=16384, csum=0):
+    """The chunk tree: one leaf, at the system chunk's start, listing every chunk."""
+    b = bytearray(node)
+    b[32:48], b[48:56], b[64:80] = FSID, SYS_AT.to_bytes(8, "little"), CHUNK_UUID
+    b[88:96], b[96:100], b[100] = (3).to_bytes(8, "little"), len(CHUNKS).to_bytes(4, "little"), 1 - 1
+    off = node - 101
+    for i, (start, length, kind) in enumerate(CHUNKS):
+        data = chunk_item(length, kind, start)
+        off -= len(data)
+        b[101 + off:101 + off + len(data)] = data
+        struct.pack_into("<QBQII", b, 101 + 25 * i, 256, helper.BTRFS_CHUNK_ITEM, start, off, len(data))
+    return checksum(b, csum)
+
+
+def btrfs_disk(dev, nodesize=16384, csum=0, incompat=0):
+    with open(dev, "r+b") as f:
+        f.seek(helper.BTRFS_SUPER)
+        f.write(btrfs_superblock(nodesize, csum=csum, incompat=incompat))
+        f.seek(SYS_AT)
+        f.write(chunk_tree(nodesize if nodesize <= 65536 else 16384, csum))
 
 
 def test_btrfs_leaves_give_their_folder_entries_stale_ones_too():
@@ -813,10 +876,38 @@ def test_btrfs_leaves_give_their_folder_entries_stale_ones_too():
     broken = bytearray(leaf)
     broken[5000] ^= 1
     assert helper.parse_btrfs_leaf(bytes(broken), fs, {5}) == []              # a wrong checksum
-    sb = bytearray(4096)
-    sb[0x20:0x30], sb[0x40:0x48] = FSID, b"_BHRfS_M"
-    sb[0x90:0x94], sb[0x94:0x98] = (4096).to_bytes(4, "little"), (16384).to_bytes(4, "little")
-    assert helper.parse_btrfs_superblock(bytes(sb)) == fs
+    got = helper.parse_btrfs_superblock(btrfs_superblock())
+    assert {k: got[k] for k in fs} == fs and got["chunk_root"] == SYS_AT and got["devid"] == 1
+
+
+def test_every_btrfs_checksum_kind_is_checked():
+    """xxhash64 wasn't checked at all (the standard library has none): a leaf with any first bytes passed."""
+    for kind in (0, 1, 2):
+        fs = {"fsid": FSID, "nodesize": 16384, "sectorsize": 4096, "csum": kind}
+        leaf = btrfs_leaf(5, [(257, b"kept.txt")], csum=kind)
+        assert helper.parse_btrfs_leaf(leaf, fs, {5}) == [(5, 257, b"kept.txt", 7)], kind
+        assert helper.parse_btrfs_leaf(bytes(32) + leaf[32:], fs, {5}) == [], kind
+    assert helper.parse_btrfs_leaf(leaf, {**fs, "csum": 7}, {5}) == []      # a kind it doesn't know: never good
+    assert helper.xxhash64(b"") == 0xEF46DB3751D8E999 and helper.xxhash64(b"abc") == 0x44BC2CF5AD770999
+    assert helper.xxhash64(b"Nobody inspects the spammish repetition") == 0xFBCEA83C8A378BF1
+
+
+def test_a_leaf_whose_item_offsets_point_anywhere_is_read_within_its_own_bytes():
+    """An item offset of 0xFFFFFFFF made the parser read past the block (struct.error), the step failed, and the
+    listing never got past that block: it failed on that filesystem every time."""
+    fs = {"fsid": FSID, "nodesize": 16384, "sectorsize": 4096, "csum": 0}
+    b = bytearray(btrfs_leaf(5, [(257, b"kept.txt")]))
+    struct.pack_into("<I", b, 101 + 17, 0xFFFFFFFF)
+    assert helper.parse_btrfs_leaf(checksum(b), fs, {5}) == []
+    b = bytearray(btrfs_leaf(5, [(257, b"kept.txt")]))
+    struct.pack_into("<I", b, 96, 700)                                       # more items than headers fit
+    assert helper.parse_btrfs_leaf(checksum(b), fs, {5}) == []
+
+
+@pytest.mark.parametrize("sector, node", [(0, 16384), (4096, 0), (3000, 16384), (4096, 6000), (8192, 4096)])
+def test_a_btrfs_superblock_with_impossible_sizes_isnt_read(sector, node):
+    """A sector size of 0 raised ZeroDivisionError in the scan."""
+    assert helper.parse_btrfs_superblock(btrfs_superblock(node, sector)) is None
 
 
 # ------------------------------------------------------------------ names of deleted files: on a fixture disk
@@ -884,27 +975,53 @@ def test_btrfs_names_from_the_home_subvolumes_tree(root, monkeypatch):
     docs = os.stat(home / "Documents").st_ino
     monkeypatch.setattr(helper, "BTRFS_TREE_ID", lambda fd: 5)
     monkeypatch.setattr(helper, "GENERATION", lambda fd: 5)          # each folder made in transaction 5
-    sb = bytearray(4096)
-    sb[0x20:0x30], sb[0x40:0x48] = FSID, b"_BHRfS_M"
-    sb[0x90:0x94], sb[0x94:0x98] = (4096).to_bytes(4, "little"), (16384).to_bytes(4, "little")
+    btrfs_disk(dev)
     with open(dev, "r+b") as f:
-        f.seek(helper.BTRFS_SUPER)
-        f.write(sb)
         f.seek(1 << 20)                                       # an old copy, freed and not yet trimmed
-        f.write(btrfs_leaf(5, [(docs, b"keep.txt"), (docs, b"old-diary.txt")]))
+        f.write(btrfs_leaf(5, [(docs, b"keep.txt"), (docs, b"old-diary.txt")], at=1 << 20))
         f.seek(3 << 20)
-        f.write(btrfs_leaf(5, [(docs, b"keep.txt")], stale=[(docs, b"letter.odt")]))
+        f.write(btrfs_leaf(5, [(docs, b"keep.txt")], stale=[(docs, b"letter.odt")], at=3 << 20))
         f.seek((4 << 20) - 16384)
-        f.write(btrfs_leaf(9, [(docs, b"other-subvolume.txt")]))
+        f.write(btrfs_leaf(9, [(docs, b"other-subvolume.txt")], at=(4 << 20) - 16384))
         # a stale block from before Documents was made: its number then was another folder's (btrfs uses the
         # highest numbers again after a remount), whose entries are older than Documents
         f.seek(2 << 20)
-        f.write(btrfs_leaf(5, [(docs, b"bobs-old-folders-file.txt", 3)], stale=[(docs, b"bobs-letter.odt", 4)]))
+        f.write(btrfs_leaf(5, [(docs, b"bobs-old-folders-file.txt", 3)], stale=[(docs, b"bobs-letter.odt", 4)],
+                           at=2 << 20))
     b = call("names_begin", mount="/")
     assert b["unit"] == "bytes" and b["total"] == DEVICE_SIZE
     while call("names_step")["done"] < b["total"]:
         pass
     assert call("names_result")["folders"] == [{"path": "Documents", "names": ["letter.odt", "old-diary.txt"]}]
+
+
+def test_a_leaf_shaped_file_another_account_wrote_plants_no_names(root, monkeypatch):
+    """fsid is world-readable (/sys/fs/btrfs), crc32c anyone can compute: another account could write a 16 KiB file
+    shaped as a leaf of the caller's tree and plant names in their list. A tree block is taken only inside a metadata
+    or system chunk, at the logical address that place has, with the chunk tree's UUID."""
+    dev = make_storage(root, fstype="btrfs")
+    home = home_folders(root)
+    docs = os.stat(home / "Documents").st_ino
+    monkeypatch.setattr(helper, "BTRFS_TREE_ID", lambda fd: 5)
+    monkeypatch.setattr(helper, "GENERATION", lambda fd: 5)
+    btrfs_disk(dev)
+    with open(dev, "r+b") as f:
+        f.seek(DATA_AT)                                           # a file's content, in a data chunk
+        f.write(btrfs_leaf(5, [(docs, b"planted-in-data.txt")], at=DATA_AT))
+        f.seek(2 << 20)                                           # in the metadata chunk, claiming another address
+        f.write(btrfs_leaf(5, [(docs, b"planted-elsewhere.txt")], at=3 << 20))
+        f.seek((2 << 20) + 65536)                                 # a guess at the chunk tree's UUID
+        f.write(btrfs_leaf(5, [(docs, b"planted-uuid.txt")], at=(2 << 20) + 65536, chunk_uuid=bytes(16)))
+        f.seek(1 << 20)                                           # btrfs's own: listed
+        f.write(btrfs_leaf(5, [(docs, b"old-diary.txt")], at=1 << 20))
+        f.seek((1 << 20) + 65536)                                 # btrfs's own, but its offsets broken: no error
+        bad = bytearray(btrfs_leaf(5, [(docs, b"x.txt")], at=(1 << 20) + 65536))
+        struct.pack_into("<I", bad, 101 + 17, 0xFFFFFFFF)
+        f.write(checksum(bad))
+    b = call("names_begin", mount="/")
+    while call("names_step")["done"] < b["total"]:
+        pass
+    assert call("names_result")["folders"] == [{"path": "Documents", "names": ["old-diary.txt"]}]
 
 
 def test_mount_points_are_read_with_every_escape_the_kernel_writes(root, monkeypatch):
@@ -917,12 +1034,7 @@ def test_mount_points_are_read_with_every_escape_the_kernel_writes(root, monkeyp
     with open(root / "proc/self/mounts", "a") as f:
         f.write("/dev/sdb1 /home/alice/stick\\011disk vfat rw 0 0\n")
     monkeypatch.setattr(helper, "BTRFS_TREE_ID", lambda fd: 5)
-    sb = bytearray(4096)
-    sb[0x20:0x30], sb[0x40:0x48] = FSID, b"_BHRfS_M"
-    sb[0x90:0x94], sb[0x94:0x98] = (4096).to_bytes(4, "little"), (16384).to_bytes(4, "little")
-    with open(root / "dev/nvme0n1p2", "r+b") as f:
-        f.seek(helper.BTRFS_SUPER)
-        f.write(sb)
+    btrfs_disk(root / "dev/nvme0n1p2")
     call("names_begin", mount="/")
     listed = set(helper._NAMES["dirs"].values())
     assert "Documents" in listed and not any(p.startswith("stick") for p in listed)
@@ -938,14 +1050,10 @@ def test_names_when_the_home_is_a_subvolume_of_the_system_disk(root, monkeypatch
     docs = os.stat(home / "Documents").st_ino
     monkeypatch.setattr(helper, "BTRFS_TREE_ID", lambda fd: 5)
     monkeypatch.setattr(helper, "GENERATION", lambda fd: 5)
-    sb = bytearray(4096)
-    sb[0x20:0x30], sb[0x40:0x48] = FSID, b"_BHRfS_M"
-    sb[0x90:0x94], sb[0x94:0x98] = (4096).to_bytes(4, "little"), (16384).to_bytes(4, "little")
+    btrfs_disk(dev)
     with open(dev, "r+b") as f:
-        f.seek(helper.BTRFS_SUPER)
-        f.write(sb)
         f.seek(1 << 20)
-        f.write(btrfs_leaf(5, [(docs, b"old-diary.txt")]))
+        f.write(btrfs_leaf(5, [(docs, b"old-diary.txt")], at=1 << 20))
     assert [t.mount for t in T.targets(host_for(root))] == ["/"]
     b = call("names_begin", mount="/")
     assert b["scope"] == "home" and b["root"] == "/home/alice"
@@ -961,21 +1069,24 @@ def test_names_on_btrfs_say_which_of_its_records_stopped_them(root, monkeypatch)
     monkeypatch.setattr(helper, "BTRFS_TREE_ID", lambda fd: 5)
     monkeypatch.setattr(helper, "GENERATION", lambda fd: 5)
 
-    def superblock(nodesize):
-        sb = bytearray(4096)
-        sb[0x20:0x30], sb[0x40:0x48] = FSID, b"_BHRfS_M"
-        sb[0x90:0x94], sb[0x94:0x98] = (4096).to_bytes(4, "little"), nodesize.to_bytes(4, "little")
-        with open(dev, "r+b") as f:
-            f.seek(helper.BTRFS_SUPER)
-            f.write(sb)
     with pytest.raises(helper.Refused, match=r"^the btrfs filesystem's superblock \(the record of where everything on "
                        r"it is\) couldn't be read$"):
         call("names_begin", mount="/")                            # nothing where its superblock goes
-    superblock(131072)
+    btrfs_disk(dev, nodesize=131072)
     with pytest.raises(helper.Refused, match="^the btrfs filesystem uses a node size of 131072 bytes, which the tool "
                        "doesn't read$"):
         call("names_begin", mount="/")
-    superblock(16384)
+    btrfs_disk(dev, incompat=helper.BTRFS_MIXED_GROUPS)
+    with pytest.raises(helper.Refused, match="mixed block groups"):
+        call("names_begin", mount="/")
+    with open(dev, "r+b") as f:                                     # the chunk tree's block isn't what it says
+        f.seek(helper.BTRFS_SUPER)
+        f.write(btrfs_superblock())
+        f.seek(SYS_AT + 5000)
+        f.write(b"x")
+    with pytest.raises(helper.Refused, match=r"chunk tree \(the record of where its own records can be\)"):
+        call("names_begin", mount="/")
+    btrfs_disk(dev)
     monkeypatch.setattr(helper, "CALLER", (ME[0] + 1, ME[1], "/home/alice"))   # the home isn't this caller's
     with pytest.raises(helper.Refused, match="^none of the btrfs filesystem's folders is yours to list$"):
         call("names_begin", mount="/")

@@ -103,6 +103,9 @@ async function api(method, path, body, raw = false) {
   if (!res.ok) {
     const err = new Error(data.error || data.detail || `${res.status} ${res.statusText}`);
     err.declined = !!data.declined;
+    // refused because the helper isn't installed (or is another version's): offered, rather than left at the refusal
+    if (err.declined && S.state && /administrator helper (isn't installed|is from another version)/.test(err.message))
+      setTimeout(() => openHelperNote(true), 0);
     err.status = res.status;
     err.data = data;                  // a failed fix still reports what was re-checked after the rollback
     throw err;
@@ -1721,9 +1724,9 @@ function helperRow() {
       : "The administrator helper is installed root-owned (/usr/libexec/daprivacyscanner), with its polkit action."),
     h("span", { class: "spacer" }),
     h("button", { class: "small", onclick: () => modal({ title: "Remove the administrator helper?", body: [
-      h("p", {}, "The changes it made stay as they are, and can still be reverted from History. Root work then goes "
-        + "through a copy of the helper run with `pkexec /usr/bin/python3` again, so the password prompt names python3 "
-        + "rather than DA Privacy Kit."),
+      h("p", {}, "The changes it made stay as they are, and can still be reverted from History once it is installed again. "
+        + "Until then, nothing runs as administrator: scans leave out what needs it, and fixes that need it can't be "
+        + "applied or reverted."),
       h("p", { class: "muted small" }, "You can install it again from the note at the top, or with "
         + "`daprivacyscanner --install-helper`."),
     ], buttons: [{ label: "Keep it" }, { label: "Remove it", kind: "danger",
@@ -1750,25 +1753,29 @@ async function uninstallHelper(close, btn, row) {
   }
 }
 
-function openHelperNote() {
+// `asked`: opened because something asked for administrator access, which needs the helper installed first
+function openHelperNote(asked) {
   const install = { label: S.state.helper_stale ? "Install this version's" : "Install it", kind: "primary",
     onclick: (close, el) => installHelper(close, el) };
+  const prompt = h("p", { class: "muted small" }, "Installing asks for your password once. That prompt names "
+    + "/usr/bin/python3: it runs this version's helper, checked by its fingerprint (SHA-256) first, to install itself. "
+    + "After that, the prompt names DA Privacy Kit. From a terminal:");
+  const first = asked ? [h("p", {}, "This needs administrator access, which goes through DA Privacy Kit's own "
+    + "administrator helper: install it first, then try again.")] : [];
   if (S.state.helper_stale) {
-    modal({ title: "The administrator helper is out of date", body: [
+    modal({ title: "The administrator helper is out of date", body: [...first,
       h("p", {}, "The helper installed in /usr/libexec/daprivacyscanner comes from another version of DA Privacy "
         + "Kit, so this version refuses it rather than ask it for actions it may not have. Until it is reinstalled, "
         + "scans run without administrator access and fixes that need it can't be applied."),
-      h("p", { class: "muted small" }, "Installing asks for your password once. From a terminal:"),
-      commandBlock(["daprivacyscanner --install-helper"]),
+      prompt, commandBlock(["daprivacyscanner --install-helper"]),
     ], buttons: [{ label: "Close" }, install] });
     return;
   }
-  modal({ title: "The administrator helper isn't installed", body: [
-    h("p", {}, "Until it is, root work is done by a copy of the helper run with `pkexec /usr/bin/python3`: the password "
-      + "prompt therefore names python3 rather than DA Privacy Kit, and what runs as root is only as safe as "
-      + "your own account. Installing it root-owned, with its own polkit action, fixes both."),
-    h("p", { class: "muted small" }, "Installing asks for your password once. From a terminal:"),
-    commandBlock(["daprivacyscanner --install-helper", "daprivacyscanner --uninstall-helper"]),
+  modal({ title: "The administrator helper isn't installed", body: [...first,
+    h("p", {}, "Until it is, nothing runs as administrator: scans leave out what needs it, and fixes that need it "
+      + "can't be applied. Installed root-owned, with polkit actions of its own, nothing running as you can change "
+      + "what runs as root."),
+    prompt, commandBlock(["daprivacyscanner --install-helper", "daprivacyscanner --uninstall-helper"]),
   ], buttons: [{ label: "Close" }, install] });
 }
 
@@ -5112,6 +5119,7 @@ async function scan() {
     S.band = null;
     const unknown = S.state.context_keys.filter(k => S.report.context.values[k]?.value === null);
     const declined = S.report.admin?.requested && !S.report.admin.granted;
+    if (declined && S.report.admin.install_helper) setTimeout(() => openHelperNote(true), 0);
     const parts = [declined ? `Scanned without administrator access (${S.report.admin.message})` : "Scan finished. Nothing was changed."];
     if (S.report.admin?.dropped) parts.push("Administrator access was dropped again: nothing found needs it to fix.");
     if (unknown.length) parts.push(`Couldn't determine: ${unknown.map(k => (CONTEXT_LABEL[k] || k).toLowerCase()).join(", ")}.`);
@@ -5425,7 +5433,7 @@ async function init() {
   $("#reads-btn").addEventListener("click", openReads);
   $("#tools-btn").addEventListener("click", openTools);
   $("#export-btn").addEventListener("click", () => openExport());
-  $("#helper-note").addEventListener("click", openHelperNote);
+  $("#helper-note").addEventListener("click", () => openHelperNote(false));
   document.querySelectorAll("#source button").forEach(b => b.addEventListener("click", () => setSource(b.dataset.source)));
   document.querySelectorAll("#show button").forEach(b => b.addEventListener("click", () => setShow(b.dataset.show)));
   $("#filter").addEventListener("input", renderChecks);

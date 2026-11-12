@@ -2,7 +2,9 @@
 <!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
   "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
 <!-- DA Privacy Kit's administrator helper: only this root-owned program, and the password is
-     asked every time it starts (auth_admin, not auth_admin_keep). -->
+     asked every time it starts (auth_admin, not auth_admin_keep). What can't be undone, what reaches
+     other accounts' data, installing or removing the helper, and turning remote access back on ask
+     again, each time (the helper checks the second action itself, with pkcheck). -->
 <policyconfig>
   <vendor>DA Privacy Kit</vendor>
   <action id="au.com.digitalarchon.daprivacyscanner.helper">
@@ -14,5 +16,14 @@
       <allow_active>auth_admin</allow_active>
     </defaults>
     <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/daprivacyscanner/daprivacyscanner-helper</annotate>
+  </action>
+  <action id="au.com.digitalarchon.daprivacyscanner.sensitive">
+    <description>Let DA Privacy Kit do something that can't be undone, or that reaches beyond your account</description>
+    <message>DA Privacy Kit asks for your password again, because it wants to $(what).</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
   </action>
 </policyconfig>

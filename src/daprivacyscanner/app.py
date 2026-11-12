@@ -27,8 +27,10 @@ from .server import create_app
 
 WEBKIT_INSTALL = ("Ubuntu, Mint, Debian: sudo apt install gir1.2-webkit2-4.1 · Fedora: sudo dnf install webkit2gtk4.1 · "
                   "Arch: sudo pacman -Syu webkit2gtk-4.1 · openSUSE: sudo zypper install typelib-1_0-WebKit2-4_1")
-HELPER_NOTE = ("The administrator helper isn't installed root-owned, so the password prompt names /usr/bin/python3 "
-               "rather than DA Privacy Kit. Install it from the app, or with: daprivacyscanner --install-helper")
+HELPER_NOTE = ("The administrator helper isn't installed, so nothing runs as administrator: scans leave out what "
+               "needs it, and fixes that need it can't be applied. Install it once, from the app, or with: "
+               "daprivacyscanner --install-helper (that password prompt names /usr/bin/python3, which runs this "
+               "version's helper to install it)")
 TIMER_UNIT = "daprivacyscanner-scan"
 
 
@@ -256,7 +258,7 @@ def scan_cli(cat, as_json: bool, notify: bool, admin: bool, quiet: bool, redact:
     if admin:
         try:
             helper = host.privileged = PkexecHelper.start()
-        except HelperUnavailable as e:
+        except HelperUnavailable as e:             # declined, or the helper not installed (it says how)
             print(f"Scanning without administrator access: {e}", file=sys.stderr)
     try:
         report = Runner(cat, host).scan().to_dict()
@@ -759,7 +761,8 @@ def main(argv: list[str] | None = None) -> None:
                     "exit status 1 when there are findings")
     ap.add_argument("--json", action="store_true", help="with --scan: print the report as JSON")
     ap.add_argument("--redact", action="store_true", help="with --scan: redact names, hosts and addresses in the report")
-    ap.add_argument("--admin", action="store_true", help="with --scan: ask for administrator access (polkit) first")
+    ap.add_argument("--admin", action="store_true", help="with --scan: ask for administrator access (polkit) first; "
+                    "the administrator helper must be installed (--install-helper)")
     ap.add_argument("--notify", action="store_true", help="with --scan: a desktop notification when findings are new or worse")
     ap.add_argument("--quiet", action="store_true", help="with --scan: print nothing (for timers)")
     ap.add_argument("--schedule", choices=["daily", "weekly", "off"],
@@ -771,7 +774,8 @@ def main(argv: list[str] | None = None) -> None:
                     "FILE is made new, readable by you alone: never written over a file that is there (it goes into "
                     "\"NAME (2).txt\" and so on instead) nor through a link")
     ap.add_argument("--install-helper", action="store_true", help="install this version's administrator helper "
-                    "root-owned, with its polkit action (asks for your password)")
+                    "root-owned, with its polkit actions (asks for your password; the prompt names /usr/bin/python3, "
+                    "which runs the copy checked by its hash); administrator access needs it")
     ap.add_argument("--uninstall-helper", action="store_true", help="remove the installed administrator helper")
     ap.add_argument("--dry-run", metavar="CHECK", nargs="?", const="all",
                     help="print what the fix for CHECK (or every fixable check; 'easy': the Easy fixes) would do, "

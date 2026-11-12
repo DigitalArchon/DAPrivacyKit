@@ -397,6 +397,10 @@ def swap_system(r, monkeypatch, avail_kb=8000000):
              "/dev/zram1": "/dev/zram1 partition 4000000 2048 50"}
     active = dict(lines)
     calls = []
+    for name in lines:                              # the devices and the swap file, as swap_on finds them
+        (r / name.lstrip("/")).parent.mkdir(parents=True, exist_ok=True)
+        (r / name.lstrip("/")).write_bytes(b"")
+        os.chmod(r / name.lstrip("/"), 0o600)
 
     def write():
         (r / "proc/swaps").write_text("Filename Type Size Used Priority\n" + "".join(v + "\n" for v in active.values()))

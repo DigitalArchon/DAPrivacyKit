@@ -13,10 +13,29 @@ installed root-owned on its own.
 
 Protocol: one JSON object per line on stdin, {"id": n, "action": "...", "args": {...}}; one
 reply per line on stdout, {"id": n, "ok": true, "result": ...} or {"id": n, "ok": false,
-"error": "..."}. The helper exits at end of input.
+"error": "..."}. stdin and stdout are one end of a socket pair the app holds the other end of: a
+pipe's end can be opened again by any process of the same user through /proc/<app>/fd, a socket's
+can't. A request line is at most MAX_REQUEST bytes. The helper exits at end of input, after
+HELPER_IDLE seconds without a request (the app sends "keepalive" while long work holds the access),
+and after HELPER_LIFETIME however it is used. {"action": "cancel", "args": {"id": n}} stops request
+n while it runs (it answers "Stopped."); it is never answered itself.
+
+Consent: one polkit prompt (pkexec's) starts the helper for a session of reads and reversible, journalled
+changes. What can't be undone, what returns other accounts' data, installing or removing the helper, and a
+revert that turns remote access back on (CONSENT, revert) ask polkit again, each time, for SENSITIVE_ACTION
+(auth_admin, never kept), with pkcheck on the app's own process; declined, nothing is done. Started with
+--install-only (privileged.install_helper: a copy that isn't installed yet), it does nothing but install or
+remove itself, which that start's own prompt was for.
+
+Journal: a change request may carry "change_id" (32 lowercase hex, never used before), which the journal
+entry then has; without one the helper makes one. Before anything changes, the entry is written (state
+"intent", what was there before), then marked "applied", or "failed" (with what was put back); every write is
+fsynced, and its folder. Entries are the caller's (their uid is in each).
 
 Detection (read-only):
-    hello                      -> {"version", "uid"}
+    hello                      -> {"version", "uid", "mode"}
+    keepalive                  -> {"alive": true}: nothing but a request, so the helper doesn't end for being idle
+    list_changes               -> {"changes": [{"change_id", "state", "action", "time", "text"}]}: the caller's journal
     luks_dump   {device}       -> parsed `cryptsetup luksDump`: version, keyslots, tokens (no salts or digests)
     clevis_list {device}       -> [{"slot", "pin", "config"}] from `clevis luks list`
     read_file   {path}         -> {"text"} or {"missing": true}, for an allowlisted config file
@@ -117,25 +136,42 @@ import json
 import os
 import pwd
 import re
+import select
 import shlex
 import stat
 import struct as _struct
 import subprocess
 import sys
-import tempfile
 import time
 import uuid
 
 # Bumped whenever the actions or their arguments change: an installed (root-owned) copy from an
 # older version is then refused with a clear message instead of failing on an unknown action. Also
 # bumped when an action's answer is corrected, so an installed copy is named out of date and replaced.
-PROTOCOL = 30
+PROTOCOL = 31
 # Prefix for every path the helper writes or journals. Empty in use; tests point it at a fixture
 # tree (and replace RUN), so nothing in the test suite touches the real system.
 ROOT = ""
+STATE_DIR = "/var/lib/daprivacyscanner"
 CHANGES_DIR = "/var/lib/daprivacyscanner/changes"
+RUN_DIR = "/run/daprivacyscanner"
+# what was put back, or failed with nothing left changed: no copy of anything, so in /run (gone at a reboot), and the
+# journal's own folders still go once nothing is left to put back
+DONE_DIR = "/run/daprivacyscanner/done"
+DONE_KEEP = 7 * 86400
+# the helper's own folders, and the mode each is kept at (an older helper made some under the user's umask)
+OWN_DIRS = {STATE_DIR: 0o700, CHANGES_DIR: 0o700, RUN_DIR: 0o755, DONE_DIR: 0o700,
+            "/run/daprivacyscanner/ramdisk": 0o700}
 MAX_FILE = 256 * 1024
 COMMAND_TIMEOUT = 20
+MAX_REQUEST = 4 << 20                          # one request line at most (names_check's 500 paths fit many times)
+HELPER_IDLE = 6 * 60                           # seconds without a request before the helper ends (the app ends its own
+                                               # access after 5 minutes unused, and sends keepalive while work holds it)
+HELPER_LIFETIME = 12 * 3600                    # and at most this long, however it is used
+MODE = "session"                               # "install": started only to install or remove itself (main)
+# what polkit is asked for, each time, before what can't be undone or reaches beyond the caller's account
+SENSITIVE_ACTION = "au.com.digitalarchon.daprivacyscanner.sensitive"
+CONSENT_WAIT = 300                             # seconds the password prompt may stand
 # Root-only (on some distros) config files that detection needs. Exact paths or fnmatch
 # patterns; a path must also be itself (no symlink, no ..) to be read.
 READABLE = (
@@ -307,7 +343,13 @@ def parse_clevis_list(text: str) -> list[dict]:
 # ------------------------------------------------------------------ actions
 
 def hello(args: dict) -> dict:
-    return {"version": PROTOCOL, "uid": os.geteuid()}
+    return {"version": PROTOCOL, "uid": os.geteuid(), "mode": MODE}
+
+
+def keepalive(args: dict) -> dict:
+    """Nothing but a request: the helper doesn't end for being idle while the app's long work holds the access
+    (between the TRIM test's reads, a watch's polls)."""
+    return {"alive": True}
 
 
 def luks_dump(args: dict) -> dict:
@@ -405,34 +447,108 @@ def _check_path(path: str) -> str:
     return real
 
 
-def _read(path: str) -> bytes | None:
+def _owner() -> int:
+    """Who the helper's own files and folders must belong to: root (in a fixture tree, the tests' own account)."""
+    return os.geteuid() if ROOT else 0
+
+
+def _read(path: str, trusted: bool = False) -> bytes | None:
+    """A file's content (None when it isn't there), never through a link. `trusted`: one of the helper's own state
+    files (its journal, what it turned off), which must be root's, writable by no one else and have one name: an
+    older helper started under a user's umask 000 left its folders writable by every account, and an entry planted
+    there would have been put back as root."""
     real = _check_path(path)
     try:
         fd = os.open(real, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except FileNotFoundError:
         return None
     with os.fdopen(fd, "rb") as f:
-        if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
+        st = os.fstat(f.fileno())
+        if not stat.S_ISREG(st.st_mode):
             raise Refused(f"{path} is not a regular file")
+        if trusted and (st.st_uid != _owner() or st.st_mode & 0o022 or st.st_nlink != 1):
+            raise Refused(f"{path} isn't the helper's own (it must be root's, and writable by root alone)")
         data = f.read(MAX_FILE + 1)
     if len(data) > MAX_FILE:
         raise Refused(f"{path} is too large")
     return data
 
 
+def _fsync_dir(real: str) -> None:
+    try:
+        fd = os.open(real, os.O_RDONLY | os.O_DIRECTORY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
+def _makedirs(path: str, mode: int = 0o755) -> list[str]:
+    """The folders on the way to `path` (a logical path) that are missing, made one at a time with `mode` set on each
+    (os.makedirs sets it on the last alone: the others got the umask's, 0777 under umask 000), never through a
+    link. Returns the ones it made, outermost first."""
+    made = []
+    for d in _missing_dirs(path + "/x"):
+        real = _p(d)
+        try:
+            os.mkdir(real, mode)
+        except FileExistsError:
+            pass
+        else:
+            made.append(d)
+        st = os.lstat(real)
+        if not stat.S_ISDIR(st.st_mode):
+            raise Refused(f"{d} goes through a symlink" if stat.S_ISLNK(st.st_mode) else f"{d} isn't a folder")
+        if d in made:
+            os.chmod(real, mode)
+    _check_path(path)
+    return made
+
+
+def _own_dir(path: str) -> str:
+    """One of the helper's own folders (OWN_DIRS), there and as it must be: made with its mode where it is missing
+    (and the helper's folders above it), and where it is there, root's (else refused: what it holds can't be trusted),
+    never a link, its mode set again (an older helper made /var/lib/daprivacyscanner under the user's umask: 0775,
+    or 0777 under umask 000). Returns its real path."""
+    chain = [d for d in OWN_DIRS if path == d or path.startswith(d + "/")]
+    for d in sorted(chain, key=len):
+        parent = os.path.dirname(d)
+        if not os.path.isdir(_p(parent)):
+            _makedirs(parent, 0o755)
+        real = _check_path(d)
+        try:
+            os.mkdir(real, OWN_DIRS[d])
+        except FileExistsError:
+            pass
+        st = os.lstat(real)
+        if not stat.S_ISDIR(st.st_mode):
+            raise Refused(f"{d} isn't a folder")
+        if st.st_uid != _owner():
+            raise Refused(f"{d} isn't root's, so what it holds can't be trusted: remove it (sudo rm -r {d})")
+        if stat.S_IMODE(st.st_mode) != OWN_DIRS[d]:
+            os.chmod(real, OWN_DIRS[d])
+    return _check_path(path)
+
+
 def _write(path: str, data: bytes | None, mode: int = 0o644) -> None:
-    """Atomically replace (or with None, remove) a file, keeping an existing file's mode and owner."""
+    """Atomically replace (or with None, remove) a file, keeping an existing file's mode and owner. What is written
+    is on the disk when this returns (the file and its folder fsynced): a change journalled first must find its
+    record there after a crash."""
     real = _check_path(path)
+    parent = os.path.dirname(real)
     if data is None:
         try:
             os.unlink(real)
         except FileNotFoundError:
-            pass
+            return
+        _fsync_dir(parent)
         return
-    parent = os.path.dirname(real)
     if not os.path.isdir(parent):
-        os.makedirs(parent, mode=0o755, exist_ok=True)
-        _check_path(os.path.dirname(path))
+        _makedirs(os.path.dirname(path), 0o755)
     try:
         st = os.lstat(real)
         mode, owner = stat.S_IMODE(st.st_mode), (st.st_uid, st.st_gid)
@@ -443,9 +559,11 @@ def _write(path: str, data: bytes | None, mode: int = 0o644) -> None:
     try:
         with os.fdopen(fd, "wb") as f:
             f.write(data)
+            f.flush()
             os.fchmod(f.fileno(), mode)
             if owner is not None and os.geteuid() == 0:
                 os.fchown(f.fileno(), *owner)
+            os.fsync(f.fileno())
         os.replace(tmp, real)
     except BaseException:
         try:
@@ -453,6 +571,7 @@ def _write(path: str, data: bytes | None, mode: int = 0o644) -> None:
         except OSError:
             pass
         raise
+    _fsync_dir(parent)
 
 
 def _sha(data: bytes | None) -> str | None:
@@ -467,25 +586,135 @@ def _must_be_root() -> None:
 # ------------------------------------------------------------------ changes: the journal
 
 _CHANGE_ID = re.compile(r"^[0-9a-f]{32}$")
+# the requests that make a change the journal records: only these may carry the app's "change_id"
+JOURNALLED = frozenset({"write_dropin", "edit_config", "set_service", "set_sysctl", "ufw_enable", "browser_policy",
+                        "block_extensions", "mount_tmpfs", "enable_tmp_mount", "opensnitch_rules"})
+REQUEST_ID: str | None = None                  # the change id the request in hand brought (handle), used once
+ACTION = ""                                    # the request in hand's action, for its journal entry
 
 
-def _journal(change: dict) -> str:
-    d = _check_path(CHANGES_DIR)
-    os.makedirs(d, mode=0o700, exist_ok=True)
-    os.chmod(d, 0o700)
-    change["id"] = uuid.uuid4().hex
-    change["created"] = time.time()
+def _caller_uid() -> int | None:
+    """The calling user's uid where it is known (pkexec's PKEXEC_UID, or a test's CALLER), for the journal."""
+    if CALLER is not None:
+        return CALLER[0]
+    try:
+        return int(os.environ["PKEXEC_UID"])
+    except (KeyError, ValueError):
+        return None
+
+
+def _change_known(change_id: str) -> bool:
+    return any(os.path.lexists(_p(f"{d}/{change_id}.json")) for d in (CHANGES_DIR, DONE_DIR))
+
+
+def _change_text(change: dict) -> str:
+    """What a journal entry changed, in a line (list_changes): the files, units and settings, never their content."""
+    parts = []
+    if change.get("files"):
+        parts.append("files " + ", ".join(f["path"] for f in change["files"]))
+    services = change.get("services") or ([change["service"]] if change.get("service") else [])
+    if services:
+        parts.append("units " + ", ".join(s["unit"] for s in services))
+    if change.get("sysctl"):
+        parts.append(f"the kernel setting {change['sysctl']['key']}")
+    if change.get("ufw"):
+        parts.append("the firewall (ufw)")
+    if change.get("mount_unit"):
+        parts.append(f"{change['mount_unit']['path']} kept in memory")
+    if change.get("linked_unit"):
+        parts.append(f"{change['linked_unit']['unit']} enabled")
+    return "; ".join(parts) or change.get("action", "")
+
+
+def _journal_begin(change: dict) -> str:
+    """The intent record, written (and fsynced) before anything is changed: what the request is about to do and what
+    was there before, so a crash, a full disk or a limit on file sizes part way leaves a change that can be put back.
+    Its id is the one the request brought (REQUEST_ID), else a new one."""
+    global REQUEST_ID
+    change_id, REQUEST_ID = REQUEST_ID or uuid.uuid4().hex, None
+    change.update(id=change_id, created=time.time(), state="intent", action=ACTION, uid=_caller_uid())
+    change["text"] = _change_text(change)
+    _own_dir(CHANGES_DIR)
+    _write(f"{CHANGES_DIR}/{change_id}.json", json.dumps(change).encode(), 0o600)
+    return change_id
+
+
+def _journal_save(change: dict, **fields) -> None:
+    change.update(fields)
+    change["text"] = _change_text(change)
     _write(f"{CHANGES_DIR}/{change['id']}.json", json.dumps(change).encode(), 0o600)
-    return change["id"]
+
+
+def _journal_forget(change: dict) -> None:
+    """A record of what turned out to change nothing (a unit already so): gone, as if never made."""
+    _write(f"{CHANGES_DIR}/{change['id']}.json", None)
+    _rmdir_empty(CHANGES_DIR, STATE_DIR)
+
+
+def _journal_close(change: dict, state: str, **fields) -> None:
+    """A record with nothing left to put back ("reverted", or "failed" with everything put back): out of the journal,
+    its folders removed once empty, and a line of it kept in /run (no copy of anything, gone at a reboot), so
+    list_changes can still say what became of it."""
+    _write(f"{CHANGES_DIR}/{change['id']}.json", None)
+    _rmdir_empty(CHANGES_DIR, STATE_DIR)
+    done = {"id": change["id"], "state": state, "action": change.get("action", ""), "uid": change.get("uid"),
+            "created": change.get("created"), "time": time.time(), "text": change.get("text") or _change_text(change),
+            **{k: v for k, v in fields.items() if k in ("failed",)}}
+    try:
+        _own_dir(DONE_DIR)
+        _write(f"{DONE_DIR}/{change['id']}.json", json.dumps(done).encode(), 0o600)
+        now = time.time()
+        for name in os.listdir(_p(DONE_DIR)):
+            m = re.fullmatch(r"([0-9a-f]{32})\.json", name)
+            if m and m[1] != change["id"]:
+                try:
+                    old = json.loads(_read(f"{DONE_DIR}/{name}", trusted=True) or b"{}")
+                    if now - float(old.get("time") or 0) > DONE_KEEP:
+                        _write(f"{DONE_DIR}/{name}", None)
+                except (Refused, OSError, ValueError, TypeError):
+                    continue
+    except (Refused, OSError):
+        pass                                       # only list_changes' answer for it is lost
 
 
 def _load_change(change_id) -> dict:
     if not isinstance(change_id, str) or not _CHANGE_ID.match(change_id):
         raise Refused("bad change id")
-    data = _read(f"{CHANGES_DIR}/{change_id}.json")
+    data = _read(f"{CHANGES_DIR}/{change_id}.json", trusted=True)
     if data is None:
         raise Refused("that change isn't in the helper's journal (already reverted?)")
-    return json.loads(data)
+    _own_dir(CHANGES_DIR)                          # and its folders are root's alone
+    change = json.loads(data)
+    if not isinstance(change, dict) or change.get("id") != change_id:
+        raise Refused("that change's record isn't one the helper wrote")
+    return change
+
+
+def list_changes(args: dict) -> dict:
+    """The calling user's changes in the journal, and what became of those put back or failed lately: {"change_id",
+    "state" (intent, applied, failed, reverted), "action", "time", "text"}. An app whose request timed out learns
+    from it whether the change was made."""
+    uid = _caller()[0]
+    out = []
+    for d in (CHANGES_DIR, DONE_DIR):
+        try:
+            names = sorted(os.listdir(_p(d)))
+        except OSError:
+            continue
+        for name in names:
+            m = re.fullmatch(r"([0-9a-f]{32})\.json", name)
+            if not m:
+                continue
+            try:
+                c = json.loads(_read(f"{d}/{name}", trusted=True) or b"{}")
+            except (Refused, OSError, ValueError):
+                continue
+            if not isinstance(c, dict) or c.get("uid") != uid:
+                continue
+            out.append({"change_id": m[1], "state": c.get("state", "applied"), "action": c.get("action", ""),
+                        "time": c.get("time") or c.get("created"), "text": c.get("text") or _change_text(c)})
+    out.sort(key=lambda c: c["time"] or 0)
+    return {"changes": out[-1000:]}
 
 
 def _file_record(path: str, before: bytes | None, after: bytes | None) -> dict:
@@ -569,12 +798,14 @@ def _unit_dirs() -> set[str]:
     return {f"{base}/{n}" for n in names if os.path.isdir(_p(f"{base}/{n}")) and not os.path.islink(_p(f"{base}/{n}"))}
 
 
-def _journal_add_dirs(change_id: str, dirs: list[str]) -> None:
-    """Folders a change made after its journal entry was written (enabling its unit), added to it."""
-    if dirs:
+def _journal_add_dirs(change_id: str, dirs: list[str], **fields) -> None:
+    """Folders a change made after its journal entry was written (enabling its unit), added to it, with `fields`
+    (its state once done)."""
+    if dirs or fields:
         change = _load_change(change_id)
-        change["dirs"] = list(dict.fromkeys([*change.get("dirs", []), *dirs]))
-        _write(f"{CHANGES_DIR}/{change_id}.json", json.dumps(change).encode(), 0o600)
+        if dirs:
+            change["dirs"] = list(dict.fromkeys([*change.get("dirs", []), *dirs]))
+        _journal_save(change, **fields)
 
 
 def _rmdir_empty(*dirs: str) -> None:
@@ -617,14 +848,24 @@ def _remove_dirs(dirs: list[str]) -> list[str]:
     return notes
 
 
-def _apply_files(files: dict[str, bytes | None], hooks: list[str], extra: dict | None = None) -> dict:
-    """Writes the files (path -> new content, None removes), journals what was there before, and the
-    folders writing them made, validates and runs the hooks. Unchanged files are left alone."""
+def _why(e: BaseException) -> str:
+    return str(e) if isinstance(e, Refused) else getattr(e, "strerror", None) or type(e).__name__
+
+
+def _apply_files(files: dict[str, bytes | None], hooks: list[str], extra: dict | None = None,
+                 more: bool = False) -> dict:
+    """Journals what is there now and what it will write (the intent record), then writes the files (path -> new
+    content, None removes), with the folders writing them makes, validates and runs the hooks. Unchanged files are
+    left alone. A failure puts back what was written; the record is then closed as failed, or kept (and its id sent)
+    where something couldn't be put back. `more`: the caller has more to do, and marks the record applied itself."""
     befores = {p: _read(p) for p in files}
     changed = {p: new for p, new in files.items() if befores[p] != new}
     if not changed:
         return {"changed": False}
     dirs = list(dict.fromkeys(d for p, new in changed.items() if new is not None for d in _missing_dirs(p)))
+    change = {"files": [_file_record(p, befores[p], new) for p, new in changed.items()], "hooks": hooks,
+              **({"dirs": dirs} if dirs else {}), **(extra or {})}
+    change_id = _journal_begin(change)
     for d in dirs:
         _did(["mkdir", d])                         # _write makes them, outermost first
     done = []
@@ -635,14 +876,22 @@ def _apply_files(files: dict[str, bytes | None], hooks: list[str], extra: dict |
         problem = _validate(hooks)
         if problem:
             raise Refused(f"the new configuration was rejected, so nothing was changed: {problem}")
-    except BaseException:
+    except BaseException as e:
+        left = []
         for p in done:
-            _write(p, befores[p])
+            try:
+                _write(p, befores[p])
+            except (OSError, Refused):
+                left.append(p)
         _remove_dirs(dirs)
+        if left:
+            _journal_save(change, state="failed", failed=_why(e))
+            raise Refused(f"{_why(e)}; {', '.join(left)} couldn't be put back as it was (what it changed is recorded, "
+                          "so it can be put back)", {"change_id": change_id}) from None
+        _journal_close(change, "failed", failed=_why(e))
         raise
-    change = {"files": [_file_record(p, befores[p], new) for p, new in changed.items()], "hooks": hooks,
-              **({"dirs": dirs} if dirs else {}), **(extra or {})}
-    change_id = _journal(change)
+    if not more:
+        _journal_save(change, state="applied")
     problems = _hooks(hooks)
     return {"changed": True, "change_id": change_id, "warnings": problems, "files": sorted(changed), "dirs": dirs}
 
@@ -1102,16 +1351,29 @@ def edit_config(args: dict) -> dict:
 
 # ------------------------------------------------------------------ services
 
-SERVICES = frozenset({
-    "ssh.service", "ssh.socket", "sshd.service", "xrdp.service", "xrdp-sesman.service",
-    "avahi-daemon.service", "avahi-daemon.socket", "smbd.service", "nmbd.service", "rpcbind.service", "rpcbind.socket",
-    "cockpit.socket", "teamviewerd.service", "anydesk.service", "rustdesk.service",
-    "apport.service", "whoopsie.service", "whoopsie.path", "abrtd.service", "abrt-journal-core.service",
-    "abrt-oops.service", "abrt-xorg.service", "abrt-vmcore.service",
-    "firewalld.service", "tmp.mount", "fstrim.timer",
-    "rsyslog.service", "syslog-ng.service", "syslog-ng@default.service", "motd-news.timer",
-    "opensnitchd.service", "opensnitch.service",
-})
+# Each unit the app turns on or off, and only the way it does (enable, start, mask): what its guides offer
+# (checks/guides: service_off turns units off, mask for Avahi, which cups-browsed starts again; the firewall, OpenSnitch,
+# the weekly TRIM timer and /tmp in memory are turned on). A remote-access service is never turned on here, nor a
+# firewall off: a revert puts back what the journal recorded, asking again for a remote-access one (_revert_consent).
+_OFF = frozenset({(False, False, False)})
+_OFF_MASK = _OFF | {(False, False, True)}
+_ON = frozenset({(True, True, False)})
+SERVICES = {
+    **dict.fromkeys(("ssh.service", "ssh.socket", "sshd.service", "xrdp.service", "xrdp-sesman.service",
+                     "smbd.service", "nmbd.service", "rpcbind.service", "rpcbind.socket", "cockpit.socket",
+                     "teamviewerd.service", "anydesk.service", "rustdesk.service",
+                     "apport.service", "whoopsie.service", "whoopsie.path", "abrtd.service", "abrt-journal-core.service",
+                     "abrt-oops.service", "abrt-xorg.service", "abrt-vmcore.service",
+                     "rsyslog.service", "syslog-ng.service", "syslog-ng@default.service", "motd-news.timer"), _OFF),
+    "avahi-daemon.service": _OFF_MASK, "avahi-daemon.socket": _OFF_MASK,
+    "firewalld.service": _ON, "fstrim.timer": _ON, "opensnitchd.service": _ON, "opensnitch.service": _ON,
+    "tmp.mount": frozenset({(True, None, False)}),          # from the next boot: mounting over /tmp now hides its files
+}
+# what lets someone reach this computer from elsewhere: turned on again only by a revert, and only after the password
+# is asked for again (the guides turn them off)
+REMOTE_ACCESS = frozenset({"ssh.service", "ssh.socket", "sshd.service", "xrdp.service", "xrdp-sesman.service",
+                           "smbd.service", "nmbd.service", "cockpit.socket", "teamviewerd.service", "anydesk.service",
+                           "rustdesk.service"})
 
 
 def _unit_state(unit: str) -> tuple[str, str]:
@@ -1176,6 +1438,9 @@ def set_service(args: dict) -> dict:
     if enable not in (True, False, None) or start not in (True, False, None) or (enable is None and start is None) or \
             mask not in (True, False) or (mask and (enable is not False or start is not False)):
         raise Refused("bad request")
+    for u in units:
+        if (enable, start, mask) not in SERVICES[u]:
+            raise Refused(f"the helper doesn't turn {u} {'on' if enable or start else 'off'} that way")
     before = {u: _unit_state(u) for u in units}
     for u in units:
         why = CANT_ENABLE.get(before[u][0]) if enable is True or (start is True and before[u][0].startswith("masked")) \
@@ -1183,6 +1448,12 @@ def set_service(args: dict) -> dict:
         if why:
             raise Refused(f"{u} can't be turned on: " + why.format(u=u))
     had = _unit_dirs()
+    want = "masked" if mask else "enabled" if enable else "disabled"
+    change = {"services": [{"unit": u, "before": before[u],
+                            "after": [want if enable is not None else before[u][0],
+                                      ("active" if start else "inactive") if start is not None else before[u][1]]}
+                           for u in units]}
+    _journal_begin(change)
     try:
         _set_units({u: (enable, start) for u in units}, before)
         if mask:
@@ -1195,7 +1466,6 @@ def set_service(args: dict) -> dict:
                 raise Refused(f"{u} was started again at once, by something that asked for it")
             if start is True and now[u][1] != "active":
                 raise Refused(f"{u} didn't stay running (systemctl status {u} says why)")
-            want = "masked" if mask else "enabled" if enable else "disabled"
             if enable is not None and (before[u][0] in ("enabled", "disabled") or mask) and now[u][0] != want:
                 raise Refused(f"{u} is {now[u][0]} now, not {want}")
     except Refused as e:
@@ -1204,20 +1474,21 @@ def set_service(args: dict) -> dict:
         except Refused:
             after = before
         if after == before:
+            _journal_close(change, "failed", failed=str(e))
             raise
         made = sorted(_unit_dirs() - had)
-        change_id = _journal({"services": [{"unit": u, "before": before[u], "after": after[u]} for u in units],
-                              "failed": str(e), **({"dirs": made} if made else {})})
+        _journal_save(change, services=[{"unit": u, "before": before[u], "after": after[u]} for u in units],
+                      state="failed", failed=str(e), **({"dirs": made} if made else {}))
         raise Refused(f"{e} (what it had changed by then is recorded, so it can be put back)",
-                      {"change_id": change_id}) from None
+                      {"change_id": change["id"]}) from None
     after = {u: _unit_state(u) for u in units}
     if after == before:
+        _journal_forget(change)
         return {"changed": False}
     made = sorted(_unit_dirs() - had)
-    return {"changed": True,
-            "change_id": _journal({"services": [{"unit": u, "before": before[u], "after": after[u]} for u in units],
-                                   **({"dirs": made} if made else {})}),
-            "warnings": [], "dirs": made}
+    _journal_save(change, services=[{"unit": u, "before": before[u], "after": after[u]} for u in units],
+                  state="applied", **({"dirs": made} if made else {}))
+    return {"changed": True, "change_id": change["id"], "warnings": [], "dirs": made}
 
 
 # ------------------------------------------------------------------ sysctl
@@ -1240,11 +1511,17 @@ def set_sysctl(args: dict) -> dict:
         before = f.read().strip()
     if before == value:
         return {"changed": False}
-    with open(path, "w") as f:
-        f.write(value)
+    change = {"sysctl": {"key": key, "before": before, "after": value}}
+    change_id = _journal_begin(change)
+    try:
+        with open(path, "w") as f:
+            f.write(value)
+    except OSError as e:
+        _journal_close(change, "failed", failed=_why(e))
+        raise Refused(f"the kernel refused {key}={value}: {e.strerror}") from None
     _did(["sysctl", "-w", f"{key}={value}"])
-    return {"changed": True, "change_id": _journal({"sysctl": {"key": key, "before": before, "after": value}}),
-            "warnings": []}
+    _journal_save(change, state="applied")
+    return {"changed": True, "change_id": change_id, "warnings": []}
 
 
 # ------------------------------------------------------------------ ufw
@@ -1283,18 +1560,24 @@ def ufw_enable(args: dict) -> dict:
     # a unit that is masked, static or generated is left as it is: only one that can be enabled is
     unit_needed = unit_before is not None and unit_before[0] in ("enabled", "disabled") and unit_before != ("enabled", "active")
     had = _unit_dirs()
+    to_add = [a for a in dict.fromkeys(allow) if a not in existing]
+    if active and not to_add and not unit_needed:
+        return {"changed": False}
+    change = {"ufw": {"was_active": active, "added": to_add},
+              **({"service": {"unit": UFW_UNIT, "before": unit_before, "after": ["enabled", "active"]}}
+                 if unit_needed else {})}
+    _journal_begin(change)
     added, turned_on = [], False
     try:
-        for a in allow:
-            if a not in existing:
-                _do(["ufw", "allow", a])
-                added.append(a)
+        for a in to_add:
+            _do(["ufw", "allow", a])
+            added.append(a)
         if not active:
             _do(["ufw", "--force", "enable"])
             turned_on = True
         if unit_needed:
             _set_unit(UFW_UNIT, True, True, unit_before)
-    except Refused:
+    except Refused as e:
         now = _ufw_unit_state()
         if unit_needed and now is not None and now != unit_before:
             _set_unit(UFW_UNIT, unit_before[0] == "enabled", unit_before[1] == "active", now)
@@ -1303,16 +1586,19 @@ def ufw_enable(args: dict) -> dict:
         for a in added:
             _do_code(["ufw", "delete", "allow", a])
         _remove_dirs(sorted(_unit_dirs() - had))
+        _journal_close(change, "failed", failed=str(e))
         raise
     unit_after = _ufw_unit_state() if unit_needed else unit_before
     unit_changed = unit_needed and unit_after != unit_before
     if active and not added and not unit_changed:
+        _journal_forget(change)
         return {"changed": False}
     made = sorted(_unit_dirs() - had)
-    change = {"ufw": {"was_active": active, "added": added},
-              **({"service": {"unit": UFW_UNIT, "before": unit_before, "after": unit_after}} if unit_changed else {}),
-              **({"dirs": made} if made else {})}
-    return {"changed": True, "change_id": _journal(change), "warnings": [], "dirs": made}
+    change.pop("service", None)
+    _journal_save(change, ufw={"was_active": active, "added": added}, state="applied",
+                  **({"service": {"unit": UFW_UNIT, "before": unit_before, "after": unit_after}} if unit_changed else {}),
+                  **({"dirs": made} if made else {}))
+    return {"changed": True, "change_id": change["id"], "warnings": [], "dirs": made}
 
 
 # ------------------------------------------------------------------ browser policies
@@ -1626,9 +1912,31 @@ def clear_opensnitch_log(args: dict) -> dict:
 
 # ------------------------------------------------------------------ revert
 
+def _unit_state_or_none(unit: str) -> tuple[str, str] | None:
+    """A unit's state, or None once it isn't installed (its package removed since)."""
+    try:
+        return _unit_state(unit)
+    except Refused:
+        return None
+
+
+def _revert_consent(services: list[dict], now: dict) -> None:
+    """Putting back a remote-access service that was on (ssh, a remote desktop, file sharing) lets others reach this
+    computer again: the password is asked for again first, each time (_consent)."""
+    on = [s["unit"] for s in services if s["unit"] in REMOTE_ACCESS and now.get(s["unit"]) is not None
+          and (s["before"][0] == "enabled" or s["before"][1] == "active")
+          and not (now[s["unit"]][0] == s["before"][0] and (now[s["unit"]][1] == "active") == (s["before"][1] == "active"))]
+    if on:
+        _consent(f"turn {' and '.join(on)} back on, as before its fix: {'they let' if len(on) > 1 else 'it lets'} "
+                 "others reach this computer")
+
+
 def revert(args: dict) -> dict:
     _must_be_root()
     change = _load_change(args.get("change_id"))
+    uid = _caller_uid()
+    if change.get("uid") is not None and uid is not None and change["uid"] != uid:
+        raise Refused("that change was made for another account")
     force = args.get("force") is True
     # what was put back by hand already (a file deleted, a setting changed back) is no conflict: as before is the aim
     conflicts = []
@@ -1637,10 +1945,16 @@ def revert(args: dict) -> dict:
         f["_back"] = _read(f["path"]) == before
         if not f["_back"] and _sha(_read(f["path"])) != f["after_sha"]:
             conflicts.append(f"{f['path']} has been edited since")
-    # one unit (journals before protocol 28) or several turned on or off together
+    # one unit (journals before protocol 28) or several turned on or off together; a unit whose package was removed
+    # since is a conflict, and a forced revert puts back the rest (its own files above all)
     services = change.get("services") or ([change["service"]] if change.get("service") else [])
+    units_now = {s["unit"]: _unit_state_or_none(s["unit"]) for s in services}
+    gone = [s["unit"] for s in services if units_now[s["unit"]] is None]
     for svc in services:
-        if tuple(_unit_state(svc["unit"])) not in (tuple(svc["after"]), tuple(svc["before"])):
+        now = units_now[svc["unit"]]
+        if now is None:
+            conflicts.append(f"{svc['unit']} isn't installed any more, so it can't be put back")
+        elif change.get("state") != "intent" and tuple(now) not in (tuple(svc["after"]), tuple(svc["before"])):
             conflicts.append(f"{svc['unit']} has been changed since")
     sc = change.get("sysctl")
     if sc:
@@ -1657,8 +1971,10 @@ def revert(args: dict) -> dict:
             conflicts.append(f"{linked['unit']} has been changed since")
     if conflicts and not force:
         return {"ok": False, "conflict": True, "message": "; ".join(conflicts)}
+    _revert_consent(services, units_now)
     said: list[str] = []                # what was put back, by kind of change: the revert's message
-    problems: list[str] = []
+    problems: list[str] = [f"{u} isn't installed any more, so it was left as it is" for u in gone]
+    services = [s for s in services if s["unit"] not in gone]
     if mount_unit:
         still, problems = _remove_mount_unit(mount_unit)
         said.append(f"{mount_unit['path']} stays in memory until the next restart, with its mount unit removed" if still
@@ -1711,8 +2027,7 @@ def revert(args: dict) -> dict:
         _, failed, _ = RUN(["systemctl", "is-failed", mount_unit["name"]])
         if failed.strip() == "failed":
             _do_code(["systemctl", "reset-failed", mount_unit["name"]])
-    _write(f"{CHANGES_DIR}/{change['id']}.json", None)
-    _rmdir_empty(CHANGES_DIR, os.path.dirname(CHANGES_DIR))     # the journal's own folders, once nothing is in them
+    _journal_close(change, "reverted")          # the journal's own folders go once nothing is in them
     message = "; ".join(said) or "Put back as it was"
     if message.startswith("the "):                 # a sentence; a unit's or a file's name keeps its own case
         message = "The" + message[3:]
@@ -1803,10 +2118,61 @@ def _caller() -> tuple[int, int, str]:
     return uid, gid, home
 
 
+RENAME_NOREPLACE = 1
+
+
+def _renameat2(olddir: int, old: str, newdir: int, new: str, flags: int) -> None:
+    """renameat2(2), which the os module doesn't have; OSError as os.rename raises it."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    fn = getattr(libc, "renameat2", None)
+    if fn is None:
+        raise OSError(errno.ENOSYS, "renameat2 isn't available")
+    fn.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+    if fn(olddir, os.fsencode(old), newdir, os.fsencode(new), flags) != 0:
+        e = ctypes.get_errno()
+        raise OSError(e, os.strerror(e))
+
+
+def _new_folder(fd: int, name: str, uid: int, gid: int) -> int:
+    """A folder for the user, made in the folder open at `fd` (theirs) under a random name, opened, checked to be the
+    empty one just made, given to them by its descriptor and only then renamed to `name`, never over anything there:
+    made under its own name and given away by name, the user (who owns the folder it is in) could have put in its place
+    something of root's to receive. Returns its descriptor."""
+    tmp = f".daprivacyscanner-{uuid.uuid4().hex[:12]}"
+    os.mkdir(tmp, 0o700, dir_fd=fd)
+    try:
+        nfd = os.open(tmp, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+    except OSError:
+        raise Refused("the folder couldn't be made: it was changed as it was being made") from None
+    try:
+        st = os.fstat(nfd)
+        with os.scandir(nfd) as entries:
+            empty = next(entries, None) is None
+        if st.st_uid != os.geteuid() or stat.S_IMODE(st.st_mode) != 0o700 or not empty:
+            raise Refused("the folder couldn't be made: it was changed as it was being made")
+        os.fchown(nfd, uid, gid)
+        try:
+            _renameat2(fd, tmp, fd, name, RENAME_NOREPLACE)
+        except OSError as e:
+            if e.errno not in (errno.EINVAL, errno.ENOSYS):        # EEXIST: made meanwhile, and left as it is
+                raise
+            if os.path.lexists(os.path.join(f"/proc/self/fd/{fd}", name)):   # a filesystem without it: by hand
+                raise OSError(errno.EEXIST, "File exists") from None
+            os.rename(tmp, name, src_dir_fd=fd, dst_dir_fd=fd)
+        return nfd
+    except BaseException:
+        os.close(nfd)
+        try:
+            os.rmdir(tmp, dir_fd=fd)
+        except OSError:
+            pass
+        raise
+
+
 def _folder_fd(home: str, parts: tuple[str, ...], uid: int, gid: int, create: bool = True) -> tuple[int, bool]:
     """Opens the folder under the home one folder at a time without following links, so what is
     checked is what gets mounted: each must be a real folder owned by the user. The last is created
-    for the user if missing (with `create`). Returns its descriptor and whether it was created."""
+    for the user if missing (with `create`, _new_folder). Returns its descriptor and whether it was created."""
     fd = os.open(_p(home), os.O_RDONLY | os.O_DIRECTORY)
     created = False
     try:
@@ -1817,11 +2183,17 @@ def _folder_fd(home: str, parts: tuple[str, ...], uid: int, gid: int, create: bo
             except FileNotFoundError:
                 if i < len(parts) - 1 or not create:
                     raise Refused(f"{shown} doesn't exist") from None
-                os.mkdir(name, 0o700, dir_fd=fd)
-                os.chown(name, uid, gid, dir_fd=fd, follow_symlinks=False)
-                _did(["install", "-d", "-m", "700", "-o", str(uid), "-g", str(gid), home + "/" + "/".join(parts[:i + 1])])
-                nfd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
-                created = True
+                try:
+                    nfd = _new_folder(fd, name, uid, gid)
+                except FileExistsError:                            # made meanwhile: taken as it is, and checked below
+                    try:
+                        nfd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+                    except OSError:
+                        raise Refused(f"{shown} is a link or not a folder") from None
+                else:
+                    _did(["install", "-d", "-m", "700", "-o", str(uid), "-g", str(gid),
+                          home + "/" + "/".join(parts[:i + 1])])
+                    created = True
             except OSError:
                 raise Refused(f"{shown} is a link or not a folder") from None
             os.close(fd)
@@ -1884,10 +2256,13 @@ def mount_unit_text(path: str, home: str, uid: int, gid: int, size: int, target:
         conditions += [f"ConditionPathIsDirectory={p}", f"ConditionPathIsSymbolicLink=!{p}"]
     if until == "logout":
         # mounted while the user's service manager runs: it starts at their first login and stops
-        # after their last session ends, and the mount (bound to it) goes with it
+        # after their last session ends, and the mount (bound to it) goes with it. Before it, as the RAM disk's
+        # drop-in is: systemd mounts it before the manager starts anything of the user's (so no program of theirs
+        # runs while the path is looked up), and unmounts it after the manager has stopped, every program of theirs
+        # ended
         manager = f"user@{uid}.service"
         order = ["DefaultDependencies=no", "Conflicts=umount.target", "Before=umount.target",
-                 f"After=local-fs.target {manager}", f"BindsTo={manager}"]
+                 "After=local-fs.target", f"Before={manager}", f"BindsTo={manager}"]
         install = ["# mounted when you log in, unmounted (and emptied) when your last session ends", f"WantedBy={manager}"]
     else:
         order = []
@@ -1942,22 +2317,35 @@ def mount_tmpfs(args: dict) -> dict:
         if ephemeral:
             record.update(folder_mode=None if created else mode)
         r = _apply_files({unit: mount_unit_text(path, home, uid, gid, size, target, noexec, until).encode()}, [],
-                         extra={"mount_unit": record})
+                         extra={"mount_unit": record}, more=True)
         if ephemeral:
             os.fchmod(fd, 0o500)        # the folder under the mount: nothing can be saved in it unmounted
             _did(["chmod", "500", path])
+        _do_code(["systemctl", "daemon-reload"])
+        # mounted here, on the folder opened above one name at a time (/proc/self/fd), never by systemd now: it would
+        # hand the path to mount(8), which looks it up again while the user's programs run, and a folder on the way
+        # replaced by a link at that moment would put the mount somewhere else. systemd takes up a mount at its
+        # unit's path as that unit, active (tested on Ubuntu 26.04 and Fedora 44). At boot (or, for "until logout", as
+        # the user's manager starts) it mounts it itself, before anything of the user's runs.
+        flags = MS_NOSUID | MS_NODEV | (MS_NOEXEC if noexec else 0)
+        options = f"size={size}M,mode=0700,uid={uid},gid={gid}"
+        err = MOUNT(f"/proc/self/fd/{fd}", flags, options)
+        if not err:
+            _did(["mount", "-t", "tmpfs", "-o", ",".join([options, *(["noexec"] if noexec else []), "nosuid", "nodev"]),
+                  "tmpfs", path])
     finally:
         os.close(fd)
-    _do_code(["systemctl", "daemon-reload"])
-    code, out, err = _do_code(["systemctl", "enable", "--now", name])
+    code, out, e2 = _do_code(["systemctl", "enable", name])
     made = sorted(_unit_dirs() - had)              # the target's .wants folder, where it wasn't there yet
-    _journal_add_dirs(r["change_id"], made)
+    _journal_add_dirs(r["change_id"], made, state="applied")
     r["dirs"] = r.get("dirs", []) + made
     r["unit"], r["path"] = unit, path
-    r["mounted"] = code == 0
-    if code != 0:
-        r["warnings"].append(f"not mounted now ({(err or out).strip()[:120]}); it is tried again at every "
+    r["mounted"] = not err
+    if err:
+        r["warnings"].append(f"not mounted now ({os.strerror(err)}); it is tried again at every "
                              + ("login" if until == "logout" else "boot"))
+    if code != 0:
+        r["warnings"].append(f"systemctl enable {name}: {(e2 or out).strip()[:120]}")
     return r
 
 
@@ -1990,6 +2378,59 @@ def _stop_metadata_daemon(uid) -> None:
         time.sleep(0.1)
 
 
+def _mount_dev(path: str) -> tuple[str | None, int | None]:
+    """The type and device number of what is mounted at `path` last (the one visible), from mountinfo; (None, None)
+    when nothing is (or the type from /proc/mounts alone, in a fixture tree without mountinfo)."""
+    found = None
+    for m in _watch_mountinfo():
+        if m["mount"] == path:
+            found = m
+    if found is None:
+        return _fstype_at(path), None
+    major, _, minor = found["dev"].partition(":")
+    try:
+        return found["fstype"], os.makedev(int(major), int(minor))
+    except ValueError:
+        return found["fstype"], None
+
+
+def _unmount_in_home(mu: dict) -> None:
+    """Unmounts the app's tmpfs on a folder in the user's home, reached as applying reached it: the folder above it
+    opened one name at a time without following links (_folder_fd), the mount checked to be a tmpfs of the user's
+    there, then umount2 on /proc/self/fd/<that folder>/<name>, never following a link at the end. Given the path,
+    umount(8) would look it up again as root while the user's programs run. ~/Ephemeral goes as its unit says
+    (LazyUnmount: detached even while a program still holds a file in it). Nothing (and nothing said) when it isn't
+    mounted or isn't the app's."""
+    target = mu.get("target", "thumbnails")
+    if target not in IN_MEMORY or "home" not in mu or not _mounted_at(mu["path"]):
+        return
+    parts = IN_MEMORY[target][0]
+    try:
+        if len(parts) > 1:
+            pfd, _ = _folder_fd(mu["home"], parts[:-1], mu["uid"], 0, create=False)
+        else:
+            pfd = os.open(_p(mu["home"]), os.O_RDONLY | os.O_DIRECTORY)
+    except (OSError, Refused):
+        return
+    try:
+        try:
+            cfd = os.open(parts[-1], os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=pfd)
+        except OSError:
+            return
+        try:
+            st = os.fstat(cfd)
+        finally:
+            os.close(cfd)
+        fstype, dev = _mount_dev(mu["path"])
+        if fstype != "tmpfs" or (dev is not None and st.st_dev != dev) or st.st_uid != mu["uid"]:
+            return
+        err = UMOUNT(f"/proc/self/fd/{pfd}/{parts[-1]}", UMOUNT_NOFOLLOW | (MNT_DETACH if target == "ephemeral" else 0))
+        if not err:
+            _did(["umount", *(["--lazy"] if target == "ephemeral" else []), mu["path"]])
+    finally:
+        os.close(pfd)
+
+
 def _remove_mount_unit(mu: dict) -> tuple[bool, list[str]]:
     """Before the unit file goes: disable it and stop it, which unmounts. Whether it unmounted is read from the mount
     table, never from systemctl's exit status: systemd 255 answers 0 for `disable --now` when the stop job failed
@@ -2000,10 +2441,11 @@ def _remove_mount_unit(mu: dict) -> tuple[bool, list[str]]:
     target = mu.get("target", "thumbnails")
     if target == "gvfs-metadata":
         _stop_metadata_daemon(mu.get("uid"))
-    code, out, err = _do_code(["systemctl", "disable", "--now", mu["name"]])
+    _unmount_in_home(mu)
     if _mounted_at(mu["path"]) and target == "gvfs-metadata":
         _stop_metadata_daemon(mu.get("uid"))        # started again meanwhile (a file manager asked): once more
-        code, out, err = _do_code(["systemctl", "stop", mu["name"]])
+        _unmount_in_home(mu)
+    _do_code(["systemctl", "disable", mu["name"]])
     if _mounted_at(mu["path"]):                     # systemctl's own words ("Job failed. See journalctl -xe") say less
         return True, [f"A program still has a file in {mu['path']} open, so it couldn't be unmounted now"]
     if target not in IN_MEMORY or "home" not in mu:
@@ -2058,7 +2500,7 @@ RAMDISK_STATE = "/run/daprivacyscanner/ramdisk"
 # (when /run, with the state above, is empty) still puts it back rather than guessing
 RAMDISK_XATTR = "user.daprivacyscanner.ramdisk"
 MS_NOSUID, MS_NODEV, MS_NOEXEC = 2, 4, 8
-UMOUNT_NOFOLLOW = 8
+UMOUNT_NOFOLLOW, MNT_DETACH = 8, 2
 
 
 def _libc():
@@ -2076,10 +2518,10 @@ def _mount(target: str, flags: int, options: str) -> int:
     return 0 if libc.mount(b"tmpfs", target.encode(), b"tmpfs", flags, options.encode()) == 0 else ctypes.get_errno()
 
 
-def _umount(target: str) -> int:
-    """umount2(2) without following a link at the end, never lazily; 0, or the errno."""
+def _umount(target: str, flags: int = UMOUNT_NOFOLLOW) -> int:
+    """umount2(2) without following a link at the end, never lazily unless `flags` say so; 0, or the errno."""
     libc, ctypes = _libc()
-    return 0 if libc.umount2(target.encode(), UMOUNT_NOFOLLOW) == 0 else ctypes.get_errno()
+    return 0 if libc.umount2(target.encode(), flags) == 0 else ctypes.get_errno()
 
 
 MOUNT, UMOUNT = _mount, _umount                # tests replace them
@@ -2270,8 +2712,7 @@ def ramdisk_open(args: dict) -> dict:
         os.close(fd)
     state = {"path": path, "uid": uid, "size_mb": size, "noexec": noexec, "noswap": noswap,
              "created": created, "folder_mode": None if created else before, "opened": time.time()}
-    d = _check_path(RAMDISK_STATE)
-    os.makedirs(d, mode=0o700, exist_ok=True)
+    _own_dir(RAMDISK_STATE)
     _write(state_file, json.dumps(state).encode(), 0o600)
     return {"path": path, "size_mb": size, "noexec": noexec, "noswap": noswap}
 
@@ -2286,8 +2727,13 @@ def ramdisk_close(args: dict) -> dict:
     name, parts, state_file = _ramdisk(args)
     uid, gid, home = _caller()
     path = home + "/" + "/".join(parts)
-    raw = _read(state_file)
-    state = json.loads(raw) if raw else None
+    try:
+        raw = _read(state_file, trusted=True)
+        state = json.loads(raw) if raw else None
+    except (Refused, ValueError):                # not the helper's own: what the folder says decides instead
+        state = None
+    if not isinstance(state, dict):
+        state = None
     fstype = _fstype_at(path)
     was_open = fstype is not None
     if was_open:
@@ -2368,6 +2814,29 @@ def swaps_on_disk() -> list[dict]:
     return out
 
 
+def _swap_state() -> dict | None:
+    """What swap_off turned off, when the file is the helper's own (root's, writable by root alone: an older helper
+    made /run/daprivacyscanner under the user's umask, and a list planted there would have had swapon take a file of
+    the planter's); None otherwise."""
+    try:
+        raw = _read(SWAP_STATE, trusted=True)
+        state = json.loads(raw) if raw else None
+    except (Refused, ValueError):
+        return None
+    if not isinstance(state, dict) or not isinstance(state.get("devices"), list):
+        return None
+    return state
+
+
+def _swap_target(name: str) -> bool:
+    """A swap swap_on may turn on again: a block device, or a swap file of root's that only root can write."""
+    try:
+        st = os.stat(_p(name))
+    except OSError:
+        return False
+    return IS_BLOCK(st) or (stat.S_ISREG(st.st_mode) and st.st_uid == _owner() and not st.st_mode & 0o022)
+
+
 def swap_off(args: dict) -> dict:
     """Turn off every swap that reaches a disk, if memory can take back what is in it."""
     _must_be_root()
@@ -2379,8 +2848,7 @@ def swap_off(args: dict) -> dict:
     if avail and int(avail.group(1)) // 1024 < used_mb + SWAP_MARGIN_MB:
         raise Refused(f"there isn't enough free memory to take back the {used_mb} MB in swap now: close some "
                       "programs first")
-    raw = _read(SWAP_STATE)
-    state = json.loads(raw) if raw else {"devices": [], "since": time.time()}
+    state = _swap_state() or {"devices": [], "since": time.time()}
     off, failed = [], []
     for s in disk:
         code, out, err = _do_code(["swapoff", s["name"]])
@@ -2391,8 +2859,7 @@ def swap_off(args: dict) -> dict:
         else:
             failed.append(f"{s['name']}: {(err or out).strip()[:200]}")
     if state["devices"]:
-        d = _check_path(os.path.dirname(SWAP_STATE))
-        os.makedirs(d, mode=0o755, exist_ok=True)
+        _own_dir(RUN_DIR)
         _write(SWAP_STATE, json.dumps(state).encode(), 0o644)
     return {"off": off, "failed": failed}
 
@@ -2400,13 +2867,12 @@ def swap_off(args: dict) -> dict:
 def swap_on(args: dict) -> dict:
     """Turn back on the swaps swap_off turned off (and only those), with their priorities."""
     _must_be_root()
-    raw = _read(SWAP_STATE)
-    state = json.loads(raw) if raw else {"devices": []}
+    state = _swap_state() or {"devices": []}
     active = {s["name"] for s in swaps_on_disk()}
     on, failed = [], []
     for dev in state.get("devices", []):
-        name, prio = dev.get("name"), dev.get("priority")
-        if not isinstance(name, str) or not name.startswith("/") or "\0" in name:
+        name, prio = (dev.get("name"), dev.get("priority")) if isinstance(dev, dict) else (None, None)
+        if not isinstance(name, str) or not name.startswith("/") or "\0" in name or not _swap_target(name):
             continue
         if name in active:
             on.append(name)
@@ -2477,6 +2943,34 @@ def _caller_groups(uid: int, gid: int) -> set[int]:
         return set(os.getgrouplist(pwd.getpwuid(uid).pw_name, gid))
     except (KeyError, OSError):
         return {gid}
+
+
+class _as_caller:
+    """Within it, the kernel checks the helper's file access as the caller's (fsuid, fsgid and their groups): a walk
+    of the caller's folders opens only what they could open themselves, access control lists included, which the
+    permission bits read alone get wrong (a group's bits are an ACL's mask). Capabilities that bypass permissions go
+    with the fsuid and come back with it. As anyone but root (tests), nothing changes."""
+
+    def __init__(self, uid: int, gid: int, groups: set[int]):
+        self.uid, self.gid, self.groups, self.saved = uid, gid, sorted(groups), None
+
+    def __enter__(self):
+        if os.geteuid() != 0:
+            return self
+        libc = ctypes.CDLL(None, use_errno=True)
+        self.saved = os.getgroups()
+        os.setgroups(self.groups)
+        libc.setfsgid(self.gid)
+        libc.setfsuid(self.uid)
+        self.libc = libc
+        return self
+
+    def __exit__(self, *exc):
+        if self.saved is not None:
+            self.libc.setfsuid(0)
+            self.libc.setfsgid(0)
+            os.setgroups(self.saved)
+        return False
 
 
 def _caller_may(st: os.stat_result, uid: int, groups: set[int], bits: int) -> bool:
@@ -2961,6 +3455,7 @@ def trim_scan(args: dict) -> dict:
             raise Refused("the device changed since the test started")
         pos, counted = max(0, off - TRIM_OVERLAP), off
         while counted < end:
+            _check_cancel()
             want = min(TRIM_READ, end - pos)
             n, bad = _read_window(fd, buf, pos, want)
             if n <= 0:
@@ -3086,6 +3581,9 @@ NAMES_ORPHANS_MAX = 100000                     # journal blocks remembered that 
 NAMES_GONE_MAX = 1000                          # deleted subfolders looked up
 NAMES_WEAK_MAX = 2000                          # copies kept until the journal is read, to be tied by their entries
 NAMES_ITABLE_MAX = 50000                       # copies of inode table blocks remembered (where, not what)
+NAMES_INODE_COPIES = 64                        # of those, read for one inode at most (the latest)
+NAMES_GONE_READS = 20000                       # journal blocks read to tie folders that are gone, in all
+NAMES_GONE_PER_KEY = 256                       # of those, for one folder's checksum at most
 FS_IOC_GETFLAGS, FS_IOC_FIEMAP = 0x80086601, 0xC020660B
 FS_IOC_GETVERSION = 0x80087601
 EXT4_IOC_CHECKPOINT = 0x4004662B
@@ -3281,32 +3779,205 @@ def _ext4_seed_key(basis: list[int], fs_seed: int, ino: int, gen: int) -> int:
     return out
 
 
-def _btrfs_csum_ok(block: bytes, kind: int) -> bool | None:
-    """The tree block's checksum (over all but its first 32 bytes); None for xxhash64, which the
-    standard library doesn't have (the block's structure is checked instead)."""
+_XX1, _XX2, _XX3, _XX4, _XX5 = (0x9E3779B185EBCA87, 0xC2B2AE3D27D4EB4F, 0x165667B19E3779F9, 0x85EBCA77C2B2AE63,
+                                0x27D4EB2F165667C5)
+_U64 = (1 << 64) - 1
+
+
+def _xx_round(acc: int, value: int) -> int:
+    acc = (acc + value * _XX2) & _U64
+    acc = ((acc << 31) | (acc >> 33)) & _U64
+    return (acc * _XX1) & _U64
+
+
+def xxhash64(data: bytes, seed: int = 0) -> int:
+    """XXH64, which btrfs can checksum its blocks with, in Python: the standard library doesn't have it."""
+    n, p = len(data), 0
+    rotl = lambda x, r: ((x << r) | (x >> (64 - r))) & _U64  # noqa: E731
+    if n >= 32:
+        v = [(seed + _XX1 + _XX2) & _U64, (seed + _XX2) & _U64, seed & _U64, (seed - _XX1) & _U64]
+        words = _struct.unpack_from(f"<{n // 32 * 4}Q", data)
+        for i in range(0, len(words), 4):
+            v = [_xx_round(v[0], words[i]), _xx_round(v[1], words[i + 1]), _xx_round(v[2], words[i + 2]),
+                 _xx_round(v[3], words[i + 3])]
+        h = (rotl(v[0], 1) + rotl(v[1], 7) + rotl(v[2], 12) + rotl(v[3], 18)) & _U64
+        for x in v:
+            h = ((h ^ _xx_round(0, x)) * _XX1 + _XX4) & _U64
+        p = n // 32 * 32
+    else:
+        h = (seed + _XX5) & _U64
+    h = (h + n) & _U64
+    while p + 8 <= n:
+        h = (rotl(h ^ _xx_round(0, int.from_bytes(data[p:p + 8], "little")), 27) * _XX1 + _XX4) & _U64
+        p += 8
+    if p + 4 <= n:
+        h = (rotl(h ^ (int.from_bytes(data[p:p + 4], "little") * _XX1 & _U64), 23) * _XX2 + _XX3) & _U64
+        p += 4
+    while p < n:
+        h = (rotl(h ^ (data[p] * _XX5 & _U64), 11) * _XX1) & _U64
+        p += 1
+    h = ((h ^ (h >> 33)) * _XX2) & _U64
+    h = ((h ^ (h >> 29)) * _XX3) & _U64
+    return h ^ (h >> 32)
+
+
+def _btrfs_csum_ok(block: bytes, kind: int) -> bool:
+    """The tree block's checksum (over all but its first 32 bytes), of whichever kind the filesystem uses: crc32c,
+    xxhash64, sha256 or blake2b-256. A kind it doesn't know is never taken for a good checksum."""
     body = block[32:]
     if kind == 0:
         return _crc32c(body).to_bytes(4, "little") == block[:4]
+    if kind == 1:
+        return xxhash64(body).to_bytes(8, "little") == block[:8]
     if kind == 2:
         return hashlib.sha256(body).digest() == block[:32]
     if kind == 3:
         return hashlib.blake2b(body, digest_size=32).digest() == block[:32]
-    return None
+    return False
+
+
+BTRFS_CHUNK_ITEM = 228
+BTRFS_BG_DATA, BTRFS_BG_SYSTEM, BTRFS_BG_METADATA, BTRFS_BG_DUP = 0x1, 0x2, 0x4, 0x20
+BTRFS_BG_PROFILES = 0x8 | 0x10 | 0x20 | 0x40 | 0x80 | 0x100 | 0x200 | 0x400
+BTRFS_MIXED_GROUPS = 1 << 2                    # incompat: files' data and the trees in the same chunks
+BTRFS_CHUNK_NODES = 4096                       # of the chunk tree, read at most
 
 
 def parse_btrfs_superblock(sb: bytes) -> dict | None:
-    if len(sb) < 0x24b or sb[0x40:0x48] != b"_BHRfS_M":
+    """What the scan needs of a btrfs superblock: the fsid its tree blocks carry, sector and node sizes (their own
+    bounds: powers of two, 4 KiB to 64 KiB nodes, a node a whole number of sectors), the checksum kind, and where the
+    chunk tree is (the bootstrap chunks it is in, its root, this device's id), from which the scan learns where
+    tree blocks can be at all."""
+    if len(sb) < 0x32b or sb[0x40:0x48] != b"_BHRfS_M":
         return None
     incompat = int.from_bytes(sb[0xbc:0xc4], "little")
     fsid = sb[0x23b:0x24b] if incompat & (1 << 10) else sb[0x20:0x30]       # METADATA_UUID
-    return {"fsid": bytes(fsid), "sectorsize": int.from_bytes(sb[0x90:0x94], "little"),
-            "nodesize": int.from_bytes(sb[0x94:0x98], "little"), "csum": int.from_bytes(sb[0xc4:0xc6], "little")}
+    sector, node = int.from_bytes(sb[0x90:0x94], "little"), int.from_bytes(sb[0x94:0x98], "little")
+    if sector & (sector - 1) or not 512 <= sector <= 65536 or node & (node - 1) or not node or node % sector:
+        return None
+    array = min(int.from_bytes(sb[0xa0:0xa4], "little"), 2048)
+    return {"fsid": bytes(fsid), "sectorsize": sector, "nodesize": node, "csum": int.from_bytes(sb[0xc4:0xc6], "little"),
+            "incompat": incompat, "chunk_root": int.from_bytes(sb[0x58:0x60], "little"), "chunk_level": sb[0xc7],
+            "devid": int.from_bytes(sb[0xc9:0xd1], "little"), "sys_chunks": bytes(sb[0x32b:0x32b + array])}
+
+
+def _btrfs_chunk(data: bytes, p: int, logical: int) -> tuple[tuple, int] | None:
+    """One btrfs_chunk at `p`: ((logical start, length, type, [(devid, offset)]), its size), or None."""
+    if p + 48 > len(data):
+        return None
+    length, _, _, kind = _struct.unpack_from("<QQQQ", data, p)
+    stripes = _struct.unpack_from("<H", data, p + 44)[0]
+    size = 48 + 32 * stripes
+    if not 0 < stripes <= 16 or p + size > len(data) or not length:
+        return None
+    return (logical, length, kind, [_struct.unpack_from("<QQ", data, p + 48 + 32 * i) for i in range(stripes)]), size
+
+
+def _btrfs_sys_chunks(array: bytes) -> list[tuple]:
+    """The bootstrap chunks the superblock lists (the system chunks, where the chunk tree is)."""
+    out, p = [], 0
+    while p + 17 <= len(array):
+        _, kind, logical = _struct.unpack_from("<QBQ", array, p)
+        if kind != BTRFS_CHUNK_ITEM:
+            break
+        got = _btrfs_chunk(array, p + 17, logical)
+        if got is None:
+            break
+        out.append(got[0])
+        p += 17 + got[1]
+    return out
+
+
+def _btrfs_place(chunks: list[tuple], logical: int, devid: int) -> int | None:
+    """Where on this device a logical address is (the first copy of a single or DUP chunk), or None."""
+    for start, length, kind, stripes in chunks:
+        if start <= logical < start + length and not kind & BTRFS_BG_PROFILES & ~BTRFS_BG_DUP:
+            for dev, offset in stripes:
+                if dev == devid:
+                    return offset + logical - start
+    return None
+
+
+def btrfs_chunk_map(read, fs: dict) -> list[tuple] | None:
+    """Every chunk of a single-device btrfs, from its chunk tree (`read(offset, length)` reads the device): the tree
+    found through the superblock's bootstrap chunks, each of its blocks checked as the scan checks a leaf (fsid, its
+    own address, checksum). None when it can't be read."""
+    boot = _btrfs_sys_chunks(fs["sys_chunks"])
+    node = fs["nodesize"]
+    chunks: dict[int, tuple] = {c[0]: c for c in boot}
+    todo, seen, uuid_ = [(fs["chunk_root"], fs["chunk_level"])], set(), None
+    while todo:
+        logical, level = todo.pop()
+        if logical in seen or len(seen) >= BTRFS_CHUNK_NODES or level > 7:
+            return None
+        seen.add(logical)
+        where = _btrfs_place(boot, logical, fs["devid"])
+        if where is None:
+            return None
+        block = read(where, node)
+        if len(block) < node or block[32:48] != fs["fsid"] or int.from_bytes(block[48:56], "little") != logical or \
+                block[100] != level or not _btrfs_csum_ok(block, fs["csum"]):
+            return None
+        if uuid_ is None:
+            uuid_ = bytes(block[64:80])
+        elif bytes(block[64:80]) != uuid_:
+            return None
+        count = int.from_bytes(block[96:100], "little")
+        if level:
+            if count > (node - 101) // 33:
+                return None
+            for i in range(count):
+                child = _struct.unpack_from("<Q", block, 101 + 33 * i + 17)[0]
+                todo.append((child, level - 1))
+            continue
+        if count > (node - 101) // 25:
+            return None
+        for i in range(count):
+            _, kind, offset, at, size = _struct.unpack_from("<QBQII", block, 101 + 25 * i)
+            if kind != BTRFS_CHUNK_ITEM or at + size > node - 101:
+                continue
+            got = _btrfs_chunk(block[101 + at:101 + at + size], 0, offset)
+            if got is not None:
+                chunks[offset] = got[0]
+    fs["chunk_uuid"] = uuid_
+    return sorted(chunks.values())
+
+
+def btrfs_tree_places(chunks: list[tuple], devid: int) -> list[tuple[int, int, int]]:
+    """Where tree blocks can be on this device: (first byte, byte after the last, logical address of the first) of
+    every copy of the metadata and system chunks, sorted. Chunks that hold files' data are left out, mixed ones too:
+    a block found anywhere else is a file's content shaped like a tree block."""
+    out = []
+    for start, length, kind, stripes in chunks:
+        if not kind & (BTRFS_BG_METADATA | BTRFS_BG_SYSTEM) or kind & BTRFS_BG_DATA or \
+                kind & BTRFS_BG_PROFILES & ~BTRFS_BG_DUP:
+            continue
+        out += [(offset, offset + length, start) for dev, offset in stripes if dev == devid]
+    return sorted(out)
+
+
+def btrfs_names_at(block: bytes, where: int, fs: dict, owners: set[int]) -> list[tuple[int, int, bytes, int]]:
+    """The folder entries of a block found at byte `where` of the device (parse_btrfs_leaf), only if it is a tree block
+    btrfs wrote there: inside a metadata or system chunk, carrying the logical address that place has and the
+    chunk tree's UUID. Another account can write a file shaped as a leaf, checksum and all (fsid is in /sys/fs/btrfs),
+    and have names planted in the caller's list; a file's data is never in those chunks."""
+    import bisect
+    places = fs.get("places") or []
+    i = bisect.bisect_right(places, (where, float("inf"), 0)) - 1
+    if i < 0 or not places[i][0] <= where < places[i][1] or where + fs["nodesize"] > places[i][1]:
+        return []
+    if int.from_bytes(block[48:56], "little") != places[i][2] + where - places[i][0]:
+        return []
+    if fs.get("chunk_uuid") is not None and bytes(block[64:80]) != fs["chunk_uuid"]:
+        return []
+    return parse_btrfs_leaf(block, fs, owners)
 
 
 def parse_btrfs_leaf(block: bytes, fs: dict, owners: set[int]) -> list[tuple[int, int, bytes, int]]:
     """(tree, folder inode, name, transid) for every folder entry a leaf of one of the `owners` trees holds,
     in its items and in stale item headers past them; transid is the transaction that made the entry (its
-    btrfs_dir_item's). [] if it isn't such a leaf or its checksum is wrong."""
+    btrfs_dir_item's). [] if it isn't such a leaf or its checksum is wrong. Every offset is checked against the
+    block: nothing it says can make it read past its end."""
     import struct
     n = fs["nodesize"]
     if len(block) < n or block[32:48] != fs["fsid"] or block[100] != 0:
@@ -3314,13 +3985,14 @@ def parse_btrfs_leaf(block: bytes, fs: dict, owners: set[int]) -> list[tuple[int
     owner = int.from_bytes(block[88:96], "little")
     if owner not in owners:
         return []
-    if _btrfs_csum_ok(block[:n], fs["csum"]) is False:
+    if not _btrfs_csum_ok(block[:n], fs["csum"]):
         return []
     nritems = int.from_bytes(block[96:100], "little")
     if nritems > (n - 101) // 25:
         return []
     data_end = n - 101
     low = min((struct.unpack_from("<I", block, 101 + 25 * i + 17)[0] for i in range(nritems)), default=data_end)
+    low = max(min(low, data_end), 25 * nritems)
     out = []
     # the item headers, then the slots after them up to the items' data: stale headers left there
     for i in range(low // 25):
@@ -3358,6 +4030,8 @@ def parse_ext4_superblock(sb: bytes) -> dict | None:
     out["fast_commit"] = bool(compat & 0x400)
     per_group, inode_size = int.from_bytes(sb[0x28:0x2C], "little"), int.from_bytes(sb[0x58:0x5A], "little")
     desc = int.from_bytes(sb[0xFE:0x100], "little") if incompat & 0x80 else 32
+    if desc & (desc - 1) or not 32 <= desc <= 1024:        # ext4's own bounds (a power of two, 32 to 1024 bytes)
+        desc = 0
     blocks = int.from_bytes(sb[0x04:0x08], "little") | (int.from_bytes(sb[0x150:0x154], "little") << 32 if incompat & 0x80 else 0)
     per_group_blocks, first = int.from_bytes(sb[0x20:0x24], "little"), int.from_bytes(sb[0x14:0x18], "little")
     out["inodes"] = None if incompat & 0x10 or not per_group or inode_size < 128 or desc < 32 else {
@@ -3491,6 +4165,16 @@ def _ext4_journal(fd: int, bsize: int) -> tuple[str, list[tuple[int, int, int]],
     extents = ext4_extents(fs["journal_map"], read_block)
     if not extents or any(a[0] + a[1] > b[0] for a, b in zip(extents, extents[1:])):     # overlapping: not a file's
         return "unknown", [], None, bad
+    # nor where they lie on the device: a crafted map could name the same blocks over and over (up to ~512 GiB read
+    # for a journal of a few), or blocks past the device's end
+    try:
+        blocks = os.lseek(fd, 0, os.SEEK_END) // bsize
+    except OSError:
+        blocks = None
+    phys = sorted((p, n) for _, n, p in extents)
+    if any(n <= 0 for _, n in phys) or any(a[0] + a[1] > b[0] for a, b in zip(phys, phys[1:])) or (
+            blocks is not None and phys[-1][0] + phys[-1][1] > blocks):
+        return "unknown", [], None, bad
     jsb = read_block(extents[0][2]) if extents[0][0] == 0 else None
     jsb = parse_jbd2_superblock(jsb or b"")
     if jsb is None or jsb["block_size"] != bsize:
@@ -3520,6 +4204,7 @@ def _journal_copies(fd: int, bsize: int, homes: set[int]) -> tuple[str, dict[int
         for start, count, p in extents:
             done = 0
             while done < count:
+                _check_cancel()
                 k = min(count - done, TRIM_READ // bsize)
                 n, b = _read_window(fd, buf, (p + done) * bsize, k * bsize)
                 bad += sum(x for _, x in b)
@@ -3555,13 +4240,21 @@ def _walk_folders(root: str, uid: int, groups: set[int], own_only: bool, ext4: b
     ext4; on btrfs each subvolume's id), for ext4 each folder's blocks, and each folder's generation (ext4:
     by inode; btrfs: by (tree, inode)). Never through a link, never into another mount; with `own_only`, only
     the caller's own folders, otherwise those the caller can open."""
+    with _as_caller(uid, _caller()[1], groups):     # and the kernel's own check of the caller's access
+        return _walk_folders_as(root, uid, groups, own_only, ext4)
+
+
+def _walk_folders_as(root: str, uid: int, groups: set[int], own_only: bool, ext4: bool) -> tuple[dict, list, bool, dict]:
     dirs: dict[tuple[int, int], str] = {}
     blocks: list = []
     gens: dict = {}
     trees: dict[int, int] = {}                  # st_dev -> btrfs tree id
     mounts = {_unescape(f[1]) for f in _proc_mounts()}
     full = False
-    rfd = os.open(_p(root), os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        rfd = os.open(_p(root), os.O_RDONLY | os.O_DIRECTORY)
+    except OSError:
+        return dirs, blocks, full, gens
 
     def allowed(st) -> bool:
         return st.st_uid == uid if own_only else _caller_may(st, uid, groups, 0o5)
@@ -3683,7 +4376,7 @@ def _names_journal_begin(s: dict, gens: dict[int, int]) -> dict:
         fs = parse_ext4_superblock(sb)
         state, extents, jsb, _ = _ext4_journal(fd, bsize)
         if state == "read" and fs is not None and fs["csum"] and fs["inodes"]:
-            j["itable"] = _ext4_inode_tables(fd, fs["inodes"], bsize)
+            j["itable"] = _ext4_inode_tables(fd, fs["inodes"], bsize, s.get("size"))
     finally:
         os.close(fd)
     j["state"] = state
@@ -3737,6 +4430,7 @@ def _names_journal_step(s: dict, fd: int) -> None:
     budget = NAMES_JOURNAL_STEP // bsize
     try:
         while budget > 0 and _journal_left(j):
+            _check_cancel()
             ext = _extent_at(j["extents"], j["pos"])
             if ext is None:                              # a hole in the journal's file
                 j["pos"] = min((a for a, _, _ in j["extents"] if a > j["pos"]), default=j["total"])
@@ -3789,21 +4483,27 @@ def _names_journal_weak(s: dict) -> None:
     folder's when a wrapped descriptor says so after all, when the block names the folder as itself, or
     when an entry in it is a file the folder holds now, under that name and inode; else no folder's."""
     j = s["j"]
+    mounts = {_unescape(f[1]) for f in _proc_mounts()}
     for blk, ino, key, block in j.pop("weak", []):
         rel = s["dirs"].get((0, ino))
         tied = rel is not None and j["owner"].get(j["wrapped"].get(blk)) == ino
         if rel is not None and not tied:
-            base = os.fsencode(_p(s["home"] + ("/" + rel if rel else "")))
-            for cino, _, name in ext4_dir_entries(block[:-12]) or []:
-                if name == b".":
-                    tied = cino == ino
-                elif name != b"..":
+            entries = ext4_dir_entries(block[:-12]) or []
+            tied = any(cino == ino for cino, _, name in entries if name == b".")
+            if not tied:
+                # looked up in the folder as the listing reached it, never by a path that root would follow through
+                # a link put on the way (_live)
+                try:
+                    fd = _open_kept(s, rel, mounts)
+                except Refused:
+                    fd = None
+                if fd is not None:
                     try:
-                        tied = os.lstat(base + b"/" + name).st_ino == cino
-                    except OSError:
-                        tied = False
-                if tied:
-                    break
+                        if os.fstat(fd).st_ino == ino:
+                            tied = any(name not in (b".", b"..") and _entry_ino(fd, name) == cino
+                                       for cino, _, name in entries)
+                    finally:
+                        os.close(fd)
         if tied:
             _journal_folder_block(s, ino, block)
         else:
@@ -3825,17 +4525,26 @@ def _ext4_group_table(desc: bytes, size: int) -> int:
     return int.from_bytes(desc[8:12], "little") | (int.from_bytes(desc[0x28:0x2C], "little") << 32 if size >= 64 else 0)
 
 
-def _ext4_inode_tables(fd: int, g: dict, bsize: int) -> list[tuple[int, int]]:
+def _ext4_inode_tables(fd: int, g: dict, bsize: int, dev_size: int | None = None) -> list[tuple[int, int]]:
     """Where the inode tables are: [(first block, block after the last)], sorted and joined, from the group
-    descriptors. [] when they can't be read (the journal's copies of them then go unused)."""
+    descriptors. [] when they can't be read (the journal's copies of them then go unused). The descriptors are
+    read a few MiB at a time, and never more of them than the device can hold (the superblock's counts are the
+    disk's word, which nothing checks before this reads them)."""
     if not 0 < g["groups"] <= 1 << 20:
         return []
-    data, bad = _aligned_read(fd, g["gdt"] * bsize, g["groups"] * g["desc"])
-    if bad or len(data) < g["groups"] * g["desc"]:
+    if dev_size is not None and (g["gdt"] * bsize + g["groups"] * g["desc"] > dev_size
+                                 or g["groups"] * g["per_group"] * g["size"] > dev_size):
         return []
+    tables, step = [], max(1, (4 << 20) // g["desc"])
+    for first in range(0, g["groups"], step):
+        count = min(step, g["groups"] - first)
+        data, bad = _aligned_read(fd, g["gdt"] * bsize + first * g["desc"], count * g["desc"])
+        if bad or len(data) < count * g["desc"]:
+            return []
+        tables += [_ext4_group_table(data[i * g["desc"]:(i + 1) * g["desc"]], g["desc"]) for i in range(count)]
     length = -(-g["per_group"] * g["size"] // bsize)
     out: list[tuple[int, int]] = []
-    for table in sorted(_ext4_group_table(data[i * g["desc"]:(i + 1) * g["desc"]], g["desc"]) for i in range(g["groups"])):
+    for table in sorted(tables):
         if not table:
             continue
         if out and table <= out[-1][1]:
@@ -3867,7 +4576,10 @@ def _ext4_inode_gens(fd: int, j: dict, ino: int) -> dict[int, tuple[bool, set[tu
     block += _ext4_group_table(desc, g["desc"])
     home, bad = _aligned_read(fd, block * j["bsize"], j["bsize"])
     out: dict[int, tuple[bool, set[tuple[int, int, int]]]] = {}
-    for data in [None if bad else home] + [_journal_block(fd, j, lblk) for lblk in j["icopies"].get(block, [])]:
+    # the latest copies of that part of the table, a bounded number: a journal crafted to hold the same block
+    # thousands of times made every folder looked up read all of them
+    copies = j["icopies"].get(block, [])[-NAMES_INODE_COPIES:]
+    for data in [None if bad else home] + [_journal_block(fd, j, lblk) for lblk in copies]:
         if data is None or len(data) < at + 128:
             continue
         raw = data[at:at + 128]
@@ -3935,8 +4647,10 @@ def _names_gone_folders(s: dict, fd: int) -> list[tuple[str, set[bytes]]]:
         return _caller_may(st, uid, groups, 0o5)
 
     out, seen, looked = [], set(), 0
+    budget = [NAMES_GONE_READS]                     # journal blocks read for this, all folders together
     queue = [(ino, s["dirs"][(0, ino)], kids) for ino, kids in j["kids"].items() if (0, ino) in s["dirs"]]
     while queue:
+        _check_cancel()
         parent, rel, kids = queue.pop()
         for name, ino in kids.items():
             if (0, ino) in s["dirs"] or ino in seen or looked >= NAMES_GONE_MAX:
@@ -3954,7 +4668,10 @@ def _names_gone_folders(s: dict, fd: int) -> list[tuple[str, set[bytes]]]:
                 if live or (live is None and not deleted):           # a folder there now, which the listing doesn't cover
                     continue
                 blocks = []
-                for lblk in j["orphans"][key]:
+                for lblk in j["orphans"][key][-NAMES_GONE_PER_KEY:]:
+                    if budget[0] <= 0:
+                        break
+                    budget[0] -= 1
                     b = _journal_block(fd, j, lblk)
                     if b is not None and b[n:n + 8] == EXT4_DIR_TAIL and \
                             int.from_bytes(b[-4:], "little") ^ _crc32c_raw(0, b[:n]) == key:  # still what it was
@@ -4012,16 +4729,25 @@ def names_begin(args: dict) -> dict:
         try:
             n = os.preadv(fd, [buf], BTRFS_SUPER)
             fs = parse_btrfs_superblock(bytes(buf[:n]))
+            # each cause said apart (the page shows it after "The helper refused: "), never one message for three
+            if fs is None:
+                raise Refused("the btrfs filesystem's superblock (the record of where everything on it is) couldn't "
+                              "be read")
+            if not 4096 <= fs["nodesize"] <= 65536:
+                raise Refused(f"the btrfs filesystem uses a node size of {fs['nodesize']} bytes, which the tool "
+                              "doesn't read")
+            if fs["incompat"] & BTRFS_MIXED_GROUPS:
+                raise Refused("this btrfs filesystem keeps files' contents and its own records in the same places "
+                              "(mixed block groups, as small filesystems have), so names can't be told from what a "
+                              "file holds")
+            chunks = btrfs_chunk_map(lambda at, length: _aligned_read(fd, at, length)[0], fs)
         finally:
             buf.close()
             os.close(fd)
-        # each cause said apart (the page shows it after "The helper refused: "), never one message for three
-        if fs is None:
-            raise Refused("the btrfs filesystem's superblock (the record of where everything on it is) couldn't "
-                          "be read")
-        if not 4096 <= fs["nodesize"] <= 65536:
-            raise Refused(f"the btrfs filesystem uses a node size of {fs['nodesize']} bytes, which the tool doesn't "
+        if chunks is None:
+            raise Refused("the btrfs filesystem's chunk tree (the record of where its own records can be) couldn't be "
                           "read")
+        fs["places"] = btrfs_tree_places(chunks, fs["devid"])
         if not state["trees"]:
             raise Refused("none of the btrfs filesystem's folders is yours to list")
         state.update(fs=fs, total=state["size"])
@@ -4051,9 +4777,12 @@ def _add_name(s: dict, key: tuple[int, int], name: bytes) -> None:
         s["found"].setdefault(key, set()).add(name)
 
 
-def _dir_names(fd: int, buf, ext: list, indexed: bool, bsize: int, live: bool = False) -> tuple[set[bytes], int]:
-    """The names in a folder's blocks at `ext` (deleted ones; with `live`, all): (names, unreadable bytes)."""
+def _dir_names(fd: int, buf, ext: list, indexed: bool, bsize: int, live: bool = False, tie: int | None = None,
+               crc=None) -> tuple[set[bytes], int]:
+    """The names in a folder's blocks at `ext` (deleted ones; with `live`, all): (names, unreadable bytes). `tie`:
+    the folder's checksum key (_ext4_seed_key), which each block must carry to be read as the folder's."""
     names, bad, first = set(), 0, True
+    n_tail = bsize - 12
     for phys, length in ext:
         length = min(length, NAMES_DIR_BYTES)
         if phys % 4096 or length % bsize:
@@ -4061,9 +4790,18 @@ def _dir_names(fd: int, buf, ext: list, indexed: bool, bsize: int, live: bool = 
         n, b = _read_window(fd, buf, phys, length)
         bad += sum(k for _, k in b)
         for at in range(0, n - bsize + 1, bsize):
-            names |= parse_ext4_dir_block(buf[at:at + bsize], skip_index=indexed and first, live=live)
+            block = buf[at:at + bsize]
+            if tie is not None and (block[n_tail:n_tail + 8] != EXT4_DIR_TAIL or
+                                    int.from_bytes(block[-4:], "little") ^ (crc or _crc32c_raw_0)(block[:n_tail]) != tie):
+                first = False
+                continue                               # not that folder's block now (its index, or another's)
+            names |= parse_ext4_dir_block(block, skip_index=indexed and first, live=live)
             first = False
     return names, bad
+
+
+def _crc32c_raw_0(data) -> int:
+    return _crc32c_raw(0, data)
 
 
 def names_step(args: dict) -> dict:
@@ -4080,15 +4818,30 @@ def names_step(args: dict) -> dict:
         elif s["fstype"] == "ext4":
             bsize = os.statvfs(_p(s["home"])).f_bsize
             buf = mmap.mmap(-1, NAMES_DIR_BYTES)
+            j = s["j"]
+            # a folder's blocks were found at names_begin, and are read now: by then the folder may be gone and its
+            # blocks another account's. With metadata_csum each block must still carry that folder's checksum (its
+            # inode number and generation); without, the folder is opened again as the listing reached it and its
+            # blocks asked for again
+            keys = {ino: key for key, ino in j.get("keys", {}).items()} if j.get("csum") else {}
+            crc = _Crc0() if keys else None
+            mounts = {_unescape(f[1]) for f in _proc_mounts()}
             try:
                 for key, indexed, ext in s["blocks"][s["done"]:s["done"] + NAMES_STEP_DIRS]:
-                    names, bad = _dir_names(fd, buf, ext, indexed, bsize)
+                    if s["done"] % 64 == 0:
+                        _check_cancel()
+                    tie = keys.get(key[1])
+                    if tie is None:
+                        ext = _extents_now(s, key, mounts)
+                    names, bad = _dir_names(fd, buf, ext or [], indexed, bsize, tie=tie, crc=crc)
                     s["unreadable"] += bad
                     for name in names:
                         _add_name(s, key, name)
                     s["done"] += 1
             finally:
                 buf.close()
+                if crc is not None:
+                    crc.close()
         else:
             fs, node = s["fs"], s["fs"]["nodesize"]
             buf = mmap.mmap(-1, TRIM_READ)
@@ -4097,6 +4850,7 @@ def names_step(args: dict) -> dict:
                 end = min(start + TRIM_CALL_MAX, s["size"])
                 pos = covered = start
                 while pos < end:
+                    _check_cancel()
                     want = min(TRIM_READ, s["size"] - pos)
                     n, bad = _read_window(fd, buf, pos, want)
                     if n <= 0:
@@ -4107,7 +4861,12 @@ def names_step(args: dict) -> dict:
                     while i != -1:
                         at = i - 32
                         if at >= 0 and (pos + at) % fs["sectorsize"] == 0 and at + node <= n:
-                            for tree, ino, name, transid in parse_btrfs_leaf(buf[at:at + node], fs, s["trees"]):
+                            try:
+                                found = btrfs_names_at(bytes(buf[at:at + node]), pos + at, fs, s["trees"])
+                            except (_struct.error, ValueError, IndexError, KeyError):
+                                found = []                 # a block that only looked like one: never stops the listing
+                                s["bad_blocks"] = s.get("bad_blocks", 0) + 1
+                            for tree, ino, name, transid in found:
                                 # an entry older than the folder of that number is a previous holder's: btrfs
                                 # uses an inode number again (the highest ones, after a remount), and a stale
                                 # block of another account's deleted folder would be tied to the caller's
@@ -4117,7 +4876,8 @@ def names_step(args: dict) -> dict:
                                     continue
                                 _add_name(s, (tree, ino), name)
                         i = buf.find(fs["fsid"], i + 1, n)
-                    pos += n if pos + n >= s["size"] else n - node      # overlap: a block across two reads
+                    # overlap, so a block across two reads is seen whole; a short read (the end) moves on by itself
+                    pos += n if pos + n >= s["size"] or n <= node else n - node
                 s["done"] = min(pos, s["size"])
             finally:
                 buf.close()
@@ -4134,9 +4894,43 @@ def names_step(args: dict) -> dict:
 
 
 def _live(s: dict, rel: str, names) -> set[bytes]:
-    """Those of `names` that a file in the folder at `rel` has now."""
-    base = os.fsencode(_p(s["home"] + ("/" + rel if rel else "")))
-    return {n for n in names if os.path.lexists(base + b"/" + n)}
+    """Those of `names` that a file in the folder at `rel` has now: looked up in that folder as the listing reached
+    it (_open_kept), never by a path, which root would follow through a link the caller put on the way (a guess
+    at every name in /root/.ssh, answered)."""
+    try:
+        fd = _open_kept(s, rel)
+    except Refused:
+        return set()
+    try:
+        return {n for n in names if _entry_ino(fd, n) is not None}
+    finally:
+        os.close(fd)
+
+
+def _entry_ino(fd: int, name: bytes) -> int | None:
+    """The inode of the entry `name` in the folder open at `fd` (never following it, if it is a link), or None."""
+    try:
+        return os.stat(name, dir_fd=fd, follow_symlinks=False).st_ino
+    except (OSError, ValueError):
+        return None
+
+
+def _extents_now(s: dict, key: tuple[int, int], mounts: set[str] | None = None) -> list | None:
+    """A listed folder's blocks as they are now (FIEMAP), the folder opened as the listing reached it and checked to
+    be the same one (its inode); None when it isn't there any more."""
+    rel = s["dirs"].get(key)
+    if rel is None:
+        return None
+    try:
+        fd = _open_kept(s, rel, mounts)
+    except Refused:
+        return None
+    try:
+        if os.fstat(fd).st_ino != key[1]:
+            return None
+        return FIEMAP(fd)
+    finally:
+        os.close(fd)
 
 
 def names_result(args: dict) -> dict:
@@ -4213,14 +5007,23 @@ def _kept(s: dict, path) -> dict:
     return s["kept"][path]
 
 
-def _open_kept(s: dict, rel: str) -> int:
+def _open_kept(s: dict, rel: str, mounts: set[str] | None = None) -> int:
     """The folder at `rel` under the listing's top, opened as the listing reached it: one name at a
     time, never through a link, never into another mount or filesystem, each folder one the
-    listing may cover."""
+    listing may cover, and opened with the caller's own file access (_as_caller)."""
     uid, gid, _ = _caller()
     groups = _caller_groups(uid, gid)
-    mounts = {_unescape(f[1]) for f in _proc_mounts()}
-    fd = os.open(_p(s["home"]), os.O_RDONLY | os.O_DIRECTORY)
+    if mounts is None:
+        mounts = {_unescape(f[1]) for f in _proc_mounts()}
+    with _as_caller(uid, gid, groups):
+        return _open_kept_as(s, rel, uid, groups, mounts)
+
+
+def _open_kept_as(s: dict, rel: str, uid: int, groups: set[int], mounts: set[str]) -> int:
+    try:
+        fd = os.open(_p(s["home"]), os.O_RDONLY | os.O_DIRECTORY)
+    except OSError:
+        raise Refused("that folder can't be read") from None
     try:
         dev = os.fstat(fd).st_dev
         path = s["home"].rstrip("/")
@@ -4355,6 +5158,7 @@ def names_orphans(args: dict) -> dict:
     fd = _names_device(s)
     try:
         for key, lblks in j["orphans"].items():
+            _check_cancel()
             for lblk in lblks:
                 if len(names) > NAMES_MAX:
                     break
@@ -4431,12 +5235,22 @@ def enable_tmp_mount(args: dict) -> dict:
     if not stat.S_ISREG(st.st_mode) or (not ROOT and st.st_uid != 0):
         raise Refused(f"{SHIPPED_TMP_MOUNT} isn't a root-owned file")
     had = _unit_dirs()
-    _do(["systemctl", "enable", SHIPPED_TMP_MOUNT])
+    change = {"linked_unit": {"unit": "tmp.mount", "file": SHIPPED_TMP_MOUNT}}
+    _journal_begin(change)
+    try:
+        _do(["systemctl", "enable", SHIPPED_TMP_MOUNT])
+    except Refused as e:
+        _, state, _ = RUN(["systemctl", "is-enabled", "tmp.mount"])
+        if state.strip() in ("enabled", "linked"):           # it got that far: recorded, so it can be put back
+            _journal_save(change, state="failed", failed=str(e), **({"dirs": d} if (d := sorted(_unit_dirs() - had)) else {}))
+            raise Refused(f"{e} (what it had changed by then is recorded, so it can be put back)",
+                          {"change_id": change["id"]}) from None
+        _journal_close(change, "failed", failed=str(e))
+        raise
     _do_code(["systemctl", "daemon-reload"])
     made = sorted(_unit_dirs() - had)
-    return {"changed": True, "change_id": _journal({"linked_unit": {"unit": "tmp.mount", "file": SHIPPED_TMP_MOUNT},
-                                                    **({"dirs": made} if made else {})}),
-            "warnings": [], "dirs": made}
+    _journal_save(change, state="applied", **({"dirs": made} if made else {}))
+    return {"changed": True, "change_id": change["id"], "warnings": [], "dirs": made}
 
 
 # ------------------------------------------------------------------ installing itself
@@ -4451,7 +5265,9 @@ POLICY = """<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
   "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
 <!-- DA Privacy Kit's administrator helper: only this root-owned program, and the password is
-     asked every time it starts (auth_admin, not auth_admin_keep). -->
+     asked every time it starts (auth_admin, not auth_admin_keep). What can't be undone, what reaches
+     other accounts' data, installing or removing the helper, and turning remote access back on ask
+     again, each time (the helper checks the second action itself, with pkcheck). -->
 <policyconfig>
   <vendor>DA Privacy Kit</vendor>
   <action id="au.com.digitalarchon.daprivacyscanner.helper">
@@ -4464,17 +5280,32 @@ POLICY = """<?xml version="1.0" encoding="UTF-8"?>
     </defaults>
     <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/daprivacyscanner/daprivacyscanner-helper</annotate>
   </action>
+  <action id="au.com.digitalarchon.daprivacyscanner.sensitive">
+    <description>Let DA Privacy Kit do something that can't be undone, or that reaches beyond your account</description>
+    <message>DA Privacy Kit asks for your password again, because it wants to $(what).</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+  </action>
 </policyconfig>
 """
 SELF = __file__                                 # tests point it at a copy
 _SOURCE: tuple[str, bytes] | None = None        # (SELF, what it held): read once, at start (main), before any request
+# the bytes privileged.install_helper's loader checked against the hash it was given and is running (it passes them
+# here): what install_self installs, never the file read again
+_LOADED = globals().get("__daprivacyscanner_source__")
 
 
 def own_source() -> bytes:
     """This program's source, read once, when it starts: what install_self installs is the code that was running
     then, not what the file holds when the request comes. The helper that isn't installed yet runs from a copy in
-    the user's runtime folder, which the user, or anything running as them, can change after it was authorised."""
+    the user's runtime folder, which the user, or anything running as them, can change after it was authorised:
+    started by the loader, it is the bytes the loader checked and ran."""
     global _SOURCE
+    if isinstance(_LOADED, bytes) and SELF == __file__:
+        return _LOADED
     if _SOURCE is None or _SOURCE[0] != SELF:
         with open(SELF, "rb") as f:
             _SOURCE = (SELF, f.read())
@@ -4487,8 +5318,8 @@ def install_self(args: dict) -> dict:
     if source.startswith(b"#!"):                # installed already: its first line is the interpreter
         source = source.split(b"\n", 1)[1]
     d = os.path.dirname(INSTALLED)
-    os.makedirs(_check_path(d), mode=0o755, exist_ok=True)
-    os.chmod(_p(d), 0o755)
+    _makedirs(d, 0o755)
+    os.chmod(_check_path(d), 0o755)
     _write(INSTALLED, b"#!/usr/bin/python3 -I\n" + source, 0o755)
     os.chmod(_p(INSTALLED), 0o755)
     _write(POLICY_PATH, POLICY.encode(), 0o644)
@@ -4662,12 +5493,13 @@ def vacuum_journal(args: dict) -> dict:
 
 
 class _Monitor:
-    """`resolvectl monitor` for the window, writing into a file of its own (unlinked, root's): a pipe no one read
+    """`resolvectl monitor` for the window, writing into a memory file of its own (root's): a pipe no one read
     until the window ended filled with a burst of lookups bigger than it (a browser starting), resolvectl then
-    blocked, and the lookups behind it were lost."""
+    blocked, and the lookups behind it were lost. Never a file in /tmp, which is on the disk on Debian, Ubuntu and
+    Mint: every account's lookups would have been left in its free space."""
 
     def __init__(self):
-        self.out = tempfile.TemporaryFile()
+        self.out = os.fdopen(os.memfd_create("daprivacyscanner-lookups", os.MFD_CLOEXEC), "w+b")
         try:
             self.proc = subprocess.Popen(["resolvectl", "monitor", "--json=short"], stdout=self.out,
                                          stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL, env=_ENV)
@@ -4755,6 +5587,7 @@ def observe_traffic(args: dict) -> dict:
     conns, seen = [], set()
     try:
         for _ in range(seconds):
+            _check_cancel()
             code, out, _ = RUN(["ss", "-tunpH"])
             for c in _ss_peers(out) if code == 0 else []:
                 key = (c["process"], c["peer"], c["proto"])
@@ -4813,11 +5646,17 @@ def planned(request: str, args: dict, home: str | None = None) -> list[str]:
         elif request == "mount_tmpfs" and home:
             target = args.get("target", "thumbnails")
             path = in_memory_path(home, target)
+            uid = os.getuid()
+            gid = pwd.getpwuid(uid).pw_gid
             if not os.path.lexists(_p(path)):
-                uid = os.getuid()
-                out.append(q(["install", "-d", "-m", "700", "-o", str(uid), "-g", str(pwd.getpwuid(uid).pw_gid), path]))
+                out.append(q(["install", "-d", "-m", "700", "-o", str(uid), "-g", str(gid), path]))
             out += [q(["chmod", "500", path])] if target == "ephemeral" else []
-            out += [q(["systemctl", "daemon-reload"]), q(["systemctl", "enable", "--now", unit_name(path)])]
+            options = f"size={args['size_mb']}M,mode=0700,uid={uid},gid={gid}"
+            noexec = args.get("noexec", True) is not False
+            out += [q(["systemctl", "daemon-reload"]),
+                    q(["mount", "-t", "tmpfs", "-o", ",".join([options, *(["noexec"] if noexec else []), "nosuid",
+                                                               "nodev"]), "tmpfs", path]),
+                    q(["systemctl", "enable", unit_name(path)])]
         elif request == "enable_tmp_mount":
             out += [q(["systemctl", "enable", SHIPPED_TMP_MOUNT]), q(["systemctl", "daemon-reload"])]
         elif request == "vacuum_journal":
@@ -5721,7 +6560,8 @@ def watch_end(args: dict) -> dict:
         _watch_forget()
 
 
-ACTIONS = {"hello": hello, "ufw_status": ufw_status, "observe_traffic": observe_traffic, "luks_dump": luks_dump, "clevis_list": clevis_list, "read_file": read_file,
+ACTIONS = {"hello": hello, "keepalive": keepalive, "list_changes": list_changes,
+           "ufw_status": ufw_status, "observe_traffic": observe_traffic, "luks_dump": luks_dump, "clevis_list": clevis_list, "read_file": read_file,
            "empty_password_accounts": empty_password_accounts, "sshd_settings": sshd_settings,
            "firewall_summary": firewall_summary,
            "write_dropin": write_dropin, "edit_config": edit_config, "set_service": set_service,
@@ -5741,46 +6581,313 @@ ACTIONS = {"hello": hello, "ufw_status": ufw_status, "observe_traffic": observe_
            "clear_opensnitch_log": clear_opensnitch_log}
 
 
+# ------------------------------------------------------------------ asking again (consent)
+# The session's prompt (pkexec's, for the helper's own polkit action) covers reads and reversible, journalled changes.
+# These ask polkit again, each time, for SENSITIVE_ACTION (auth_admin, never kept): what the request does, in the
+# prompt's own words ($(what) in the action's message). Declined, nothing is done.
+CONSENT = {
+    "clear_crash_dumps": "delete the crash dumps and crash reports the system keeps (this can't be undone)",
+    "vacuum_journal": "delete the system journal's older records (this can't be undone)",
+    "clear_journal_files": "delete the system journal's files on the disk (this can't be undone)",
+    "clear_syslog": "delete the text logs in /var/log (this can't be undone)",
+    "clear_opensnitch_log": "empty OpenSnitch's log and delete its older copies (this can't be undone)",
+    "snapper_cleanup": "delete the snapshots beyond snapper's limits (this can't be undone)",
+    "observe_traffic": "watch, for a short while, which sites every account on this computer looks up and connects to",
+    "names_orphans": "show names of deleted files that may be other accounts' or the system's",
+    "install_self": "install its administrator helper (/usr/libexec/daprivacyscanner) and its polkit actions",
+    "uninstall_self": "remove its administrator helper and its polkit actions",
+}
+CONSENT_ACTIONS = frozenset(CONSENT) | {"revert"}      # the requests that may ask (revert: for remote access)
+SUBJECT: tuple[int, int, int] | None = None            # (pid, start time, uid) of the app that started the helper
+ASK = None                                             # tests replace it: (what) -> bool
+
+
+def _proc_start(pid: int) -> int | None:
+    """A process's start time (/proc/PID/stat, field 22: clock ticks since boot), which polkit pairs with its pid."""
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as f:
+            text = f.read(4096).decode(errors="replace")
+        return int(text.rpartition(")")[2].split()[19])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def _remember_subject() -> None:
+    """The app's own process (pkexec runs the helper in its place, so the app is its parent), with its start time and
+    the user pkexec names: whom polkit asks for the password again, and on whose desktop the prompt comes up."""
+    global SUBJECT
+    try:
+        uid = int(os.environ["PKEXEC_UID"])
+    except (KeyError, ValueError):
+        return
+    pid = os.getppid()
+    start = _proc_start(pid)
+    if start is not None and pid > 1:
+        SUBJECT = (pid, start, uid)
+
+
+def _pkcheck(what: str) -> bool:
+    """polkit asked, with the app's process as the subject, for SENSITIVE_ACTION: the password prompt comes up on the
+    user's desktop, through their session's agent. True when it was given."""
+    if SUBJECT is None:
+        raise Refused("the helper can't tell which program to ask for the password (it wasn't started by pkexec)")
+    pid, start, uid = SUBJECT
+    if os.getppid() != pid or _proc_start(pid) != start:
+        raise Refused("the app that started the helper has ended")
+    try:
+        p = subprocess.run(["pkcheck", "--action-id", SENSITIVE_ACTION, "--process", f"{pid},{start},{uid}",
+                            "--allow-user-interaction", "--detail", "what", what], capture_output=True, text=True,
+                           errors="replace", timeout=CONSENT_WAIT, stdin=subprocess.DEVNULL, env=_ENV)
+    except FileNotFoundError:
+        raise Refused("pkcheck (polkit) isn't installed, so the helper can't ask for the password again") from None
+    except subprocess.TimeoutExpired:
+        return False
+    if p.returncode == 2:
+        raise Refused("no password prompt can be shown here (no polkit agent is running in the desktop session)",
+                      {"declined": True})
+    if p.returncode not in (0, 1, 3):
+        raise Refused(f"polkit couldn't be asked: {(p.stderr or p.stdout).strip()[:200]}")
+    return p.returncode == 0
+
+
+def _consent(what: str) -> None:
+    """Asks for the password again before `what` (CONSENT); refused, nothing is done. In a fixture tree (tests) there
+    is no polkit: granted, unless a test's ASK says otherwise."""
+    ask = ASK or (None if ROOT else _pkcheck)
+    if ask is not None and not ask(what):
+        raise Refused(f"This wasn't done, since your password wasn't given for it: DA Privacy Kit wanted to {what}.",
+                      {"declined": True})
+
+
+# ------------------------------------------------------------------ the session: requests, cancel, idle end
+
+class Stopped(Refused):
+    """The request in hand was cancelled by the app (the user stopped it, or closed its panel)."""
+
+
+_TOO_LONG = object()
+
+
+class _Input:
+    """The app's requests, read from the socket here (never by a buffered reader), one line at a time and at most
+    MAX_REQUEST bytes each, so a long request can look for a cancel meant for it without losing what follows."""
+
+    def __init__(self, fd: int = 0):
+        self.fd, self.buf, self.eof, self.skipping = fd, bytearray(), False, False
+
+    def _read(self, timeout: float) -> bool:
+        if self.eof:
+            return False
+        try:
+            if not select.select([self.fd], [], [], max(timeout, 0))[0]:
+                return False
+            chunk = os.read(self.fd, 1 << 16)
+        except InterruptedError:
+            return True
+        except OSError:
+            chunk = b""
+        if not chunk:
+            self.eof = True
+            return False
+        self.buf += chunk
+        if b"\n" not in chunk and len(self.buf) > MAX_REQUEST:    # far too long: dropped up to its end
+            self.buf.clear()
+            self.skipping = True
+        return True
+
+    def line(self, timeout: float):
+        """The next line (bytes); _TOO_LONG for one past MAX_REQUEST; None at the end of input or after `timeout`."""
+        until = time.monotonic() + timeout
+        while True:
+            i = self.buf.find(b"\n")
+            if i >= 0:
+                line = bytes(self.buf[:i])
+                del self.buf[:i + 1]
+                if self.skipping or len(line) > MAX_REQUEST:
+                    self.skipping = False
+                    return _TOO_LONG
+                return line
+            if not self._read(until - time.monotonic()):
+                if self.eof or time.monotonic() >= until:
+                    return None
+
+    def cancelled(self, rid) -> bool:
+        """Whether a cancel for request `rid` has come (taken out of what is waiting; other lines stay, in order)."""
+        while self._read(0):
+            pass
+        if b'"cancel"' not in self.buf:
+            return False
+        lines = self.buf.split(b"\n")
+        tail, found, keep = lines.pop(), False, []
+        for ln in lines:
+            if b'"cancel"' in ln and _cancel_of(ln) == rid and rid is not None:
+                found = True
+                continue
+            keep.append(ln)
+        self.buf = bytearray(b"\n".join(keep + [tail]))
+        return found
+
+
+def _cancel_of(line: bytes):
+    """The id a cancel request names, or None if the line isn't one."""
+    try:
+        req = json.loads(line)
+    except ValueError:
+        return None
+    if isinstance(req, dict) and req.get("action") == "cancel" and isinstance(req.get("args"), dict):
+        return req["args"].get("id")
+    return None
+
+
+INPUT: _Input | None = None                    # the session's input (main); None when called in-process (tests)
+CURRENT = None                                 # the id of the request in hand
+
+
+def _check_cancel() -> None:
+    """Called in the long loops: stops the request in hand when the app has cancelled it."""
+    if INPUT is not None and INPUT.cancelled(CURRENT):
+        raise Stopped("Stopped.", {"stopped": True})
+
+
+INSTALL_ACTIONS = frozenset({"hello", "install_self", "uninstall_self"})
+
+
 def handle(line: str) -> dict:
+    global REQUEST_ID, ACTION, CURRENT
     rid = None
     try:
         req = json.loads(line)
         rid = req.get("id") if isinstance(req, dict) else None
         if not isinstance(req, dict) or req.get("action") not in ACTIONS or not isinstance(req.get("args", {}), dict):
             return {"id": rid, "ok": False, "error": "unknown action"}
+        action, args = req["action"], dict(req.get("args") or {})
         DID.clear()
-        result = ACTIONS[req["action"]](req.get("args", {}))
+        REQUEST_ID, ACTION, CURRENT = None, action, rid
+        if MODE == "install" and action not in INSTALL_ACTIONS:
+            raise Refused("this copy of the helper only installs or removes itself")
+        # (revert names the change it puts back by its own "change_id")
+        change_id = args.pop("change_id", None) if action in JOURNALLED else None
+        if change_id is not None:
+            if not isinstance(change_id, str) or not _CHANGE_ID.match(change_id):
+                raise Refused("bad change id")
+            if _change_known(change_id):
+                raise Refused("that change id has been used already")
+            REQUEST_ID = change_id
+        # what can't be undone, what reaches beyond the caller's account, and installing or removing the helper: the
+        # password again (not for the install-only copy, whose own start asked for exactly that)
+        if action in CONSENT and not (MODE == "install" and action in INSTALL_ACTIONS):
+            _consent(CONSENT[action])
+        result = ACTIONS[action](args)
         if DID and isinstance(result, dict):
             result = {**result, "ran": list(DID)}
         return {"id": rid, "ok": True, "result": result}
     except Refused as e:
         # what it had run before it failed, and a change it journalled on the way (Refused.data)
         return {"id": rid, "ok": False, "error": str(e), **({"ran": list(DID)} if DID else {}),
-                **{k: v for k, v in e.data.items() if k in ("change_id", "message")}}
+                **{k: v for k, v in e.data.items() if k in ("change_id", "message", "declined", "stopped")}}
     except json.JSONDecodeError:
         return {"id": None, "ok": False, "error": "bad request"}
     except Exception as e:  # noqa: BLE001 - report, never crash mid-session
         return {"id": rid, "ok": False, "error": f"{type(e).__name__}"}
+    finally:
+        REQUEST_ID, CURRENT = None, None
+
+
+OUT = 1                                        # where answers go (serve)
+
+
+def _send(reply: dict) -> bool:
+    data = (json.dumps(reply) + "\n").encode()
+    while data:
+        try:
+            n = os.write(OUT, data)
+        except InterruptedError:
+            continue
+        except OSError:
+            return False
+        data = data[n:]
+    return True
+
+
+def _boottime() -> float:
+    """Seconds since boot, the time asleep included (the lifetime counts it; idle time is measured while awake)."""
+    try:
+        return time.clock_gettime(time.CLOCK_BOOTTIME)
+    except (AttributeError, OSError):
+        return time.monotonic()
+
+
+def serve(fd: int = 0, out: int = 1) -> None:
+    """The session: requests on `fd` (answers on `out`) until the end of input, HELPER_IDLE seconds without one, or
+    HELPER_LIFETIME."""
+    global INPUT, OUT
+    INPUT, OUT = _Input(fd), out
+    started = _boottime()
+    try:
+        while True:
+            left = HELPER_LIFETIME - (_boottime() - started)
+            if left <= 0:
+                return
+            line = INPUT.line(min(HELPER_IDLE, left))
+            if line is None:
+                return                                 # the app is gone, or hasn't asked for anything in a while
+            if line is _TOO_LONG:
+                if not _send({"id": None, "ok": False, "error": "request too long"}):
+                    return
+                continue
+            if not line.strip() or (b'"cancel"' in line and _cancel_of(line) is not None):
+                continue                               # a cancel for a request already answered
+            if not _send(handle(line.decode("utf-8", "replace"))):
+                return
+    finally:
+        INPUT = None
+        if _WATCH:                                     # the access dropped, or the app gone, with a watch on
+            _watch_forget()
 
 
 def main() -> None:
+    global MODE
+    _harden()
     if sys.argv[1:] == ["--watch"]:                    # the watch's own process (watch_begin starts it)
-        _no_dumps()
         _watch_child()
         return
-    _no_dumps()
+    if sys.argv[1:] == ["--install-only"]:             # privileged.install_helper's loader starts it so
+        MODE = "install"
     try:
         own_source()                                   # now, before any request: what install_self installs
     except OSError:
         pass
+    _remember_subject()
+    serve(0)
+
+
+def _harden() -> None:
+    """What the helper inherits from whoever ran pkexec, put right before anything is done: the umask (pkexec keeps
+    the user's: under 000 the helper's own folders were made writable by every account, under 077 the services
+    couldn't read the drop-ins it wrote), the working folder, resource limits that would cut a write or a read short
+    (a file size limit truncating a config file, or the journal entry recording it), and crash dumps."""
+    os.umask(0o022)
     try:
-        for line in sys.stdin:
-            if line.strip():
-                sys.stdout.write(json.dumps(handle(line)) + "\n")
-                sys.stdout.flush()
-    finally:
-        if _WATCH:                                     # the access dropped, or the app gone, with a watch on
-            _watch_forget()
+        os.chdir("/")
+    except OSError:
+        pass
+    try:
+        import resource
+        inf = resource.RLIM_INFINITY
+        for name in ("RLIMIT_FSIZE", "RLIMIT_AS", "RLIMIT_DATA", "RLIMIT_CPU"):
+            try:
+                resource.setrlimit(getattr(resource, name), (inf, inf))
+            except (ValueError, OSError, AttributeError):
+                pass
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        if soft != inf and soft < 4096:
+            try:
+                resource.setrlimit(resource.RLIMIT_NOFILE, (4096, max(hard, 4096) if hard != inf else inf))
+            except (ValueError, OSError):
+                pass
+    except ImportError:
+        pass
+    _no_dumps()
 
 
 def _no_dumps() -> None:

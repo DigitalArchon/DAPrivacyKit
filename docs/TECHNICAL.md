@@ -55,7 +55,11 @@ carried out.
    Root work goes through a small helper started with pkexec, which offers only named actions, checks every
    argument itself, reads only the files on its list and never writes content the app sends. Declined, system
    checks say what they couldn't see ([section 5](#5-the-privileged-helper)). What it reads beyond files is for the
-   caller alone: a watch of one app returns what the caller's own processes did, never another account's.
+   caller alone: a watch of one app returns what the caller's own processes did, never another account's. A
+   session is always the installed, root-owned helper (the fallback only installs it, running the bytes whose hash
+   the app gave), on a socket pair, ending itself when unused; what can't be undone, what returns other accounts'
+   data, installing or removing the helper and turning remote access back on ask for the password again, each
+   time. Every change is journalled before it is made.
 4. **Read-only by default.** A scan changes nothing, the user's home folder included: programs that write as they read (dnf5 copying the system's metadata, flatpak making an installation) get folders of their own in the runtime folder, removed at once, and nothing a scan runs starts a socket-activated service.
 5. **Fix tiers.** `auto`: applied after one confirmation, and reversible. `guided`: step by step, each step
    explained with its side effects and confirmed on its own. `advice`: explained, with the commands for this
@@ -389,14 +393,49 @@ listening have changed also when the list of them has, though some still listen.
 
 ## 5. The privileged helper
 
-- **How it starts.** `pkexec /usr/bin/python3 -I helper.py` from a source tree (the polkit prompt then
-  names python3), or a root-owned copy with its own polkit action
-  (`/usr/libexec/daprivacyscanner/daprivacyscanner-helper`) installed by `--install-helper` /
-  `packaging/install-helper.sh`, run as `pkexec <that path>`. From an AppImage it runs a private copy, since root can't read the
-  AppImage's FUSE mount. `-I` keeps user site-packages and the script directory off `sys.path`. Standard
-  library only.
-- **Protocol.** One JSON object per line on stdin (`{"id", "action", "args"}`), one reply per line on
-  stdout. It exits at end of input.
+- **How it starts.** A session is always the root-owned copy with its own polkit action
+  (`/usr/libexec/daprivacyscanner/daprivacyscanner-helper`), run as `pkexec <that path>`. Until it is installed
+  (or while the installed one is another version's, `PROTOCOL`), administrator access isn't available
+  (`privileged.HelperNotInstalled`): the page, `--scan --admin` and the error say to install it, and the page offers
+  it. Installing (`--install-helper`, the page, `packaging/install-helper.sh` with sudo) runs this version's
+  `helper.py` once, only to install or remove itself: `pkexec /usr/bin/python3 -I -c LOADER <file> <sha256>`, where
+  the loader (`privileged.LOADER`) reads the file once, checks it against the SHA-256 of what the app read from its
+  own package, and runs exactly those bytes with `--install-only` (they are what `install_self` installs). A file
+  that a process of the user's changed while the prompt stood is refused, never run as root. From an AppImage the
+  file is a private copy, since root can't read the AppImage's FUSE mount. `-I` keeps user site-packages and the
+  script directory off `sys.path`. Standard library only.
+- **What it inherits.** pkexec keeps the caller's umask, working folder and resource limits: the helper sets
+  umask 022, works from `/`, lifts the limits that would cut a write or a read short (file size, address space,
+  data, CPU) and turns off crash dumps before anything else (`_harden`). Every folder it makes gets its mode set
+  (`_makedirs`), its own state folders (`OWN_DIRS`: /var/lib/daprivacyscanner, its journal, /run/daprivacyscanner)
+  are root's and get their modes back where an older helper made them under the user's umask, and a state file it
+  reads (a journal entry, swap.json, a RAM disk's record) must be root's, writable by root alone and have one name
+  (`_read(trusted=True)`), else it is refused or ignored.
+- **Protocol.** One JSON object per line (`{"id", "action", "args"}`), one reply per line, over a socket pair: the
+  helper's stdin and stdout are one end, the app holds the other. A pipe's end could be opened again by any process
+  of the same user through `/proc/<app>/fd/N` (and requests written with an id the app skipped as late); a socket's
+  can't (ENXIO). A request line is at most `MAX_REQUEST` (4 MiB). It exits at end of input, after `HELPER_IDLE` (6
+  minutes) without a request, and after `HELPER_LIFETIME` (12 hours) however it is used; while work holds the access
+  the app sends `keepalive` every minute. `{"action": "cancel", "args": {"id": n}}` stops request n while it runs
+  (the long loops look for it: the TRIM test's reads, the listing of deleted names, the traffic watch); it answers
+  "Stopped." and the cancel itself is never answered. The app sends it when the user stops a tool or closes its
+  panel.
+- **Asking again.** The session's prompt covers reads and reversible, journalled changes. What can't be undone as
+  root (`clear_crash_dumps`, `vacuum_journal`, `clear_journal_files`, `clear_syslog`, `clear_opensnitch_log`,
+  `snapper_cleanup`), what returns other accounts' data (`observe_traffic`: every account's lookups and
+  connections; `names_orphans`), installing or removing the helper in a session (`install_self`,
+  `uninstall_self`; the install-only copy's own start asked for exactly that), and a revert that turns a
+  remote-access service back on (`REMOTE_ACCESS`: ssh, xrdp, TeamViewer, AnyDesk, RustDesk, Cockpit, Samba) ask
+  polkit again, each time (`helper.CONSENT`), for `au.com.digitalarchon.daprivacyscanner.sensitive` (auth_admin,
+  never kept): the helper runs `pkcheck --action-id … --process <app pid>,<start time>,<uid>
+  --allow-user-interaction --detail what "<what it is about to do>"`, the prompt naming it (`$(what)` in the action's
+  message), on the app's own process (its parent, checked to be the same one). Declined, nothing is done, and the
+  answer says so (`declined`; `privileged.ConsentDeclined`); the app waits the prompt's time on top of the
+  request's (`call_timeout`).
+- **Services.** `set_service` turns each unit on its list only the way the app does (`SERVICES`): the remote-access
+  services, file sharing, crash reporters, syslog daemons and motd-news off (Avahi masked too), firewalld, the weekly
+  TRIM timer and OpenSnitch on, tmp.mount enabled from the next boot. No request turns remote access on or a
+  firewall off; a revert puts back what the journal recorded.
 - **Actions.** Detection (`luks_dump`, `clevis_list`, `read_file` for allowlisted files,
   `empty_password_accounts` (names, never hashes), `sshd_settings`, `firewall_summary`, `ufw_status`,
   `observe_traffic`, `erase_facts`); changes (`write_dropin`, `edit_config`, `set_service`, `set_sysctl`,
@@ -411,14 +450,48 @@ listening have changed also when the list of them has, though some still listen.
   edited by fixed rules, and only units, sysctls and policies on its own lists can be touched. The calling
   user and their home come from `PKEXEC_UID`, never from the request. Folders under the home are opened
   one component at a time with `O_NOFOLLOW` and must belong to the caller.
+- **The journal.** A change request may carry `change_id` (32 lowercase hex, never used before; the app's
+  `PkexecHelper.call` gives every change one), which its journal entry then has; without one the helper makes one.
+  Before anything changes, the entry is written and fsynced with its folder (state `intent`: what it is about to do
+  and what is there now), then marked `applied`, or `failed` with what was put back. Entries record the caller's
+  uid; a revert refuses another account's. What has nothing left to put back (a revert, a failure undone whole)
+  leaves the journal (whose folders go once empty) for a line in /run/daprivacyscanner/done, gone at a reboot and
+  after 7 days. `list_changes` answers the caller's changes, `{change_id, state, action, time, text}`: an app whose
+  request got no answer (`timed_out`, with the change id) can learn what became of it. A forced revert puts back
+  what it can when a unit's package is gone since (the app's own files above all) and says what it left.
+- **Mounts in the home.** A folder kept in memory is mounted by the helper itself on the folder it opened one name
+  at a time (`/proc/self/fd/N`), never by systemd at that moment (it would hand the path to mount(8), which looks it
+  up again while the user's programs run); `systemctl enable` without `--now` then has systemd take the mount up as
+  its unit (active). Reverting unmounts it through the folder above it, opened the same way
+  (`umount2("/proc/self/fd/N/<name>", UMOUNT_NOFOLLOW)`), after checking it is a tmpfs of the user's, then disables
+  the unit. ~/Ephemeral "until logout" is ordered `Before=user@UID.service` (as the RAM disk's drop-in is): systemd
+  mounts it before the user's manager starts anything, and unmounts it after every program of theirs has ended. A
+  folder made for the user is made under a random name, checked, given away by its descriptor and only then renamed
+  into place without replacing anything (`_new_folder`, `renameat2(RENAME_NOREPLACE)`).
+- **Disks read.** btrfs tree blocks are taken only inside the metadata and system chunks (read from the chunk tree,
+  found through the superblock's bootstrap chunks), carrying the logical address that place has and the chunk tree's
+  UUID, with every checksum kind checked (crc32c, xxhash64 in Python, SHA-256, BLAKE2b): a file another account wrote
+  shaped as a leaf plants no names; a block that only looks like one never stops the listing; a filesystem with mixed
+  block groups is refused, said why. ext4: a group descriptor size outside 32-1024 (a power of two), a journal whose
+  extents name the same blocks twice or lie past the device, or more inode-table descriptors than the device holds,
+  aren't read; folders that are gone are looked for in a bounded number of journal blocks. A folder's blocks found at
+  the start are read later only if they still carry that folder's checksum (metadata_csum), else after the folder is
+  opened again and asked again. Whether a name is still there, and the copies tied to a folder by its entries, are
+  looked up in the folder opened as the listing reached it (`_open_kept`, `stat(dir_fd=…, follow_symlinks=False)`),
+  never by a path root would follow through a link. The walk and `_open_kept` run with the caller's file access
+  (`_as_caller`: setfsuid, setfsgid and their groups), so access control lists decide as the kernel does. The
+  traffic watch's lookups go into a memory file (memfd), never /tmp.
 - **What it did.** Every change answers with `ran`: each command it ran, in order, quoted for a shell (a
   setting written straight to its file, a sysctl or a tmpfs mount, as the command that does the same;
   crash dumps deleted as `rm -f` by pattern, never by name; a file a revert restores from the journal as a
   `#` line, since no command does the same), and `files`, the paths it wrote. Reads aren't listed. History
   shows them.
 - **Lifetime.** One authorisation covers a scan and the fixes after it. Access ends when the user drops
-  it, after 5 idle minutes (`server.ADMIN_IDLE`), when the app quits, or straight after a scan that found
-  nothing a root fix could act on. Long work holds it for as long as it runs (the TRIM test, a listing of deleted
+  it, after 5 idle minutes (`server.ADMIN_IDLE`, looked at every few seconds by a timer of the session's own, not
+  only when the page asks), when the app quits, or straight after a scan that found nothing a root fix could act
+  on, unless something has asked for it since (`AdminSession.drop_unless_claimed`: a tool between its
+  `with_root` and its `hold`) or a request is in hand. A scan, applying a fix and a revert hold it while they run,
+  and applying uses the access there is then, never the one the dry run had. Long work holds it for as long as it runs (the TRIM test, a listing of deleted
   names, a watch of an app, which says so before it starts and drops the access when it ends, and the online tests
   given access, whose traffic watch asks the helper every few seconds). The watch and the TRIM test and listing
   don't run at once, nor is the helper installed or removed while any of these runs: the helper does one call at a
