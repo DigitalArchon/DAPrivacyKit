@@ -7,6 +7,7 @@ import re
 import time
 from pathlib import Path
 
+from ..procnames import comm
 from .. import ini
 from .. import network as net
 from ..host import Host, Unreadable
@@ -1285,7 +1286,7 @@ def command_lines(host: Host, name: str) -> list[list[str]]:
         if not p.name.isdigit():
             continue
         try:
-            if (p / "comm").read_text().strip() != name:
+            if comm(p).strip() != name:
                 continue
             out.append([a for a in (p / "cmdline").read_bytes().decode(errors="replace").split("\0") if a])
         except OSError:
