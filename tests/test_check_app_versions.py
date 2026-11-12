@@ -40,5 +40,5 @@ def test_the_brief_lists_new_majors_with_their_checks():
     assert [r.state for r in rows] == ["new major", "newer", "untracked"]
     text = tool.brief(rows)
     assert "## Firefox (firefox): 157 -> 170.0" in text and "## VLC" not in text
-    assert "- br.webrtc: WebRTC IP exposure (src/daprivacyscanner/checks/browser.py" in text
+    assert "- br.webrtc: WebRTC shows websites your local address (src/daprivacyscanner/checks/browser.py" in text
     assert "Discord (discord)" in text.split("## Not tracked on Repology")[1]

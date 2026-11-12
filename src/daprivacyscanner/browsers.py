@@ -30,6 +30,27 @@ UBO_CHROMIUM = "cjpalhdlnbpafiamejdnhcphjbkeiagm"
 UBO_LITE = "ddkjiahejlhfcafbddmgiahcphecmpfh"
 
 
+FAMILIES = ("chromium", "mozilla")
+# a default the browser's table doesn't give: the checks say they couldn't tell, never assume upstream's
+UNKNOWN = object()
+# a default that depends on the country or language the browser runs in (Firefox Suggest, sponsored shortcuts)
+REGION = "region"
+
+
+@dataclass(frozen=True)
+class ProfileFolder:
+    """Where one browser (or one edition of it: Chrome Beta, Brave Nightly) keeps its profiles, natively, in its Flatpak
+    and in its Snap. The one registry of browser profile locations: the checks read every browser listed here."""
+    name: str                   # as the checks show it: "Google Chrome Beta", "Zen"
+    family: str                 # chromium (a user data folder) or mozilla (a profiles.ini root)
+    browser: str                # its browsers.yaml id
+    home: str = ""              # a folder in the home folder (Firefox-family dot folders: .mozilla/firefox)
+    config: str = ""            # a folder in ~/.config (a Chromium user data folder; the XDG root of Firefox 147+)
+    flatpak: str = ""           # its Flatpak id: the same folders in the Flatpak's own home and config
+    snap: str = ""              # its snap name
+    snap_dir: str = ""          # a Chromium snap's user data folder inside the snap's folders
+
+
 @dataclass(frozen=True)
 class Browser:
     id: str
@@ -41,12 +62,22 @@ class Browser:
     no_ublock: bool = False
     desktop: tuple[str, ...] = ()
     appimage: tuple[re.Pattern, ...] = ()
-    profiles: dict = field(default_factory=dict)
+    family: str = ""                    # chromium | mozilla: the profiles the checks read; "" when they read none
+    folders: tuple[ProfileFolder, ...] = ()
+    unchecked: str = ""                 # why the checks don't read its profiles (shown to the user)
+    defaults: dict = field(default_factory=dict)    # the settings the checks read, as the browser ships them
+    inherits: str = ""                  # the browser whose defaults fill in the rest of this one's (a fork's upstream)
+    defaults_source: str = ""
     why: str = ""
     verify: str = ""
 
     def matches_appimage(self, filename: str) -> bool:
         return any(p.search(filename) for p in self.appimage)
+
+    @property
+    def profiles(self) -> dict[str, list[str]]:
+        """{family: the names of its profile folders}, {} when its profiles aren't read."""
+        return {self.family: [f.name for f in self.folders]} if self.family else {}
 
 
 @dataclass(frozen=True)
@@ -64,6 +95,32 @@ class BrowserData:
 
     def by_appimage(self, filename: str) -> Browser | None:
         return next((b for b in self if b.matches_appimage(filename)), None)
+
+    def folders(self, family: str) -> list[ProfileFolder]:
+        """Every profile folder of a family, in the file's order (the first of those sharing a folder names it)."""
+        return [f for b in self for f in b.folders if f.family == family]
+
+    def by_folder(self, name: str) -> Browser | None:
+        """The browser a profile folder (by its name: "Brave Beta", "Zen") belongs to."""
+        return next((b for b in self for f in b.folders if f.name == name), None)
+
+    def default(self, bid: str, key: str):
+        """What a browser ships a setting the checks read as: its own table, then the one it inherits from;
+        UNKNOWN when neither gives it (a fork whose defaults weren't read, a setting not in its table)."""
+        seen = set()
+        while bid and bid in self.browsers and bid not in seen:
+            seen.add(bid)
+            b = self.browsers[bid]
+            if key in b.defaults:
+                return b.defaults[key]
+            bid = b.inherits
+        return UNKNOWN
+
+
+def family_names(family: str, data: BrowserData | None = None) -> tuple[str, ...]:
+    """The names of every profile folder of a family ("Firefox", "LibreWolf", "Zen"...), for the readers."""
+    data = data or load()
+    return tuple(dict.fromkeys(f.name for f in data.folders(family)))
 
 
 def default_path() -> Path:
@@ -88,7 +145,56 @@ def load(path: Path | str | None = None) -> BrowserData:
     return parse(data)
 
 
-_KEYS = {"id", "name", "class", "blocking", "blocker", "no_ublock", "profiles", "detect", "facts", "why", "verify"}
+_KEYS = {"id", "name", "class", "blocking", "blocker", "no_ublock", "profiles", "defaults", "detect", "facts", "why",
+         "verify"}
+_FOLDER_KEYS = {"name", "home", "config", "flatpak", "snap", "snap_dir"}
+_REL = re.compile(r"^(?!/)(?!.*(?:^|/)\.\.(?:/|$))[A-Za-z0-9._ /-]{1,80}$")
+
+
+def _profiles(raw: Any, where: str, bid: str) -> tuple[str, tuple[ProfileFolder, ...], str]:
+    """(family, folders, why unchecked) from a browser's `profiles`: {family, folders} or {unchecked: why}."""
+    if not isinstance(raw, dict) or not raw:
+        raise DataError(f"{where}.profiles: {{family, folders}} or {{unchecked: why}}: every browser says where its "
+                        "profiles are, or why the checks don't read them")
+    if set(raw) == {"unchecked"}:
+        why = " ".join(str(raw["unchecked"] or "").split())
+        if not why:
+            raise DataError(f"{where}.profiles.unchecked: say why")
+        return "", (), why
+    if set(raw) - {"family", "folders"} or raw.get("family") not in FAMILIES:
+        raise DataError(f"{where}.profiles: family must be one of {', '.join(FAMILIES)}, with folders")
+    folders = []
+    for i, f in enumerate(raw.get("folders") or []):
+        w = f"{where}.profiles.folders[{i}]"
+        if not isinstance(f, dict) or not isinstance(f.get("name"), str) or set(f) - _FOLDER_KEYS:
+            raise DataError(f"{w}: a name and some of {', '.join(sorted(_FOLDER_KEYS - {'name'}))}")
+        vals = {k: str(f.get(k) or "") for k in _FOLDER_KEYS}
+        for k in ("home", "config", "snap_dir"):
+            if vals[k] and not _REL.match(vals[k]):
+                raise DataError(f"{w}.{k}: a relative path")
+        if not (vals["home"] or vals["config"]):
+            raise DataError(f"{w}: needs home or config")
+        if raw["family"] == "chromium" and (vals["home"] or not vals["config"]):
+            raise DataError(f"{w}: a Chromium user data folder is in ~/.config (config)")
+        folders.append(ProfileFolder(vals["name"], raw["family"], bid, vals["home"], vals["config"], vals["flatpak"],
+                                     vals["snap"], vals["snap_dir"]))
+    if not folders:
+        raise DataError(f"{where}.profiles: needs folders")
+    return raw["family"], tuple(folders), ""
+
+
+def _defaults(raw: Any, where: str) -> tuple[dict, str, str]:
+    """(settings, the browser it inherits the rest from, where they were read) from a browser's `defaults`."""
+    if raw is None:
+        return {}, "", ""
+    if not isinstance(raw, dict) or set(raw) - {"inherits", "source", "verified", "settings"}:
+        raise DataError(f"{where}.defaults: inherits, settings, source, verified")
+    if not str(raw.get("source", "")).startswith("https://") or not raw.get("verified"):
+        raise DataError(f"{where}.defaults: needs the source it was read from (https) and the date (verified)")
+    settings = raw.get("settings") or {}
+    if not isinstance(settings, dict):
+        raise DataError(f"{where}.defaults.settings: a mapping")
+    return dict(settings), str(raw.get("inherits") or ""), str(raw["source"])
 
 
 def parse(data: Any) -> BrowserData:
@@ -124,17 +230,25 @@ def parse(data: Any) -> BrowserData:
             appimage = tuple(re.compile(p, re.I) for p in _strs(d.get("appimage"), f"{where}.detect.appimage"))
         except re.error as e:
             raise DataError(f"{where}.detect.appimage: {e}") from None
-        prof = b.get("profiles") or {}
-        if not isinstance(prof, dict) or set(prof) - {"chromium", "mozilla"} or len(prof) > 1:
-            raise DataError(f"{where}.profiles: {{chromium: <name>}} or {{mozilla: <name>}}")
+        family, folders, unchecked = _profiles(b.get("profiles"), where, b["id"])
+        defaults, inherits, source = _defaults(b.get("defaults"), where)
         out[b["id"]] = Browser(
             id=b["id"], name=b["name"], cls=b["class"], blocking=b["blocking"],
             facts=_facts(b["facts"], where, TOPICS) if b.get("facts") else (),
             blocker=str(b.get("blocker") or ""), no_ublock=bool(b.get("no_ublock")), desktop=desktop,
-            appimage=appimage, profiles=dict(prof), why=" ".join(str(b.get("why") or "").split()),
+            appimage=appimage, family=family, folders=folders, unchecked=unchecked, defaults=defaults,
+            inherits=inherits, defaults_source=source, why=" ".join(str(b.get("why") or "").split()),
             verify=" ".join(str(b.get("verify") or "").split()))
     if not out:
         raise DataError(f"{DATA_NAME}: no browsers")
+    names: dict[str, str] = {}
+    for b in out.values():
+        if b.inherits and (b.inherits not in out or out[b.inherits].family != b.family):
+            raise DataError(f"browsers.{b.id}.defaults.inherits: a browser of the same family")
+        for f in b.folders:
+            if f.name in names:
+                raise DataError(f"browsers.{b.id}: the profile folder name {f.name} is also {names[f.name]}'s")
+            names[f.name] = b.id
     return BrowserData(out)
 
 

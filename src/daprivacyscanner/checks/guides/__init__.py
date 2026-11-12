@@ -122,13 +122,21 @@ def firefox_open(scan: Scan) -> bool:
 
 
 MOZILLA_PROGRAMS = {"firefox": "Firefox", "firefox-bin": "Firefox", "firefox-esr": "Firefox", "librewolf": "LibreWolf",
+                    "zen": "Zen", "zen-bin": "Zen", "waterfox": "Waterfox", "waterfox-bin": "Waterfox", "floorp": "Floorp",
                     "thunderbird": "Thunderbird", "thunderbird-bin": "Thunderbird"}
 
 
-def mozilla_open(scan: Scan, only=("Firefox", "LibreWolf", "Thunderbird")) -> list[str]:
+def firefox_family() -> tuple[str, ...]:
+    """The Firefox-family browsers whose profiles the checks read (browsers.yaml's registry)."""
+    from ...browsers import family_names
+    return family_names("mozilla")
+
+
+def mozilla_open(scan: Scan, only=None) -> list[str]:
     """Which of these Firefox-family programs are running, by name; a GeckoMain process whose
     program isn't known counts as all of them (it rewrites its prefs.js as it exits, whichever it is).
     The user's own only: another account's Firefox has profiles of its own, and blocked this user's."""
+    only = (*firefox_family(), "Thunderbird") if only is None else only
     procs = processes(scan.host, own=True)
     names = [n for n in only if any(label == n and p in procs for p, label in MOZILLA_PROGRAMS.items())]
     if not names and "GeckoMain" in procs:
@@ -257,7 +265,7 @@ def remote_ports_text(remote: list[RemoteAccess]) -> str:
     return ", ".join(f"{r.label} ({', '.join(r.ports)})" for r in remote if r.ports)
 
 
-def ff_prefs(check: Check, scan: Scan, label: str, prefs: dict | Callable, side_effects=(), only=("Firefox", "LibreWolf"),
+def ff_prefs(check: Check, scan: Scan, label: str, prefs: dict | Callable, side_effects=(), only=None,
              want: Callable | None = None, recommended: bool = False, key: str = "") -> list[Option]:
     """One option per Firefox-family profile that doesn't have these prefs yet (prefs.js,
     changed while the browser is closed). `prefs` may be a function of the profile and its prefs
@@ -265,6 +273,7 @@ def ff_prefs(check: Check, scan: Scan, label: str, prefs: dict | Callable, side_
     only while its own program runs: a running Thunderbird doesn't hold up Firefox's profiles."""
     from .._util import firefox_prefs
     out = []
+    only = firefox_family() if only is None else only
     running = mozilla_open(scan, only)
     for p in mozilla_profiles(scan.host, scan.paths, only):
         current = firefox_prefs(scan.host, p.path)

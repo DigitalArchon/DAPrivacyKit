@@ -86,7 +86,7 @@ def test_history_retention_reads_the_cookie_policy_and_its_firefox_step_ends(cat
     (d / "corp.json").write_text(json.dumps({"DefaultCookiesSetting": 4}))
     firefox(host.home, prefs=pref("privacy.sanitize.sanitizeOnShutdown", True))
     o = detect(cat, "br.history_retention", make_scan(host))
-    assert ev(o)["Google Chrome, Default"] == "cookies cleared when it closes (policy), history kept"
+    assert ev(o)["Google Chrome, Default"] == "cookies cleared when it closes (policy), history kept for 90 days"
     g = build(cat, host, "br.history_retention")
     assert _step(g, "Firefox").done                  # Firefox clears its history already: nothing left there
     step = _step(g, "Chromium-based browsers")

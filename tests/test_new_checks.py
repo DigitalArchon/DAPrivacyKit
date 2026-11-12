@@ -338,7 +338,8 @@ def test_account_sync(cat, tmp_path):
     host = make_host(tmp_path / "b")
     chrome(host.home, prefs={"account_info": [{"email": "a@b"}]})
     o = detect(cat, "br.account_sync", make_scan(host))
-    assert o.status is Status.PASS and "sync not set up" in ev(o)["Google Chrome, Default"]
+    # signed in without sync, Chrome keeps passwords, addresses and payment methods in the Google Account
+    assert o.status is Status.FAIL and "kept in the Google Account" in ev(o)["Google Chrome, Default"]
 
 
 
@@ -349,7 +350,7 @@ def test_account_sync_end_to_end_encrypted_is_a_risk(cat, tmp_path):
     host = make_host(tmp_path)
     firefox(host.home, prefs=pref("services.sync.username", "alice@example.com"))
     chrome(host.home, prefs={"account_info": [{"email": "a@b"}], "sync": {"has_setup_completed": True,
-                                                                          "passphrase_type": 2}})
+                                                                          "cached_passphrase_type": 4}})
     scan = make_scan(host)
     o = detect(cat, "br.account_sync", scan)
     assert o.status is Status.WARN and "passphrase" in ev(o)["Google Chrome, Default"]

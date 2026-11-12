@@ -204,7 +204,7 @@ UBO = {"id": "uBlock0@raymondhill.net", "type": "extension", "active": True, "lo
 
 def test_default_browser_without_a_blocker(cat, tmp_path):
     o = detect(cat, "br.content_blocking", make_scan(ff_machine(tmp_path / "a", "firefox.desktop", [])))
-    assert o.status is Status.FAIL and o.summary.startswith("Firefox blocks no ads")
+    assert o.status is Status.FAIL and o.summary.startswith("Firefox has no ad blocker the app recognises")
     g = guide(cat, ff_machine(tmp_path / "a", "firefox.desktop", []), "br.content_blocking")
     assert g.steps[0].commands == ["https://addons.mozilla.org/firefox/addon/ublock-origin/"]
     assert g.steps[-1].title == "Not in Tor Browser"
@@ -226,4 +226,4 @@ def test_chrome_with_ublock_lite_is_partial(cat, tmp_path):
     (prof / "Preferences").write_text("{}")
     (ext / "manifest.json").write_text(json.dumps({"name": "uBlock Origin Lite", "manifest_version": 3}))
     o = detect(cat, "br.content_blocking", make_scan(host))
-    assert o.status is Status.WARN and "only uBlock Origin Lite" in o.summary
+    assert o.status is Status.WARN and "blocks with uBlock Origin Lite" in o.summary

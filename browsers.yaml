@@ -19,8 +19,21 @@
 #               br.surveillance_browsers
 #   blocking    builtin (a blocker on by default; `blocker` names it) | extension (needs one: uBlock
 #               Origin) | none_allowed (Tor Browser: add nothing)
-#   profiles    where its profiles are, to look for uBlock Origin: {chromium: <name in _util's
-#               CHROMIUM_BROWSERS>} or {mozilla: <name in _util's MOZILLA_APPS>}. Omitted: not looked for.
+#   profiles    Where its profiles are: the one registry the browser checks read (_util's chromium_dirs and
+#               mozilla_profiles go by it). {family: chromium | mozilla, folders: [...]}, each folder an edition with
+#               `name` (as the checks show it, unique), `config` (a folder in ~/.config: a Chromium user data folder,
+#               or the XDG root of a Firefox-family browser), `home` (a Firefox-family folder in the home folder,
+#               .mozilla/firefox), `flatpak` (its Flatpak id: the same folders inside ~/.var/app/<id>), `snap` and
+#               `snap_dir` (a Chromium snap's user data folder inside ~/snap/<name>/{common,current}). Browsers that
+#               share a folder (ungoogled-chromium and Cromite use Chromium's ~/.config/chromium) list it too: the
+#               first in this file names it. Or {unchecked: why}: the checks don't read it, and say why, never
+#               nothing. Every browser has one or the other (a test checks).
+#   defaults    The settings the checks read, as the browser ships them: {settings: {name: value}, inherits: <id of
+#               the browser whose table fills in the rest>, source (https), verified (date)}. Firefox-family names are
+#               its prefs ("region": on in some countries only); Chromium-family ones are Preferences keys, and
+#               https_upgrades ({mode: strict | balanced | off, from: <major version>, trial_from: <major>}: on by
+#               default from `from`, decided by Google's field trials from `trial_from`). A setting a profile doesn't
+#               set and no table gives is "couldn't tell", never upstream's default assumed.
 #   detect      desktop: menu entry ids (file names) in any application folder; appimage: regexes for
 #               AppImage file names (case-insensitive)
 #   facts       {topic, text, source, verified}. topic: maker | code | record | blocking | security | use
@@ -36,7 +49,20 @@ browsers:
     class: surveillance
     no_ublock: true
     blocking: extension
-    profiles: {chromium: Google Chrome}
+    profiles:
+      family: chromium
+      folders:
+        - {name: Google Chrome, config: google-chrome, flatpak: com.google.Chrome}
+        - {name: Google Chrome Beta, config: google-chrome-beta, flatpak: com.google.ChromeDev}
+        - {name: Google Chrome Dev, config: google-chrome-unstable, flatpak: com.google.ChromeDev}
+    defaults:
+      inherits: chromium
+      source: https://chromium.googlesource.com/chromium/src/+/main/chrome/common/chrome_features.cc
+      verified: 2026-11-12
+      settings:
+        # on by default for public sites from Chrome 157 (the feature's default); in 154 to 156 Google's field
+        # trials turned it on for some people and not others (the Chrome Security blog, 28 October 2025)
+        https_upgrades: {mode: balanced, from: 157, trial_from: 154}
     detect:
       desktop: [google-chrome.desktop, google-chrome-beta.desktop, google-chrome-unstable.desktop,
                 com.google.Chrome.desktop, com.google.ChromeDev.desktop]
@@ -92,7 +118,10 @@ browsers:
     class: surveillance
     no_ublock: true
     blocking: extension
-    profiles: {chromium: Microsoft Edge}
+    profiles:
+      family: chromium
+      folders:
+        - {name: Microsoft Edge, config: microsoft-edge, flatpak: com.microsoft.Edge}
     detect:
       desktop: [microsoft-edge.desktop, microsoft-edge-beta.desktop, microsoft-edge-dev.desktop,
                 com.microsoft.Edge.desktop]
@@ -146,7 +175,10 @@ browsers:
     name: Opera
     class: surveillance
     blocking: extension
-    profiles: {chromium: Opera}
+    profiles:
+      family: chromium
+      folders:
+        - {name: Opera, config: opera, flatpak: com.opera.Opera}
     detect:
       desktop: [opera.desktop, opera-beta.desktop, opera-developer.desktop, com.opera.Opera.desktop,
                 opera_opera.desktop]
@@ -176,6 +208,11 @@ browsers:
     name: Yandex Browser
     class: surveillance
     blocking: extension
+    profiles:
+      family: chromium
+      folders:
+        - {name: Yandex Browser, config: yandex-browser, flatpak: ru.yandex.Browser}
+        - {name: Yandex Browser Beta, config: yandex-browser-beta}
     detect:
       desktop: [yandex-browser.desktop, yandex-browser-stable.desktop, yandex-browser-beta.desktop]
     why: >-
@@ -202,7 +239,11 @@ browsers:
     name: Vivaldi
     class: closed_ui
     blocking: extension
-    profiles: {chromium: Vivaldi}
+    profiles:
+      family: chromium
+      folders:
+        - {name: Vivaldi, config: vivaldi, flatpak: com.vivaldi.Vivaldi}
+        - {name: Vivaldi Snapshot, config: vivaldi-snapshot}
     detect:
       desktop: [vivaldi-stable.desktop, vivaldi-snapshot.desktop, com.vivaldi.Vivaldi.desktop,
                 vivaldi_vivaldi-stable.desktop]
@@ -225,7 +266,42 @@ browsers:
     name: Firefox
     class: other
     blocking: extension
-    profiles: {mozilla: Firefox}
+    profiles:
+      family: mozilla
+      folders:
+        # profiles made since Firefox 147 are in ~/.config/mozilla/firefox, unless ~/.mozilla/firefox is there
+        - {name: Firefox, home: .mozilla/firefox, config: mozilla/firefox, flatpak: org.mozilla.firefox, snap: firefox}
+    defaults:
+      source: https://github.com/mozilla-firefox/firefox/blob/release/browser/app/profile/firefox.js
+      verified: 2026-11-12
+      settings:
+        browser.cache.disk.enable: true
+        browser.sessionstore.privacy_level: 0
+        browser.contentblocking.category: standard
+        dom.security.https_only_mode: false
+        dom.security.https_only_mode_pbm: false
+        media.peerconnection.enabled: true
+        media.peerconnection.ice.obfuscate_host_addresses: true
+        media.peerconnection.ice.default_address_only: false
+        media.peerconnection.ice.proxy_only_if_behind_proxy: false
+        privacy.sanitize.sanitizeOnShutdown: false
+        browser.privatebrowsing.autostart: false
+        privacy.clearOnShutdown_v2.browsingHistoryAndDownloads: true
+        privacy.clearOnShutdown_v2.historyFormDataAndDownloads: true
+        privacy.clearOnShutdown.history: true
+        datareporting.healthreport.uploadEnabled: true
+        app.shield.optoutstudies.enabled: true
+        datareporting.usage.uploadEnabled: true
+        browser.search.suggest.enabled: true
+        browser.urlbar.suggest.quicksuggest.sponsored: region
+        browser.newtabpage.activity-stream.showSponsoredTopSites: region
+        # Firefox Suggest's online suggestions (what you type goes to Mozilla's servers): offered to English
+        # speakers in the US only, on by default there
+        browser.urlbar.quicksuggest.online.enabled: region
+        network.trr.mode: 0
+        permissions.default.camera: 0
+        permissions.default.microphone: 0
+        permissions.default.geo: 0
     detect:
       desktop: [firefox.desktop, firefox-esr.desktop, org.mozilla.firefox.desktop, firefox_firefox.desktop]
     why: >-
@@ -253,7 +329,21 @@ browsers:
     name: Chromium
     class: other
     blocking: extension
-    profiles: {chromium: Chromium}
+    profiles:
+      family: chromium
+      folders:
+        - {name: Chromium, config: chromium, flatpak: org.chromium.Chromium, snap: chromium, snap_dir: chromium}
+    defaults:
+      source: https://chromium.googlesource.com/chromium/src/+/main/chrome/common/chrome_features.cc
+      verified: 2026-11-12
+      settings:
+        search.suggest_enabled: true
+        # with "default", websites see no local address unless they were allowed the camera or microphone (mDNS
+        # host candidates, kWebRtcHideLocalIpsWithMdns)
+        webrtc.ip_handling_policy: default
+        https_upgrades: {mode: balanced, from: 157}
+        # history older than this is deleted (components/history/core/browser/history_backend.h, kExpireDaysThreshold)
+        history_days: 90
     detect:
       desktop: [chromium.desktop, chromium-browser.desktop, org.chromium.Chromium.desktop,
                 chromium_chromium.desktop]
@@ -272,6 +362,13 @@ browsers:
     class: privacy
     blocking: builtin
     blocker: Brave Shields
+    profiles:
+      family: chromium
+      folders:
+        - {name: Brave, config: BraveSoftware/Brave-Browser, flatpak: com.brave.Browser, snap: brave,
+           snap_dir: .config/BraveSoftware/Brave-Browser}
+        - {name: Brave Beta, config: BraveSoftware/Brave-Browser-Beta, flatpak: com.brave.Browser.beta}
+        - {name: Brave Nightly, config: BraveSoftware/Brave-Browser-Nightly, flatpak: com.brave.Browser.nightly}
     detect:
       desktop: [brave-browser.desktop, brave-browser-beta.desktop, brave-browser-nightly.desktop,
                 com.brave.Browser.desktop, brave_brave.desktop]
@@ -310,6 +407,10 @@ browsers:
     class: privacy
     blocking: builtin
     blocker: Brave Shields
+    profiles:
+      family: chromium
+      folders:
+        - {name: Brave Origin, config: BraveSoftware/Brave-Origin, flatpak: com.brave.Origin}
     detect:
       # the brave-origin package (Mint 22.3, 2026-10-04) installs both names in /usr/share/applications
       desktop: [brave-origin.desktop, com.brave.Origin.desktop]
@@ -333,6 +434,31 @@ browsers:
     class: privacy
     blocking: builtin
     blocker: uBlock Origin, preinstalled
+    profiles:
+      family: mozilla
+      folders:
+        - {name: LibreWolf, home: .librewolf, flatpak: io.gitlab.librewolf-community}
+    defaults:
+      inherits: firefox
+      # librewolf.cfg, and distribution/policies.json for HTTPS-Only Mode (HttpsOnlyMode enabled: on, and changeable)
+      source: https://codeberg.org/librewolf/settings/src/branch/master/librewolf.cfg
+      verified: 2026-11-12
+      settings:
+        browser.cache.disk.enable: false
+        browser.sessionstore.privacy_level: 2
+        browser.contentblocking.category: strict
+        dom.security.https_only_mode: true
+        media.peerconnection.ice.proxy_only_if_behind_proxy: true
+        privacy.sanitize.sanitizeOnShutdown: true
+        privacy.clearOnShutdown_v2.browsingHistoryAndDownloads: false
+        privacy.clearOnShutdown_v2.historyFormDataAndDownloads: false
+        datareporting.healthreport.uploadEnabled: false
+        app.shield.optoutstudies.enabled: false
+        datareporting.usage.uploadEnabled: false
+        browser.search.suggest.enabled: false
+        browser.urlbar.suggest.quicksuggest.sponsored: false
+        browser.urlbar.quicksuggest.online.enabled: false
+        network.trr.mode: 5
     detect:
       desktop: [librewolf.desktop, io.gitlab.librewolf-community.desktop]
     why: >-
@@ -352,7 +478,24 @@ browsers:
     name: Waterfox
     class: privacy
     blocking: extension
-    profiles: {mozilla: Waterfox}
+    profiles:
+      family: mozilla
+      folders:
+        - {name: Waterfox, home: .waterfox, flatpak: net.waterfox.waterfox}
+    defaults:
+      inherits: firefox
+      # its default prefs, read from 6.7.8's omni.ja (Firefox 153.7 ESR)
+      source: https://github.com/BrowserWorks/waterfox/tree/current/waterfox/browser/app/profile
+      verified: 2026-11-12
+      settings:
+        media.peerconnection.ice.default_address_only: true
+        datareporting.healthreport.uploadEnabled: false
+        app.shield.optoutstudies.enabled: false
+        datareporting.usage.uploadEnabled: false       # not in its build: there is no daily usage ping to send
+        browser.urlbar.suggest.quicksuggest.sponsored: false
+        browser.urlbar.quicksuggest.online.enabled: false
+        browser.newtabpage.activity-stream.showSponsoredTopSites: false
+        network.trr.mode: 2                            # DNS over Oblivious HTTP, through dooh.waterfox.com
     detect:
       desktop: [waterfox.desktop, net.waterfox.waterfox.desktop]
     why: Firefox without Mozilla's telemetry, independent again since 2023. Add uBlock Origin.
@@ -369,7 +512,22 @@ browsers:
     name: Zen
     class: privacy
     blocking: extension
-    profiles: {mozilla: Zen}
+    profiles:
+      family: mozilla
+      folders:
+        # ~/.zen when it is there, else ~/.config/zen; its Flatpak keeps .zen (--persist=.zen)
+        - {name: Zen, home: .zen, config: zen, flatpak: app.zen_browser.zen}
+    defaults:
+      inherits: firefox
+      # its default prefs, read from 1.24.2b's omni.ja (Firefox 160.0)
+      source: https://github.com/zen-browser/desktop/tree/dev/prefs
+      verified: 2026-11-12
+      settings:
+        datareporting.healthreport.uploadEnabled: false
+        app.shield.optoutstudies.enabled: false
+        browser.search.suggest.enabled: false
+        browser.urlbar.suggest.quicksuggest.sponsored: false
+        browser.urlbar.quicksuggest.online.enabled: false
     detect:
       desktop: [zen.desktop, zen-browser.desktop, app.zen_browser.zen.desktop]
       appimage: ['^zen[-_.]']
@@ -393,7 +551,20 @@ browsers:
     name: Floorp
     class: privacy
     blocking: extension
-    profiles: {mozilla: Floorp}
+    profiles:
+      family: mozilla
+      folders:
+        - {name: Floorp, home: .floorp, flatpak: one.ablaze.floorp}
+    defaults:
+      inherits: firefox
+      # its default prefs, read from 12.21.1's omni.ja (Firefox 159.0.1)
+      source: https://github.com/Floorp-Projects/Floorp
+      verified: 2026-11-12
+      settings:
+        datareporting.healthreport.uploadEnabled: false
+        app.shield.optoutstudies.enabled: false
+        datareporting.usage.uploadEnabled: false       # not in its build
+        browser.newtabpage.activity-stream.showSponsoredTopSites: false
     detect:
       desktop: [floorp.desktop, one.ablaze.floorp.desktop]
       appimage: ['^floorp']
@@ -412,6 +583,17 @@ browsers:
     class: privacy
     blocking: builtin
     blocker: uBlock Origin, built in
+    profiles:
+      family: chromium
+      folders:
+        - {name: Helium, config: net.imput.helium}
+    defaults:
+      inherits: chromium
+      source: https://github.com/imputnet/helium-linux/tree/main/patches/helium
+      verified: 2026-11-12
+      settings:
+        search.suggest_enabled: false
+        webrtc.ip_handling_policy: default_public_interface_only
     detect:
       desktop: [helium.desktop, net.imput.helium.desktop]
       appimage: ['^helium']
@@ -433,6 +615,18 @@ browsers:
     name: ungoogled-chromium
     class: privacy
     blocking: extension
+    profiles:
+      family: chromium
+      folders:
+        # native packages use Chromium's own folder (listed under Chromium); its Flatpak one of its own
+        - {name: ungoogled-chromium, config: chromium, flatpak: io.github.ungoogled_software.ungoogled_chromium}
+    defaults:
+      inherits: chromium
+      source: https://github.com/ungoogled-software/ungoogled-chromium/tree/master/patches
+      verified: 2026-11-12
+      settings:
+        search.suggest_enabled: false
+        webrtc.ip_handling_policy: disable_non_proxied_udp
     detect:
       desktop: [ungoogled-chromium.desktop, io.github.ungoogled_software.ungoogled_chromium.desktop]
     why: Chromium without Google. It still runs the full uBlock Origin, installed by hand; add it.
@@ -447,6 +641,19 @@ browsers:
     class: privacy
     blocking: builtin
     blocker: Cromite's own blocker
+    profiles:
+      family: chromium
+      folders:
+        # Chromium's own folder: none of its patches changes it
+        - {name: Cromite, config: chromium}
+    defaults:
+      inherits: chromium
+      source: https://github.com/uazo/cromite/tree/master/build/patches
+      verified: 2026-11-12
+      settings:
+        search.suggest_enabled: false
+        webrtc.ip_handling_policy: disable_non_proxied_udp
+        https_upgrades: {mode: strict}
     detect:
       desktop: [cromite.desktop]
     why: Chromium with privacy patches and its own ad blocker.
@@ -462,6 +669,10 @@ browsers:
     class: privacy
     blocking: builtin
     blocker: uBlock Origin, preinstalled
+    profiles:
+      unchecked: >-
+        It keeps its profile in its own folder, set up to forget everything as it closes, with settings it is built
+        to keep: the app doesn't judge them.
     detect:
       desktop: [mullvad-browser.desktop, start-mullvad-browser.desktop, net.mullvad.MullvadBrowser.desktop]
     why: >-
@@ -482,6 +693,10 @@ browsers:
     name: Tor Browser
     class: privacy
     blocking: none_allowed
+    profiles:
+      unchecked: >-
+        It keeps its profile in its own folder, set up to forget everything as it closes, with settings it is built
+        to keep: the app doesn't judge them.
     detect:
       # the AUR's tor-browser-bin and tor-browser-alpha-bin: tor-browser.desktop and tor-browser-alpha-bin.desktop
       desktop: [torbrowser.desktop, start-tor-browser.desktop, org.torproject.torbrowser-launcher.desktop,

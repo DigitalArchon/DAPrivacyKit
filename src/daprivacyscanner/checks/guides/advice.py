@@ -701,7 +701,7 @@ def landlock(check, scan, outcome):
 @guide("br.account_sync")
 def account_sync(check, scan, outcome):
     from ..browser import sync_states
-    syncing = [s for s in sync_states(scan) if s.state in ("readable", "passphrase", "e2e")]
+    syncing = [s for s in sync_states(scan) if s.state in ("readable", "passphrase", "e2e", "account")]
     steps = []
     for browser in dict.fromkeys(s.browser for s in syncing):
         mine = [s for s in syncing if s.browser == browser]

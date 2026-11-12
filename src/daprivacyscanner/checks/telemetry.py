@@ -10,7 +10,7 @@ from .. import ini
 from ..host import Unreadable
 from ..model import Evidence, Note, Outcome
 from . import Check, Scan, register
-from ._util import (absent, children, chromium_dirs, chromium_policies, dig, failed, firefox_policies, firefox_prefs,
+from ._util import (absent, children, chromium_dirs, chromium_policies, dig, failed, firefox_prefs,
                     installed, mozilla_profiles, passed, read_json, read_jsonc, read_text, sqlite_count, systemctl_state,
                     unknown, warned)
 
@@ -113,25 +113,45 @@ class Location(Check):
         return passed("GeoClue's online lookup is off.", *ev)
 
 
-MOZILLA_TELEMETRY_APPS = ("Firefox", "LibreWolf", "Thunderbird")
+def mozilla_telemetry_apps() -> tuple[str, ...]:
+    """The Firefox-family browsers the checks read (browsers.yaml's registry), and Thunderbird."""
+    from ..browsers import family_names
+    return (*family_names("mozilla"), "Thunderbird")
 
 
-def mozilla_telemetry_on(app: str, prefs: dict, policies: dict) -> dict[str, str]:
+def mozilla_telemetry_on(app: str, prefs: dict, policies: dict, unsure: list[str] | None = None) -> dict[str, str]:
     """{the pref that turns it off: what it is} for each kind of telemetry on in a Firefox-family profile (the guide
-    sets those prefs to false, and only those)."""
-    default = app != "LibreWolf"            # LibreWolf ships with telemetry off; Firefox and Thunderbird on
-    # Firefox's policies.json doesn't govern Thunderbird, and Thunderbird runs no studies
+    sets those prefs to false, and only those). Each browser as it ships (browsers.yaml defaults: LibreWolf, Zen,
+    Waterfox and Floorp have telemetry and studies off); Thunderbird with them on. `policies` are those its browser
+    obeys (Firefox's native install and Snap: ff_policies). A default the app doesn't know goes in `unsure`."""
+    from ..browsers import UNKNOWN, load
+    data = load()
+    b = data.by_folder(app)
+
+    def value(key):
+        if key in prefs:
+            return prefs[key]
+        return data.default(b.id, key) if b is not None else True
+
+    # Thunderbird runs no studies
     policy = policies if app != "Thunderbird" else {}
     out = {}
-    if not policy.get("DisableTelemetry") and prefs.get("datareporting.healthreport.uploadEnabled", default) is True:
-        out["datareporting.healthreport.uploadEnabled"] = "telemetry"
-    if app != "Thunderbird" and not policy.get("DisableFirefoxStudies") and \
-            prefs.get("app.shield.optoutstudies.enabled", default) is True:
-        out["app.shield.optoutstudies.enabled"] = "studies"
-    # the daily usage ping, a separate switch (on by default in Firefox 157, greprefs.js; the DisableTelemetry
-    # policy locks it off too, its Policies.sys.mjs)
-    if app == "Firefox" and not policy.get("DisableTelemetry") and prefs.get("datareporting.usage.uploadEnabled", True) is True:
-        out["datareporting.usage.uploadEnabled"] = "the daily usage ping"
+    checks = [("datareporting.healthreport.uploadEnabled", "telemetry", "DisableTelemetry")]
+    if app != "Thunderbird":
+        checks.append(("app.shield.optoutstudies.enabled", "studies", "DisableFirefoxStudies"))
+    if app == "Firefox":
+        # the daily usage ping, a separate switch (on by default in Firefox 157, greprefs.js; the DisableTelemetry
+        # policy locks it off too, its Policies.sys.mjs). The forks' builds send no ping of Mozilla's: Zen keeps the
+        # pref, with telemetry locked off
+        checks.append(("datareporting.usage.uploadEnabled", "the daily usage ping", "DisableTelemetry"))
+    for key, what, policy_name in checks:
+        if policy.get(policy_name):
+            continue
+        v = value(key)
+        if v is True:
+            out[key] = what
+        elif v is UNKNOWN and unsure is not None:
+            unsure.append(what)
     return out
 
 
@@ -140,13 +160,18 @@ class BrowserTelemetry(Check):
     id = "tel.browser_telemetry"
 
     def detect(self, scan: Scan) -> Outcome:
-        host, ev, on = scan.host, [], []
-        policies = firefox_policies(host)
-        for p in mozilla_profiles(host, scan.paths, MOZILLA_TELEMETRY_APPS):
-            what = list(mozilla_telemetry_on(p.app, firefox_prefs(host, p.path), policies).values())
-            ev.append(Evidence.val(p.label, ", ".join(what) + " on" if what else "off"))
+        from .browser import ff_policies
+        host, ev, on, unsure = scan.host, [], [], []
+        for p in mozilla_profiles(host, scan.paths, mozilla_telemetry_apps()):
+            open_question: list[str] = []
+            what = list(mozilla_telemetry_on(p.app, firefox_prefs(host, p.path), ff_policies(scan, p),
+                                             open_question).values())
+            ev.append(Evidence.val(p.label, ", ".join(what) + " on" if what else "off" if not open_question else
+                                   f"couldn't tell ({', '.join(open_question)}: its default isn't known)"))
             if what:
                 on.append(p.app)
+            elif open_question:
+                unsure.append(p.label)
         for d in chromium_dirs(scan.paths):
             state = read_json(host, d.root.path / "Local State") or {}
             policy = chromium_policies(host, d.browser)
@@ -172,6 +197,9 @@ class BrowserTelemetry(Check):
             return absent("No Firefox or Chromium-based browser profiles were found.")
         if on:
             return failed(f"Browser telemetry is on: {', '.join(sorted(set(on)))}.", *ev)
+        if unsure:
+            return unknown(f"Couldn't tell whether {', '.join(unsure)} send{'s' if len(unsure) == 1 else ''} "
+                           "telemetry.", *ev)
         return passed("Browser telemetry is off.", *ev)
 
 

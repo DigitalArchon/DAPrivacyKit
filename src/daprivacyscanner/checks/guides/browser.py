@@ -6,7 +6,7 @@ from ...fix import DeleteFiles, InUse
 from ...guide import Guide, Step
 from .._util import chromium_dirs, files_under, mozilla_cache, mozilla_profiles
 from ...helper import CLEAR_ON_EXIT
-from . import guide, option, evidence, ff_prefs, chromium_policy_options, chromium_step, mozilla_open
+from . import guide, option, evidence, ff_prefs, chromium_policy_options, chromium_step, firefox_family, mozilla_open
 
 
 SESSION_LOST = "Firefox no longer reopens the tabs you had open: restoring them needs the history it clears."
@@ -81,9 +81,10 @@ def history_retention(check, scan, outcome):
 @guide("br.tracking_protection")
 def tracking_protection(check, scan, outcome):
     from .._util import firefox_prefs
+    from ..browser import ff_value
     opts = ff_prefs(check, scan, "Strict tracking protection", {"browser.contentblocking.category": "strict"},
-                    only=("Firefox",), want=lambda prefs, p: firefox_prefs(scan.host, p.path).get(
-                        "browser.contentblocking.category", "standard") not in ("strict", "custom"),
+                    want=lambda prefs, p: ff_value(p, firefox_prefs(scan.host, p.path),
+                                                   "browser.contentblocking.category") not in ("strict", "custom"),
                     side_effects=["A few sites break (sign-in through another site, some embedded videos); turn it "
                                   "off for one site with the shield icon in the address bar."], recommended=True)
     weak = evidence(outcome, value="third-party cookies allowed")
@@ -105,7 +106,7 @@ def disk_cache(check, scan, outcome):
                     side_effects=["Pages load a little slower after a restart; restored tabs come back without "
                                   "form contents."], recommended=True)
     cleanup = []
-    for p in mozilla_profiles(scan.host, scan.paths, ("Firefox", "LibreWolf")):
+    for p in mozilla_profiles(scan.host, scan.paths, firefox_family()):
         cache = mozilla_cache(scan.paths, p)
         files = files_under(cache)[0]
         if files:
@@ -113,7 +114,7 @@ def disk_cache(check, scan, outcome):
             from ..fixes import _mozilla_procs
             cleanup.append(DeleteFiles(cache, files, f"{p.label} disk cache", scan.host.display(cache)).unless(
                 InUse(p.app, names=_mozilla_procs(p.app), held=(cache,))))
-    running = mozilla_open(scan, ("Firefox", "LibreWolf"))
+    running = mozilla_open(scan, firefox_family())
     steps = [Step("Firefox", options=opts, done=not opts)]
     if cleanup:
         steps.append(Step("Delete the cache on disk now", "Turning the disk cache off leaves the one already there.",
@@ -132,7 +133,8 @@ def ad_features(check, scan, outcome):
     from ..browser import ENHANCED_SAFE_BROWSING, _browsers, chromium_ad_states
     opts = ff_prefs(check, scan, "Turn off sponsored suggestions and search suggestions",
                     {"browser.search.suggest.enabled": False, "browser.urlbar.suggest.quicksuggest.sponsored": False,
-                     "browser.newtabpage.activity-stream.showSponsoredTopSites": False},
+                     "browser.newtabpage.activity-stream.showSponsoredTopSites": False,
+                     "browser.urlbar.quicksuggest.online.enabled": False},
                     side_effects=["The address bar no longer suggests searches as you type (history and bookmarks "
                                   "still are)."], recommended=True)
     states = chromium_ad_states(scan, _browsers(scan)[1])
@@ -325,7 +327,7 @@ def site_permissions(check, scan, outcome):
     from .._util import chromium_dirs, chromium_profiles
     from ..browser import BLOCK, _permission_summary, chromium_site_permissions, firefox_site_permissions
     review = []
-    for p in mozilla_profiles(scan.host, scan.paths, ("Firefox", "LibreWolf")):
+    for p in mozilla_profiles(scan.host, scan.paths, firefox_family()):
         counts, defaults = firefox_site_permissions(scan, p)
         review.append(f"{p.label} ({_permission_summary(counts, defaults)}): Settings → Privacy & Security → "
                       "Permissions; Camera, Microphone and Location each have a Settings… button listing the sites. "

@@ -60,8 +60,9 @@ def browser_telemetry(check, scan, outcome):
     policies = firefox_policies(scan.host)
     # per profile, only what the check counts as on there (Thunderbird: telemetry alone; what the policy turns
     # off is left), so an option is never one that changes nothing the check sees
-    off = lambda p, prefs: {k: False for k in mozilla_telemetry_on(p.app, prefs, policies)}  # noqa: E731
-    ff = ff_prefs(check, scan, "Turn off telemetry and studies", off, only=("Firefox", "LibreWolf"), key="profile")
+    from ..browser import ff_policies
+    off = lambda p, prefs: {k: False for k in mozilla_telemetry_on(p.app, prefs, ff_policies(scan, p))}  # noqa: E731
+    ff = ff_prefs(check, scan, "Turn off telemetry and studies", off, key="profile")
     tb = ff_prefs(check, scan, "Turn off telemetry", off, only=("Thunderbird",), key="profile")
     native_on = [p for p in mozilla_profiles(scan.host, scan.paths, ("Firefox",)) if p.install == "native"
                  and mozilla_telemetry_on(p.app, firefox_prefs(scan.host, p.path), policies)]

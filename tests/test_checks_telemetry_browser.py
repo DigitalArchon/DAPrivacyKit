@@ -242,12 +242,12 @@ MIGRATED2 = pref("privacy.sanitize.clearOnShutdown.hasMigratedToNewPrefs2", True
 @pytest.mark.parametrize("prefs, state", [
     # what "Delete cookies and site data when Firefox is closed" leaves (privacy.mjs: resetCleaningPrefs): history kept,
     # though the old prefs the check read, at their defaults, said it was cleared
-    (MIGRATED3 + pref("privacy.clearOnShutdown_v2.browsingHistoryAndDownloads", False), "kept"),
+    (MIGRATED3 + pref("privacy.clearOnShutdown_v2.browsingHistoryAndDownloads", False), "kept until you clear it"),
     (MIGRATED3, "cleared when it closes"),
     (MIGRATED3 + pref("privacy.clearOnShutdown.history", False), "cleared when it closes"),     # migrated from
-    (MIGRATED2 + pref("privacy.clearOnShutdown_v2.historyFormDataAndDownloads", False), "kept"),
+    (MIGRATED2 + pref("privacy.clearOnShutdown_v2.historyFormDataAndDownloads", False), "kept until you clear it"),
     (MIGRATED2 + pref("privacy.clearOnShutdown.history", False), "cleared when it closes"),
-    (pref("privacy.clearOnShutdown.history", False), "kept"),                  # the old dialog's, before migrating
+    (pref("privacy.clearOnShutdown.history", False), "kept until you clear it"),                  # the old dialog's, before migrating
 ], ids=["v3-off", "v3-default", "v3-old-off", "v2-off", "v2-old-off", "v1-off"])
 def test_firefox_history_is_judged_by_the_pref_its_shutdown_sanitizer_reads(cat, tmp_path, prefs, state):
     host = make_host(tmp_path)
@@ -330,12 +330,33 @@ def test_disk_cache_off_but_the_old_one_left(cat, tmp_path, root, cache):
 
 
 def test_webrtc(cat, tmp_path):
+    """Stock browsers show websites mDNS names, not local addresses, until a site is allowed the camera or microphone
+    (Chromium's kWebRtcHideLocalIpsWithMdns, Firefox's obfuscate_host_addresses): only a profile set to show them, or
+    one going around the proxy it was given, is a problem."""
     host = make_host(tmp_path)
     firefox(host.home, prefs=pref("media.peerconnection.ice.default_address_only", True))
     chrome(host.home, prefs={"webrtc": {"ip_handling_policy": "disable_non_proxied_udp"}})
     assert detect(cat, "br.webrtc", make_scan(host)).status is Status.PASS
     chrome(host.home, prefs={}, root=".config/vivaldi")
+    o = detect(cat, "br.webrtc", make_scan(host))
+    assert o.status is Status.PASS and ev(o)["Vivaldi, Default"] == "not set: the browser's own default"
+    chrome(host.home, prefs={"webrtc": {"ip_handling_policy": "default_public_and_private_interfaces"}}, root=".config/vivaldi")
     assert detect(cat, "br.webrtc", make_scan(host)).status is Status.FAIL
+
+
+@pytest.mark.parametrize("prefs, status", [
+    ("", Status.PASS),
+    (pref("media.peerconnection.ice.obfuscate_host_addresses", False), Status.FAIL),
+    (pref("network.proxy.type", 1) + pref("network.proxy.socks", "10.64.0.1"), Status.FAIL),
+    (pref("network.proxy.type", 1) + pref("network.proxy.socks", "10.64.0.1")
+     + pref("media.peerconnection.ice.proxy_only_if_behind_proxy", True), Status.PASS),
+    (pref("media.peerconnection.enabled", False) + pref("media.peerconnection.ice.obfuscate_host_addresses", False),
+     Status.PASS),
+], ids=["stock", "shows-local", "around-proxy", "kept-to-proxy", "off"])
+def test_firefox_webrtc(cat, tmp_path, prefs, status):
+    host = make_host(tmp_path)
+    firefox(host.home, prefs=prefs)
+    assert detect(cat, "br.webrtc", make_scan(host)).status is status
 
 
 def test_flatpak_and_snap_browsers_are_found(cat, tmp_path):

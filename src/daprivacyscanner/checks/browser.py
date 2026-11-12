@@ -30,9 +30,146 @@ BROAD = re.compile(r"^(<all_urls>|(\*|https?|wss?)://\*/.*)$")
 
 
 def _browsers(scan: Scan) -> tuple[list[MozProfile], list[tuple[BrowserDir, list[Path]]]]:
-    firefox = mozilla_profiles(scan.host, scan.paths, ("Firefox", "LibreWolf"))
+    """Every Firefox-family profile and Chromium-family user data folder of the browsers in browsers.yaml's registry
+    (Firefox, LibreWolf, Waterfox, Zen, Floorp; Chrome, Chromium, Brave, Edge, Vivaldi, Opera, Helium...)."""
+    from ..browsers import family_names
+    firefox = mozilla_profiles(scan.host, scan.paths, family_names("mozilla"))
     chromium = [(d, chromium_profiles(d)) for d in chromium_dirs(scan.paths)]
     return firefox, [(d, p) for d, p in chromium if p]
+
+
+# ------------------------------------------------------------------ what the checks read, and each browser's defaults
+
+def _browser_of(p: MozProfile | BrowserDir):
+    """The browsers.yaml entry of a profile (by its folder's name), or None (Thunderbird)."""
+    from ..browsers import load
+    return load().by_folder(p.app if isinstance(p, MozProfile) else p.browser)
+
+
+def ff_value(p: MozProfile, prefs: dict, key: str):
+    """A Firefox-family pref as the profile has it: its own prefs.js/user.js value, else what this browser ships
+    (browsers.yaml `defaults`, a fork's own then Firefox's where it inherits them), else browsers.UNKNOWN."""
+    from ..browsers import UNKNOWN, load
+    if key in prefs:
+        return prefs[key]
+    b = _browser_of(p)
+    return load().default(b.id, key) if b else UNKNOWN
+
+
+def chromium_default(d: BrowserDir, key: str, installed: set[str] | None = None):
+    """What the browser using a Chromium-family folder ships a setting as (browsers.yaml `defaults`), or UNKNOWN.
+    A folder several browsers share (~/.config/chromium: Chromium, ungoogled-chromium, Cromite) goes by the one
+    installed here, when only one of them is; with several, a default they don't agree on is UNKNOWN."""
+    from ..browsers import UNKNOWN, load
+    data = load()
+    ids = list(d.ids) or [b.id for b in [_browser_of(d)] if b]
+    if installed is not None and len(ids) > 1:
+        ids = [i for i in ids if i in installed] or ids
+    values = [data.default(i, key) for i in ids]
+    if not values or any(v is UNKNOWN for v in values) or any(v != values[0] for v in values):
+        return UNKNOWN
+    return values[0]
+
+
+def ff_policies(scan: Scan, p: MozProfile) -> dict:
+    """The policies a Firefox-family profile's browser obeys: /etc/firefox's and the install's own policies.json are
+    Firefox's, read by its native install and its Snap; never its Flatpak's, nor LibreWolf's or another fork's."""
+    return firefox_policies(scan.host) if p.app == "Firefox" and p.install in ("native", "snap") else {}
+
+
+def chromium_policy(scan: Scan, d: BrowserDir) -> dict:
+    """The managed policies a Chromium-family browser obeys: /etc's, for a native install only (a Flatpak or Snap
+    doesn't read them)."""
+    return chromium_policies(scan.host, d.browser) if d.root.install == "native" else {}
+
+
+def chromium_version(d: BrowserDir) -> tuple[int, ...] | None:
+    """The version that last ran in a Chromium-family user data folder: its `Last Version` file."""
+    from ..appversions import parse_version
+    text = read_text_quiet(d.root.path / "Last Version")
+    return parse_version(text) if text else None
+
+
+def read_text_quiet(p: Path) -> str | None:
+    try:
+        return p.read_text(encoding="utf-8", errors="replace")[:200]
+    except OSError:
+        return None
+
+
+def installed_ids(scan: Scan) -> set[str]:
+    """The browsers.yaml ids of the browsers installed here."""
+    from ..vpn import DataError
+    try:
+        return {f.browser.id for f in installed_browsers(scan) if f.browser is not None}
+    except DataError:
+        return set()
+
+
+def coverage(scan: Scan, firefox: list[MozProfile], chromium) -> tuple[list[Note], bool, list[str]]:
+    """What the profile checks didn't read: (notes, whether a browser here wasn't checked at all, the names of the
+    installed browsers the app has no reader for). An installed browser the app doesn't know, or one with no reader,
+    is never passed over in silence; one whose profiles weren't where they go hasn't been used yet, or keeps them
+    elsewhere."""
+    from ..vpn import DataError
+    try:
+        found = installed_browsers(scan)
+    except DataError:
+        return [], False, []
+    read = {b.id for b in (_browser_of(p) for p in firefox) if b} | {i for d, _ in chromium for i in d.ids}
+    unknown_names, by_design, unused = [], [], []
+    for f in found:
+        b = f.browser
+        if b is None:
+            unknown_names.append(f.name)
+        elif b.unchecked:
+            by_design.append((b.name, b.unchecked))
+        elif b.id not in read:
+            where = ", ".join(dict.fromkeys(
+                "~/" + p for fo in b.folders for p in (fo.home, fo.config and f".config/{fo.config}") if p))
+            unused.append(f"{b.name} ({where})" if where else b.name)
+    notes = []
+    if unknown_names:
+        notes.append(Note("limitation", "Not checked: a browser the app doesn't know",
+                          f"{', '.join(dict.fromkeys(unknown_names))}: the app doesn't know where "
+                          f"{'this browser keeps' if len(unknown_names) == 1 else 'these browsers keep'} its settings, so "
+                          "they aren't part of this result. Check the same setting in its own settings page."))
+    if unused:
+        notes.append(Note("info", "Not used yet",
+                          f"{'; '.join(dict.fromkeys(unused))}: installed, but no profile was found where it keeps "
+                          "them. It hasn't been opened yet, or keeps them somewhere this version of the app doesn't "
+                          "look: once you use it, scan again."))
+    for name, why in dict.fromkeys(by_design):
+        notes.append(Note("info", f"{name} isn't read", why))
+    return notes, bool(unknown_names), unknown_names
+
+
+class ProfileCheck(Check):
+    """A check of every browser profile's settings: `judge` sees the profiles read; what wasn't (an installed browser
+    the app doesn't know, one not used yet) is said in a note, never in silence, and a pass then doesn't stand for
+    a browser it didn't read."""
+
+    def detect(self, scan: Scan) -> Outcome:
+        firefox, chromium = _browsers(scan)
+        notes, unread, names = coverage(scan, firefox, chromium)
+        if not firefox and not chromium:
+            if unread:
+                return unknown(f"Couldn't check {', '.join(dict.fromkeys(names))}: the app doesn't know where "
+                               f"{'it keeps' if len(names) == 1 else 'they keep'} {'its' if len(names) == 1 else 'their'} "
+                               "settings.", notes=notes)
+            return absent("No browser profiles were found.", notes=notes)
+        out = self.judge(scan, firefox, chromium)
+        out.notes = [*out.notes, *notes]
+        out.partial = out.partial or unread
+        return out
+
+    def judge(self, scan: Scan, firefox, chromium) -> Outcome:
+        raise NotImplementedError
+
+
+def default_unknown(label: str, what: str) -> Evidence:
+    return Evidence.val(label, f"couldn't tell: {what} isn't set in the profile, and the app doesn't know this "
+                               "browser's default")
 
 
 @dataclass
@@ -59,8 +196,9 @@ def crash_dumps(scan: Scan) -> list[CrashDumps]:
             files += files_under(d.root.path / "Crash Reports" / sub)[0]
         if files:
             out.append(CrashDumps(d.label, d.browser, d.root.path / "Crash Reports", files, "chromium"))
+    from ..browsers import family_names
     roots: dict[Path, MozProfile] = {}
-    for p in mozilla_profiles(scan.host, scan.paths, ("Firefox", "LibreWolf", "Thunderbird")):
+    for p in mozilla_profiles(scan.host, scan.paths, (*family_names("mozilla"), "Thunderbird")):
         roots.setdefault(p.path.parent, p)
         files = files_under(p.path / "minidumps", pattern=MOZILLA_DUMPS)[0]
         if files:
@@ -131,13 +269,10 @@ def read_json_quiet(p: Path):
 
 
 @register
-class ExtensionsBroad(Check):
+class ExtensionsBroad(ProfileCheck):
     id = "br.extensions_broad"
 
-    def detect(self, scan: Scan) -> Outcome:
-        firefox, chromium = _browsers(scan)
-        if not firefox and not chromium:
-            return absent("No browser profiles were found.")
+    def judge(self, scan: Scan, firefox, chromium) -> Outcome:
         pending: list[Extension] = []
         broad = broad_extensions(scan, firefox, chromium, pending=pending)
         ev = [Evidence.val(e.name[:120], e.where) for e in broad[:30]]
@@ -229,7 +364,7 @@ def broad_extensions(scan: Scan, firefox, chromium, every: bool = False,
         data = read_json(scan.host, p.path / "extensions.json") or {}
         granted = read_json(scan.host, p.path / "extension-preferences.json")
         # Firefox reads the policies in /etc (native installs, and the Snap); LibreWolf has its own
-        reads_policy = p.app == "Firefox" and p.install in ("native", "snap")
+        reads_policy = bool(ff_policies(scan, p))
         for a in data.get("addons") or []:
             if a.get("type") != "extension" or not a.get("active") or a.get("location") in BUILTIN_LOCATIONS \
                     or a.get("signedState") in MOZILLA_SIGNED:
@@ -248,7 +383,7 @@ def broad_extensions(scan: Scan, firefox, chromium, every: bool = False,
                     continue
                 out.append(e)
     for d, profiles in chromium:
-        policy = chromium_policies(scan.host, d.browser) if d.root.install == "native" else {}
+        policy = chromium_policy(scan, d)
         blocklist = policy.get("ExtensionInstallBlocklist")
         blocklist = {x for x in blocklist if isinstance(x, str)} if isinstance(blocklist, list) else set()
         for prof in profiles:
@@ -303,15 +438,12 @@ def vpn_extensions(scan: Scan, firefox, chromium, pending: list[Extension] | Non
 
 
 @register
-class VpnExtensions(Check):
+class VpnExtensions(ProfileCheck):
     id = "br.vpn_extensions"
 
-    def detect(self, scan: Scan) -> Outcome:
+    def judge(self, scan: Scan, firefox, chromium) -> Outcome:
         from ..vpn import DataError, rate
         from .network import cite
-        firefox, chromium = _browsers(scan)
-        if not firefox and not chromium:
-            return absent("No browser profiles were found.")
         pending: list[Extension] = []
         try:
             found = vpn_extensions(scan, firefox, chromium, pending)
@@ -351,71 +483,103 @@ def ff_history_pref(prefs: dict) -> str:
     return "privacy.clearOnShutdown.history"
 
 
-def _ff_clears_history(prefs: dict, policies: dict) -> bool:
-    if prefs.get("browser.privatebrowsing.autostart") is True:
+def _ff_clears_history(prefs: dict, policies: dict, p: MozProfile | None = None) -> bool | None:
+    """Whether a Firefox-family profile clears its history as it closes; None when a default it rests on isn't known
+    for this browser. Without a profile, Firefox's own defaults."""
+    from ..browsers import UNKNOWN, load
+    get = (lambda k: ff_value(p, prefs, k)) if p is not None else \
+        (lambda k: prefs[k] if k in prefs else load().default("firefox", k))  # noqa: E731
+    autostart = get("browser.privatebrowsing.autostart")
+    if autostart is True:
         return True
     sanitize = policies.get("SanitizeOnShutdown")
     if sanitize is True or (isinstance(sanitize, dict) and sanitize.get("History")):
         return True
-    if prefs.get("privacy.sanitize.sanitizeOnShutdown") is True:
-        return prefs.get(ff_history_pref(prefs), True) is True
-    return False
+    on = get("privacy.sanitize.sanitizeOnShutdown")
+    if on is True:
+        history = get(ff_history_pref(prefs))
+        return None if history is UNKNOWN else history is True
+    return None if UNKNOWN in (on, autostart) else False
+
+
+# Brave's own "Clear browsing data on exit" (brave://settings/clearBrowserData, On exit), all off by default (brave-core
+# chromium_src/components/browsing_data/core/pref_names.h)
+BRAVE_ON_EXIT = "browser.clear_data.{}_on_exit"
 
 
 @register
-class HistoryRetention(Check):
+class HistoryRetention(ProfileCheck):
     id = "br.history_retention"
 
-    def detect(self, scan: Scan) -> Outcome:
-        firefox, chromium = _browsers(scan)
-        if not firefox and not chromium:
-            return absent("No browser profiles were found.")
-        policies = firefox_policies(scan.host)
-        ev, keeping = [], []
+    def judge(self, scan: Scan, firefox, chromium) -> Outcome:
+        ev, keeping, unsure = [], [], []
+        installed = installed_ids(scan) if chromium else set()
         for p in firefox:
-            clears = _ff_clears_history(firefox_prefs(scan.host, p.path), policies)
-            ev.append(Evidence.val(p.label, "cleared when it closes" if clears else "kept"))
+            clears = _ff_clears_history(firefox_prefs(scan.host, p.path), ff_policies(scan, p), p)
+            if clears is None:
+                ev.append(default_unknown(p.label, "whether it clears history as it closes"))
+                unsure.append(p.label)
+                continue
+            ev.append(Evidence.val(p.label, "cleared when it closes" if clears else "kept until you clear it"))
             if not clears:
                 keeping.append(p.label)
         for d, profiles in chromium:
-            policy = chromium_policies(scan.host, d.browser)
+            policy = chromium_policy(scan, d)
+            days = chromium_default(d, "history_days", installed)
+            kept = f"kept for {days} days" if isinstance(days, int) else "kept (for how long, the browser decides)"
             for prof in profiles:
                 prefs = read_json(scan.host, prof / "Preferences") or {}
+                brave = (lambda what: dig(prefs, *BRAVE_ON_EXIT.format(what).split(".")) is True) \
+                    if d.browser.startswith("Brave") else (lambda what: False)  # noqa: E731
                 if policy.get("ClearBrowsingDataOnExitList"):
                     state = "cleared when it closes (policy)"
-                elif policy.get("DefaultCookiesSetting") == 4:            # the policy wins over the profile's own
-                    state = "cookies cleared when it closes (policy), history kept"
+                elif brave("browsing_history") and brave("cookies"):
+                    state = "history, cookies and site data cleared when it closes"
+                elif brave("browsing_history"):
+                    state = "history cleared when it closes, cookies and site data kept"
+                elif policy.get("DefaultCookiesSetting") == 4 or brave("cookies"):    # the policy wins over the profile
+                    state = f"cookies cleared when it closes{' (policy)' if policy.get('DefaultCookiesSetting') == 4 else ''}, history {kept}"
                 elif dig(prefs, "profile", "default_content_setting_values", "cookies") == 4:
-                    state = "cookies cleared when it closes, history kept"
+                    state = f"cookies cleared when it closes, history {kept}"
                 else:
-                    state = "kept"
+                    state = f"history {kept}, cookies and site data until they expire"
                 ev.append(Evidence.val(f"{d.label}, {prof.name}", state))
-                if state != "cleared when it closes (policy)":
+                if not state.startswith(("cleared when it closes", "history, cookies")) and \
+                        not state.startswith("history cleared"):
                     keeping.append(f"{d.label}, {prof.name}")
+        notes = [Note("info", "How long it is kept",
+                      "Firefox-based browsers keep history until you clear it; Chromium-based ones delete what is older "
+                      "than 90 days (Chromium's own rule), and keep cookies until each expires.")] \
+            if chromium and keeping else []
         if keeping:
-            return failed(f"Browsing history and site data are kept indefinitely in {len(keeping)} profile"
-                          f"{'s' if len(keeping) > 1 else ''}.", *ev)
+            return failed(f"Browsing history and site data are kept on the disk in {len(keeping)} profile"
+                          f"{'s' if len(keeping) > 1 else ''}.", *ev, notes=notes)
+        if unsure:
+            return unknown(f"Couldn't tell whether {', '.join(unsure)} clear{'s' if len(unsure) == 1 else ''} history "
+                           "as it closes.", *ev)
         return passed("Browsers clear history when they close.", *ev)
 
 
 @register
-class TrackingProtection(Check):
+class TrackingProtection(ProfileCheck):
     id = "br.tracking_protection"
 
-    def detect(self, scan: Scan) -> Outcome:
-        firefox, chromium = _browsers(scan)
-        if not firefox and not chromium:
-            return absent("No browser profiles were found.")
-        ev, weak, custom = [], [], []
+    def judge(self, scan: Scan, firefox, chromium) -> Outcome:
+        from ..browsers import UNKNOWN
+        ev, weak, custom, unsure = [], [], [], []
         for p in firefox:
-            cat = firefox_prefs(scan.host, p.path).get("browser.contentblocking.category", "standard")
+            cat = ff_value(p, firefox_prefs(scan.host, p.path), "browser.contentblocking.category")
+            if cat is UNKNOWN:
+                ev.append(default_unknown(p.label, "Enhanced Tracking Protection"))
+                unsure.append(p.label)
+                continue
             ev.append(Evidence.val(p.label, f"Enhanced Tracking Protection: {cat}"))
             if cat == "custom":
                 custom.append(p.label)
-            elif cat != "strict" and p.app == "Firefox":
+            elif cat != "strict":
                 weak.append(p.label)
         for d, profiles in chromium:
-            policy = chromium_policies(scan.host, d.browser)
+            policy = chromium_policy(scan, d)
             for prof in profiles:
                 prefs = read_json(scan.host, prof / "Preferences") or {}
                 blocked = (d.browser.startswith("Brave") or policy.get("BlockThirdPartyCookies") is True
@@ -430,6 +594,8 @@ class TrackingProtection(Check):
                           f"{'s' if len(weak) > 1 else ''}.", *ev)
         if custom:
             return warned("Firefox uses custom tracking protection settings.", *ev)
+        if unsure:
+            return unknown(f"Couldn't tell how strict tracking protection is in {', '.join(unsure)}.", *ev)
         return passed("Tracking protection is strict.", *ev)
 
 
@@ -472,20 +638,23 @@ class PrivateDownloadLeak(Check):
 
 
 @register
-class DiskCache(Check):
+class DiskCache(ProfileCheck):
     id = "br.disk_cache"
 
-    def detect(self, scan: Scan) -> Outcome:
-        firefox, chromium = _browsers(scan)
-        if not firefox and not chromium:
-            return absent("No browser profiles were found.")
+    def judge(self, scan: Scan, firefox, chromium) -> Outcome:
+        from ..browsers import UNKNOWN
         # profile-sync-daemon isn't counted: it keeps profiles in memory for speed but writes them back to the
         # disk regularly, and caches (in ~/.cache) aren't part of the profiles it moves
-        ev, on_disk, left = [], [], []
+        ev, on_disk, left, unsure = [], [], [], []
         for p in firefox:
             prefs = firefox_prefs(scan.host, p.path)
-            cache = prefs.get("browser.cache.disk.enable", True)
-            level = prefs.get("browser.sessionstore.privacy_level", 0)
+            cache = ff_value(p, prefs, "browser.cache.disk.enable")
+            level = ff_value(p, prefs, "browser.sessionstore.privacy_level")
+            level = "unknown" if level is UNKNOWN else level
+            if cache is UNKNOWN:
+                ev.append(default_unknown(p.label, "the disk cache"))
+                unsure.append(p.label)
+                continue
             old = tally(mozilla_cache(scan.paths, p), limit=20_000) if not cache else Tally()
             ev.append(Evidence.val(p.label, f"disk cache {'on' if cache else 'off'}"
                                    + (f", but the old one is still there ({old.describe()})" if old.files else "")
@@ -508,40 +677,91 @@ class DiskCache(Check):
         if left:
             return failed(f"The cache is kept in memory now, but the old one is still on the disk in {', '.join(left)}.",
                           *ev, notes=notes)
+        if unsure:
+            return unknown(f"Couldn't tell whether {', '.join(unsure)} keep{'s' if len(unsure) == 1 else ''} a cache on "
+                           "the disk.", *ev, notes=notes)
         return passed("Browser caches are kept in memory; the session store is still written to the profile.", *ev,
                       notes=notes)
 
 
-SAFE_WEBRTC = {"default_public_interface_only", "disable_non_proxied_udp"}
+# Chromium's WebRTC IP handling policies (webrtc_ip_handling_policy.h): "default" uses every interface but shows a
+# website no local address (an mDNS name instead) until it is allowed the camera or microphone; the last two keep to
+# the default route, without its local address. default_public_and_private_interfaces shows that local address.
+SAFE_WEBRTC = {"default", "default_public_interface_only", "disable_non_proxied_udp"}
+SHOWS_LOCAL = "default_public_and_private_interfaces"
+WEBRTC_WORDS = {"default": "local addresses hidden from websites (the default)",
+                "default_public_interface_only": "limited to the default route",
+                "disable_non_proxied_udp": "limited to the proxy or the default route",
+                SHOWS_LOCAL: "shows websites this computer's local address"}
+
+
+def firefox_webrtc(p: MozProfile, prefs: dict) -> tuple[bool | None, str]:
+    """(whether WebRTC keeps local addresses and the proxy's way in a Firefox-family profile, in words); None when a
+    default it rests on isn't known. Firefox shows a website mDNS names instead of local addresses
+    (media.peerconnection.ice.obfuscate_host_addresses, on by default), and only the default route's until it is
+    allowed the camera or microphone (PeerConnectionImpl.cpp); a proxy set by hand is gone round by its UDP unless
+    proxy_only_if_behind_proxy keeps it to the proxy."""
+    from ..browsers import UNKNOWN
+    get = lambda k: ff_value(p, prefs, k)  # noqa: E731
+    if get("media.peerconnection.enabled") is False:
+        return True, "WebRTC off"
+    proxy = prefs.get("network.proxy.type") == 1 and any(prefs.get(f"network.proxy.{k}") for k in ("socks", "http"))
+    behind = get("media.peerconnection.ice.proxy_only_if_behind_proxy")
+    if proxy and behind is not True:
+        return (None, "a proxy is set, and whether WebRTC keeps to it couldn't be told") if behind is UNKNOWN else \
+            (False, "goes around the proxy you set: websites can see your own address")
+    if get("media.peerconnection.ice.default_address_only") is True:
+        return True, "limited to the default route"
+    hidden = get("media.peerconnection.ice.obfuscate_host_addresses")
+    if hidden is UNKNOWN:
+        return None, "couldn't tell whether local addresses are hidden from websites (its default isn't known)"
+    return (True, "local addresses hidden from websites (the default)") if hidden else \
+        (False, "shows websites this computer's local addresses")
 
 
 @register
-class Webrtc(Check):
+class Webrtc(ProfileCheck):
     id = "br.webrtc"
 
-    def detect(self, scan: Scan) -> Outcome:
-        firefox, chromium = _browsers(scan)
-        if not firefox and not chromium:
-            return absent("No browser profiles were found.")
-        ev, exposed = [], []
+    def judge(self, scan: Scan, firefox, chromium) -> Outcome:
+        from ..browsers import UNKNOWN
+        ev, exposed, unsure = [], [], []
         for p in firefox:
-            prefs = firefox_prefs(scan.host, p.path)
-            ok = prefs.get("media.peerconnection.enabled", True) is False or \
-                prefs.get("media.peerconnection.ice.default_address_only", False) is True
-            ev.append(Evidence.val(p.label, "limited to the default route" if ok else "all local addresses"))
-            if not ok:
+            ok, text = firefox_webrtc(p, firefox_prefs(scan.host, p.path))
+            ev.append(Evidence.val(p.label, text))
+            if ok is False:
                 exposed.append(p.label)
+            elif ok is None:
+                unsure.append(p.label)
+        installed = installed_ids(scan) if chromium else set()
         for d, profiles in chromium:
-            policy = chromium_policies(scan.host, d.browser).get("WebRtcIPHandling")
+            policy = chromium_policy(scan, d).get("WebRtcIPHandling")
             for prof in profiles:
-                value = policy or dig(read_json(scan.host, prof / "Preferences") or {}, "webrtc", "ip_handling_policy",
-                                      default="default")
-                ev.append(Evidence.val(f"{d.label}, {prof.name}", value))
-                if value not in SAFE_WEBRTC:
-                    exposed.append(f"{d.label}, {prof.name}")
+                value = policy or dig(read_json(scan.host, prof / "Preferences") or {}, "webrtc", "ip_handling_policy")
+                own = value is None
+                if own:
+                    value = chromium_default(d, "webrtc.ip_handling_policy", installed)
+                label = f"{d.label}, {prof.name}"
+                if value is UNKNOWN:
+                    # every policy but one keeps local addresses from websites, and that one is never a default: what
+                    # isn't set is the browser's own, which is said as it is
+                    ev.append(Evidence.val(label, "not set: the browser's own default"))
+                    continue
+                ev.append(Evidence.val(label, value))
+                if value == SHOWS_LOCAL:
+                    exposed.append(label)
+                elif value not in SAFE_WEBRTC:
+                    unsure.append(label)
+        notes = [Note("info", "What websites still see",
+                      "A site you allow to use the camera or microphone sees this computer's local addresses, as a call "
+                      "needs them. Every site sees the public address your traffic leaves from: the VPN's, when a VPN "
+                      "carries all your traffic.", ("net.vpn_leaks",))]
         if exposed:
-            return failed("WebRTC can reveal local and VPN-bypassing IP addresses to websites.", *ev)
-        return passed("WebRTC is limited to the default route.", *ev)
+            return failed(f"WebRTC shows websites your local address, or goes around your proxy, in {', '.join(exposed)}.",
+                          *ev, notes=notes)
+        if unsure:
+            return unknown(f"Couldn't tell what WebRTC shows websites in {', '.join(unsure)}.", *ev, notes=notes)
+        return passed("No browser profile is set to show websites your local addresses.", *ev, notes=notes)
 
 
 # ------------------------------------------------------------------ HTTPS-Only Mode
@@ -554,20 +774,57 @@ HTTPS_ONLY_PREF = "dom.security.https_only_mode"
 BRAVE_HTTPS_STRICT = 2
 
 
-def firefox_https_only(prefs: dict, app: str, policy) -> tuple[bool, str]:
-    """(asks before an unencrypted page, in words). LibreWolf ships with it on; Firefox with it off."""
+def firefox_https_only(prefs: dict, app: str | MozProfile, policy) -> tuple[bool | None, str]:
+    """(asks before an unencrypted page, in words; None when this browser's default isn't known). LibreWolf ships with
+    it on (its policies.json); Firefox and the other forks with it off."""
+    from ..browsers import UNKNOWN, load
     if policy in ("enabled", "force_enabled"):
         return True, "HTTPS-Only Mode on (a policy)"
-    value = prefs.get(HTTPS_ONLY_PREF)
-    if value is True or (value is None and app == "LibreWolf"):
-        return True, "HTTPS-Only Mode on"
+    if isinstance(app, MozProfile):
+        value = ff_value(app, prefs, HTTPS_ONLY_PREF)
+    else:
+        b = load().by_folder(app)
+        value = prefs[HTTPS_ONLY_PREF] if HTTPS_ONLY_PREF in prefs else load().default(b.id, HTTPS_ONLY_PREF) if b \
+            else UNKNOWN
+    if value is True:
+        return True, "HTTPS-Only Mode on" + ("" if HTTPS_ONLY_PREF in prefs else " (as the browser ships)")
     if prefs.get(HTTPS_ONLY_PREF + "_pbm") is True:
         return False, "HTTPS-Only Mode in private windows only"
+    if value is UNKNOWN:
+        return None, "couldn't tell: not set in the profile, and the app doesn't know this browser's default"
     return False, "HTTPS-Only Mode off"
 
 
-def chromium_https_only(browser: str, prefs: dict, policy) -> tuple[bool, str]:
-    if browser.startswith("Brave"):
+def chromium_https_default(d: BrowserDir, installed: set[str] | None = None) -> tuple[bool | None, str]:
+    """What "Always use secure connections" is in a Chromium-family profile that hasn't set it: the browser's default
+    (browsers.yaml https_upgrades), by the version that last ran there (its Last Version). Chrome 157 and Chromium 157
+    turn it on for public sites by default (kHttpsFirstBalancedModeAutoEnable), without writing it into Preferences;
+    Chrome 154 to 156 had it on for some people through Google's field trials."""
+    from ..browsers import UNKNOWN
+    table = chromium_default(d, "https_upgrades", installed)
+    if table is UNKNOWN or not isinstance(table, dict):
+        return None, "Always use secure connections: not set, and the app doesn't know this browser's default"
+    mode = table.get("mode")
+    on = "on" if mode == "strict" else "on for public sites"
+    if "from" not in table:
+        return mode in ("strict", "balanced"), f"Always use secure connections: {on} (as the browser ships)"
+    version = chromium_version(d)
+    if version is None:
+        return None, "Always use secure connections: not set, and which version last ran here couldn't be read"
+    major = version[0]
+    if major >= table["from"]:
+        return True, f"Always use secure connections: {on} (the default from version {table['from']})"
+    if "trial_from" in table and major >= table["trial_from"]:
+        return None, (f"Always use secure connections: not set; in version {major} its maker turns it on for some "
+                      "people and not others")
+    return False, "Always use secure connections: off"
+
+
+def chromium_https_only(browser: str | BrowserDir, prefs: dict, policy,
+                        installed: set[str] | None = None) -> tuple[bool | None, str]:
+    d = browser if isinstance(browser, BrowserDir) else None
+    name = d.browser if d else browser
+    if name.startswith("Brave"):
         setting = dig(prefs, "profile", "default_content_setting_values", "httpsUpgrades")
         if setting is None:               # where its source suggests an every-site rule would be; not seen written
             setting = dig(prefs, "profile", "content_settings", "exceptions", "httpsUpgrades", "*,*", "setting")
@@ -576,40 +833,48 @@ def chromium_https_only(browser: str, prefs: dict, policy) -> tuple[bool, str]:
         return False, "Upgrade connections to HTTPS: " + ("off" if setting == 1 else "Standard (falls back to HTTP)")
     if policy in ("force_enabled", "force_balanced_enabled"):
         return True, "Always use secure connections: on (a policy)"
-    if policy != "disallowed":
-        if prefs.get("https_only_mode_enabled") is True:
-            return True, "Always use secure connections: on"
-        if prefs.get("https_first_balanced_mode_enabled") is True:
-            return True, "Always use secure connections: on for public sites"
-    return False, "Always use secure connections: off"
+    if policy == "disallowed":
+        return False, "Always use secure connections: off (a policy)"
+    strict, balanced = prefs.get("https_only_mode_enabled"), prefs.get("https_first_balanced_mode_enabled")
+    if strict is True:
+        return True, "Always use secure connections: on"
+    if balanced is True:
+        return True, "Always use secure connections: on for public sites"
+    if strict is False or balanced is False or d is None:
+        return False, "Always use secure connections: off"
+    return chromium_https_default(d, installed)
 
 
 @register
-class HttpsOnly(Check):
+class HttpsOnly(ProfileCheck):
     id = "br.https_only"
 
-    def detect(self, scan: Scan) -> Outcome:
-        firefox, chromium = _browsers(scan)
-        if not firefox and not chromium:
-            return absent("No browser profiles were found.")
-        ev, silent = [], []
-        ff_policy = firefox_policies(scan.host).get("HttpsOnlyMode")
+    def judge(self, scan: Scan, firefox, chromium) -> Outcome:
+        ev, silent, unsure = [], [], []
         for p in firefox:
-            ok, text = firefox_https_only(firefox_prefs(scan.host, p.path), p.app, ff_policy)
+            ok, text = firefox_https_only(firefox_prefs(scan.host, p.path), p, ff_policies(scan, p).get("HttpsOnlyMode"))
             ev.append(Evidence.val(p.label, text))
-            if not ok:
+            if ok is False:
                 silent.append(p.label)
+            elif ok is None:
+                unsure.append(p.label)
+        installed = installed_ids(scan) if chromium else set()
         for d, profiles in chromium:
-            policy = chromium_policies(scan.host, d.browser).get("HttpsOnlyMode")
+            policy = chromium_policy(scan, d).get("HttpsOnlyMode")
             for prof in profiles:
-                ok, text = chromium_https_only(d.browser, read_json(scan.host, prof / "Preferences") or {}, policy)
+                ok, text = chromium_https_only(d, read_json(scan.host, prof / "Preferences") or {}, policy, installed)
                 ev.append(Evidence.val(f"{d.label}, {prof.name}", text))
-                if not ok:
+                if ok is False:
                     silent.append(f"{d.label}, {prof.name}")
+                elif ok is None:
+                    unsure.append(f"{d.label}, {prof.name}")
         if silent:
             n = len(silent)
             return failed(f"{n} browser profile{'s open' if n > 1 else ' opens'} unencrypted pages without asking "
                           "first.", *ev)
+        if unsure:
+            return unknown(f"Couldn't tell whether {', '.join(unsure)} ask{'s' if len(unsure) == 1 else ''} before "
+                           "opening an unencrypted page.", *ev)
         return passed("Every browser profile asks before opening an unencrypted page.", *ev)
 
 
@@ -629,7 +894,7 @@ def firefox_site_permissions(scan: Scan, p: MozProfile) -> tuple[dict[str, int |
     from ._util import sqlite_count
     now_ms = int(time.time() * 1000)
     prefs = firefox_prefs(scan.host, p.path)
-    policy = firefox_policies(scan.host).get("Permissions") or {}
+    policy = ff_policies(scan, p).get("Permissions") or {}
     counts, defaults = {}, {}
     db = p.path / "permissions.sqlite"
     for name, ff, _, label in SITE_PERMISSIONS:
@@ -647,7 +912,7 @@ def firefox_site_permissions(scan: Scan, p: MozProfile) -> tuple[dict[str, int |
 def chromium_site_permissions(scan: Scan, d: BrowserDir, prof: Path) -> tuple[dict[str, int], dict[str, int]]:
     prefs = read_json(scan.host, prof / "Preferences") or {}
     exceptions = dig(prefs, "profile", "content_settings", "exceptions", default={}) or {}
-    policy = chromium_policies(scan.host, d.browser)
+    policy = chromium_policy(scan, d)
     counts, defaults = {}, {}
     for name, _, key, _ in SITE_PERMISSIONS:
         sites = exceptions.get(key) if isinstance(exceptions, dict) else None
@@ -673,13 +938,10 @@ def _permission_summary(counts: dict, defaults: dict) -> str:
 
 
 @register
-class SitePermissions(Check):
+class SitePermissions(ProfileCheck):
     id = "br.site_permissions"
 
-    def detect(self, scan: Scan) -> Outcome:
-        firefox, chromium = _browsers(scan)
-        if not firefox and not chromium:
-            return absent("No browser profiles were found.")
+    def judge(self, scan: Scan, firefox, chromium) -> Outcome:
         ev, allowed, everyone, unread = [], 0, [], []
         rows = [(p.label, *firefox_site_permissions(scan, p)) for p in firefox]
         rows += [(f"{d.label}, {prof.name}", *chromium_site_permissions(scan, d, prof))
@@ -718,7 +980,63 @@ E2E_SYNC_BROWSERS = ("Brave", "Vivaldi")
 class SyncState:
     label: str          # "Firefox profile abcd.default-release", "Google Chrome, Default"
     browser: str        # "Firefox", "Google Chrome", "Brave"...
-    state: str          # "readable", "passphrase", "e2e", "signed_in" (sync not set up) or "off"
+    # "readable", "passphrase", "e2e", "account" (signed in without sync: Chrome keeps passwords, addresses and payment
+    # methods in the account), "signed_in" (signed in, sync not set up, what it keeps there not known) or "off"
+    state: str
+    detail: str = ""
+
+
+# sync.cached_passphrase_type: the proto's PassphraseType (components/sync/protocol/nigori_specifics.proto), which
+# Chromium caches there: 1 implicit and 2 keystore (Google holds the key: it can read what is synced), 3 frozen implicit
+# and 4 custom (a passphrase of the user's: end to end, IsExplicitPassphrase), 5 trusted vault (keys kept on the user's
+# devices: Google calls it on-device encryption)
+SYNC_PASSPHRASE = "cached_passphrase_type"
+E2E_PASSPHRASES = (3, 4)
+TRUSTED_VAULT = 5
+# signed in without turning sync on, Chrome keeps these in the Google Account unless turned off for it (Chromium's
+# IsTypeSelectedByDefaultInTransportMode: passwords, payments, addresses on; history and tabs off)
+ACCOUNT_STORAGE = {"passwords": "passwords", "autofill": "addresses", "payments": "payment methods"}
+
+
+def _account_types_off(prefs: dict) -> set[str]:
+    """The data types turned off for the signed-in account (sync.selected_types_per_account: an entry per account,
+    each type a boolean; a type missing is at its default, on)."""
+    per = dig(prefs, "sync", "selected_types_per_account")
+    off: set[str] = set()
+    for entry in (per.values() if isinstance(per, dict) else ()):
+        if isinstance(entry, dict):
+            off |= {k for k in ACCOUNT_STORAGE if entry.get(k) is False}
+    return off
+
+
+def chromium_sync_state(d: BrowserDir, prefs: dict) -> tuple[str, str]:
+    """(state, what is in words) of a Chromium-family profile's account: only whether one is signed in, never which."""
+    accounts = prefs.get("account_info")
+    signed_in = (bool(accounts) if isinstance(accounts, list) else False) or \
+        bool(dig(prefs, "google", "services", "account_id"))
+    setup = dig(prefs, "sync", "has_setup_completed") is True or dig(prefs, "sync", "requested") is True or \
+        dig(prefs, "google", "services", "consented_to_sync") is True
+    kind = dig(prefs, "sync", SYNC_PASSPHRASE)
+    entered = dig(prefs, "sync", "encryption_bootstrap_token_per_account")
+    if setup:
+        if d.browser.startswith(E2E_SYNC_BROWSERS):
+            return "e2e", "syncing, end-to-end encrypted"
+        if kind in E2E_PASSPHRASES or (isinstance(entered, dict) and any(entered.values())):
+            return "passphrase", "syncing with a sync passphrase (end-to-end encrypted)"
+        if kind == TRUSTED_VAULT:
+            return "readable", ("syncing (the provider can read what is synced; passwords may be kept with on-device "
+                                "encryption, which it says it can't read)")
+        return "readable", "syncing (the provider can read what is synced)"
+    if not signed_in:
+        return "off", "not signed in"
+    b = _browser_of(d)
+    if b is not None and b.id == "chrome" and not d.browser.startswith(E2E_SYNC_BROWSERS):
+        kept = [w for k, w in ACCOUNT_STORAGE.items() if k not in _account_types_off(prefs)]
+        if kept:
+            return "account", (f"signed in, sync off: {', '.join(kept)} are kept in the Google Account, which Google can "
+                               "read")
+        return "off", "signed in, sync off, and nothing kept in the account"
+    return "signed_in", "signed in, sync not set up (what the browser keeps in the account couldn't be told)"
 
 
 def sync_states(scan: Scan) -> list[SyncState]:
@@ -728,42 +1046,35 @@ def sync_states(scan: Scan) -> list[SyncState]:
     out = []
     for p in firefox:
         signed_in = bool(firefox_prefs(scan.host, p.path).get("services.sync.username"))
-        out.append(SyncState(p.label, p.label.split(" profile")[0], "e2e" if signed_in else "off"))
+        out.append(SyncState(p.label, p.app, "e2e" if signed_in else "off",
+                             f"signed in to {'Firefox' if p.app == 'Firefox' else p.app} Sync (end-to-end encrypted)"
+                             if signed_in else "not signed in"))
     for d, profiles in chromium:
         for prof in profiles:
-            prefs = read_json(scan.host, prof / "Preferences") or {}
-            accounts = prefs.get("account_info")
-            signed_in = bool(accounts) if isinstance(accounts, list) else False
-            setup = dig(prefs, "sync", "has_setup_completed") is True or dig(prefs, "sync", "requested") is True
-            # VERIFY: the key for a custom passphrase across Chrome versions
-            passphrase = dig(prefs, "sync", "encryption_bootstrap_token") not in (None, "") or \
-                dig(prefs, "sync", "passphrase_type") in (2, 3, 4)
-            state = ("e2e" if d.browser.startswith(E2E_SYNC_BROWSERS) else "passphrase" if passphrase else "readable") \
-                if setup else "signed_in" if signed_in else "off"
-            out.append(SyncState(f"{d.label}, {prof.name}", d.browser, state))
+            state, detail = chromium_sync_state(d, read_json(scan.host, prof / "Preferences") or {})
+            out.append(SyncState(f"{d.label}, {prof.name}", d.browser, state, detail))
     return out
 
 
 SYNC_WORDS = {"readable": "syncing (the provider can read what is synced)",
               "passphrase": "syncing with a sync passphrase (end-to-end encrypted)",
-              "e2e": "syncing, end-to-end encrypted", "signed_in": "signed in, sync not set up", "off": "not signed in"}
+              "e2e": "syncing, end-to-end encrypted", "signed_in": "signed in, sync not set up", "off": "not signed in",
+              "account": "signed in: passwords, addresses and payment methods kept in the account"}
 
 
 @register
-class AccountSync(Check):
+class AccountSync(ProfileCheck):
     id = "br.account_sync"
 
-    def detect(self, scan: Scan) -> Outcome:
+    def judge(self, scan: Scan, firefox, chromium) -> Outcome:
         states = sync_states(scan)
-        if not states:
-            return absent("No browser profiles were found.")
-        ev = [Evidence.val(s.label, "signed in to Firefox Sync (end-to-end encrypted)" if s.state == "e2e"
-                           and s.label.startswith(("Firefox", "LibreWolf")) else SYNC_WORDS[s.state]) for s in states]
-        readable = [s for s in states if s.state == "readable"]
+        ev = [Evidence.val(s.label, s.detail or SYNC_WORDS[s.state]) for s in states]
+        readable = [s for s in states if s.state in ("readable", "account")]
         sealed = [s for s in states if s.state in ("e2e", "passphrase")]
+        unsure = [s for s in states if s.state == "signed_in"]
         if readable:
             return failed(f"{len(readable)} profile{'s copy' if len(readable) > 1 else ' copies'} history, passwords or "
-                          "tabs to an online account whose provider can read them.", *ev)
+                          "other browsing data to an online account whose provider can read them.", *ev)
         if sealed:
             # end-to-end encrypted: the provider holds only what it can't read, so a risk, not a problem
             return warned(f"{len(sealed)} profile{'s copy' if len(sealed) > 1 else ' copies'} history, passwords or "
@@ -773,37 +1084,55 @@ class AccountSync(Check):
                                       "where each device syncs, and anyone who learns the account's password (or the "
                                       "sync passphrase or code) can read everything. A strong password of its own, "
                                       "and two-step sign-in, keep it that way.")])
+        if unsure:
+            return unknown(f"{', '.join(s.label for s in unsure)}: signed in to an account without sync; what the "
+                           "browser keeps in that account couldn't be told.", *ev)
         return passed("No browser profile syncs to an online account.", *ev)
 
 
-# Features that report what you browse: (Chromium Preferences key or Firefox pref, what it does,
-# the browser's default, and for Chromium the policy that turns it off for every user).
-# Only a setting that is on in the profile itself counts as a finding. A browser default is
-# listed in a note: counting it would make every stock Firefox and Chrome profile a finding.
-# The Privacy Sandbox keys are only written once the user answers Chrome's ad privacy notice, so
-# an absent key means the feature was never turned on (and Chromium, Edge, Vivaldi and Opera
-# builds don't offer it). VERIFY: the privacy_sandbox keys on current Chrome releases.
+# Features that report what you browse: (Chromium Preferences key or Firefox pref, what it does, and for Chromium the
+# policy that turns it off for every user); each browser's default comes from browsers.yaml (`defaults`), or False for
+# what no browser turns on by itself (the Privacy Sandbox, "Make searches and browsing better", Enhanced Safe Browsing).
+# Only a setting that is on in the profile itself counts as a finding. A browser default is listed in a note: counting
+# it would make every stock Firefox and Chrome profile a finding.
+# The Privacy Sandbox keys are written only once the user answers Chrome's ad privacy notice; Google announced in
+# October 2025 that it is retiring Topics, Protected Audience and Attribution Reporting, and Chrome 154 and later clear
+# the keys (PrivacySandboxAdPrivacyUxDeprecation): they count where an older Chrome still has them on.
 ENHANCED_SAFE_BROWSING = "enhanced Safe Browsing (sends URLs)"
-CHROMIUM_AD_PREFS = (("privacy_sandbox.m1.topics_enabled", "ad topics from your history", False, "PrivacySandboxAdTopicsEnabled"),
-                     ("privacy_sandbox.m1.fledge_enabled", "site-suggested ads", False, "PrivacySandboxSiteEnabledAdsEnabled"),
-                     ("privacy_sandbox.m1.ad_measurement_enabled", "ad measurement", False, "PrivacySandboxAdMeasurementEnabled"),
-                     ("search.suggest_enabled", "search suggestions as you type", True, "SearchSuggestEnabled"),
+CHROMIUM_AD_PREFS = (("privacy_sandbox.m1.topics_enabled", "ad topics from your history", "PrivacySandboxAdTopicsEnabled"),
+                     ("privacy_sandbox.m1.fledge_enabled", "site-suggested ads", "PrivacySandboxSiteEnabledAdsEnabled"),
+                     ("privacy_sandbox.m1.ad_measurement_enabled", "ad measurement", "PrivacySandboxAdMeasurementEnabled"),
+                     # "Make searches and browsing better": the address of every page visited, sent to Google; off
+                     # until turned on, and turned on with history sync (unified_consent_service.cc)
+                     ("url_keyed_anonymized_data_collection.enabled", "the address of every page you visit, sent to "
+                      "Google (\"Make searches and browsing better\")", "UrlKeyedAnonymizedDataCollectionEnabled"),
+                     ("search.suggest_enabled", "search suggestions as you type", "SearchSuggestEnabled"),
                      # a policy with a value rather than false: SafeBrowsingProtectionLevel 1 is standard protection
-                     ("safebrowsing.enhanced", ENHANCED_SAFE_BROWSING, False, ("SafeBrowsingProtectionLevel", 1)))
+                     ("safebrowsing.enhanced", ENHANCED_SAFE_BROWSING, ("SafeBrowsingProtectionLevel", 1)))
 REGION = "region"           # on by default in some countries only (Firefox Suggest, sponsored shortcuts)
-FIREFOX_AD_PREFS = (("browser.search.suggest.enabled", "search suggestions as you type", True, None),
-                    ("browser.urlbar.suggest.quicksuggest.sponsored", "sponsored address bar suggestions", REGION, None),
+FIREFOX_AD_PREFS = (("browser.search.suggest.enabled", "search suggestions as you type", None),
+                    ("browser.urlbar.suggest.quicksuggest.sponsored", "sponsored address bar suggestions", None),
                     ("browser.newtabpage.activity-stream.showSponsoredTopSites", "sponsored shortcuts on the new tab page",
-                     REGION, None))
+                     None),
+                    # Firefox Suggest's online part: what you type goes to Mozilla's servers (Merino)
+                    ("browser.urlbar.quicksuggest.online.enabled", "what you type in the address bar, sent to Mozilla "
+                     "for suggestions", None))
 AD_DEFAULTS_HOW = ("Firefox: Settings → Search → \"Show search suggestions\"; Settings → Home → \"Sponsored shortcuts\"; "
-                   "Settings → Privacy & Security → Address Bar → \"Suggestions from sponsors\". Chrome: Settings → You and "
-                   "Google → Sync and Google services → \"Improve search suggestions\" and \"Autocomplete searches and URLs\".")
+                   "Settings → Privacy & Security → Address Bar → \"Suggestions from sponsors\" and \"Improve the Firefox "
+                   "Suggest experience\". Chrome: Settings → You and Google → Sync and Google services → \"Improve search "
+                   "suggestions\", \"Autocomplete searches and URLs\" and \"Make searches and browsing better\".")
+AI_NOTE = Note("info", "AI features send what you ask, and the page",
+               "Chrome's Gemini, \"Help me write\" and tab comparison, and Firefox's AI chatbot in the sidebar, send what "
+               "you ask them, with the page or text you give them, to their provider when you use them. The app doesn't "
+               "read their settings: to see them, type AI into the search box of the browser's settings page.")
 
 
-def _ad_settings(prefs: dict, table, policy: dict, get) -> tuple[list[str], list[str]]:
-    """(features turned on in the profile, features on only as the browser's default)."""
-    on, defaults = [], []
-    for key, what, default, policy_name in table:
+def _ad_settings(prefs: dict, table, policy: dict, get, default) -> tuple[list[str], list[str], list[str]]:
+    """(features turned on in the profile, features on only as the browser's default, features whose default isn't
+    known for this browser)."""
+    from ..browsers import UNKNOWN
+    on, defaults, unsure = [], [], []
+    for key, what, policy_name in table:
         name, off = policy_name if isinstance(policy_name, tuple) else (policy_name, False)
         now = policy.get(name) if name else None
         if now is not None and type(now) is type(off) and now == off:
@@ -811,60 +1140,88 @@ def _ad_settings(prefs: dict, table, policy: dict, get) -> tuple[list[str], list
         v = get(prefs, key)
         if v is True:
             on.append(what)
-        elif v is None and default is True:
+            continue
+        if v is not None:
+            continue
+        d = default(key)
+        if d is True:
             defaults.append(f"{what} (browser default)")
-        elif v is None and default == REGION:
+        elif d == REGION:
             defaults.append(f"{what} (browser default in some countries)")
-    return on, defaults
+        elif d is UNKNOWN:
+            unsure.append(what)
+    return on, defaults, unsure
+
+
+# what no browser turns on by itself
+CHROMIUM_OFF_UNLESS_SET = frozenset({k for k, _, _ in CHROMIUM_AD_PREFS} - {"search.suggest_enabled"})
 
 
 def chromium_ad_states(scan: Scan, chromium) -> list[tuple[BrowserDir, Path, list[str], list[str]]]:
     """(browser folder, profile, features turned on, features on as the browser's default) of each Chromium-based
     profile but Brave's, which ships with the Privacy Sandbox and suggestions off."""
+    return [(d, prof, on, defaults) for d, prof, on, defaults, _ in _chromium_ad_states(scan, chromium)]
+
+
+def _chromium_ad_states(scan: Scan, chromium):
     out = []
+    installed = installed_ids(scan) if chromium else set()
     for d, profiles in chromium:
         if d.browser.startswith("Brave"):
             continue
-        policy = chromium_policies(scan.host, d.browser)
+        policy = chromium_policy(scan, d)
+
+        def default(key, d=d):
+            return False if key in CHROMIUM_OFF_UNLESS_SET else chromium_default(d, key, installed)
         for prof in profiles:
             out.append((d, prof, *_ad_settings(read_json(scan.host, prof / "Preferences") or {}, CHROMIUM_AD_PREFS,
-                                               policy, lambda prefs, key: dig(prefs, *key.split(".")))))
+                                               policy, lambda prefs, key: dig(prefs, *key.split(".")), default)))
     return out
 
 
 @register
-class AdFeatures(Check):
+class AdFeatures(ProfileCheck):
     id = "br.ad_features"
 
-    def detect(self, scan: Scan) -> Outcome:
-        firefox, chromium = _browsers(scan)
-        if not firefox and not chromium:
-            return absent("No browser profiles were found.")
-        ev, on, by_default = [], [], []
+    def judge(self, scan: Scan, firefox, chromium) -> Outcome:
+        ev, on, by_default, unsure = [], [], [], []
 
-        def add(label: str, active: list[str], defaults: list[str]) -> None:
+        def add(label: str, active: list[str], defaults: list[str], unknown_defaults: list[str]) -> None:
             ev.append(Evidence.val(label, ", ".join(active + defaults) or "off"))
             if active:
                 on.append(label)
             elif defaults:
                 by_default.append(label)
+            if unknown_defaults:
+                unsure.append(f"{label} ({', '.join(unknown_defaults)})")
 
+        chat = []
         for p in firefox:
-            add(p.label, *_ad_settings(firefox_prefs(scan.host, p.path), FIREFOX_AD_PREFS, {},
-                                       lambda prefs, key: prefs.get(key)))
-        for d, prof, active, defaults in chromium_ad_states(scan, chromium):
-            add(f"{d.label}, {prof.name}", active, defaults)
+            prefs = firefox_prefs(scan.host, p.path)
+            add(p.label, *_ad_settings(prefs, FIREFOX_AD_PREFS, {}, lambda prefs, key: prefs.get(key),
+                                       lambda key, p=p: ff_value(p, {}, key)))
+            if prefs.get("browser.ml.chat.provider"):
+                chat.append(p.label)
+        for d, prof, active, defaults, unknown_defaults in _chromium_ad_states(scan, chromium):
+            add(f"{d.label}, {prof.name}", active, defaults, unknown_defaults)
         notes = []
         if by_default:
             notes.append(Note("info", "Some are on as the browser's default",
                               f"In {', '.join(by_default)}, features that send what you type or browse are on because "
                               "that is how the browser ships, not because they were turned on. Most people have them, "
                               f"so they aren't counted as a finding. To turn them off: {AD_DEFAULTS_HOW}"))
+        if unsure:
+            notes.append(Note("limitation", "Defaults the app doesn't know",
+                              f"{'; '.join(unsure)}: not set in the profile, and the app doesn't know whether this browser "
+                              "ships it on: look in its settings."))
+        if chat:
+            ev.append(Evidence.val("An AI chatbot is set up in the sidebar", ", ".join(chat)))
+        notes.append(AI_NOTE)
         if on:
             return failed(f"Ad or suggestion features that report what you browse are turned on in {len(on)} profile"
                           f"{'s' if len(on) > 1 else ''}.", *ev, notes=notes)
         return passed("Nothing that reports what you browse is turned on beyond the browsers' defaults."
-                      if by_default else "Ad profiling and reporting suggestions are off.", *ev, notes=notes)
+                      if by_default or unsure else "Ad profiling and reporting suggestions are off.", *ev, notes=notes)
 
 
 # ------------------------------------------------------------------ which browsers, and the default
@@ -1115,23 +1472,57 @@ class DefaultBrowser(Check):
                       findings=findings)
 
 
-def blocking_status(scan: Scan, b) -> list[tuple[str, str]]:
-    """(profile, "uBlock Origin" | "uBlock Origin Lite" | "none") for each profile of a browser that needs an
-    extension; [] when its profiles aren't known or it has none yet."""
+# other blockers people use: (name, Firefox add-on ids, Chrome Web Store ids, a pattern for its name, why it blocks
+# less than uBlock Origin or "" when it blocks ads and trackers as fully)
+OTHER_BLOCKERS = (
+    ("AdGuard AdBlocker", ("adguardadblocker@adguard.com",), ("bgnkhhnnamicmpeenaelnjfhikgbkllg",),
+     r"^AdGuard\b.*(Ad ?Blocker|Ad blocker)", ""),
+    ("Ghostery", ("firefox@ghostery.com",), ("mlomiejdfkolichcflejclcbmpeaniij",), r"^Ghostery\b", ""),
+    ("Privacy Badger", ("jid1-MnnxcxisBPnSXQ@jetpack",), ("pkehgijcmpdhfbdbbnkijodmdjhbjlgp",), r"^Privacy Badger\b",
+     "it blocks the trackers it learns about, not ads as such"),
+    ("Adblock Plus", ("{d10d0bf8-f5b5-c8b4-a8b2-2b3a1b6b0cc0}",), ("cfhdojbkjhnklbpkdaibdccddilifddb",),
+     r"^Adblock Plus\b", "it lets \"acceptable ads\" through unless you turn that off in its settings"),
+    ("AdBlock", ("jid1-NIfFY2CA8fy1tg@jetpack",), ("gighmmpiobklfepjocnamgkkbiglidom",), r"^AdBlock\b(?! Plus)",
+     "it lets \"acceptable ads\" through unless you turn that off in its settings"),
+)
+NO_KNOWN_BLOCKER = "none"
+
+
+def _blocker(exts: list[Extension], family: str) -> str:
+    """What blocks ads and trackers in one profile: uBlock Origin, uBlock Origin Lite, another blocker the app knows
+    (by its id or its name), or "none" (no blocker the app recognises)."""
     from ..browsers import UBO_CHROMIUM, UBO_FIREFOX, UBO_LITE
+    ids = {e.id for e in exts}
+    if (UBO_FIREFOX if family == "mozilla" else UBO_CHROMIUM) in ids:
+        return "uBlock Origin"
+    if family == "chromium" and UBO_LITE in ids:
+        return "uBlock Origin Lite"
+    for name, ff, cr, pattern, _less in OTHER_BLOCKERS:
+        if ids & set(ff if family == "mozilla" else cr) or any(re.search(pattern, e.name, re.I) for e in exts):
+            return name
+    return NO_KNOWN_BLOCKER
+
+
+def blocker_less(status: str) -> str:
+    """Why a blocker blocks less than uBlock Origin, or ""."""
+    if status == "uBlock Origin Lite":
+        return "it can't block as much as uBlock Origin (Chrome's newer extension format limits it)"
+    return next((less for name, *_, less in OTHER_BLOCKERS if name == status), "")
+
+
+def blocking_status(scan: Scan, b) -> list[tuple[str, str]]:
+    """(profile, "uBlock Origin" | "uBlock Origin Lite" | another blocker's name | "none") for each profile of a browser
+    that needs an extension; [] when its profiles aren't known or it has none yet."""
     out = []
-    if "chromium" in b.profiles:
+    if b.family == "chromium":
         for d in chromium_dirs(scan.paths):
-            if d.browser == b.profiles["chromium"]:
+            if b.id in d.ids:
                 for prof in chromium_profiles(d):
-                    ids = {e.id for e in broad_extensions(scan, [], [(d, [prof])], every=True)}
-                    status = "uBlock Origin" if UBO_CHROMIUM in ids else "uBlock Origin Lite" if UBO_LITE in ids \
-                        else "none"
-                    out.append((f"{d.label}, {prof.name}", status))
-    elif "mozilla" in b.profiles:
-        for p in mozilla_profiles(scan.host, scan.paths, (b.profiles["mozilla"],)):
-            ids = {e.id for e in broad_extensions(scan, [p], [], every=True)}
-            out.append((p.label, "uBlock Origin" if UBO_FIREFOX in ids else "none"))
+                    out.append((f"{d.label}, {prof.name}",
+                                _blocker(broad_extensions(scan, [], [(d, [prof])], every=True), "chromium")))
+    elif b.family == "mozilla":
+        for p in mozilla_profiles(scan.host, scan.paths, tuple(f.name for f in b.folders)):
+            out.append((p.label, _blocker(broad_extensions(scan, [p], [], every=True), "mozilla")))
     return out
 
 
@@ -1167,22 +1558,26 @@ class ContentBlocking(Check):
                 if judged:
                     unused.append(f.name)
             for where, status in statuses:
-                ev.append(Evidence.val(where[:150], status))
-            if judged and any(s == "none" for _, s in statuses):
+                ev.append(Evidence.val(where[:150], "no blocker the app recognises" if status == NO_KNOWN_BLOCKER
+                                       else status))
+            if judged and any(s == NO_KNOWN_BLOCKER for _, s in statuses):
                 lacking.append(f.name)
-            elif judged and any(s == "uBlock Origin Lite" for _, s in statuses):
-                partial.append(f.name)
+            elif judged and any(blocker_less(s) for _, s in statuses):
+                partial += [(f.name, s) for _, s in statuses if blocker_less(s)]
             elif judged and statuses:
                 blocks = True
         notes = [Note("info", "Chrome and Edge can't block properly any more",
                       "Since 2025 Chrome and Edge can't run the full uBlock Origin, only the weaker uBlock Origin "
                       "Lite. Firefox-based browsers, ungoogled-chromium and Brave still can.")]
         if lacking:
-            return failed(f"{' and '.join(dict.fromkeys(lacking))} blocks no ads or trackers: install uBlock Origin.",
-                          *ev, notes=notes)
+            notes.append(Note("limitation", "Blockers the app recognises",
+                              "uBlock Origin and Lite, AdGuard AdBlocker, Ghostery, Privacy Badger, Adblock Plus and "
+                              "AdBlock, by their ids or names. If you use another blocker, it isn't counted here."))
+            return failed(f"{' and '.join(dict.fromkeys(lacking))} has no ad blocker the app recognises: install uBlock "
+                          "Origin.", *ev, notes=notes)
         if partial:
-            return warned(f"{' and '.join(dict.fromkeys(partial))} has only uBlock Origin Lite, which blocks less.",
-                          *ev, notes=notes)
+            name, status = partial[0]
+            return warned(f"{name} blocks with {status}, which blocks less: {blocker_less(status)}.", *ev, notes=notes)
         if not blocks:
             # a fresh install (no profile yet: nothing to judge, and nothing blocks either), or a default the app
             # doesn't know: never a pass that claims blocking

@@ -635,28 +635,15 @@ def mentions_name(text: str, login: str, words: list[str]) -> str | None:
 
 # ------------------------------------------------------------------ browsers
 
-# (name, native config dir, Flatpak app id, Flatpak config dir, snap name, snap dir under the snap root)
-CHROMIUM_BROWSERS = (
-    ("Google Chrome", "google-chrome", "com.google.Chrome", "google-chrome", None, None),
-    ("Google Chrome Beta", "google-chrome-beta", "com.google.ChromeDev", "google-chrome-beta", None, None),
-    ("Google Chrome Dev", "google-chrome-unstable", "com.google.ChromeDev", "google-chrome-unstable", None, None),
-    ("Chromium", "chromium", "org.chromium.Chromium", "chromium", "chromium", "chromium"),
-    ("Brave", "BraveSoftware/Brave-Browser", "com.brave.Browser", "BraveSoftware/Brave-Browser", "brave",
-     ".config/BraveSoftware/Brave-Browser"),
-    ("Brave Beta", "BraveSoftware/Brave-Browser-Beta", "com.brave.Browser.beta", "BraveSoftware/Brave-Browser-Beta", None, None),
-    ("Brave Nightly", "BraveSoftware/Brave-Browser-Nightly", "com.brave.Browser.nightly",
-     "BraveSoftware/Brave-Browser-Nightly", None, None),
-    ("Brave Origin", "BraveSoftware/Brave-Origin", "com.brave.Origin", "BraveSoftware/Brave-Origin", None, None),
-    ("Microsoft Edge", "microsoft-edge", "com.microsoft.Edge", "microsoft-edge", None, None),
-    ("Vivaldi", "vivaldi", "com.vivaldi.Vivaldi", "vivaldi", None, None),
-    ("Opera", "opera", "com.opera.Opera", "opera", None, None),
-)
+# Where each browser keeps its profiles is browsers.yaml's `profiles` (browsers.ProfileFolder): the one registry,
+# which these readers go by
 
 
 @dataclass(frozen=True)
 class BrowserDir:
     browser: str
     root: Location              # the browser's user data directory
+    ids: tuple[str, ...] = ()   # the browsers.yaml ids of the browsers that use this folder (Chromium's is shared)
 
     @property
     def label(self) -> str:
@@ -677,18 +664,21 @@ def chromium_used(p: Path) -> bool:
 def chromium_dirs(paths: PathResolver, any_folder: bool = False) -> list[BrowserDir]:
     """Each Chromium-based browser's user data folder, native, Flatpak and Snap, where the browser has run
     (chromium_used); with `any_folder`, every folder of the name (crash reports are looked for in each)."""
-    out = []
-    for name, native, fp_id, fp_dir, snap, snap_dir in CHROMIUM_BROWSERS:
-        for loc in paths.config(native):
-            out.append(BrowserDir(name, loc))
-        for loc in paths.locate(Base.CONFIG, fp_dir, flatpak=[fp_id]):
-            if loc.install == "flatpak":
-                out.append(BrowserDir(name, loc))
-        if snap:
-            for root in paths.snap_roots(snap):
-                p = root.path / snap_dir
+    from ..browsers import load
+    found: dict[Path, tuple[str, Location, list[str]]] = {}       # one folder, however many browsers use it
+    for f in load().folders("chromium"):
+        locs = paths.config(f.config) + [loc for loc in (paths.locate(Base.CONFIG, f.config, flatpak=[f.flatpak])
+                                                           if f.flatpak else []) if loc.install == "flatpak"]
+        if f.snap:
+            for root in paths.snap_roots(f.snap):
+                p = root.path / (f.snap_dir or f.config)
                 if isdir(p):
-                    out.append(BrowserDir(name, Location(p, "snap", snap, root.revision, root.current)))
+                    locs.append(Location(p, "snap", f.snap, root.revision, root.current))
+        for loc in locs:
+            entry = found.setdefault(loc.path, (f.name, loc, []))
+            if f.browser not in entry[2]:
+                entry[2].append(f.browser)
+    out = [BrowserDir(name, loc, tuple(ids)) for name, loc, ids in found.values()]
     return out if any_folder else [d for d in out if chromium_used(d.root.path)]
 
 
@@ -698,16 +688,9 @@ def chromium_profiles(d: BrowserDir) -> list[Path]:
             and (p / "Preferences").is_file()]
 
 
-# Firefox-family profile roots: (name, native dot-dir, flatpak id, snap name)
-MOZILLA_APPS = (
-    ("Firefox", ".mozilla/firefox", "org.mozilla.firefox", "firefox"),
-    ("LibreWolf", ".librewolf", "io.gitlab.librewolf-community", None),
-    # VERIFY: the forks' profile folders and Flatpak ids (browsers.yaml)
-    ("Waterfox", ".waterfox", "net.waterfox.waterfox", None),
-    ("Zen", ".zen", "app.zen_browser.zen", None),
-    ("Floorp", ".floorp", "one.ablaze.floorp", None),
-    ("Thunderbird", ".thunderbird", "org.mozilla.Thunderbird", "thunderbird"),
-)
+# Firefox-family profile roots: the browsers' are browsers.yaml's; Thunderbird, no browser, is here: (name, native
+# dot-dir, flatpak id, snap name)
+MOZILLA_OTHERS = (("Thunderbird", ".thunderbird", "org.mozilla.Thunderbird", "thunderbird"),)
 
 
 @dataclass(frozen=True)
@@ -725,13 +708,15 @@ class MozProfile:
 def mozilla_profiles(host: Host, paths: PathResolver, apps: Iterable[str] | None = None) -> list[MozProfile]:
     """Profiles listed in each profiles.ini (native, Flatpak, Snap and the XDG location newer
     Firefox may use; VERIFY that location against current releases)."""
+    from ..browsers import load
     out, seen = [], set()
-    for name, dotdir, fp, snap in MOZILLA_APPS:
+    folders = [(f.name, f.home, f.config, f.flatpak, f.snap) for f in load().folders("mozilla")]
+    for name, dotdir, config, fp, snap in folders + [(n, d, "", fp, s) for n, d, fp, s in MOZILLA_OTHERS]:
         if apps is not None and name not in apps:
             continue
-        roots = paths.dotdir(dotdir, flatpak=[fp], snap=[snap] if snap else [])
-        if name == "Firefox":
-            roots += paths.config("mozilla/firefox")
+        roots = paths.dotdir(dotdir, flatpak=[fp] if fp else [], snap=[snap] if snap else []) if dotdir else []
+        if config:
+            roots += paths.config(config, flatpak=[fp] if fp else [])
         for root in roots:
             ini = read_text(host, root.path / "profiles.ini") or ""
             for m in re.finditer(r"^\[Profile\d+\]\s*$(.*?)(?=^\[|\Z)", ini, re.M | re.S):

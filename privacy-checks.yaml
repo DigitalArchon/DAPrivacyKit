@@ -2109,7 +2109,7 @@ checks:
     related: [br.surveillance_browsers, br.content_blocking]
 
   - id: br.content_blocking
-    title: Your browser blocks no ads or trackers
+    title: Your browser has no ad and tracker blocker
     category: browser
     severity: 3
     warn_lower: 2
@@ -2120,6 +2120,10 @@ checks:
       blocker such as uBlock Origin stops most of them before they load.
     detect:
       - 'Per profile: a blocker built in (browsers.yaml blocking: Brave Shields, uBlock Origin in Helium, LibreWolf and Mullvad Browser, Cromite''s own), else the uBlock Origin extension (uBlock0@raymondhill.net; cjpalhdlnbpafiamejdnhcphjbkeiagm) or uBlock Origin Lite (ddkjiahejlhfcafbddmgiahcphecmpfh, partial)'
+      - 'Other blockers, by their add-on and Web Store ids or their names: AdGuard AdBlocker and Ghostery (block as
+        uBlock Origin does), Privacy Badger (trackers it learns, not ads), Adblock Plus and AdBlock (let "acceptable
+        ads" through by default): the last three a risk, as uBlock Origin Lite is. A profile with none of these has
+        "no blocker the app recognises", never "blocks no ads": another blocker may be there'
       - 'Fails for the default browser (or, when it is unknown, any browser with profiles) with none; Tor Browser is exempt: the Tor Project advises adding no extensions'
       - 'A browser with no profile yet (every fresh install) is "not used yet": not applicable, never a pass that claims
         blocking; nor a default browser the app doesn''t know'
@@ -2134,7 +2138,7 @@ checks:
     verify: Extension ids of uBlock Origin and uBlock Origin Lite; built-in blockers on by default (Brave Shields, Cromite).
 
   - id: br.history_retention
-    title: History, cookies and site data kept indefinitely
+    title: History, cookies and site data kept on the disk
     category: browser
     severity: 4
     kind: hygiene
@@ -2146,7 +2150,13 @@ checks:
         reads (Sanitizer.sys.mjs), or, until maybeMigratePrefs has run
         (privacy.sanitize.clearOnShutdown.hasMigratedToNewPrefs3), the pref it copies from: historyFormDataAndDownloads
         (hasMigratedToNewPrefs2), else privacy.clearOnShutdown.history'
-      - 'Chromium: ClearBrowsingDataOnExitList policy'
+      - 'Chromium: ClearBrowsingDataOnExitList policy (native installs only: a Flatpak or Snap doesn''t read /etc);
+        Brave''s own Clear browsing data → On exit (browser.clear_data.browsing_history_on_exit, cookies_on_exit:
+        brave-core''s pref_names.h); otherwise history is kept for 90 days (Chromium deletes older history:
+        history_backend.h kExpireDaysThreshold, browsers.yaml history_days), cookies until they expire'
+      - 'Firefox-family: each browser''s defaults from browsers.yaml (LibreWolf clears cookies and site data, not
+        history, as it closes); /etc/firefox policies count for Firefox''s native install and its Snap only, never its
+        Flatpak or a fork'
     fix: >
       Offer clear-on-exit for cookies, cache and history, with exceptions for sites the user wants to stay logged
       in to. Chromium-based browsers, for every user by policy: DefaultCookiesSetting=4 (site data kept only until
@@ -2201,7 +2211,9 @@ checks:
     scope: user
     tier: guided
     detect:
-      - 'Firefox: browser.cache.disk.enable, browser.sessionstore.privacy_level'
+      - 'Firefox family: browser.cache.disk.enable, browser.sessionstore.privacy_level, set in the profile or as the
+        browser ships them (browsers.yaml defaults: LibreWolf''s cache is off); a fork whose default isn''t in its
+        table is "couldn''t tell"'
       - 'With the disk cache off, the cache already there: cache2 in the profile''s cache folder (~/.cache/mozilla/firefox/<profile>
         for ~/.mozilla/firefox and ~/.config/mozilla/firefox profiles, ~/.cache/librewolf/<profile>, the Flatpak''s
         ~/.var/app/ID/cache, the Snap''s .cache beside its dot folder); still a finding until it is deleted'
@@ -2340,17 +2352,27 @@ checks:
       once (ksycoca, the menu cache).
 
   - id: br.webrtc
-    title: WebRTC IP exposure
+    title: WebRTC shows websites your local address
     category: browser
     severity: 2
     scope: user
     tier: guided
+    why: >
+      Browsers no longer show a website this computer's local addresses through WebRTC: it gets a made-up name instead
+      (Chromium since 2019, Firefox's obfuscate_host_addresses), and only the default route is used until a site is
+      allowed the camera or microphone. What is left: a profile set to show them, and a proxy set in Firefox that
+      WebRTC's own traffic goes around, showing your real address.
     detect:
-      - 'Firefox: media.peerconnection.ice.default_address_only'
-      - 'Chromium: WebRtcIPHandling policy'
-    fix: Restrict to the default route; mostly relevant with split-tunnel VPNs.
+      - 'Firefox family: media.peerconnection.ice.obfuscate_host_addresses (on by default) and default_address_only;
+        with a proxy set by hand (network.proxy.type 1), media.peerconnection.ice.proxy_only_if_behind_proxy
+        (LibreWolf''s default); each browser''s defaults from browsers.yaml'
+      - 'Chromium family: the WebRtcIPHandling policy (native installs) or webrtc.ip_handling_policy in Preferences:
+        "default" hides local addresses behind mDNS names (kWebRtcHideLocalIpsWithMdns, on by default),
+        default_public_interface_only and disable_non_proxied_udp keep to the default route;
+        default_public_and_private_interfaces shows the local address. Not set: the browser''s own, said as it is'
+    fix: Restrict to the default route; turn on proxy_only_if_behind_proxy where a proxy is set.
     remedy: >
-      Video calls in the browser can reveal your local address, or your real address around a VPN.
+      A browser here is set to show websites your local address, or lets WebRTC go around the proxy you set.
       Guide… restricts that.
 
   - id: br.https_only
@@ -2370,6 +2392,11 @@ checks:
     detect:
       - 'Firefox: dom.security.https_only_mode in prefs.js (the _pbm pref covers private windows only), or the HttpsOnlyMode policy; LibreWolf has it on unless prefs.js turns it off'
       - 'Chromium, Chrome, Edge, Vivaldi: https_only_mode_enabled or https_first_balanced_mode_enabled in Preferences, or the HttpsOnlyMode policy (force_enabled, force_balanced_enabled)'
+      - 'Neither set: the browser''s default (browsers.yaml https_upgrades), by the version that last ran (the user
+        data folder''s Last Version): Chrome and Chromium 157 and later turn it on for public sites
+        (kHttpsFirstBalancedModeAutoEnable, never written to Preferences), Chrome 154 to 156 by Google''s field
+        trials for some people (couldn''t tell), Cromite strictly; a browser with no table (Edge, Vivaldi, Opera) is
+        "couldn''t tell", never Chromium''s assumed. Firefox''s policies count for its native install and Snap only'
       - 'Brave: profile.default_content_setting_values.httpsUpgrades 2 (Strict), 1 (Disabled), absent for Standard, its default, which falls back to HTTP'
     fix: Firefox, one pref in prefs.js while it is closed; the Chromium family by its settings page (steps).
     remedy: >
@@ -2429,11 +2456,21 @@ checks:
     why: >
       With sync on, history, passwords, bookmarks and open tabs are copied to Google, Microsoft,
       Opera, Brave, Vivaldi or Mozilla. Chrome, Edge and Opera sync can be read by the provider
-      unless a sync passphrase is set: a problem. Firefox, Brave and Vivaldi sync, and Chrome with a
-      sync passphrase, are end-to-end encrypted: the provider can't read them, so only a risk (it
-      keeps a copy, and the account's password or the passphrase opens it).
+      unless a sync passphrase is set: a problem. Chrome signed in to a Google Account without sync
+      still keeps passwords, addresses and payment methods in that account. Firefox, Brave and Vivaldi
+      sync, and Chrome with a sync passphrase, are end-to-end encrypted: the provider can't read them,
+      so only a risk (it keeps a copy, and the account's password or the passphrase opens it).
     detect:
-      - 'Chromium: <profile>/Preferences account_info non-empty or sync.has_setup_completed; sync.encryption passphrase flags'
+      - 'Chromium: <profile>/Preferences account_info non-empty or google.services.account_id (signed in);
+        sync.has_setup_completed, sync.requested or google.services.consented_to_sync (syncing)'
+      - 'The passphrase: sync.cached_passphrase_type, the proto''s PassphraseType (nigori_specifics.proto): 1
+        implicit and 2 keystore are readable by Google, 3 frozen implicit and 4 custom are end to end
+        (IsExplicitPassphrase), 5 trusted vault is readable but for what on-device encryption keeps; or a passphrase
+        entered (sync.encryption_bootstrap_token_per_account). There is no sync.passphrase_type, and the old
+        encryption_bootstrap_token is no proof of a passphrase'
+      - 'Chrome signed in without sync: passwords, addresses and payment methods are kept in the account by default
+        (IsTypeSelectedByDefaultInTransportMode), unless turned off for it (sync.selected_types_per_account): a
+        problem. Another Chromium-family browser signed in without sync: couldn''t tell'
       - 'Brave (sync chain) and Vivaldi (encryption password) always encrypt end to end'
       - 'Firefox: services.sync.username in prefs.js (only whether it is set, never the address)'
     fix: Sign out, or sync fewer data types; in Chrome set a sync passphrase so Google can't read it.
@@ -2441,7 +2478,9 @@ checks:
       Your browsing data is copied to the provider's servers. Where the provider can read it, sign out,
       sync less, or in Chrome set a sync passphrase so Google can't; where it is end-to-end encrypted,
       give the account a strong password of its own. How to… shows where, for each browser here.
-    verify: The Preferences keys for a custom sync passphrase across Chrome versions; Brave's and Vivaldi's sync keys.
+    verify: >
+      The shape of sync.selected_types_per_account (an entry per account, a boolean per type); Brave's and Vivaldi's
+      sync keys.
 
   - id: br.ad_features
     title: Browser ad and suggestion features that report what you do
@@ -2450,19 +2489,27 @@ checks:
     scope: user
     tier: guided
     why: >
-      Chrome's Privacy Sandbox profiles your interests for advertisers from your history; search
-      suggestions send every keystroke in the address bar to the search engine; sponsored
-      shortcuts and suggestions in Firefox report what is shown and clicked.
+      Chrome's "Make searches and browsing better" sends Google the address of every page you
+      visit; search suggestions send every keystroke in the address bar to the search engine;
+      Firefox Suggest's online suggestions send what you type to Mozilla, and sponsored shortcuts and
+      suggestions report what is shown and clicked. Chrome's Privacy Sandbox profiled your interests for
+      advertisers from your history: Google is retiring it (October 2025), and newer Chrome clears it.
     detect:
-      - 'Chromium: Preferences privacy_sandbox.m1.topics_enabled / fledge_enabled / ad_measurement_enabled, search.suggest_enabled, safebrowsing.enhanced'
-      - 'Firefox: browser.search.suggest.enabled, browser.urlbar.suggest.quicksuggest.sponsored, browser.newtabpage.activity-stream.showSponsoredTopSites'
+      - 'Chromium: Preferences url_keyed_anonymized_data_collection.enabled (off until turned on, and turned on with
+        history sync; policy UrlKeyedAnonymizedDataCollectionEnabled), privacy_sandbox.m1.topics_enabled /
+        fledge_enabled / ad_measurement_enabled (where an older Chrome still has them: 154 and later clear them),
+        search.suggest_enabled (each browser''s default from browsers.yaml; unknown for one without a table, said in a
+        note), safebrowsing.enhanced'
+      - 'Firefox: browser.search.suggest.enabled, browser.urlbar.suggest.quicksuggest.sponsored, browser.newtabpage.activity-stream.showSponsoredTopSites, browser.urlbar.quicksuggest.online.enabled (Suggest''s online part, offered to English speakers in the US), each fork''s defaults from browsers.yaml'
+      - 'AI features (Chrome''s Gemini, Help me write, tab comparison; Firefox''s chatbot, browser.ml.chat.provider
+        listed when set) send what you ask them when used: a note, their settings not read'
       - 'Only a feature turned on in the profile (or by policy) counts; one on only as the browser ships is listed in a note, since every stock profile has them'
     fix: >
       Firefox prefs while it is closed; Chromium policies (PrivacySandboxAdTopicsEnabled, PrivacySandboxSiteEnabledAdsEnabled,
       PrivacySandboxAdMeasurementEnabled, SearchSuggestEnabled) for every user, or the settings page per profile.
     remedy: >
       Guide… turns off the browser's built-in advertising features and search suggestions.
-    verify: Chromium's Preferences keys for the Privacy Sandbox APIs, and the policy names, on current releases.
+    verify: Whether Firefox writes browser.urlbar.quicksuggest.online.enabled to prefs.js where Suggest isn't offered.
 
 # ---------------------------------------------------------------------------
 # DESKTOP ACTIVITY TRACKING

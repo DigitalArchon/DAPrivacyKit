@@ -97,13 +97,14 @@ apps:
     name: "Waterfox"
     packages: [waterfox, waterfox-bin]
     flatpak: [net.waterfox.waterfox]
-    checked: "6.7.5"
+    checked: "6.7.8"
     basis: current
-    checked_on: 2026-10-08
+    checked_on: 2026-11-12
     checks: [auth.firefox_no_primary_password, br.account_sync, br.ad_features, br.content_blocking, br.crashpad_dumps, br.default_browser, br.disk_cache, br.extensions_broad, br.history_retention, br.https_only, br.site_permissions, br.tracking_protection, br.vpn_extensions, br.webrtc, net.dns_unencrypted, tel.browser_telemetry]
     data: [home:.waterfox]
     relies_on: >-
-      As Firefox's, in ~/.waterfox
+      As Firefox's, in ~/.waterfox (always: its nsXREDirProvider never uses XDG); its own default prefs
+      (browsers.yaml defaults: telemetry off, WebRTC limited to the default route, DNS over Oblivious HTTP)
     upstream:
       repology: waterfox
       notes: https://www.waterfox.net/docs/releases/
@@ -113,14 +114,15 @@ apps:
     name: "Zen"
     packages: [zen-browser, zen-browser-bin]
     flatpak: [app.zen_browser.zen]
-    checked: "1.23b"
+    checked: "1.24.2b"
     basis: current
-    checked_on: 2026-10-08
+    checked_on: 2026-11-12
     major_parts: 2
     checks: [auth.firefox_no_primary_password, br.account_sync, br.ad_features, br.content_blocking, br.crashpad_dumps, br.default_browser, br.disk_cache, br.extensions_broad, br.history_retention, br.https_only, br.site_permissions, br.tracking_protection, br.vpn_extensions, br.webrtc, net.dns_unencrypted, tel.browser_telemetry]
-    data: [home:.zen]
+    data: [home:.zen, config:zen]
     relies_on: >-
-      As Firefox's, in ~/.zen
+      As Firefox's, in ~/.zen, or ~/.config/zen where ~/.zen isn't (Zen's nsXREDirProvider patch); its Flatpak keeps
+      .zen; its own default prefs (browsers.yaml defaults: telemetry, studies, search suggestions and Suggest off)
     upstream:
       repology: zen-browser
       notes: https://zen-browser.app/release-notes/
@@ -130,13 +132,14 @@ apps:
     name: "Floorp"
     packages: [floorp, floorp-bin]
     flatpak: [one.ablaze.floorp]
-    checked: "12.19.0"
+    checked: "12.21.1"
     basis: current
-    checked_on: 2026-10-08
+    checked_on: 2026-11-12
     checks: [auth.firefox_no_primary_password, br.account_sync, br.ad_features, br.content_blocking, br.crashpad_dumps, br.default_browser, br.disk_cache, br.extensions_broad, br.history_retention, br.https_only, br.site_permissions, br.tracking_protection, br.vpn_extensions, br.webrtc, net.dns_unencrypted, tel.browser_telemetry]
     data: [home:.floorp]
     relies_on: >-
-      As Firefox's, in ~/.floorp
+      As Firefox's, in ~/.floorp; its own default prefs (browsers.yaml defaults: telemetry and sponsored shortcuts
+      off)
     upstream:
       repology: floorp
       notes: https://github.com/Floorp-Projects/Floorp/releases
@@ -180,6 +183,62 @@ apps:
       repology: chromium
       notes: https://chromereleases.googleblog.com/
       source: https://chromium.googlesource.com/chromium/src
+
+  - id: helium
+    name: "Helium"
+    packages: [helium-browser-bin, helium-browser]
+    checked: "0.21.2"
+    basis: current
+    checked_on: 2026-11-12
+    major_parts: 2
+    checks: [auth.chromium_basic_store, br.account_sync, br.ad_features, br.content_blocking, br.crashpad_dumps, br.default_browser, br.disk_cache, br.extensions_broad, br.history_retention, br.https_only, br.site_permissions, br.tracking_protection, br.vpn_extensions, br.webrtc, tel.browser_telemetry]
+    data: [config:net.imput.helium]
+    relies_on: >-
+      As Chromium's, in ~/.config/net.imput.helium (helium-linux's change-chromium-branding.patch); its own defaults
+      (browsers.yaml: search suggestions off, WebRTC kept to the default route); mostly an AppImage, whose version
+      is read from the folder's Last Version
+    upstream:
+      repology: helium-browser
+      notes: https://github.com/imputnet/helium-linux/releases
+      source: https://github.com/imputnet/helium-linux
+    verify: "The package names Helium is packaged under (the AUR's helium-browser-bin)"
+
+  - id: ungoogled-chromium
+    name: "ungoogled-chromium"
+    packages: [ungoogled-chromium, ungoogled-chromium-bin]
+    flatpak: [io.github.ungoogled_software.ungoogled_chromium]
+    checked: "157.0.8103.50"
+    basis: current
+    checked_on: 2026-11-12
+    tolerance: 3
+    checks: [auth.chromium_basic_store, br.account_sync, br.ad_features, br.content_blocking, br.crashpad_dumps, br.default_browser, br.disk_cache, br.extensions_broad, br.history_retention, br.https_only, br.site_permissions, br.tracking_protection, br.vpn_extensions, br.webrtc, tel.browser_telemetry]
+    data: [config:chromium]
+    relies_on: >-
+      As Chromium's, in Chromium's own ~/.config/chromium (its Flatpak in its own config folder); its own defaults
+      (browsers.yaml: search suggestions off, WebRTC disable_non_proxied_udp)
+    upstream:
+      repology: ungoogled-chromium
+      notes: https://github.com/ungoogled-software/ungoogled-chromium/releases
+      source: https://github.com/ungoogled-software/ungoogled-chromium
+
+  - id: cromite
+    name: "Cromite"
+    packages: [cromite-bin, cromite]
+    checked: "153.0.8010.37"
+    basis: current
+    checked_on: 2026-11-12
+    tolerance: 3
+    checks: [auth.chromium_basic_store, br.account_sync, br.ad_features, br.content_blocking, br.crashpad_dumps, br.default_browser, br.disk_cache, br.extensions_broad, br.history_retention, br.https_only, br.site_permissions, br.tracking_protection, br.vpn_extensions, br.webrtc, tel.browser_telemetry]
+    data: [config:chromium]
+    relies_on: >-
+      As Chromium's, in Chromium's own ~/.config/chromium (none of its patches changes it); its own defaults
+      (browsers.yaml: HTTPS-only on, search suggestions off, WebRTC disable_non_proxied_udp); a tarball on Linux, whose
+      version is read from the folder's Last Version
+    upstream:
+      repology: cromite
+      notes: https://github.com/uazo/cromite/releases
+      source: https://github.com/uazo/cromite
+    verify: "Whether Cromite is packaged anywhere on Linux (the AUR's cromite-bin), and its repology name"
 
   - id: brave
     name: "Brave"
