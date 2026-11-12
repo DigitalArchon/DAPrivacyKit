@@ -2482,5 +2482,28 @@ while ($$(".modal").length) { $$(".modal .buttons button").at(-1).click(); await
   await window.quit(); await tick();
   check(posted.length === 3 && !$$(".modal").length, "with nothing else keeping it open, it quits at once"); }
 
+// The Administrator badge follows what every answer says (X-Admin-Active): access that ended by itself (idle) was
+// still shown as held. Drop says "dropped" only when the server dropped it.
+{ const S = window.eval("S"), fetch0 = window.fetch;
+  let held = "1";
+  window.fetch = async (path, opts) => { const r = await fetch0(path, opts); return { ...r, headers: { get: (k) => k === "X-Admin-Active" ? held : null } }; };
+  await window.eval("api")("GET", "/api/online/status"); await tick();
+  check(S.adminActive && $("#priv-badge").textContent === "Administrator", "an answer saying access is held shows it");
+  held = "0";
+  await window.eval("api")("GET", "/api/online/status"); await tick();
+  check(!S.adminActive && $("#priv-badge").textContent === "Unprivileged", "an answer saying it ended (idle) puts the badge back");
+  held = "1";
+  await window.eval("api")("GET", "/api/online/status"); await tick();
+  routes["POST /api/admin/drop"] = () => ({ __status: 500, data: { error: "The helper didn't answer." } });
+  $("#status-text").textContent = "";
+  await window.eval("dropAdmin")(); await tick();
+  check(!$("#status-text").textContent.includes("dropped") && S.adminActive
+        && $$(".toast").some(t => t.textContent.includes("couldn't be dropped")), "a Drop that failed isn't announced as dropped");
+  routes["POST /api/admin/drop"] = () => ({ admin_active: false });
+  held = "0";
+  await window.eval("dropAdmin")(); await tick();
+  check($("#status-text").textContent.includes("dropped") && !S.adminActive, "a Drop that worked says so");
+  window.fetch = fetch0; }
+
 if (failures) { console.error(`${failures} front-end checks failed`); process.exit(1); }
 console.log("front-end: all checks passed");

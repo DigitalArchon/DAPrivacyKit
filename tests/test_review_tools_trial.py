@@ -985,6 +985,7 @@ def test_a_newer_copy_of_a_boxs_program_replaces_the_old_one_and_reverts(cat, tm
     exe.write_text("#!/bin/sh\n")
     exe.chmod(0o755)
     monkeypatch.setattr(I, "program", lambda environ: [str(exe)])
+    monkeypatch.setattr(I, "unsafe_place", lambda path, uid=None: "")     # pytest's folders are in /tmp, anyone's
     src = host.home / "Downloads"
     src.mkdir()
     v1 = b"\x7fELF\x02\x01\x01\x00AI\x02" + b"1" * 80

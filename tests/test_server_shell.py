@@ -445,3 +445,358 @@ def test_a_redacted_export_names_nothing_the_user_named(cat, tmp_path):
         assert not any(w in everything for w in secret), everything
         if fmt == "json":
             assert "org.example.Notes/data/[redacted]" in out
+
+
+# ------------------------------------------------------------------ server.py: who may talk to it, and what it says
+
+T = "t0ken"
+HT = {"X-Token": T}
+
+
+def _client(cat, tmp_path, **kw):
+    from fastapi.testclient import TestClient
+
+    from daprivacyscanner.server import create_app
+    host = make_host(tmp_path)
+    return TestClient(create_app(T, cat, make_host=lambda: host, **kw))
+
+
+def test_the_kernel_says_whose_program_is_on_the_other_end(tmp_path):
+    """peer.peer_uid reads the socket's owner from /proc/net/tcp (and tcp6), as the kernel lists it for every account."""
+    import socket
+
+    from daprivacyscanner import peer
+    srv = socket.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(1)
+    cli = socket.create_connection(srv.getsockname())
+    conn, _ = srv.accept()
+    try:
+        assert peer.peer_uid(cli.getsockname(), srv.getsockname()) == os.getuid()
+        assert peer.same_user(cli.getsockname(), srv.getsockname())
+        assert peer.peer_uid(("127.0.0.1", 1), srv.getsockname()) is None             # no such socket
+        assert not peer.same_user(None, srv.getsockname()) and not peer.same_user(("testclient", 50000), ("x", 80))
+        # another account's socket, as the table lists it
+        port, sport = cli.getsockname()[1], srv.getsockname()[1]
+        table = tmp_path / "tcp"
+        table.write_text("  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n"
+                         f"   0: {peer._hex4('127.0.0.1')}:{port:04X} {peer._hex4('127.0.0.1')}:{sport:04X} 01 "
+                         "00000000:00000000 00:00000000 00000000  1234        0 99 1 0 20 4 30 10 -1\n")
+        assert peer.peer_uid(cli.getsockname(), srv.getsockname(), tables=(str(table),)) == 1234
+    finally:
+        for s in (cli, conn, srv):
+            s.close()
+
+
+def test_another_accounts_program_is_refused_everything(cat, tmp_path):
+    """In --browser mode the launch link was on a command line, which every account can read: another account that
+    used it first held the session (and with Try an app, ran its program as the user, on the user's display). Every
+    connection whose program isn't this account's is refused, the page and its script included."""
+    asked = []
+    c = _client(cat, tmp_path, same_user=lambda client, server: asked.append((client, server)) or False,
+                launch_token="launch")
+    for path in ("/", "/?t=launch", "/static/app.js", "/api/state"):
+        r = c.get(path, headers=HT)
+        assert r.status_code == 403 and "only programs of the account" in r.text, path
+    assert c.post("/api/scan", headers=HT).status_code == 403
+    assert asked and asked[0][0] == ("testclient", 50000)
+    ok = _client(cat, tmp_path / "b", same_user=lambda client, server: True, launch_token="launch")
+    assert ok.get("/static/app.js").status_code == 200 and "data-token" in ok.get("/?t=launch").text
+
+
+def test_the_real_server_answers_its_own_account_on_the_socket_it_was_given(cat, tmp_path):
+    """app.main binds the socket and hands it to uvicorn as it is (a port picked, closed and bound again could be taken
+    in between), and the server asks the kernel whose each connection is."""
+    import http.client
+    import threading
+    import time
+
+    import uvicorn
+
+    from daprivacyscanner import app as app_mod, peer
+    from daprivacyscanner.server import create_app
+    host = make_host(tmp_path)
+    sock = app_mod._listen(0)
+    port = sock.getsockname()[1]
+    seen = []
+
+    def check(client, server):
+        seen.append(peer.same_user(client, server))
+        return seen[-1]
+    application = create_app(T, cat, make_host=lambda: host, same_user=check,
+                             allowed_hosts={f"127.0.0.1:{port}"})
+    server = uvicorn.Server(uvicorn.Config(application, log_level="warning", ws="none", lifespan="on"))
+    t = threading.Thread(target=server.run, kwargs={"sockets": [sock]}, daemon=True)
+    t.start()
+    try:
+        for _ in range(200):
+            if server.started:
+                break
+            time.sleep(0.02)
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+        conn.request("GET", "/api/state", headers=HT)
+        r = conn.getresponse()
+        assert r.status == 200 and r.getheader("X-Admin-Active") == "0"
+        r.read()
+        conn.request("GET", "/static/icon.svg")
+        r = conn.getresponse()
+        assert r.status == 200 and r.getheader("Cross-Origin-Resource-Policy") == "same-origin"
+        r.read()
+        assert seen and all(seen)
+    finally:
+        server.should_exit = True
+        t.join(10)
+
+
+def test_every_answer_is_for_this_origin_alone(cat, tmp_path):
+    """/ and /static answered any website, with no Cross-Origin-Resource-Policy: a page elsewhere could load them to
+    tell the app runs, and which version. The policy, nosniff and frame-ancestors are headers on every answer."""
+    c = _client(cat, tmp_path)
+    for path, headers in (("/", {}), ("/static/app.js", {}), ("/api/state", HT), ("/api/state", {}),
+                          ("/nowhere", {})):
+        r = c.get(path, headers=headers)
+        assert r.headers["Cross-Origin-Resource-Policy"] == "same-origin", path
+        assert r.headers["X-Content-Type-Options"] == "nosniff"
+        assert "frame-ancestors 'none'" in r.headers["Content-Security-Policy"]
+        assert "script-src 'self'" in r.headers["Content-Security-Policy"]
+
+
+def test_every_route_needs_the_token_but_the_pages_shell(cat, tmp_path):
+    """Authentication was each route's own Depends(auth): a route that forgot it was open. The guard asks for the
+    token on everything but / and /static."""
+    c = _client(cat, tmp_path)
+    c.app.get("/api/forgot")(lambda: {"open": True})          # a route added without Depends(auth)
+    c.app.post("/api/forgot-post")(lambda: {"open": True})
+    assert c.get("/api/forgot").status_code == 403 and c.post("/api/forgot-post").status_code == 403
+    assert c.get("/api/forgot", headers={"X-Token": "wrong"}).status_code == 403
+    assert c.get("/api/forgot", headers={"X-Token": "tök".encode()}).status_code == 403  # beyond ASCII: just wrong
+    assert c.get("/api/forgot", headers=HT).json() == {"open": True}
+    assert c.post("/", headers={}).status_code == 403                                   # the shell is GET only
+    assert c.get("/static/style.css").status_code == 200 and c.get("/").status_code == 200
+    from daprivacyscanner.server import create_app
+    for route in create_app(T, cat).routes:                 # and every route of the app's own
+        path = getattr(route, "path", "")
+        if path.startswith("/api/") and "{" not in path:
+            for method in getattr(route, "methods", ()) or ():
+                assert c.request(method, path).status_code == 403, (method, path)
+
+
+def test_the_page_learns_administrator_access_ended_by_itself(cat, tmp_path):
+    """The badge was the page's own: access dropped after 5 idle minutes still read "Administrator". Every API answer
+    says whether it is held now."""
+    from daprivacyscanner.privileged import FakePrivileged
+    helper = FakePrivileged()
+    c = _client(cat, tmp_path, start_helper=lambda: helper)
+    assert c.get("/api/state", headers=HT).headers["X-Admin-Active"] == "0"
+    c.post("/api/scan", headers=HT, json={"admin": True})
+    assert c.get("/api/online/status", headers=HT).headers["X-Admin-Active"] == "1"
+    c.app.state.admin.idle = 0                              # idle long enough
+    assert c.get("/api/online/status", headers=HT).headers["X-Admin-Active"] == "0"
+
+
+def test_work_on_a_thread_gets_a_copy_of_the_report(cat, tmp_path, monkeypatch):
+    """The report was saved and exported in worker threads while the loop merged online results into it: a dict
+    changing size under json.dumps stops it with a RuntimeError. Threads get a copy, taken on the loop."""
+    from fastapi.testclient import TestClient
+
+    from conftest import sample
+    from daprivacyscanner import blockdev, history, report as report_mod
+    from daprivacyscanner.server import create_app
+    saved, exported = [], []
+    monkeypatch.setattr(history.LastReport, "save", lambda self, report: saved.append(report))
+    real = report_mod.export
+    monkeypatch.setattr(report_mod, "export", lambda report, *a, **kw: exported.append(report) or real(report, *a, **kw))
+    host = make_host(tmp_path, commands={("lsblk", "-J", "-o", blockdev.COLUMNS): sample("lsblk/debian-12-partial.json")})
+    c = TestClient(create_app(T, cat, make_host=lambda: host))
+    c.post("/api/scan", headers=HT)
+    c.get("/api/report?format=json", headers=HT)
+    live = c.app.state.report
+    assert saved and exported and all(r is not live and r["results"] is not live["results"] for r in saved + exported)
+    assert saved[-1]["results"] == live["results"]
+
+
+# ------------------------------------------------------------------ jobs and quitting
+
+def test_jobs_are_told_to_stop_and_waited_for_and_none_starts_after(cat, tmp_path):
+    import asyncio
+    import threading
+
+    from daprivacyscanner.jobs import Job, Jobs, Quitting, in_thread, view
+
+    class State:
+        pass
+    jobs, stopped = Jobs(State()), threading.Event()
+
+    async def main():
+        def work(job):                                   # a long job's work, looking at its cancel as it goes
+            while not job["cancel"]:
+                threading.Event().wait(0.01)
+            stopped.set()
+
+        async def run(job):
+            await in_thread(work, job)
+            job["state"] = "stopped"
+        job = jobs.start(Job("meta", "running", phase="x"), run)
+        assert jobs.running("meta") and view(job)["phase"] == "x" and "cancel" not in view(job)
+        await asyncio.sleep(0.05)
+        told = jobs.cancel_all()
+        assert told == ["meta"] and view(job)["stopping"]
+        left = await asyncio.to_thread(jobs.wait, 5)
+        assert left == [] and stopped.is_set() and job.ended.is_set()
+        with pytest.raises(Quitting):
+            jobs.start(Job("trim", "asking"), run)
+    asyncio.run(main())
+
+
+def test_quitting_stops_the_online_tests_and_closes_what_it_must(cat, tmp_path, monkeypatch):
+    """Quit set no cancel flag: after the window closed an invisible process went on running the online tests,
+    contacting third-party hosts. shutdown tells every job to stop, waits for them, then closes ~/TempBrowser, discards
+    the trial, drops administrator access; a request after that is refused, and a second call does nothing again."""
+    import threading
+    import time
+
+    from fastapi.testclient import TestClient
+
+    from daprivacyscanner import runner as runner_mod
+    from daprivacyscanner.server import create_app
+    from daprivacyscanner.tools import browser as B
+    running, ended = threading.Event(), threading.Event()
+
+    def scan_online(self, ids, progress=None, stopped=None, on_result=None):
+        running.set()
+        while not stopped():
+            time.sleep(0.01)
+        ended.set()
+    monkeypatch.setattr(runner_mod.Runner, "scan_online", scan_online)
+    closed = []
+    monkeypatch.setattr(B, "close_disk", lambda host, helper: closed.append(1) or "")
+    host = make_host(tmp_path)
+    with TestClient(create_app(T, cat, make_host=lambda: host)) as c:
+        c.app.state.report = {"results": {}, "modifiers": {}, "context": {"values": {}}}
+        oid = next(s.id for s in cat if s.scope.value == "online")
+        assert c.post("/api/online/run", headers=HT, json={"ids": [oid]}).status_code == 200
+        assert running.wait(5)
+        t0 = time.monotonic()
+        said = c.app.state.shutdown()
+        assert ended.is_set() and time.monotonic() - t0 < 5 and said["told"] == ["online"] and said["left"] == []
+        assert closed == [1]
+        assert c.post("/api/scan", headers=HT).status_code == 503
+        assert c.app.state.shutdown() is said and closed == [1]
+
+
+def test_quitting_waits_for_a_fix_under_way(cat, tmp_path, monkeypatch):
+    """A fix applied as the window closes is finished, not cut off half-way by the process ending."""
+    import threading
+    import time
+
+    from fastapi.testclient import TestClient
+
+    from daprivacyscanner import server as server_mod
+    from daprivacyscanner.server import create_app
+    from daprivacyscanner.tools import browser as B
+    monkeypatch.setattr(B, "close_disk", lambda host, helper: "")
+    started, finished = threading.Event(), threading.Event()
+    real = server_mod.apply_plan
+
+    def slow_apply(*a, **kw):
+        started.set()
+        time.sleep(0.5)
+        finished.set()
+        return real(*a, **kw)
+    monkeypatch.setattr(server_mod, "apply_plan", slow_apply)
+    from conftest import sample
+    from daprivacyscanner import blockdev
+    host = make_host(tmp_path, commands={("lsblk", "-J", "-o", blockdev.COLUMNS): sample("lsblk/debian-12-partial.json")})
+    with TestClient(create_app(T, cat, make_host=lambda: host)) as c:
+        c.post("/api/scan", headers=HT)
+        cid = next(cid for cid, r in c.app.state.report["results"].items() if r.get("fixable")
+                   and cat[cid].tier.value == "auto")
+        plan = c.post(f"/api/fix/{cid}/plan", headers=HT).json()["plan"]
+        threading.Thread(target=lambda: c.post("/api/fix/apply", headers=HT, json={"plan_id": plan["id"],
+                                                                                   "confirm_irreversible": True}),
+                         daemon=True).start()
+        assert started.wait(5)
+        said = c.app.state.shutdown(wait=0.1)
+        assert finished.is_set() and said["settled"]
+
+
+def test_a_file_chooser_left_open_is_closed_at_quit(tmp_path):
+    """zenity waited up to an hour for an answer, the app with it."""
+    import threading
+    import time
+
+    from daprivacyscanner.host import SystemRunner
+    from daprivacyscanner.tools.pick import end_dialogs
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    zenity = bindir / "zenity"
+    zenity.write_text("#!/bin/sh\nexec sleep 30\n")
+    zenity.chmod(0o755)
+    runner, out = SystemRunner({"PATH": f"{bindir}:/usr/bin:/bin"}), []
+    t = threading.Thread(target=lambda: out.append(runner.run(["zenity", "--file-selection"], timeout=60)))
+    t.start()
+    for _ in range(100):
+        if end_dialogs():
+            break
+        time.sleep(0.05)
+    t.join(5)
+    assert out and not out[0].ok and not t.is_alive()
+
+
+def test_the_end_of_a_run_quits_then_ends_the_process(monkeypatch):
+    """However the window or the browser run ends, what quitting closes runs, the server stops, and the process ends
+    at once, whatever threads are still busy (Python waited for them, an invisible process going on)."""
+    from types import SimpleNamespace
+
+    from daprivacyscanner import app as app_mod
+    done, exited = [], []
+    monkeypatch.setattr(app_mod, "exit_now", lambda code: exited.append(code))
+    fake = SimpleNamespace(state=SimpleNamespace(shutdown=lambda: done.append("shutdown")))
+    server = SimpleNamespace(should_exit=False)
+    thread = SimpleNamespace(join=lambda timeout=None: done.append("joined"))
+    app_mod.finish(fake, server, thread, lambda: done.append("launcher"))
+    assert done == ["shutdown", "launcher", "joined"] and server.should_exit and exited == [0]
+
+    def broken():
+        raise RuntimeError("x")
+    fake.state.shutdown = broken
+    with pytest.raises(RuntimeError):
+        app_mod.finish(fake, server, thread)
+    assert exited == [0, 0]                                 # it ends all the same
+
+
+# ------------------------------------------------------------------ app.py: the launch link never on a command line
+
+def test_the_browser_gets_the_link_in_a_file_only_this_account_reads(tmp_path, monkeypatch):
+    """webbrowser.open(url) put ?t=<launch token> on xdg-open's and the browser's command lines, which every account
+    can read (/proc/*/cmdline). The browser is handed a file in the runtime folder, 0600, that opens the link."""
+    from daprivacyscanner import app as app_mod
+    runtime = tmp_path / "run"
+    runtime.mkdir(mode=0o700)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
+    url = "http://127.0.0.1:4242/?t=SECRET&x=1"
+    f = app_mod.launcher_file(url)
+    assert f.parent == runtime / "daprivacyscanner" and stat.S_IMODE(f.parent.stat().st_mode) == 0o700
+    assert stat.S_IMODE(f.stat().st_mode) == 0o600 and "SECRET" not in f.as_uri()
+    page = f.read_text()
+    assert 'http-equiv="refresh" content="0;url=http://127.0.0.1:4242/?t=SECRET&amp;x=1"' in page
+    app_mod.remove_launcher(f)
+    assert not f.exists()
+    monkeypatch.delenv("XDG_RUNTIME_DIR")                    # none: a private folder of its own in /tmp
+    g = app_mod.launcher_file(url)
+    assert stat.S_IMODE(g.parent.stat().st_mode) == 0o700 and g.parent.name.startswith("daprivacyscanner-")
+    app_mod.remove_launcher(g)
+    assert not g.parent.exists()
+
+
+def test_using_the_launch_link_removes_the_launcher(cat, tmp_path):
+    gone = []
+    c = _client(cat, tmp_path, launch_token="L", on_launched=lambda: gone.append(1))
+    assert "data-token" in c.get("/?t=L").text and gone == [1]
+    assert c.get("/?t=L").status_code == 403 and gone == [1]
+
+
+def test_the_browser_warning_says_whose_programs_can_use_the_pages_key():
+    from daprivacyscanner.app import BROWSER_EXPOSES
+    assert "only programs of your own account can use it" in BROWSER_EXPOSES
+    assert "worthless once the app has quit" in BROWSER_EXPOSES

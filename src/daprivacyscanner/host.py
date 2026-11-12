@@ -9,6 +9,7 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Mapping, Sequence
@@ -58,6 +59,23 @@ class CommandRunner:
         raise NotImplementedError
 
 
+_RUNNING: set[subprocess.Popen] = set()       # the commands SystemRunner is running now, for end_commands
+_RUNNING_LOCK = threading.Lock()
+
+
+def end_commands(programs: set[str]) -> int:
+    """Ends the commands running now whose program is one of `programs` (by name: a file chooser, zenity or kdialog,
+    left open when the app quits, which waited up to an hour otherwise). How many were told to end."""
+    with _RUNNING_LOCK:
+        procs = [p for p in _RUNNING if os.path.basename(str(p.args[0])) in programs]
+    for p in procs:
+        try:
+            p.terminate()
+        except OSError:
+            pass
+    return len(procs)
+
+
 class SystemRunner(CommandRunner):
     def __init__(self, environ: Mapping[str, str] | None = None):
         from .hostenv import host_env
@@ -76,16 +94,27 @@ class SystemRunner(CommandRunner):
         except OSError as e:
             return CommandResult(argv, CANT_RUN, "", f"{argv[0]}: its input couldn't be opened ({e.strerror or e})")
         try:
-            with source:
-                p = subprocess.run(argv, capture_output=True, text=True, errors="replace", timeout=timeout,
-                                   stdin=source, env={**self._env, **env} if env else self._env)
-        except subprocess.TimeoutExpired:
-            return CommandResult(argv, TIMED_OUT, "", f"timed out after {timeout:g} s")
+            with source, subprocess.Popen(argv, stdin=source, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                                          errors="replace", env={**self._env, **env} if env else self._env) as p:
+                with _RUNNING_LOCK:
+                    _RUNNING.add(p)
+                try:
+                    out, err = p.communicate(timeout=timeout)
+                except subprocess.TimeoutExpired:
+                    p.kill()
+                    p.communicate()
+                    return CommandResult(argv, TIMED_OUT, "", f"timed out after {timeout:g} s")
+                except BaseException:
+                    p.kill()
+                    raise
+                finally:
+                    with _RUNNING_LOCK:
+                        _RUNNING.discard(p)
         except FileNotFoundError as e:          # gone since `which` looked, or a script whose interpreter isn't there
             return CommandResult(argv, NOT_FOUND, "", f"{argv[0]}: not found ({e.strerror or e})")
         except OSError as e:
             return CommandResult(argv, CANT_RUN, "", f"{argv[0]} couldn't be started ({e.strerror or e})")
-        return CommandResult(argv, p.returncode, p.stdout, p.stderr)
+        return CommandResult(argv, p.returncode, out, err)
 
     def which(self, name: str) -> bool:
         return shutil.which(name, path=self._env.get("PATH")) is not None

@@ -70,9 +70,13 @@ def test_quitting_at_a_logout_asks_for_the_password_as_quit_does(cat, host, monk
     app = create_app("t0ken", cat, make_host=lambda: host, start_helper=lambda: asked.append(True))
     app.state.close_browser_disk()
     assert asked == [True]
+    # every way a run ends goes through app.finish, which quits as Quit does (app.state.shutdown, which closes it)
     src = inspect.getsource(app_module.main)
-    assert "app.state.close_browser_disk()" in src[src.index("finally:"):]
+    assert "finish(app, server, thread" in src[src.index("finally:"):]
     assert "signal.SIGTERM, told_to_end" in src                       # --browser mode: Python would end at once
+    app = create_app("t0ken", cat, make_host=lambda: host, start_helper=lambda: asked.append(True))
+    app.state.shutdown()
+    assert asked == [True, True]
 
 
 def test_the_files_are_overwritten_while_the_password_is_asked_for(host, monkeypatch):  # noqa: F811

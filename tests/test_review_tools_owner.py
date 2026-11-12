@@ -186,10 +186,21 @@ def test_a_trial_another_copy_runs_isnt_a_leftover(host, other, monkeypatch):  #
     assert trial.leftovers(host) == [str(running)]
 
 
-def test_quitting_the_window_discards_the_trial():
-    """--browser mode's Quit did; the window's own quit (app.py's finally) didn't, so a trial on the disk stayed."""
+def test_quitting_the_window_discards_the_trial(cat, host, monkeypatch):  # noqa: F811
+    """--browser mode's Quit did; the window's own quit (app.py's finally) didn't, so a trial on the disk stayed. Both
+    go through app.state.shutdown now (app.finish, at the end of every run)."""
+    from daprivacyscanner.server import create_app
+    from daprivacyscanner.tools import browser as B
     src = inspect.getsource(app_module.main)
-    assert "app.state.discard_trial()" in src[src.index("finally:"):]
+    assert "finish(app, server, thread" in src[src.index("finally:"):]
+    assert "app.state.shutdown()" in inspect.getsource(app_module.finish)
+    gone = []
+    monkeypatch.setattr(trial, "discard", lambda h, t: gone.append(t))
+    monkeypatch.setattr(B, "close_disk", lambda host, helper: "")
+    app = create_app("t0ken", cat, make_host=lambda: host)
+    app.state.trial = marker = object()
+    app.state.shutdown()
+    assert gone == [marker] and app.state.trial is None
 
 
 def test_trial_leftovers_go_at_the_start(cat, host, monkeypatch):  # noqa: F811

@@ -506,6 +506,7 @@ def program(monkeypatch, tmp_path):
     exe.write_text("#!/bin/sh\n")
     exe.chmod(0o755)
     monkeypatch.setattr(I, "program", lambda environ: [str(exe)])
+    monkeypatch.setattr(I, "unsafe_place", lambda path, uid=None: "")     # pytest's folders are in /tmp, anyone's
     return exe
 
 

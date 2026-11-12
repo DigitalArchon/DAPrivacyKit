@@ -32,10 +32,52 @@ HELPER_NOTE = ("The administrator helper isn't installed root-owned, so the pass
 TIMER_UNIT = "daprivacyscanner-scan"
 
 
-def _free_port() -> int:
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+def _listen(port: int = 0) -> socket.socket:
+    """The server's socket on 127.0.0.1, bound and listening, handed to uvicorn as it is: a port picked, closed and
+    bound again by uvicorn could be taken by another program in between, which would then get the page's requests
+    (the launch token among them)."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)    # a fixed --port again soon after a quit
+        s.bind(("127.0.0.1", port))
+        s.listen(128)
+    except OSError:
+        s.close()
+        raise
+    return s
+
+
+def launcher_file(url: str) -> Path:
+    """A page that opens `url` (with the launch token), in a folder of this account's alone, readable by it alone:
+    what --browser hands the browser in place of the link, so the token is never on a command line (xdg-open's, the
+    browser's), where every account can read it (/proc/*/cmdline), as Jupyter does. In $XDG_RUNTIME_DIR, else a
+    private folder in /tmp. Removed once the link has been used, and at quit."""
+    import html
+    import tempfile
+    runtime = os.environ.get("XDG_RUNTIME_DIR") or ""
+    folder = None
+    if runtime and os.path.isdir(runtime):
+        folder = os.path.join(runtime, "daprivacyscanner")
+        try:
+            os.mkdir(folder, 0o700)
+        except FileExistsError:
+            pass
+        st = os.lstat(folder)
+        if not os.path.isdir(folder) or os.path.islink(folder) or st.st_uid != os.getuid():
+            folder = None
+        elif st.st_mode & 0o077:
+            os.chmod(folder, 0o700)
+    if folder is None:
+        folder = tempfile.mkdtemp(prefix="daprivacyscanner-")         # 0700, a name nobody could take first
+    name = os.path.join(folder, f"open-{os.getpid()}-{secrets.token_hex(4)}.html")
+    fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    link = html.escape(url, quote=True)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write('<!doctype html>\n<html lang="en"><head><meta charset="utf-8"><meta name="referrer" content="no-referrer">'
+                f'<meta http-equiv="refresh" content="0;url={link}"><title>DA Privacy Kit</title></head>\n'
+                f'<body><p>Opening DA Privacy Kit… If it doesn\'t open, <a href="{link}">open it here</a> (it works '
+                'once).</p></body></html>\n')
+    return Path(name)
 
 
 HOST_TYPELIB_DIRS = ("/usr/lib64/girepository-1.0", "/usr/lib/x86_64-linux-gnu/girepository-1.0",
@@ -90,7 +132,9 @@ def window_problem() -> str | None:
 # What running in the user's own browser gives away, said wherever the app does it or offers to
 BROWSER_EXPOSES = ("In your web browser the page, with your findings, file names and whatever the tools show, can be read "
                    "by any browser extension allowed on all sites, and the browser may spell-check what you type with "
-                   "an online service, sync its history, or keep what is typed in its session files.")
+                   "an online service, sync its history, or keep what is typed in its session files. It keeps the "
+                   "page's access key in those files too while the app runs: only programs of your own account can use "
+                   "it (the app answers no other account), and it is worthless once the app has quit.")
 
 
 def refuse_without_window(problem: str) -> int:
@@ -537,18 +581,6 @@ def outbox_cli() -> int:
     return 0
 
 
-def _presentation_off() -> None:
-    """Presentation mode is for while the app runs: quitting puts the settings back."""
-    from .host import Host
-    from .tools import presentation
-    try:
-        host = Host.local()
-        if presentation.is_on(host):
-            presentation.turn_off(host)
-    except Exception as e:  # noqa: BLE001 - the page says it is still on next time
-        print(f"Presentation mode couldn't be turned off: {e}", file=sys.stderr)
-
-
 class CloseGuard:
     """Closing the window when that would leave ~/TempBrowser open, its files in it (a viewer View offline… opened, or
     another program, is using a file in it: browser.left_open_by), puts the close off, and the page asks (quit() in
@@ -818,11 +850,17 @@ def main(argv: list[str] | None = None) -> None:
     elif installed_helper_stale():
         print(STALE_HELPER, file=sys.stderr)
 
-    token = secrets.token_urlsafe(32)              # the session (cookie) token: never leaves the process
-    launch = secrets.token_urlsafe(32)             # in the URL once; exchanged for the cookie, then forgotten
-    port = args.port or _free_port()
+    token = secrets.token_urlsafe(32)              # the session token: never leaves the process but to the page
+    launch = secrets.token_urlsafe(32)             # in the URL once; exchanged for the session token, then forgotten
+    try:
+        sock = _listen(args.port)                  # bound here and handed over: never closed and bound again
+    except OSError as e:
+        raise SystemExit(f"The app's server couldn't listen on 127.0.0.1:{args.port or 'a free port'}: "
+                         f"{e.strerror or e}.")
+    port = sock.getsockname()[1]
     windows: list = []                         # the app window, once made: its file dialog serves the tools
     guards: list[CloseGuard] = []              # and what its close asks first
+    launchers: list[Path] = []                 # --browser: the page that carries the link (launcher_file)
 
     def window_pick(kind: str, multiple: bool, start: str):
         if not windows:
@@ -831,15 +869,22 @@ def main(argv: list[str] | None = None) -> None:
         kind_ = webview.FileDialog.FOLDER if kind == "folder" else webview.FileDialog.OPEN
         return list(windows[0].create_file_dialog(kind_, directory=start, allow_multiple=multiple) or [])
 
+    def launched() -> None:
+        for f in launchers:
+            remove_launcher(f)
+        launchers.clear()
+
+    from . import peer
     app = create_app(token, cat, on_quit=(lambda: setattr(server, "should_exit", True)) if use_browser else None,
                      launch_token=launch, allowed_hosts={f"127.0.0.1:{port}", f"localhost:{port}"},
                      dev=args.dev or os.environ.get("DAPRIVACYSCANNER_DEV") == "1",
                      pick=None if use_browser else window_pick, open_tool=open_tool, watch_outbox=True,
-                     close_window=None if use_browser else (lambda: guards and guards[0].go()))
+                     close_window=None if use_browser else (lambda: guards and guards[0].go()),
+                     same_user=peer.same_user, on_launched=launched)
     # no WebSockets: the page only makes plain requests, and uvicorn's auto-detection can pick
     # up an incompatible system copy of the websockets package
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning", ws="none"))
-    thread = threading.Thread(target=server.run, daemon=True)
+    thread = threading.Thread(target=server.run, kwargs={"sockets": [sock]}, daemon=True)
     thread.start()
     while not server.started:
         if not thread.is_alive():
@@ -859,15 +904,25 @@ def main(argv: list[str] | None = None) -> None:
         if use_browser:
             signal.signal(signal.SIGTERM, told_to_end)  # else Python ends at once, ~/TempBrowser's files left in it
             signal.signal(signal.SIGHUP, told_to_end)
-            print(f"DA Privacy Kit running in your web browser. {BROWSER_EXPOSES}\n"
-                  f"Open this link once (it works a single time):\n{url}", flush=True)
+            signal.signal(signal.SIGINT, told_to_end)   # Ctrl+C twice cut the close short
+            print(f"DA Privacy Kit running in your web browser. {BROWSER_EXPOSES}", flush=True)
+            opened = False
             if not args.no_open:
                 import webbrowser
 
                 from .hostenv import as_host
 
-                with as_host():                 # the browser gets the host's environment, not the AppImage's
-                    webbrowser.open(url)
+                # the link goes to the browser in a file only this account can read, never on a command line
+                # (xdg-open's and the browser's), which every account can read while it runs
+                try:
+                    launchers.append(launcher_file(url))
+                    with as_host():             # the browser gets the host's environment, not the AppImage's
+                        opened = webbrowser.open(launchers[-1].as_uri())
+                except OSError as e:
+                    print(f"The page couldn't be handed to the browser ({e.strerror or e}).", file=sys.stderr)
+            print((f"It is opening in your browser. If it doesn't (a browser from a Snap can't read the file the app "
+                   f"hands it), open this link instead, once (it works a single time):\n{url}") if opened else
+                  f"Open this link once (it works a single time):\n{url}", flush=True)
             while thread.is_alive():  # until Quit in the page, or Ctrl+C
                 thread.join(0.5)
         else:
@@ -911,12 +966,48 @@ def main(argv: list[str] | None = None) -> None:
     except KeyboardInterrupt:
         pass
     finally:
-        app.state.close_browser_disk()  # the browser's RAM disk is for while the app runs (this copy's, owner.py)
-        app.state.discard_trial()       # and so is a trial: its folder, overwritten first when in memory
-        app.state.admin.drop()          # the root helper ends with the app
-        _presentation_off()             # and so does Presentation mode
+        finish(app, server, thread, launched)
+
+
+def finish(app, server, thread: threading.Thread, launched: Callable[[], None] = lambda: None) -> None:
+    """The end of a run with the window or in the browser, however it came (Quit, the window closed, a logout's
+    signal, Ctrl+C): what quitting closes (app.state.shutdown: jobs told to stop and waited for a while, ~/TempBrowser
+    closed, this copy's trial discarded, administrator access dropped, Presentation mode off), then the server
+    stopped, then the process ends at once (os._exit), not waiting for threads still busy: Python waited for the
+    default executor's at exit, and the window gone, an invisible process went on (a dialog for up to an hour), with
+    GLib's signal handlers still installed and its loop gone, so a logout's SIGTERM did nothing."""
+    try:
+        app.state.shutdown()
+        launched()                                      # the launcher file, if the link was never used
+    finally:
         server.should_exit = True
         thread.join(timeout=5)
+        exit_now(0)
+
+
+def exit_now(code: int) -> None:
+    """Ends the process now, after flushing what it printed (tests replace it)."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except (OSError, ValueError):
+            pass
+    os._exit(code)
+
+
+def remove_launcher(f: Path) -> None:
+    """The launcher file, and the private folder in /tmp it was in when there was no runtime folder."""
+    try:
+        f.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError:
+        return
+    if f.parent.name.startswith("daprivacyscanner-"):
+        try:
+            f.parent.rmdir()
+        except OSError:
+            pass
 
 
 if __name__ == "__main__":

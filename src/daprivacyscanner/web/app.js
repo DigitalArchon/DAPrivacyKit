@@ -72,12 +72,24 @@ function sessionToken() {
   try { return sessionStorage.getItem(TOKEN_KEY) || ""; } catch { return ""; }
 }
 
+/* Every answer says whether administrator access is held now (X-Admin-Active): the badge follows it, also when the
+   access ended by itself (5 idle minutes, the helper gone), which the page never learnt of before. */
+function followAdmin(res) {
+  const held = res.headers?.get?.("X-Admin-Active");
+  if (held !== "0" && held !== "1") return;
+  if ((held === "1") !== S.adminActive) {
+    S.adminActive = held === "1";
+    if (S.state) renderTop();
+  }
+}
+
 async function api(method, path, body, raw = false) {
   const res = await fetch(path, {
     method, credentials: "omit",
     headers: { "X-Token": S.token, "Content-Type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
+  followAdmin(res);
   if (raw) {
     if (!res.ok) {                    // an error is JSON all the same: what it says, not "500 Internal Server Error"
       let data = {};
@@ -370,7 +382,9 @@ function browserBanner() {
   return h("div", { class: "notebox danger" }, h("b", {}, "Running in your web browser, not the app's window"),
     "This page shows your findings, file names and whatever the tools show you. Here, any browser extension allowed on all "
     + "sites can read it and act on it, the browser may send what you type to an online spell checker, and it can keep "
-    + "what is typed in its session files or sync its history. Use the app's window where you can: it needs WebKitGTK 4.1, "
+    + "what is typed in its session files or sync its history. It keeps this page's access key in those files too while "
+    + "the app runs: only programs of your own account can use it (the app answers no other account), and it is "
+    + "worthless once the app has quit. Use the app's window where you can: it needs WebKitGTK 4.1, "
     + "and the app says how to install it when it starts without --browser. Quit when you are done.",
     h("div", { class: "orow" }, h("button", { class: "small", onclick: () => { S.browserNoted = true; renderChecks(); } }, "I understand")));
 }
@@ -5242,7 +5256,11 @@ async function stopJob(now) {
 }
 
 async function dropAdmin() {
-  try { await api("POST", "/api/admin/drop"); } catch (e) { toast(e.message, "error"); }
+  try { await api("POST", "/api/admin/drop"); } catch (e) {
+    // not dropped: said so, never "dropped" (the badge goes by what the server says, followAdmin)
+    toast(`Administrator access couldn't be dropped: ${e.message}`, "error");
+    return;
+  }
   S.adminActive = false;
   renderTop();
   setStatus("Administrator access dropped. The helper has exited.", "done");
@@ -5271,7 +5289,12 @@ async function quit() {
 
 async function quitNow() {
   try { await api("POST", "/api/quit"); } catch { /* already gone */ }
-  if (S.state.can_quit) document.body.replaceChildren(h("div", { class: "quit-note" }, "DA Privacy Kit has quit. You can close this tab."));
+  if (S.state.can_quit) {
+    // worthless now anyway (the server that knew it has ended), and out of the browser's session files with the tab
+    try { sessionStorage.removeItem(TOKEN_KEY); } catch { /* no storage */ }
+    S.token = "";
+    document.body.replaceChildren(h("div", { class: "quit-note" }, "DA Privacy Kit has quit. You can close this tab."));
+  }
 }
 
 /* Dark by default; "light" is the only other theme, kept in this browser's storage. */

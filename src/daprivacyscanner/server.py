@@ -2,17 +2,23 @@
 
 Access: the page is opened once with a launch token in the URL (?t=...), which the server
 exchanges for the session token, handed to the page in its body (data-token) and then forgotten,
-so the token in the launch command line and the browser's history is worthless a second later. The
+so the token in the browser's history is worthless a second later (in --browser mode the link reaches the
+browser through a launcher file only this account can read, never a command line: app.py). The
 page keeps the session token in its session storage, which belongs to this origin alone (host and
 port: a cookie would go to every other local server on 127.0.0.1 the user visits in --browser mode,
 whatever its port, since cookies ignore ports), and sends it with every API call in the X-Token
 header, which a cross-site page can't add without a CORS preflight the server doesn't answer.
-Requests whose Host header isn't this server's address are refused (DNS rebinding)."""
+Every connection whose program isn't this account's is refused (`same_user`, peer.py: any account can connect to
+127.0.0.1), and so are requests whose Host header isn't this server's address (DNS rebinding). Every answer but the
+page's shell (/ and /static) needs the token, checked for every route at once (`guard`), and every answer says it
+is for this origin alone (Cross-Origin-Resource-Policy) with the page's Content-Security-Policy, so a website can't
+load the app's files to tell it is running, nor frame it."""
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import copy
 import hmac
 import html
 import subprocess
@@ -35,6 +41,8 @@ from .fix import FixPlan, apply_plan, revert_entry
 from .guide import Guide
 from .history import Accepted, Baseline, LastReport, forget_scans, hidden
 from .host import Host
+from .jobs import Job, Jobs, Quitting, in_thread
+from .jobs import view as job_view
 from .paths import PathResolver
 from .privileged import (HelperDeclined, HelperError, HelperUnavailable, PkexecHelper, Privileged, installed_helper,
                          installed_helper_stale)
@@ -48,6 +56,24 @@ OUTBOX_EVERY = 2.0               # seconds between looks into the browsers' Temp
 KEEPS_EVERY = 2.0                # seconds between looks at a watched app (What does this app keep?)
 KEEPS_MISSES = 3                 # polls in a row the watch may leave unanswered (busy under a heavy load) before it ends
 KEEPS_LEFT = 180.0               # seconds a watch goes on once its app has closed, or its panel was closed, then it ends
+QUIT_WAIT = 10.0                 # seconds quitting waits for the jobs it told to stop
+CHANGES_WAIT = 120.0             # and for a fix, a revert or a set-up under way (never cut short half-way)
+SHORT_WORKERS = 16               # threads for requests' short work (asyncio.to_thread); long work has its own
+
+# the page's own policy (index.html has it as a <meta> too), as a header on every answer, with what a <meta> can't say:
+# no other site may frame it
+CSP = ("default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; "
+       "frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
+SECURITY_HEADERS = {
+    "Content-Security-Policy": CSP,
+    # a website can't load the app's page, script or icon as its own resource (to tell it runs, and which version)
+    "Cross-Origin-Resource-Policy": "same-origin",
+    "Cross-Origin-Opener-Policy": "same-origin",
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "no-referrer",
+}
+OTHER_ACCOUNT = "This server answers only programs of the account that started DA Privacy Kit."
 
 
 class JSONResponse(_JSONResponse):
@@ -191,10 +217,15 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
                pick: Callable[[str, bool, str], list[str] | None] | None = None,
                open_tool: dict | None = None, spawn_browser: Callable = subprocess.Popen,
                open_url: Callable[[str], None] | None = None, watch_outbox: bool = False,
-               spawn_app: Callable = subprocess.Popen, close_window: Callable[[], None] | None = None) -> FastAPI:
+               spawn_app: Callable = subprocess.Popen, close_window: Callable[[], None] | None = None,
+               same_user: Callable[[tuple | None, tuple | None], bool] | None = None,
+               on_launched: Callable[[], None] | None = None) -> FastAPI:
     """`token` is the session token (the X-Token header of every API call; the page gets it when the
-    launch token is exchanged). `launch_token`, if given, is accepted once on GET /?t=... `allowed_hosts`: the Host
-    header values served (None: any, for tests). `on_quit` ends the process (POST /api/quit): in
+    launch token is exchanged). `launch_token`, if given, is accepted once on GET /?t=..., and `on_launched` called
+    then (app.py removes the launcher file that carried it). `allowed_hosts`: the Host
+    header values served (None: any, for tests). `same_user(client, server)`: whether the program on the other end of
+    a connection is this account's (peer.same_user; None: not asked, for tests, whose client isn't a socket); every
+    connection that isn't is refused, the page's shell included. `on_quit` ends the process (POST /api/quit): in
     the browser, closing the tab doesn't. `close_window` closes the app's window, which quits it (POST /api/quit in
     the window: the page's Quit anyway, once it has asked, app.CloseGuard). `start_helper` asks for administrator
     access (polkit) and returns the privileged helper. `make_net` gives the network to the online tests and to the
@@ -206,19 +237,29 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
     about.LINKS in the user's default browser (xdg-open, detached; a fake in tests). `watch_outbox` starts
     the watcher that empties the browsers' TempOutboxes into their To upload while the app runs, and removes trial
     folders an ended copy of the app left (both off in tests, which call them themselves). `spawn_app` starts an app for "What does this app keep?" and "Try an app"
-    (subprocess.Popen; a fake in tests)."""
-    app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, default_response_class=JSONResponse)
+    (subprocess.Popen; a fake in tests).
+
+    Quitting goes through `app.state.shutdown()` (POST /api/quit in --browser mode, app.main as the window closes or
+    a signal ends the session): every job told to stop, then what quitting closes."""
+    @contextlib.asynccontextmanager
+    async def lifespan(_app):
+        # the short work requests hand to a thread (reads, a scan, a plan): a pool of its own size, not the default's
+        # few threads on a small machine (os.cpu_count() + 4); what blocks for long has a thread of its own (in_thread)
+        from concurrent.futures import ThreadPoolExecutor
+        asyncio.get_running_loop().set_default_executor(ThreadPoolExecutor(SHORT_WORKERS, thread_name_prefix="api"))
+        yield
+
+    app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, default_response_class=JSONResponse,
+                  lifespan=lifespan)
     app.state.report = None
     app.state.restored = False             # whether the saved last report was looked for
-    app.state.online_job = None
-    app.state.trim_job = None
-    app.state.meta_job = None              # Remove metadata: reading or cleaning files and folders
-    app.state.browser_job = None           # Tor or Mullvad Browser into the RAM disk: download, verify, unpack
-    app.state.names_job = None             # the names of the user's deleted files: handed to the page once
-    app.state.clean_job = None             # cleaning the folders they are in (ext4)
+    # the jobs the page follows, one of each kind (jobs.KINDS), as app.state.<kind>_job: the online tests; the TRIM
+    # test; the names of the user's deleted files, handed to the page once, and cleaning the folders they are in
+    # (ext4); Remove metadata, reading or cleaning files and folders; Tor or Mullvad Browser into the RAM disk
+    # (download, verify, unpack); What does this app keep?, the watch, then its result (memory only)
+    jobs = app.state.jobs = Jobs(app.state)
     app.state.trim_cleaned = False         # leftovers of an unfinished TRIM test were looked for
     app.state.erase_facts = {}             # Retire a drive: what each drive said about erasing, this session only
-    app.state.keeps_job = None             # What does this app keep?: the watch, then its result (memory only)
     app.state.trial = None                 # Try an app: the one trial, its sandbox and its report (memory only)
     app.state.trial_cleaned = False        # trial folders left by a run of the app that was killed were looked for
     app.state.left_open = None             # why the last quit left ~/TempBrowser open, for the panel (memory only)
@@ -228,11 +269,49 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
     admin = app.state.admin = AdminSession(start_helper)
     launch = {"token": launch_token}
     pending_tool = {"value": open_tool}
+    # changes under way (a fix, a revert, a set-up): quitting waits for them, never cutting one short half-way
+    in_flight = threading.Condition()
+    changes = {"n": 0}
+
+    @contextlib.contextmanager
+    def changing():
+        with in_flight:
+            changes["n"] += 1
+        try:
+            yield
+        finally:
+            with in_flight:
+                changes["n"] -= 1
+                in_flight.notify_all()
+
+    def token_ok(request: Request) -> bool:
+        # compare_digest refuses text beyond ASCII (a TypeError, which would be a 500): such a header is just wrong
+        t = request.headers.get("x-token")
+        return t is not None and t.isascii() and hmac.compare_digest(t, token)
+
+    def shell_route(request: Request) -> bool:
+        """The page's shell, served without the token: the page itself (where the launch token is exchanged) and its
+        script, style and icon. Everything else needs it, whatever the route says (a forgotten Depends(auth) left one
+        open otherwise)."""
+        path = request.url.path
+        return request.method in ("GET", "HEAD") and (path == "/" or path.startswith("/static/"))
+
+    def secured(response):
+        for k, v in SECURITY_HEADERS.items():
+            response.headers.setdefault(k, v)
+        return response
 
     @app.middleware("http")
-    async def check_host(request: Request, call_next):
+    async def guard(request: Request, call_next):
+        path = request.url.path
+        if same_user is not None and not same_user(request.scope.get("client"), request.scope.get("server")):
+            return secured(PlainTextResponse(OTHER_ACCOUNT, status_code=403))
         if allowed_hosts is not None and request.headers.get("host", "").lower() not in allowed_hosts:
-            return PlainTextResponse("This server only answers its own address.", status_code=421)
+            return secured(PlainTextResponse("This server only answers its own address.", status_code=421))
+        if not shell_route(request) and not token_ok(request):
+            return secured(JSONResponse({"detail": "bad token"}, status_code=403))
+        if jobs.quitting and request.method == "POST" and path != "/api/quit":
+            return secured(quitting())
         try:
             response = await call_next(request)
         except Exception as e:  # noqa: BLE001 - see below
@@ -242,11 +321,14 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
             print(f"{request.method} {request.url.path}: {type(e).__name__}", file=sys.stderr)
             response = JSONResponse({"error": f"The app hit an error it didn't expect ({type(e).__name__})."},
                                     status_code=500)
-        # what the API answers (downloads' names, a photo's metadata, deleted files' names) is never cached: in
-        # --browser mode the user's browser kept a JSON answer in its disk cache otherwise (tested with Firefox)
-        if request.url.path.startswith("/api/"):
+        if path.startswith("/api/"):
+            # what the API answers (downloads' names, a photo's metadata, deleted files' names) is never cached: in
+            # --browser mode the user's browser kept a JSON answer in its disk cache otherwise (tested with Firefox)
             response.headers["Cache-Control"] = "no-store"
-        return response
+            # whether administrator access is held now, with every answer: the page's badge follows it, also when
+            # it ended by itself (idle, the helper gone), which the page never learnt of before
+            response.headers["X-Admin-Active"] = "1" if admin.active() else "0"
+        return secured(response)
 
     def host_now() -> Host:
         """A host for this request, with administrator access if it is active (never prompts)."""
@@ -255,9 +337,10 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
         return host
 
     async def with_root(host: Host) -> str | None:
-        """Gives the host administrator access, asking for it if needed. Returns why not, or None."""
+        """Gives the host administrator access, asking for it if needed (the prompt on a thread of its own: it can
+        stand for minutes). Returns why not, or None."""
         try:
-            host.privileged = await asyncio.to_thread(admin.get, True)
+            host.privileged = await in_thread(admin.get, True, name="admin-prompt")
         except HelperDeclined:
             return "Administrator access was declined, so nothing was changed."
         except HelperUnavailable as e:
@@ -279,35 +362,55 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
     def busy() -> JSONResponse:
         return JSONResponse({"error": "A scan or fix is already running."}, status_code=409)
 
-    def persist(host: Host) -> None:
+    def quitting() -> JSONResponse:
+        return JSONResponse({"error": "DA Privacy Kit is quitting."}, status_code=503)
+
+    # The report is changed only on the event loop, and work on a thread gets a copy of it: a thread saving or
+    # exporting it while the loop merged an online test's result into it could stop with "dictionary changed size
+    # during iteration".
+
+    def report_copy() -> dict | None:
+        return copy.deepcopy(app.state.report)
+
+    async def persist(host: Host) -> None:
         """Keeps the report as it is now for the next start (after a scan, a fix, a revert or the
         online tests)."""
-        if app.state.report is not None:
-            LastReport(paths_of(host)).save(app.state.report)
+        snap = report_copy()
+        if snap is not None:
+            await asyncio.to_thread(LastReport(paths_of(host)).save, snap)
 
-    def recheck_undone(host: Host) -> list:
+    async def recheck_undone(host: Host) -> list:
         """Fixes the user applied that have been undone since (UndoLog.undone), against the report as
         it is now: after a scan, a fix, a revert, accepting a finding or forgetting history."""
         report = app.state.report
         if report is None:
             return []
-        report["undone"] = undo_log(host).undone(report["results"], Accepted(paths_of(host)).all(), host)
-        return report["undone"]
+        results = copy.deepcopy(report["results"])
+        undone = await asyncio.to_thread(
+            lambda: undo_log(host).undone(results, Accepted(paths_of(host)).all(), host))
+        report["undone"] = undone
+        return undone
 
-    def restore(host: Host) -> None:
+    async def restore(host: Host) -> None:
         """The saved last report, once, when there is no report yet."""
         if app.state.report is None and not app.state.restored:
             app.state.restored = True
-            app.state.report = LastReport(paths_of(host)).load(set(catalogue.checks))
+            loaded = await asyncio.to_thread(LastReport(paths_of(host)).load, set(catalogue.checks))
+            if app.state.report is None:
+                app.state.report = loaded
 
-    def refresh(host: Host, check_id: str, also: tuple[str, ...] = ()) -> dict:
+    async def refresh(host: Host, check_id: str, also: tuple[str, ...] = ()) -> dict:
         """After a fix or revert: the context again, this check (and `also`), and every check whose
         severity depends on a context key that changed (a fix can change the context, e.g. autologin).
-        Works the same on a report restored from the last run. The report is updated in place.
+        Works the same on a report restored from the last run. The report is updated in place, on the loop.
         Returns {"result": this check, "rechecked": {id: result}, "context": the new context}."""
         old = app.state.report
-        rep = Runner(catalogue, host).rescan([check_id, *also], old["context"] if old else None)
-        d = rep.to_dict()
+        context = copy.deepcopy(old["context"]) if old else None
+
+        def rescan():
+            rep = Runner(catalogue, host).rescan([check_id, *also], context)
+            return rep, rep.to_dict()
+        rep, d = await asyncio.to_thread(rescan)
         for key in rep.kept_context:                  # known before, not readable now: keep what was shown
             d["context"]["values"][key] = old["context"]["values"][key]
         if old is not None:
@@ -324,11 +427,8 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
         return body if isinstance(body, dict) else {}
 
     def auth(request: Request) -> None:
-        # compare_digest refuses text beyond ASCII (a TypeError, which would be a 500): such a header is just wrong
-        t = request.headers.get("x-token")
-        if t is not None and t.isascii() and hmac.compare_digest(t, token):
-            return
-        raise HTTPException(403, "bad token")
+        if not token_ok(request):                 # the guard has refused it already; kept on each route all the same
+            raise HTTPException(403, "bad token")
 
     @app.get("/")
     async def index(request: Request):
@@ -338,6 +438,11 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
             # its session storage, this origin's own), then it is forgotten
             if launch["token"] is not None and t.isascii() and hmac.compare_digest(t, launch["token"]):
                 launch["token"] = None
+                if on_launched is not None:             # the launcher file that carried it has done its work
+                    try:
+                        on_launched()
+                    except OSError:
+                        pass
                 page = (WEB_DIR / "index.html").read_text(encoding="utf-8")
                 page = page.replace("<body>", f'<body data-token="{html.escape(token)}">', 1)
                 return HTMLResponse(page, headers={"Cache-Control": "no-store"})
@@ -351,12 +456,21 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
     @app.get("/api/state", dependencies=[Depends(auth)])
     async def state():
         host = make_host()
-        await asyncio.to_thread(restore, host)
+        await restore(host)
         await asyncio.to_thread(undo_log(host).expire_backups)     # backups kept only for a while (known_hosts')
         if not app.state.trim_cleaned and not trim_running():
             from .tools import trimtest
             app.state.trim_cleaned = True
             await asyncio.to_thread(trimtest.leftovers, host)      # a test the app didn't finish (closed, crashed)
+
+        def gather() -> dict:                      # files read, the helper's checked: off the event loop
+            acc = Accepted(paths_of(host))
+            return {"helper_installed": installed_helper() is not None, "helper_stale": installed_helper_stale(),
+                    "accepted": acc.all(), "accepted_damaged": acc.damaged(host.display),   # said, never an empty list alone
+                    "last_scan": (Baseline(paths_of(host)).load() or {}).get("taken"),
+                    "presentation": presentation_on(host),
+                    "welcome": {"show": about.welcome_shown(paths_of(host).config_home), "links": about.LINKS}}
+        read = await asyncio.to_thread(gather)
         return {
             "version": __version__,
             "app": about.age(),                      # its version and build date, and whether this copy is getting old
@@ -370,16 +484,10 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
             "in_browser": on_quit is not None,      # only --browser passes on_quit: the page then says what that exposes
             "admin_active": admin.active(),
             "admin_idle_minutes": ADMIN_IDLE // 60,
-            "helper_installed": installed_helper() is not None,
-            "helper_stale": installed_helper_stale(),
             "dev": dev,
             "reads": about.READS, "never": about.NEVER,
-            "accepted": Accepted(paths_of(host)).all(),
-            "accepted_damaged": Accepted(paths_of(host)).damaged(host.display),    # said, never an empty list alone
-            "last_scan": (Baseline(paths_of(host)).load() or {}).get("taken"),
             "open_tool": pending_tool.pop("value", None),
-            "presentation": await asyncio.to_thread(presentation_on, host),
-            "welcome": {"show": about.welcome_shown(paths_of(host).config_home), "links": about.LINKS},
+            **read,
         }
 
     @app.post("/api/welcome", dependencies=[Depends(auth)])
@@ -429,11 +537,12 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
         async with scan_lock:
             await asyncio.to_thread(admin.drop)
             try:
-                r = await asyncio.to_thread(install_helper, bool(body.get("uninstall")))
+                with changing():
+                    r = await in_thread(install_helper, bool(body.get("uninstall")), name="helper-install")
             except (HelperUnavailable, HelperError) as e:
                 return JSONResponse({"error": str(e), "declined": isinstance(e, HelperDeclined)}, status_code=403)
-        return {"ok": True, **r, "helper_installed": installed_helper() is not None,
-                "helper_stale": installed_helper_stale()}
+        there = await asyncio.to_thread(lambda: (installed_helper() is not None, installed_helper_stale()))
+        return {"ok": True, **r, "helper_installed": there[0], "helper_stale": there[1]}
 
     @app.post("/api/admin/drop", dependencies=[Depends(auth)])
     async def drop_admin():
@@ -458,7 +567,7 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
             granted = {"requested": want_admin, "granted": False, "message": "", "dropped": False}
             if want_admin:
                 try:
-                    host.privileged = await asyncio.to_thread(admin.get, True)
+                    host.privileged = await in_thread(admin.get, True, name="admin-prompt")
                     granted["granted"] = True
                 except HelperUnavailable as e:
                     granted["message"] = str(e)
@@ -476,8 +585,8 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
                 if old.get("online"):
                     new["online"] = old["online"]
             app.state.report = new
-            await asyncio.to_thread(recheck_undone, host)
-            await asyncio.to_thread(persist, host)
+            await recheck_undone(host)
+            await persist(host)
             if host.privileged is not None and not admin.held() and not any(needs_root_to_fix(catalogue, dict(r, id=cid))
                                                        for cid, r in new["results"].items()):
                 await asyncio.to_thread(admin.drop)   # nothing to fix as root: don't keep root around
@@ -504,15 +613,19 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
         except OSError as e:                    # there but unreadable (its permissions): never written over
             return JSONResponse({"error": f"The list of findings you accepted couldn't be changed: {e.strerror or e}."},
                                 status_code=400)
-        undone = await asyncio.to_thread(recheck_undone, host)
-        await asyncio.to_thread(persist, host)
+        undone = await recheck_undone(host)
+        await persist(host)
         return {"accepted": data, "undone": undone}
 
-    def export_text(host: Host, what: str, fmt: str, redact: bool) -> str:
-        if what == "everything":
-            return report_mod.export_all(app.state.report, catalogue, undo_log(host).entries(),
-                                         Accepted(paths_of(host)).all(), fmt, host, redact)
-        return report_mod.export(app.state.report, catalogue, fmt, host, redact, Accepted(paths_of(host)).all())
+    async def export_text(host: Host, what: str, fmt: str, redact: bool) -> str:
+        report = report_copy()                  # a copy, taken on the loop: the thread reads it while the loop goes on
+
+        def build() -> str:
+            if what == "everything":
+                return report_mod.export_all(report, catalogue, undo_log(host).entries(),
+                                             Accepted(paths_of(host)).all(), fmt, host, redact)
+            return report_mod.export(report, catalogue, fmt, host, redact, Accepted(paths_of(host)).all())
+        return await asyncio.to_thread(build)
 
     @app.get("/api/report", dependencies=[Depends(auth)])
     async def export_report(request: Request):
@@ -521,7 +634,7 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
             return JSONResponse({"error": "Scan first."}, status_code=400)
         fmt = request.query_params.get("format", "text")
         redact = request.query_params.get("redact") in ("1", "true", "yes")
-        text = await asyncio.to_thread(export_text, make_host(), "report", fmt, redact)
+        text = await export_text(make_host(), "report", fmt, redact)
         return TextResponse(text, media_type="application/json" if fmt == "json" else "text/plain; charset=utf-8")
 
     @app.get("/api/export", dependencies=[Depends(auth)])
@@ -531,7 +644,7 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
         (?format=text|json, ?redact=1)."""
         fmt = request.query_params.get("format", "text")
         redact = request.query_params.get("redact") in ("1", "true", "yes")
-        text = await asyncio.to_thread(export_text, make_host(), "everything", fmt, redact)
+        text = await export_text(make_host(), "everything", fmt, redact)
         return TextResponse(text, media_type="application/json" if fmt == "json" else "text/plain; charset=utf-8")
 
     @app.post("/api/export/save", dependencies=[Depends(auth)])
@@ -555,7 +668,7 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
             chooser = pick or dialog(host)
             if chooser is None:
                 return {"unavailable": True}
-            chosen = await asyncio.to_thread(chooser, "folder", False, str(downloads(host)))
+            chosen = await in_thread(chooser, "folder", False, str(downloads(host)), name="file-chooser")
             if not chosen:
                 return {"cancelled": True}
             folder = chosen[0]
@@ -566,7 +679,7 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
                 raise PathRefused(f"{host.display(dest)} isn't a folder.")
         except PathRefused as e:
             return JSONResponse({"error": str(e)}, status_code=400)
-        text = await asyncio.to_thread(export_text, host, what, fmt, bool(body.get("redact")))
+        text = await export_text(host, what, fmt, bool(body.get("redact")))
         try:
             name, mode = await asyncio.to_thread(report_mod.save, real, report_mod.file_name(what, fmt), text)
         except OSError as e:
@@ -588,9 +701,9 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
         from .network import carrying_vpn_links
 
         host = make_host()
-        settings, error = online_settings(host)
+        settings, error = await asyncio.to_thread(online_settings, host)
         impl = online_checks()
-        vpn = bool(carrying_vpn_links(host))
+        vpn = bool(await asyncio.to_thread(carrying_vpn_links, host))
         tests = []
         for s in catalogue:
             if s.scope.value != "online":
@@ -611,12 +724,6 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
     # They take a while (the traffic test watches for a minute), so they run as a job the page
     # polls, and the rest of the app stays usable: they don't hold the scan lock. Results are
     # merged into the report as each test finishes.
-
-    def job_view(job: dict | None) -> dict | None:
-        if job is None:
-            return None
-        return {**{k: v for k, v in job.items() if k not in ("cancel", "abort")}, "stopping": job["cancel"],
-                "now": time.time()}
 
     def online_admin() -> bool:
         """Online tests running with administrator access, or still taking it up."""
@@ -645,16 +752,20 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
             res = rep["results"].get(target)
             if res is not None:
                 titles = {n["title"] for n in res["notes"]}
-                res["notes"] += [n for n in notes if n["title"] not in titles]
+                res["notes"] = res["notes"] + [n for n in notes if n["title"] not in titles]
 
     async def run_online_job(job: dict, settings: dict, want_admin: bool) -> None:
         loop = asyncio.get_running_loop()
+        host = make_host()
         try:
             host = await asyncio.to_thread(host_now)
             if want_admin and host.privileged is None:
                 job["state"] = "asking"
                 problem = await with_root(host)
                 job["admin_message"] = (problem or "").replace(" Nothing was changed.", "")
+            if job["cancel"]:                              # told to stop while access was asked for (quitting)
+                job["state"] = "stopped"
+                return
             job["privileged"] = host.privileged is not None
             job["state"], job["started"] = "running", time.time()
 
@@ -664,14 +775,18 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
             def on_result(cid, result, states, extra) -> None:
                 d = result.to_dict()
                 notes = {k: [n.to_dict() for n in v] for k, v in extra.items()}
-                loop.call_soon_threadsafe(merge_online, job, cid, d, states, notes)
+                try:
+                    loop.call_soon_threadsafe(merge_online, job, cid, d, states, notes)
+                except RuntimeError:                       # the loop has closed: the app has quit
+                    pass
 
             runner = Runner(catalogue, host, net=make_net(), online=settings)
             # administrator access is held while the tests use it: the traffic watch's requests go to the helper given
             # here, never through get(), so the idle end, a scan finding nothing to fix as root or a watch of an app
             # ending closed it in the middle of the watch, and the watch was lost
             with admin.hold() if host.privileged is not None else contextlib.nullcontext():
-                await asyncio.to_thread(runner.scan_online, job["ids"], progress, lambda: job["cancel"], on_result)
+                await in_thread(runner.scan_online, job["ids"], progress, lambda: job["cancel"], on_result,
+                                name="online-tests")
             await asyncio.sleep(0)                         # let the last merge run first
             if not job["abort"]:
                 job["state"] = "stopped" if job["cancel"] and job["done"] < job["total"] else "done"
@@ -683,7 +798,7 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
             if not job["abort"]:                           # "stop now" already ended it
                 job["current"], job["finished"] = None, time.time()
                 mark_online(job)
-                await asyncio.to_thread(persist, host)
+                await persist(host)
 
     @app.post("/api/online/run", dependencies=[Depends(auth)])
     async def online_run(request: Request):
@@ -704,19 +819,20 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
         if job is not None and job.get("winding_down"):
             return JSONResponse({"error": "The test you stopped is still finishing; try again in a few seconds."},
                                 status_code=409)
-        settings, error = online_settings(make_host())
+        settings, error = await asyncio.to_thread(online_settings, make_host())
         if error:
             return JSONResponse({"error": error}, status_code=400)
         secs = body.get("observe_seconds")
         if isinstance(secs, int) and not isinstance(secs, bool) and 5 <= secs <= 300:
             settings["observe_seconds"] = secs
-        job = app.state.online_job = {
-            "id": uuid.uuid4().hex, "state": "starting", "ids": ids, "total": len(ids), "done": 0,
-            "titles": {i: catalogue[i].title for i in ids}, "current": None, "created": time.time(),
-            "started": None, "finished": None, "observe_seconds": settings["observe_seconds"], "results": {},
-            "admin_message": "", "error": "", "privileged": False, "cancel": False, "abort": False,
-            "winding_down": True, "cancelled": None}
-        app.state.online_task = asyncio.create_task(run_online_job(job, settings, bool(body.get("admin"))))
+        job = Job("online", "starting", ids=ids, total=len(ids), done=0, titles={i: catalogue[i].title for i in ids},
+                  current=None, created=time.time(), started=None, finished=None,
+                  observe_seconds=settings["observe_seconds"], results={}, admin_message="", error="",
+                  privileged=False, abort=False, winding_down=True, cancelled=None)
+        try:
+            jobs.start(job, lambda j: run_online_job(j, settings, bool(body.get("admin"))))
+        except Quitting:
+            return quitting()
         return {"job": job_view(job)}
 
     @app.get("/api/online/status", dependencies=[Depends(auth)])
@@ -757,7 +873,8 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
         async with scan_lock:
             host = await asyncio.to_thread(host_now)
             # an online test's guide is built from the result the user saw: the test isn't run again
-            stored = app.state.report["results"].get(check_id) if online and app.state.report is not None else None
+            stored = copy.deepcopy(app.state.report["results"].get(check_id)) \
+                if online and app.state.report is not None else None
             result, plan = await asyncio.to_thread(Runner(catalogue, host).plan_fix, check_id, params, stored)
             if plan is None and result.needs_admin and host.privileged is None:
                 # administrator access ended since the scan found it: the check can only be read again with it
@@ -799,14 +916,15 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
                     plans[plan.id] = stored
                     return JSONResponse({"error": problem, "declined": True}, status_code=403)
             log = undo_log(host)
-            res = await asyncio.to_thread(apply_plan, plan, host, log, bool(body.get("confirm_irreversible")))
-            # with the checks the plan deals with too (br.start_script's makes br.shader_cache's fix possible), as a
-            # revert and the Easy fixes do
-            again = await asyncio.to_thread(refresh, host, plan.check_id, tuple(plan.also))
-            if res.ok and res.entry_id:               # what the check said right after: undone later if it comes back
-                await asyncio.to_thread(log.set_outcome, res.entry_id, again.get("result"))
-            undone = await asyncio.to_thread(recheck_undone, host)
-            await asyncio.to_thread(persist, host)
+            with changing():
+                res = await asyncio.to_thread(apply_plan, plan, host, log, bool(body.get("confirm_irreversible")))
+                # with the checks the plan deals with too (br.start_script's makes br.shader_cache's fix possible), as a
+                # revert and the Easy fixes do
+                again = await refresh(host, plan.check_id, tuple(plan.also))
+                if res.ok and res.entry_id:           # what the check said right after: undone later if it comes back
+                    await asyncio.to_thread(log.set_outcome, res.entry_id, again.get("result"))
+            undone = await recheck_undone(host)
+            await persist(host)
             # the History entry as made: what each step did, exactly (a failed attempt's too, when it got as far
             # as changing something), for the page to show right away
             entry = await asyncio.to_thread(lambda: UndoLog.summary(log.get(res.entry_id), host)) if res.entry_id else None
@@ -884,25 +1002,30 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
         async with scan_lock:
             declined = await with_root(host) if any(p.needs_root for p in todo) else None
             log, out = undo_log(host), []
-            for plan in todo:
-                if plan.needs_root and declined:
-                    out.append({"check_id": plan.check_id, "title": plan.title, "ok": False, "error": declined,
-                                "declined": True})
-                    continue
-                res = await asyncio.to_thread(apply_plan, plan, host, log, bool(body.get("confirm_irreversible")))
-                out.append({"check_id": plan.check_id, "title": plan.title, "ok": res.ok, "error": res.error,
-                            "entry_id": res.entry_id, "rolled_back": res.rolled_back})
-            # with the checks a plan also deals with (a change two checks share, applied once as the first one's)
-            checked = list(dict.fromkeys(cid for p in todo for cid in (p.check_id, *p.also)))
-            again = await asyncio.to_thread(refresh, host, checked[0], tuple(checked[1:]))
-            for r in out:                             # what the check said right after: undone later if it comes back
-                if r.get("entry_id") and r["ok"]:
-                    await asyncio.to_thread(log.set_outcome, r["entry_id"], again["rechecked"].get(r["check_id"]))
+            with changing():
+                for plan in todo:
+                    if plan.needs_root and declined:
+                        out.append({"check_id": plan.check_id, "title": plan.title, "ok": False, "error": declined,
+                                    "declined": True})
+                        continue
+                    if jobs.quitting:                 # the rest isn't started: each plan is its own, whole
+                        out.append({"check_id": plan.check_id, "title": plan.title, "ok": False,
+                                    "error": "Not applied: DA Privacy Kit is quitting."})
+                        continue
+                    res = await asyncio.to_thread(apply_plan, plan, host, log, bool(body.get("confirm_irreversible")))
+                    out.append({"check_id": plan.check_id, "title": plan.title, "ok": res.ok, "error": res.error,
+                                "entry_id": res.entry_id, "rolled_back": res.rolled_back})
+                # with the checks a plan also deals with (a change two checks share, applied once as the first one's)
+                checked = list(dict.fromkeys(cid for p in todo for cid in (p.check_id, *p.also)))
+                again = await refresh(host, checked[0], tuple(checked[1:]))
+                for r in out:                         # what the check said right after: undone later if it comes back
+                    if r.get("entry_id") and r["ok"]:
+                        await asyncio.to_thread(log.set_outcome, r["entry_id"], again["rechecked"].get(r["check_id"]))
             for r in out:                             # each History entry as made: what every step did, exactly
                 r["entry"] = await asyncio.to_thread(lambda: UndoLog.summary(log.get(r["entry_id"]), host)) \
                     if r.get("entry_id") else None
-            undone = await asyncio.to_thread(recheck_undone, host)
-            await asyncio.to_thread(persist, host)
+            undone = await recheck_undone(host)
+            await persist(host)
         return {"ok": all(r["ok"] for r in out), "results": out, "rechecked": again["rechecked"],
                 "context": again["context"], "undone": undone, "admin_active": admin.active()}
 
@@ -923,10 +1046,10 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
         when they expire: the step can then no longer be reverted."""
         host = host_now()
         log = undo_log(host)
-        if log.get(entry_id) is None:
+        if await asyncio.to_thread(log.get, entry_id) is None:
             return JSONResponse({"error": "No such fix in the history."}, status_code=404)
         gone = await asyncio.to_thread(log.drop_backups, entry_id)
-        return {"dropped": gone, "entry": UndoLog.summary(log.get(entry_id), host)}
+        return {"dropped": gone, "entry": await asyncio.to_thread(lambda: UndoLog.summary(log.get(entry_id), host))}
 
     @app.post("/api/undo/{entry_id}/revert", dependencies=[Depends(auth)])
     async def revert(entry_id: str, request: Request):
@@ -936,7 +1059,7 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
         async with scan_lock:
             host = await asyncio.to_thread(host_now)
             log = undo_log(host)
-            entry = log.get(entry_id)
+            entry = await asyncio.to_thread(log.get, entry_id)
             if entry is None:
                 return JSONResponse({"error": "No such fix in the history."}, status_code=404)
             if UndoLog.needs_root(entry):
@@ -944,13 +1067,14 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
                 if problem:
                     return JSONResponse({"error": problem.replace("changed", "reverted"), "declined": True},
                                         status_code=403)
-            results = await asyncio.to_thread(revert_entry, entry, host, log, bool(body.get("force")))
-            again = await asyncio.to_thread(refresh, host, entry["check_id"], tuple(entry.get("also") or ()))
-            undone = await asyncio.to_thread(recheck_undone, host)
-            await asyncio.to_thread(persist, host)
+            with changing():
+                results = await asyncio.to_thread(revert_entry, entry, host, log, bool(body.get("force")))
+                again = await refresh(host, entry["check_id"], tuple(entry.get("also") or ()))
+            undone = await recheck_undone(host)
+            await persist(host)
+            summary = await asyncio.to_thread(lambda: UndoLog.summary(log.get(entry_id), host))
         return {"ok": all(r.ok for r in results), "conflict": any(r.conflict for r in results),
-                "messages": [r.message for r in results], "entry": UndoLog.summary(log.get(entry_id), host),
-                "undone": undone, **again}
+                "messages": [r.message for r in results], "entry": summary, "undone": undone, **again}
 
     @app.post("/api/undo/forget", dependencies=[Depends(auth)])
     async def forget(request: Request):
@@ -961,13 +1085,15 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
         host = make_host()
         log = undo_log(host)
         everything = bool(body.get("everything"))
-        gone = await asyncio.to_thread(log.forget, everything)
-        if everything:
-            await asyncio.to_thread(forget_scans, paths_of(host))
-        undone = await asyncio.to_thread(recheck_undone, host)
+        with changing():
+            gone = await asyncio.to_thread(log.forget, everything)
+            if everything:
+                await asyncio.to_thread(forget_scans, paths_of(host))
+        undone = await recheck_undone(host)
         # with the host, as GET /api/undo: History draws the entries left from this answer, Wi-Fi connections by name
         entries = await asyncio.to_thread(lambda: [UndoLog.summary(e, host) for e in reversed(log.entries())])
-        return {"forgotten": gone, "entries": entries, "undone": undone, "damaged": log.damaged(host)}
+        return {"forgotten": gone, "entries": entries, "undone": undone,
+                "damaged": await asyncio.to_thread(log.damaged, host)}
 
     # ------------------------------------------------------------ tools (docs/TECHNICAL.md, Tools)
     # Started by the user on files they chose; nothing is kept and nothing leaves the machine.
@@ -1024,8 +1150,8 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
         if chooser is None:
             return {"unavailable": True, "paths": []}
         kind = "folder" if body.get("folder") else "open"
-        paths = await asyncio.to_thread(chooser, kind, bool(body.get("multiple")) and kind == "open",
-                                        str(downloads(host)))
+        paths = await in_thread(chooser, kind, bool(body.get("multiple")) and kind == "open", str(downloads(host)),
+                                name="file-chooser")
         return {"paths": list(paths or [])}
 
     @app.post("/api/tools/verify", dependencies=[Depends(auth)])
@@ -1067,11 +1193,9 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
     # by the page; one at a time. Its result stays for as long as the app runs, never saved.
 
     def meta_running() -> bool:
-        job = app.state.meta_job
-        return job is not None and job["state"] == "running"
+        return jobs.running("meta")
 
-    def meta_view(job: dict | None) -> dict | None:
-        return None if job is None else {k: v for k, v in job.items() if k != "cancel"}
+    meta_view = job_view
 
     def meta_roots(host: Host, body: dict) -> list[Path]:
         from .tools.pick import checked
@@ -1107,7 +1231,7 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
                     job["result"] = e.run.to_dict(host)
                 raise
         try:
-            job["result"] = await asyncio.to_thread(work)
+            job["result"] = await in_thread(work, name="metadata")
             job["state"] = "done"
         except metadata.Stopped:
             job["state"] = "stopped"
@@ -1133,12 +1257,14 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
             if not isinstance(files, list) or not files:
                 return JSONResponse({"error": "Tick at least one file to clean."}, status_code=400)
             only = {f for f in files if isinstance(f, str)}
-        job = app.state.meta_job = {"id": uuid.uuid4().hex, "kind": kind, "state": "running", "phase": "Finding the files",
-                                    "done": 0, "total": 0, "current": "", "selection": None, "result": None,
-                                    "error": "", "cancel": False, "lightweight": bool(body.get("lightweight")),
-                                    "paths": [str(r) for r in roots], "hidden": body.get("hidden") is True}
-        app.state.meta_task = asyncio.create_task(run_meta_job(job, roots, body.get("hidden") is True, only,
-                                                               bool(body.get("lightweight"))))
+        job = Job("meta", "running", kind=kind, phase="Finding the files", done=0, total=0, current="", selection=None,
+                  result=None, error="", lightweight=bool(body.get("lightweight")), paths=[str(r) for r in roots],
+                  hidden=body.get("hidden") is True)
+        try:
+            jobs.start(job, lambda j: run_meta_job(j, roots, body.get("hidden") is True, only,
+                                                   bool(body.get("lightweight"))))
+        except Quitting:
+            return quitting()
         return {"job": meta_view(job)}
 
     @app.post("/api/tools/metadata/read", dependencies=[Depends(auth)])
@@ -1216,8 +1342,9 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
             if problem:
                 return JSONResponse({"error": problem.replace("changed", "opened"), "declined": True}, status_code=403)
             try:
-                await asyncio.to_thread(host.privileged.call, "ramdisk_open",
-                                        {"size_mb": size, "noexec": bool(noexec), "name": name})
+                with changing():
+                    await asyncio.to_thread(host.privileged.call, "ramdisk_open",
+                                            {"size_mb": size, "noexec": bool(noexec), "name": name})
             except HelperError as e:
                 return JSONResponse({"error": f"It couldn't be opened: {e}"}, status_code=400)
             if name == ramdisk.BROWSER:                 # this copy opened it: this copy closes it when it quits
@@ -1273,11 +1400,12 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
                                          f"inside ~/{name}. {'Its' if one else 'Their'} files aren't the RAM disk's to "
                                          f"overwrite, and ~/{name} can't be unmounted around {'it' if one else 'them'}.",
                                          "mounted": inside}, status_code=409)
-                if name == ramdisk.BROWSER:             # its TempOutboxes stopped meanwhile: their mat2 isn't a user
-                    users, w = await asyncio.to_thread(B.users_or_wipe, host, st.path)
-                else:
-                    users = await asyncio.to_thread(B.disk_users, host, st.path)
-                    w = None if users else await asyncio.to_thread(ramdisk.wipe, st.path)
+                with changing():                        # the overwrite isn't cut short by quitting
+                    if name == ramdisk.BROWSER:         # its TempOutboxes stopped meanwhile: their mat2 isn't a user
+                        users, w = await in_thread(B.users_or_wipe, host, st.path, name="ramdisk-wipe")
+                    else:
+                        users = await asyncio.to_thread(B.disk_users, host, st.path)
+                        w = None if users else await in_thread(ramdisk.wipe, st.path, name="ramdisk-wipe")
                 if users:
                     return JSONResponse({"error": f"Close {', '.join(users)} first: "
                                          f"{'it is' if len(users) == 1 else 'they are'} using files in ~/{name}.",
@@ -1289,7 +1417,8 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
                         " Its files have been overwritten and deleted already." if wiped else ""), "declined": True,
                         "wiped": wiped}, status_code=403)
                 try:
-                    await asyncio.to_thread(host.privileged.call, "ramdisk_close", {"name": name})
+                    with changing():
+                        await asyncio.to_thread(host.privileged.call, "ramdisk_close", {"name": name})
                 except HelperError as e:
                     return JSONResponse({"error": f"It couldn't be closed: {e}", "wiped": wiped}, status_code=400)
                 owner.release(host, name)
@@ -1306,15 +1435,10 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
     # when the user starts it, after the page has named the hosts; verifying and unpacking follow in the
     # same background job, which the page follows. Starting the browser is quick.
 
-    def browser_view(job: dict | None) -> dict | None:
-        if job is None:
-            return None
-        return {**{k: v for k, v in job.items() if k not in ("cancel", "archive")}, "stopping": job["cancel"],
-                "now": time.time()}
+    browser_view = job_view
 
     def browser_busy() -> bool:
-        j = app.state.browser_job
-        return j is not None and j["state"] == "running"
+        return jobs.running("browser")
 
     async def run_browser_job(job: dict, b, archive: Path | None, held: int | None = None) -> None:
         from .tools import browser as B, kept, owner
@@ -1322,26 +1446,25 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
         state, error, unchecked = "failed", "", ""
         try:
             if archive is None:
-                archive = await asyncio.to_thread(B.download, host, make_net(), b, job, lambda: job["cancel"])
+                archive = await in_thread(B.download, host, make_net(), b, job, lambda: job["cancel"])
             else:   # the user's own archive, or the kept copy: a copy of it in the RAM disk, only the latest version
-                archive = await asyncio.to_thread(B.copy_in, host, archive, job)
+                archive = await in_thread(B.copy_in, host, archive, job)
                 job.update(phase=f"Asking {B.index_host(b)} which version is the latest", done=0, total=0)
                 try:
-                    job["latest"] = await asyncio.to_thread(B.check_latest, make_net(), b, archive.name,
-                                                            job["source"] == "kept")
+                    job["latest"] = await in_thread(B.check_latest, make_net(), b, archive.name, job["source"] == "kept")
                 except B.Unreachable as e:              # blocked here? decided once the signature is verified
                     unchecked = str(e)
                 except B.Outdated as e:                 # the page offers the download of the new one
                     job["newer"] = e.latest
                     raise
             job.update(phase=f"Checking {archive.name}'s signature", done=0, total=0)
-            job["verdict"] = await asyncio.to_thread(B.verified, host, archive)
+            job["verdict"] = await in_thread(B.verified, host, archive)
             if unchecked:
                 job["warning"] = await asyncio.to_thread(B.accept_unchecked, archive, b, unchecked,
                                                          job["verdict"]["signed"])
             if job["cancel"]:
                 raise B.Stopped("Stopped before unpacking: nothing was unpacked.")
-            target = await asyncio.to_thread(B.unpack, host, archive, b, job)
+            target = await in_thread(B.unpack, host, archive, b, job)
             security = await asyncio.to_thread(B.preset_security, host, b, target)
             vpn_preset = await asyncio.to_thread(B.preset_vpn, host, b, target, archive) if job["vpn"] else None
             job["release"] = await asyncio.to_thread(B.record_release, host, b, archive, job["source"], security,
@@ -1351,7 +1474,7 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
             if job.get("keep"):                         # ticked: from the verified file, verified again where it is kept
                 job.update(phase="Keeping the download for next time")
                 try:
-                    k = await asyncio.to_thread(kept.keep, host, b, archive, B.verified)
+                    k = await in_thread(kept.keep, host, b, archive, B.verified)
                     job["kept"] = {"version": k["version"], "folder": host.display(kept.folder(host))}
                 except (kept.KeepError, B.BrowserError, OSError) as e:
                     why = (e.strerror or e) if isinstance(e, OSError) else e
@@ -1445,13 +1568,16 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
         if held is None:
             return JSONResponse({"error": f"{b.name} is being set up or started in another window of this app."},
                                 status_code=409)
-        job = app.state.browser_job = {"id": uuid.uuid4().hex, "state": "running", "browser": b.id, "name": b.name,
-                                       "source": source, "hosts": [B.index_host(b)] if archive else list(b.hosts),
-                                       "phase": "Starting", "done": 0, "total": 0, "version": "", "verdict": None,
-                                       "error": "", "cancel": False, "created": time.time(), "finished": None,
-                                       "vpn": b.id == "mullvad" and body.get("vpn", True) is not False,
-                                       "keep": source == "download" and body.get("keep") is True}
-        app.state.browser_task = asyncio.create_task(run_browser_job(job, b, archive, held))
+        job = Job("browser", "running", browser=b.id, name=b.name, source=source,
+                  hosts=[B.index_host(b)] if archive else list(b.hosts), phase="Starting", done=0, total=0, version="",
+                  verdict=None, error="", created=time.time(), finished=None,
+                  vpn=b.id == "mullvad" and body.get("vpn", True) is not False,
+                  keep=source == "download" and body.get("keep") is True)
+        try:
+            jobs.start(job, lambda j: run_browser_job(j, b, archive, held))
+        except Quitting:
+            owner.let_go(held)
+            return quitting()
         return {"job": browser_view(job)}
 
     @app.post("/api/tools/browser/stop", dependencies=[Depends(auth)])
@@ -1539,6 +1665,8 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
             return JSONResponse({"error": "Choose Tor Browser or Mullvad Browser."}, status_code=400)
         expect = body.get("expect") if isinstance(body.get("expect"), dict) else None
         expect = {k: expect[k] for k in B.EXPECTED if k in expect} if expect else None
+        if jobs.quitting:
+            return quitting()
         try:
             how = await asyncio.to_thread(B.start, host, b, spawn_browser, body.get("sandbox") is not False,
                                           body.get("sound") is True, make_net, body.get("nested") is True, expect,
@@ -1567,7 +1695,8 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
                 return JSONResponse({"error": problem.replace("changed", "turned off" if body["off"] else "turned on"),
                                      "declined": True}, status_code=403)
             try:
-                r = await asyncio.to_thread(host.privileged.call, "swap_off" if body["off"] else "swap_on", {})
+                with changing():
+                    r = await asyncio.to_thread(host.privileged.call, "swap_off" if body["off"] else "swap_on", {})
             except HelperError as e:
                 return JSONResponse({"error": f"Swap couldn't be turned {'off' if body['off'] else 'on'}: {e}"},
                                     status_code=400)
@@ -1720,8 +1849,7 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
     # the TRIM test: a background job (it reads the whole disk two or three times), followed by the page
 
     def trim_running() -> bool:
-        jobs = (app.state.trim_job, app.state.names_job, app.state.clean_job)
-        return any(j is not None and j["state"] in ("asking", "running") for j in jobs)
+        return jobs.running("trim", "names", "clean")
 
     # the TRIM test and Deleted file names don't start while an app is watched, nor the watch while they run: the
     # helper does one call at a time, and a disk read for minutes held the watch's polling (and its End) behind it
@@ -1730,10 +1858,7 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
                                       "need the administrator helper, which does one thing at a time."},
                             status_code=409)
 
-    def trim_view(job: dict | None) -> dict | None:
-        if job is None:
-            return None
-        return {**{k: v for k, v in job.items() if k != "cancel"}, "stopping": job["cancel"], "now": time.time()}
+    trim_view = job_view
 
     async def run_trim_job(job: dict, mount: str) -> None:
         from .tools import trimtest
@@ -1743,9 +1868,12 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
             if problem:
                 job["state"], job["error"] = "failed", problem.replace("Nothing was changed.", "The test didn't start.")
                 return
+            if job["cancel"]:                          # stopped while access was asked for (quitting)
+                raise trimtest.Stopped("Stopped before it started: nothing was written.")
             job["state"], job["started"] = "running", time.time()
             with admin.hold():
-                job["result"] = await asyncio.to_thread(trimtest.run, host, mount, lambda: admin.get(prompt=False), job)
+                job["result"] = await in_thread(trimtest.run, host, mount, lambda: admin.get(prompt=False), job,
+                                                name="trim-test")
             job["state"] = "done"
         except trimtest.Stopped as e:
             job["state"], job["error"] = "stopped", str(e)
@@ -1783,11 +1911,12 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
         mount = body.get("mount")
         if not isinstance(mount, str):
             return JSONResponse({"error": "Choose a filesystem to test."}, status_code=400)
-        job = app.state.trim_job = {"id": uuid.uuid4().hex, "state": "asking", "mount": mount, "phase": "Starting",
-                                    "scan": None, "done": 0, "total": 0, "phase_started": time.time(), "steps": [],
-                                    "created": time.time(), "started": None, "finished": None, "result": None,
-                                    "error": "", "cancel": False}
-        app.state.trim_task = asyncio.create_task(run_trim_job(job, mount))
+        job = Job("trim", "asking", mount=mount, phase="Starting", scan=None, done=0, total=0, phase_started=time.time(),
+                  steps=[], created=time.time(), started=None, finished=None, result=None, error="")
+        try:
+            jobs.start(job, lambda j: run_trim_job(j, mount))
+        except Quitting:
+            return quitting()
         return {"job": trim_view(job)}
 
     @app.post("/api/tools/trim/stop", dependencies=[Depends(auth)])
@@ -1839,9 +1968,12 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
                     h = admin.get(prompt=False)
                     if h is None:
                         raise names.Stopped("Administrator access ended, so it stopped.")
-                    job["trimmed"] = (await asyncio.to_thread(h.call, "names_fstrim", {"mount": mount}, 900)).get("trimmed")
-                job["result"] = await asyncio.to_thread(names.scan, host, mount, lambda: admin.get(prompt=False), job,
-                                                        trim_passed(mount))
+                    job["trimmed"] = (await in_thread(h.call, "names_fstrim", {"mount": mount}, 900,
+                                                      name="names-trim")).get("trimmed")
+                if job["cancel"]:
+                    raise names.Stopped("Stopped: nothing was listed.")
+                job["result"] = await in_thread(names.scan, host, mount, lambda: admin.get(prompt=False), job,
+                                                trim_passed(mount), name="names")
             job["state"] = "done"
         except names.Stopped as e:
             job["state"], job["error"] = "stopped", str(e)
@@ -1876,10 +2008,12 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
             return JSONResponse({"error": "The TRIM test or another listing is still running."}, status_code=409)
         if keeps_running():
             return watching()
-        job = app.state.names_job = {"state": "asking", "phase": "Starting", "done": 0, "total": 0, "unit": "",
-                                     "phase_started": time.time(), "result": None, "error": "", "cancel": False,
-                                     "mount": mount, "trimmed": None}
-        app.state.names_task = asyncio.create_task(run_names_job(job, mount, body.get("trim_first") is True))
+        job = Job("names", "asking", phase="Starting", done=0, total=0, unit="", phase_started=time.time(), result=None,
+                  error="", mount=mount, trimmed=None)
+        try:
+            jobs.start(job, lambda j: run_names_job(j, mount, body.get("trim_first") is True))
+        except Quitting:
+            return quitting()
         return {"job": trim_view(job)}
 
     @app.get("/api/tools/names/job", dependencies=[Depends(auth)])
@@ -1929,9 +2063,11 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
                 job["state"], job["error"] = "failed", problem
                 return
             job["state"] = "running"
+            if job["cancel"]:
+                raise names.Stopped("Stopped before it started: nothing was changed.")
             with admin.hold():
-                job["result"] = await asyncio.to_thread(rebuild.run, host, mount, rels, lambda: admin.get(prompt=False),
-                                                        job, again)
+                job["result"] = await in_thread(rebuild.run, host, mount, rels, lambda: admin.get(prompt=False), job,
+                                                again, name="names-clean")
             job["state"] = "done"
         except names.Stopped as e:
             job["state"], job["error"] = "stopped", str(e)
@@ -1964,9 +2100,11 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
             return JSONResponse({"error": "The TRIM test or another listing is still running."}, status_code=409)
         if keeps_running():
             return watching()
-        job = app.state.clean_job = {"state": "asking", "phase": "Starting", "steps": [], "result": None, "error": "",
-                                     "cancel": False, "mount": mount, "started": time.time()}
-        app.state.clean_task = asyncio.create_task(run_clean_job(job, mount, rels, again))
+        job = Job("clean", "asking", phase="Starting", steps=[], result=None, error="", mount=mount, started=time.time())
+        try:
+            jobs.start(job, lambda j: run_clean_job(j, mount, rels, again))
+        except Quitting:
+            return quitting()
         return {"job": trim_view(job)}
 
     @app.get("/api/tools/names/clean", dependencies=[Depends(auth)])
@@ -1987,8 +2125,8 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
             return JSONResponse({"error": "The TRIM test or another listing is still running."}, status_code=409)
         try:
             with admin.hold():
-                return {"result": await asyncio.to_thread(rebuild.recheck, make_host(), mount, rels,
-                                                          lambda: admin.get(prompt=False))}
+                return {"result": await in_thread(rebuild.recheck, make_host(), mount, rels,
+                                                  lambda: admin.get(prompt=False), name="names-check")}
         except (names.Stopped, rebuild.Refused) as e:
             return JSONResponse({"error": str(e)}, status_code=409)
         except HelperError as e:
@@ -2003,7 +2141,8 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
             return JSONResponse({"error": "The TRIM test or another listing is still running."}, status_code=409)
         try:
             with admin.hold():
-                return await asyncio.to_thread(call, lambda: admin.get(prompt=False) if admin.active() else None)
+                return await in_thread(call, lambda: admin.get(prompt=False) if admin.active() else None,
+                                       name="names-listing")
         except names.Stopped as e:
             return JSONResponse({"error": str(e)}, status_code=409)
         except HelperError as e:
@@ -2039,13 +2178,9 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
     keeps_starting = asyncio.Lock()
 
     def keeps_running() -> bool:
-        job = app.state.keeps_job
-        return job is not None and job["state"] in ("asking", "running", "ending")
+        return jobs.running("keeps")
 
-    def keeps_view(job: dict | None) -> dict | None:
-        if job is None:
-            return None
-        return {**{k: v for k, v in job.items() if k != "cancel"}, "stopping": job["cancel"], "now": time.time()}
+    keeps_view = job_view
 
     async def run_keeps_job(job: dict, entry) -> None:
         from .tools import appwatch
@@ -2118,7 +2253,7 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
                         began = None
                         raise appwatch.WatchError("Administrator access ended, so the watch ended with it. "
                                                   "Nothing of what it saw is left.")
-                    raw = await asyncio.to_thread(h.call, "watch_end", {}, 180)
+                    raw = await in_thread(h.call, "watch_end", {}, 180, name="watch-end")
                     watched, began = began, None
                 finally:
                     if began is not None:               # it failed on the way: the watch doesn't stay on
@@ -2128,7 +2263,7 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
                                 await asyncio.to_thread(h.call, "watch_end", {}, 30)
                         except Exception:  # noqa: BLE001 - it ends with the helper anyway
                             pass
-            job["result"] = await asyncio.to_thread(appwatch.report, host, entry, raw, watched, before)
+            job["result"] = await in_thread(appwatch.report, host, entry, raw, watched, before, name="watch-report")
             job["state"] = "done"
         except appwatch.WatchError as e:
             job["state"], job["error"] = "failed", str(e)
@@ -2193,12 +2328,13 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
             if await asyncio.to_thread(appwatch.running, host, entry):
                 return JSONResponse({"error": f"Close {entry.name} first: started while it runs, it would only hand "
                                               "over to the copy that is open, which isn't watched."}, status_code=409)
-            job = app.state.keeps_job = {"id": uuid.uuid4().hex, "state": "asking", "app": entry.name,
-                                         "started": None, "finished": None, "counts": None, "alive": None,
-                                         "closed": False, "absent": False, "quiet": False, "watched": [],
-                                         "not_watched": [], "result": None, "error": "", "cancel": False,
-                                         "away": None, "ends_at": None, "ended_itself": ""}
-            app.state.keeps_task = asyncio.create_task(run_keeps_job(job, entry))
+            job = Job("keeps", "asking", app=entry.name, started=None, finished=None, counts=None, alive=None,
+                      closed=False, absent=False, quiet=False, watched=[], not_watched=[], result=None, error="",
+                      away=None, ends_at=None, ended_itself="")
+            try:
+                jobs.start(job, lambda j: run_keeps_job(j, entry))
+            except Quitting:
+                return quitting()
         return {"job": keeps_view(job)}
 
     @app.post("/api/tools/keeps/stop", dependencies=[Depends(auth)])
@@ -2262,10 +2398,10 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
                     entry = await asyncio.to_thread(menu.app, host, body.get("app"))
                     if entry is None:
                         return JSONResponse({"error": "Choose an app from the list."}, status_code=400)
-                    app.state.trial = await asyncio.to_thread(trial.prepare_app, host, entry, where)
+                    app.state.trial = await in_thread(trial.prepare_app, host, entry, where, name="trial-prepare")
                 else:
                     path = tool_paths(host, body.get("path"))[0]
-                    app.state.trial = await asyncio.to_thread(trial.prepare_file, host, path, where)
+                    app.state.trial = await in_thread(trial.prepare_file, host, path, where, name="trial-prepare")
             except (PathRefused, ValueError) as e:
                 return trial_error(e)
             except subprocess.TimeoutExpired:
@@ -2285,6 +2421,8 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
             t = app.state.trial
             if t is None:
                 return JSONResponse({"error": "Choose what to try first."}, status_code=400)
+            if jobs.quitting:
+                return quitting()
             try:
                 if t.state == "ready":
                     await asyncio.to_thread(trial.choose, t, body.get("program") or "", str(body.get("args") or ""))
@@ -2326,7 +2464,7 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
     async def tools_trial_discard():
         """Ends it if it runs and removes its folder (overwritten first when it is in memory)."""
         async with trial_lock:
-            await asyncio.to_thread(discard_trial)
+            await in_thread(discard_trial, name="trial-discard")      # overwriting gigabytes in memory takes a while
         return {"trial": None}
 
     # Boxes (the catalogue's app.boxes): set up through the guide, reverted from History. Here: the list with each
@@ -2357,13 +2495,18 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
         from .tools import box, integration
         from .hostenv import host_env
         host = make_host()
-        try:
-            b = box_of(host, await body_of(request))
+        body = await body_of(request)
+
+        def look():
+            b = box_of(host, body)
             why = box.problem(host, b)
             if why:
                 raise ValueError(f"{b.name}'s Box can't start: {why}.")
             if box.running(host, b.slug):
                 raise ValueError(f"{b.name} is already running in its Box.")
+            return b
+        try:
+            b = await asyncio.to_thread(look)
         except ValueError as e:
             return JSONResponse({"error": str(e)}, status_code=400)
         command = integration.program(host.environ) + ["--box", b.slug]
@@ -2442,7 +2585,8 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
             handover_plans[str(body.get("plan_id"))] = stored
             return JSONResponse({"error": "Confirm first that these files are deleted for good."}, status_code=400)
         try:
-            done = await asyncio.to_thread(handover.clean, make_host(), stored[1])
+            with changing():
+                done = await asyncio.to_thread(handover.clean, make_host(), stored[1])
         except handover.Refused as e:
             handover_plans[str(body.get("plan_id"))] = stored          # "Close X first": the same list can be tried again
             return JSONResponse({"error": str(e)}, status_code=409)
@@ -2515,7 +2659,8 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
         from .fix import FixError
         from .tools import presentation
         try:
-            return await asyncio.to_thread(presentation.turn_on, make_host())
+            with changing():
+                return await asyncio.to_thread(presentation.turn_on, make_host())
         except presentation.AlreadyOn as e:
             return JSONResponse({"error": str(e)}, status_code=409)
         except FixError as e:
@@ -2528,14 +2673,16 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
         from .fix import FixError
         from .tools import presentation
         try:
-            return await asyncio.to_thread(presentation.renew, make_host())
+            with changing():
+                return await asyncio.to_thread(presentation.renew, make_host())
         except FixError as e:
             return JSONResponse({"error": str(e)}, status_code=400)
 
     @app.post("/api/tools/presentation/off", dependencies=[Depends(auth)])
     async def tools_presentation_off():
         from .tools import presentation
-        return await asyncio.to_thread(presentation.turn_off, make_host())
+        with changing():
+            return await asyncio.to_thread(presentation.turn_off, make_host())
 
     @app.post("/api/tools/ramdisk/show", dependencies=[Depends(auth)])
     async def tools_ramdisk_show():
@@ -2644,14 +2791,46 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
                 print(f"The browser's RAM disk's folder couldn't be put back: {type(e).__name__}", file=sys.stderr)
         threading.Thread(target=clear_trials, name="trial-leftovers", daemon=True).start()
 
+    quit_done = threading.Lock()
+    quit_state: dict = {}
+
+    def shutdown(wait: float | None = None, changes_wait: float | None = None) -> dict:
+        """Quitting, however it comes (the page's Quit in --browser mode, the window closed, a logout's SIGTERM or
+        SIGHUP, Ctrl+C), once: nothing new starts (jobs.quitting), every job is told to stop as its Stop does (the
+        online tests, a download, mat2 over a folder, the TRIM test, a listing, a watch) and a file chooser left open
+        is closed; then up to QUIT_WAIT seconds for the jobs to end, and CHANGES_WAIT for a fix, a revert or a set-up
+        under way (never cut short half-way); then what is for while the app runs: ~/TempBrowser closed (asking for
+        the password if it must, its files overwritten meanwhile), a trial discarded, administrator access dropped,
+        Presentation mode turned off. Off the event loop, which the jobs' work needs. Before, nothing was stopped:
+        Python waited for the jobs' threads at exit, an invisible process going on after the window closed. app.main
+        ends the process (os._exit) once this has returned, whatever is left."""
+        from .tools import presentation
+        from .tools.pick import end_dialogs
+        with quit_done:
+            if quit_state:
+                return quit_state
+            told = jobs.cancel_all()
+            end_dialogs()
+            left = jobs.wait(QUIT_WAIT if wait is None else wait) if told else []
+            with in_flight:
+                settled = in_flight.wait_for(lambda: changes["n"] == 0, CHANGES_WAIT if changes_wait is None
+                                             else changes_wait)
+            closed = close_browser_disk()
+            for what, step in (("The trial", discard_trial), ("Administrator access", admin.drop),
+                               ("Presentation mode", lambda: presentation.turn_off(make_host()))):
+                try:
+                    step()
+                except Exception as e:  # noqa: BLE001 - quitting goes on; its kind only (a message can name a path)
+                    print(f"{what} couldn't be ended at quit: {type(e).__name__}", file=sys.stderr)
+            quit_state.update(told=told, left=left, settled=settled, browser_disk=closed)
+            return quit_state
+
+    app.state.shutdown = shutdown
+
     if on_quit is not None:
         @app.post("/api/quit", dependencies=[Depends(auth)])
         async def quit_app():
-            from .tools import presentation
-            await asyncio.to_thread(close_browser_disk)
-            await asyncio.to_thread(discard_trial)                          # a trial is for while the app runs
-            await asyncio.to_thread(admin.drop)
-            await asyncio.to_thread(presentation.turn_off, make_host())     # it was for while the app runs
+            await in_thread(shutdown, name="quit")
             asyncio.get_running_loop().call_later(0.3, on_quit)  # let this reply reach the page first
             return {"ok": True}
     elif close_window is not None:

@@ -16,6 +16,14 @@ from ..host import Host
 # is no dialog
 Picker = Callable[[str, bool, str], "list[str] | None"]
 DIALOG_TIMEOUT = 3600
+DIALOGS = frozenset({"zenity", "kdialog"})
+
+
+def end_dialogs() -> int:
+    """Closes a file chooser left open (zenity or kdialog, in --browser mode) as the app quits: it waited up to
+    DIALOG_TIMEOUT, the app with it. How many there were."""
+    from ..host import end_commands
+    return end_commands(DIALOGS)
 
 
 def downloads(host: Host) -> Path:

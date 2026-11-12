@@ -72,7 +72,9 @@ so; move the AppImage, start it from there and set them up again.
 what to install (in a message box when started from the menu). It never opens in your web browser by itself:
 there, any browser extension allowed on all sites could read the page, with your findings and file names, and
 the browser may send what you type to an online spell checker or keep it. `daprivacyscanner --browser` runs it
-in the browser anyway, if you accept that; the page then says so at the top.
+in the browser anyway, if you accept that; the page then says so at the top. The app answers only programs of your
+own account, and the link it opens works once (a browser from a Snap can't open the file the app hands it: open
+the link the terminal shows instead).
 
 | Distribution | Package |
 |---|---|
@@ -113,7 +115,7 @@ Across the top:
 | **History** | Fixes you have applied, with Revert (section 6). |
 | **Light / Dark** | Switches the theme. |
 | **Export…** | Saves or copies the report (section 7). |
-| **Quit** | Closes the app (and anything it must close, such as the browser's RAM disk). |
+| **Quit** | Closes the app (and anything it must close, such as the browser's RAM disk). What is still running (online tests, a download, cleaning files, the TRIM test) is stopped first; a fix being applied is finished. |
 
 Below that are two panes:
 

@@ -372,6 +372,7 @@ def test_a_boxs_revert_takes_its_runs_and_the_exchange_mount_point(cat, tmp_path
     exe.write_text("#!/bin/sh\n")
     exe.chmod(0o755)
     monkeypatch.setattr(I, "program", lambda environ: [str(exe)])
+    monkeypatch.setattr(I, "unsafe_place", lambda path, uid=None: "")     # pytest's folders are in /tmp, anyone's
     host = box_host(tmp_path)
     plan = options(Runner(cat, host).plan_fix("app.boxes", {"source": "chat.desktop"})[1])["Set up a Box for Chat App"]
     log, res = apply(host, plan)

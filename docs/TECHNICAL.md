@@ -151,28 +151,57 @@ refusal says why and what to do (move the AppImage into a folder of one's own an
 
 ## 2. The local web server
 
-The UI is plain HTML/CSS/JS (`web/`) served by FastAPI on 127.0.0.1, on a random port.
+The UI is plain HTML/CSS/JS (`web/`) served by FastAPI on 127.0.0.1, on a random port. The app binds the socket
+itself and hands it to uvicorn as it is (`app._listen`): a port picked, closed and bound again could be taken by
+another program in between.
 
+- **This account's programs only.** Any account on the computer can connect to 127.0.0.1. Every connection,
+  the page and its script included, is refused unless the program on the other end is this account's: the
+  server looks the client's socket up in the kernel's table (`/proc/net/tcp` and `tcp6`, readable by every
+  account, the owner's uid included; `peer.py`) and refuses what it can't find.
 - **Launch token.** The window (or browser) is opened at `/?t=<launch token>`. The server exchanges that
   token once for the session token, handed to the page in its body (`data-token`, taken off at once) and
-  then forgets it, so the token in the process's command line or the browser's history is worthless a
-  moment later. The page keeps the session token in its session storage, which belongs to this origin
-  alone, port included, and sends it with every API call in the `X-Token` header. Not a cookie: cookies
-  ignore ports, so in `--browser` mode the browser would send one to every other local server on
-  127.0.0.1 the user visits (a dev server, a sync client's page, a server another account runs), which
-  would then hold the session. In `--browser` mode the link is therefore for the tab it opens in: another
-  tab, or a page opened without the link, is refused.
-- **Every API call** needs the `X-Token` header (a cross-site form can't set it, and a cross-site `fetch`
-  that sets it needs a CORS preflight the server never answers). Tokens are compared with
-  `hmac.compare_digest`; a header beyond ASCII is simply wrong (403), never an error. The launch link
-  passes through the browser's command line for a moment in `--browser` mode, where any account on the
-  computer can read it (`/proc/*/cmdline`): it is good once, so one that was taken first leaves the real
-  page refused with a message saying so.
+  then forgets it, so the token in the browser's history is worthless a moment later. The page keeps the
+  session token in its session storage, which belongs to this origin alone, port included, and sends it
+  with every API call in the `X-Token` header. Not a cookie: cookies ignore ports, so in `--browser` mode the
+  browser would send one to every other local server on 127.0.0.1 the user visits (a dev server, a sync
+  client's page, a server another account runs), which would then hold the session. In `--browser` mode the
+  link is therefore for the tab it opens in: another tab, or a page opened without the link, is refused.
+  The link never goes on a command line, where every account can read it (`/proc/*/cmdline`): `--browser`
+  hands the browser a launcher page in `$XDG_RUNTIME_DIR/daprivacyscanner` (0700, the file 0600; a private
+  folder in /tmp without a runtime folder) that opens it, as Jupyter does, removed once the link has been
+  used (`app.launcher_file`); the terminal shows the link too, for a browser that can't read that file (a
+  Snap's). The browser keeps the session token in its session files while the app runs; only this account's
+  programs can use it, and the page drops it at Quit, worthless anyway once the server has ended (a new
+  token each run). The `--browser` warning says so.
+- **Every route** but the page's shell (`GET /` and `/static/`) needs the `X-Token` header, checked for all
+  of them at once in the server's guard (a route that forgot its own check isn't left open). A cross-site
+  form can't set it, and a cross-site `fetch` that sets it needs a CORS preflight the server never answers.
+  Tokens are compared with `hmac.compare_digest`; a header beyond ASCII is simply wrong (403), never an
+  error.
 - **DNS rebinding.** Requests whose `Host` header isn't the server's own address are refused.
-- **Content Security Policy.** `default-src 'self'`, no inline script, no frames, no objects, no form
-  actions. No CDN or remote asset is ever loaded.
+- **Headers on every answer.** The Content Security Policy (`default-src 'self'`, no inline script, no
+  frames, no objects, no form actions, and `frame-ancestors 'none'`, which a `<meta>` can't say),
+  `Cross-Origin-Resource-Policy: same-origin` (a website can't load the app's page, script or icon to tell
+  it is running, or which version), `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`,
+  `Referrer-Policy: no-referrer`. API answers are `no-store` and carry `X-Admin-Active` (whether
+  administrator access is held now), which the page's badge follows, also when the access ended by itself.
+  No CDN or remote asset is ever loaded.
 - **Links** in the UI open in the default browser through `/api/open`, by name, from `about.LINKS` only:
   the page can't make the server open an arbitrary URL.
+- **Background work** (`jobs.py`). Long work the page follows (the online tests, the TRIM test, Deleted file
+  names and their clean-up, Remove metadata, setting up a browser, What does this app keep?) is a job, one of
+  each kind at a time, with a `cancel` flag its work looks at. What blocks for long (a job's work, a file
+  chooser, the password prompt) runs on a daemon thread of its own (`jobs.in_thread`); requests' short work
+  on a pool of its own size. The report is changed only on the event loop; work on a thread gets a copy.
+- **Quitting** (`app.state.shutdown`, from the page's Quit in `--browser` mode, the window closed, a logout's
+  SIGTERM or SIGHUP, Ctrl+C; once): nothing new starts, every job is told to stop and a file chooser left open
+  is closed, then up to 10 seconds for the jobs and 120 for a fix, a revert or a set-up under way (never cut
+  short), then ~/TempBrowser is closed, a trial discarded, administrator access dropped, Presentation mode
+  turned off, and the process ends at once (`os._exit`, `app.finish`). Before, nothing was stopped and Python
+  waited for the threads at exit: after the window closed an invisible process went on running the online
+  tests, a download, mat2 or a dialog, and with GLib's signal handlers still installed and its loop gone, a
+  logout's SIGTERM did nothing.
 
 ---
 
