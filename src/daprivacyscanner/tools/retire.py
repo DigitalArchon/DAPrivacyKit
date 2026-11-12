@@ -23,6 +23,7 @@ and Sanitize, and NVMe's sanitize and format capabilities come from the helper's
 
 from __future__ import annotations
 
+import os
 import re
 import shlex
 from dataclasses import dataclass, field
@@ -65,22 +66,38 @@ class Disk:
     luks: list[str] = field(default_factory=list)         # partitions (or the disk) that are LUKS
     plain: list[str] = field(default_factory=list)        # partitions with a filesystem that isn't encrypted
     smr: bool = False                                     # known drive-managed SMR model
+    wwn: str = ""                                         # its World Wide Name, where udev knows one
+    by_id: str = ""                                       # its lasting name, /dev/disk/by-id/…, where it has one
+    parts_by_id: dict[str, str] = field(default_factory=dict)   # its partitions' (/dev/sdb1 -> /dev/disk/by-id/…-part1)
 
     @property
     def path(self) -> str:
         return f"/dev/{self.name}"
 
     @property
+    def dev(self) -> str:
+        """What the commands name it by: its /dev/disk/by-id name, which no other drive takes when this one is
+        unplugged, after a suspend or a restart (sdb is whichever drive came second), else its /dev name."""
+        return self.by_id or self.path
+
+    def stable(self, part: str) -> str:
+        return self.parts_by_id.get(part, part)
+
+    @property
     def controller(self) -> str:
-        """NVMe: the controller's device (sanitize works on it), /dev/nvme0 for nvme0n1."""
-        return "/dev/" + re.sub(r"n\d+$", "", self.name) if self.kind == "nvme" else self.path
+        """NVMe: the device sanitize is sent to. nvme-cli takes a namespace's block device for the controller's
+        commands too, so its by-id name where it has one; else the controller's, /dev/nvme0 for nvme0n1."""
+        if self.kind != "nvme":
+            return self.dev
+        return self.by_id or "/dev/" + re.sub(r"n\d+$", "", self.name)
 
     def to_dict(self) -> dict:
         return {"name": self.name, "path": self.path, "model": self.model, "serial": self.serial, "size": self.size,
                 "transport": self.transport, "rotational": self.rotational, "removable": self.removable,
                 "zoned": self.zoned, "kind": self.kind, "kind_title": KIND_TITLE[self.kind], "system": self.system,
                 "mounted": self.mounted, "open_crypt": self.open_crypt, "volume_groups": self.volume_groups,
-                "luks": self.luks, "plain": self.plain, "smr": self.smr, "blocked": blocked(self)}
+                "luks": self.luks, "plain": self.plain, "smr": self.smr, "blocked": blocked(self), "wwn": self.wwn,
+                "by_id": self.by_id, "identity": identity(self)}
 
 
 def blocked(d: Disk) -> str:
@@ -97,14 +114,50 @@ def _sys(host: Host, path: str) -> str:
         return ""
 
 
-def _serial(host: Host, name: str) -> str:
-    """From udev's database (readable without root), or the NVMe controller's own file."""
+def _udev(host: Host, name: str, key: str) -> str:
+    """One property of the device from udev's database (readable without root)."""
     devno = _sys(host, f"/sys/block/{name}/dev")
     if re.fullmatch(r"\d+:\d+", devno):
-        m = re.search(r"^E:ID_SERIAL_SHORT=(.+)$", _sys(host, f"/run/udev/data/b{devno}"), re.M)
+        m = re.search(rf"^E:{key}=(.+)$", _sys(host, f"/run/udev/data/b{devno}"), re.M)
         if m:
             return m.group(1).strip()
-    return _sys(host, f"/sys/block/{name}/device/serial")
+    return ""
+
+
+def _serial(host: Host, name: str) -> str:
+    """From udev's database, or the NVMe controller's own file."""
+    return _udev(host, name, "ID_SERIAL_SHORT") or _sys(host, f"/sys/block/{name}/device/serial")
+
+
+BY_ID = "/dev/disk/by-id"
+BUSES = ("ata-", "nvme-", "scsi-", "usb-", "mmc-", "virtio-", "ieee1394-", "memstick-")
+
+
+def by_id_names(host: Host) -> dict[str, list[str]]:
+    """Device name -> its names in /dev/disk/by-id (udev's links, which follow the drive, not the order it came in)."""
+    out: dict[str, list[str]] = {}
+    try:
+        entries = sorted(host.sys_path(BY_ID).iterdir())
+    except OSError:
+        return out
+    for e in entries:
+        try:
+            target = os.readlink(e)
+        except OSError:
+            continue
+        out.setdefault(os.path.basename(target), []).append(e.name)
+    return out
+
+
+def _lasting(names: list[str], serial: str) -> str:
+    """The by-id name to show: one naming its bus, model and serial (ata-Samsung_SSD_870_EVO_1TB_S6PN…) before a
+    World Wide Name or an EUI, which say nothing a person can check against the label."""
+    whole = [n for n in names if not re.search(r"-part\d+$", n)]
+
+    def rank(n: str) -> tuple:
+        return (0 if serial and serial in n and n.startswith(BUSES) and ".eui" not in n else
+                1 if n.startswith(BUSES) and not n.startswith(("nvme-eui.", "nvme-nvme.")) else 2, n)
+    return min(whole, key=rank) if whole else ""
 
 
 def _kind(host: Host, d: Disk, vendor: str) -> str:
@@ -171,6 +224,7 @@ def disks(host: Host) -> list[Disk]:
         devices = []
     swaps = {(found.name if (found := blockdev.find(devices, host, s)) else s) for s in _swaps(host)}
     btrfs = btrfs_mounts(host, devices)
+    ids = by_id_names(host)
     home = str(host.home)
     out = []
     try:
@@ -197,7 +251,15 @@ def disks(host: Host) -> list[Disk]:
                  zoned=_sys(host, f"{base}/queue/zoned") or "none")
         d.kind = _kind(host, d, vendor)
         d.smr = d.zoned != "none" or bool(DM_SMR.search(d.model))
+        d.wwn = _udev(host, name, "ID_WWN")
+        lasting = _lasting(ids.get(name, []), d.serial)
+        d.by_id = f"{BY_ID}/{lasting}" if lasting else ""
         tree = _tree(devices, name)
+        if lasting:
+            for x in tree[1:]:
+                part = next((n for n in ids.get(x.name, []) if n.startswith(lasting + "-part")), None)
+                if part:
+                    d.parts_by_id[x.path] = f"{BY_ID}/{part}"
         for x in tree:
             for mp in set(x.mountpoints) | set(btrfs.get(x.name, []) if x.fstype == "btrfs" else []):
                 if mp in SYSTEM_MOUNTS or home == mp or home.startswith(mp.rstrip("/") + "/"):
@@ -229,9 +291,18 @@ def find(host: Host, name: str) -> Disk:
 
 
 def identity(d: Disk) -> list:
-    """What tells a drive from another given its name later (sdb is whichever drive came second): its model, serial
-    and size. What a drive said about erasing (erase_facts) is kept with this, and used for that drive only."""
-    return [d.model, d.serial, d.size]
+    """What tells a drive from another given its name later (sdb is whichever drive came second): its model, serial,
+    size and World Wide Name. What a drive said about erasing (erase_facts) is kept with this, and used for that drive
+    only; the page sends it back with the request for the commands, which are refused for another drive."""
+    return [d.model, d.serial, d.size, d.wwn]
+
+
+def same_drive(d: Disk, expected) -> None:
+    """Refuses when the drive by that name now isn't the one the page listed (`expected`: its identity then)."""
+    if expected is not None and list(expected) != identity(d):
+        raise Refused(f"The drive called {d.name} now isn't the one that was listed (its model, serial or size differ): "
+                      "drives get other names when one is plugged in or out, after a suspend or a restart. Close this "
+                      "and choose the drive again.")
 
 
 # ------------------------------------------------------------------ the guide
@@ -244,12 +315,14 @@ def _size(n: int) -> str:
 
 
 def guide(host: Host, name: str, typed: str, kind: str | None = None, from_start: bool = False,
-          facts: dict | None = None) -> Guide:
-    """The steps for this drive, with its exact device in every command. `typed`: what the user typed
-    (must be the drive's name). `kind`: the user's answer for an external disk the app can't tell
-    ("hdd" or "ssd"). `from_start`: the user says everything on it was encrypted from its first use.
-    `facts`: the helper's erase_facts for it, when read (with the `identity` of the drive they came from, `drive`)."""
+          facts: dict | None = None, expected: list | None = None) -> Guide:
+    """The steps for this drive, with its exact device in every command (its /dev/disk/by-id name where it has one).
+    `typed`: what the user typed (must be the drive's name). `kind`: the user's answer for an external disk the app
+    can't tell ("hdd" or "ssd"). `from_start`: the user says everything on it was encrypted from its first use.
+    `facts`: the helper's erase_facts for it, when read (with the `identity` of the drive they came from, `drive`).
+    `expected`: the identity of the drive the page listed under that name: refused when it is another one now."""
     d = find(host, name)
+    same_drive(d, expected)
     if facts and "drive" in facts and facts["drive"] != identity(d):
         facts = None                         # another drive's, which had this name then: its frozen state, its erases
     if blocked(d):
@@ -258,17 +331,29 @@ def guide(host: Host, name: str, typed: str, kind: str | None = None, from_start
         raise Refused(f"Type the drive's name, {d.name}, to show the commands.")
     kind = kind if d.kind == "usb-disk" and kind in ("hdd", "ssd") else d.kind
     who = " ".join(x for x in (d.model, f"serial {d.serial}" if d.serial else "", _size(d.size)) if x)
+    named = (f"The commands name it {d.by_id}, its lasting name, which stays with this drive whatever /dev name it has "
+             "(sdb, nvme1n1 change when drives are plugged in or out, after a suspend or a restart), and dd is told "
+             "never to create a file of that name if the drive has gone." if d.by_id else
+             f"This drive has no lasting name in {BY_ID}, so the commands name it {d.path}, which another drive can have "
+             "once this one is unplugged, after a suspend or a restart: check it is still this drive (the first step) "
+             "before each command, and again after anything is plugged in or out.")
     g = Guide("tool.retire", f"Erase {d.path}", advice=True,
               intro=f"Every command below erases {d.path} ({who}). Run them yourself, in a terminal, in order; the "
-                    "app erases nothing. Check the model and serial against the label on the drive before you start: "
-                    "the name (sdb, nvme1n1) can change when drives are plugged in or the computer restarts.")
+                    "app erases nothing. Check the model and serial against the label on the drive before you start. "
+                    + named)
+    g.steps.append(Step("Check it is this drive", f"It should say {who or d.name}. If it says anything else, or nothing, "
+                        "stop: close this and choose the drive again.",
+                        commands=[f"lsblk -d -o PATH,MODEL,SERIAL,SIZE {d.dev}"]))
     if d.mounted or d.open_crypt or d.volume_groups:
         g.steps.append(Step("Unmount it", f"Parts of it are in use ({', '.join(d.mounted + d.open_crypt)}): unmount "
                             "them first, and close what is open on it, in this order.", commands=_unmount_commands(host, d)))
     if facts and facts.get("ata", {}) and facts["ata"].get("frozen"):
         g.steps.append(Step("Unfreeze it", "The drive's security commands are frozen: most computers freeze them at "
                             "start-up. Suspending and waking the computer usually unfreezes them; then read what the "
-                            "drive says again here.", commands=["systemctl suspend"]))
+                            "drive says again here.", commands=["systemctl suspend"],
+                            side_effects=["After waking, a drive (a USB one most of all) can come back under another "
+                                          "/dev name: close this, choose the drive again, read what it says and show "
+                                          "the commands again before running any of them."]))
     crypto = _crypto_erase(d, from_start)
     if kind == "virtual":
         g.steps.append(Step("Delete it on the host", "This is a virtual disk: whatever erases it from inside, the "
@@ -326,10 +411,15 @@ def _unmount_commands(host: Host, d: Disk) -> list[str]:
     return list(dict.fromkeys(cmds))
 
 
+def _q(path: str) -> str:
+    return shlex.quote(path)
+
+
 def _crypto_erase(d: Disk, from_start: bool) -> Step | None:
     if not d.luks:
         return None
-    cmds = [f"sudo cryptsetup erase {p}" for p in d.luks] + [f"sudo cryptsetup luksDump {p}" for p in d.luks]
+    cmds = [f"sudo cryptsetup erase {shlex.quote(d.stable(p))}" for p in d.luks] + \
+        [f"sudo cryptsetup luksDump {shlex.quote(d.stable(p))}" for p in d.luks]
     text = ("Destroy the encryption keys: without them, what is on the drive is unreadable, wherever the drive keeps "
             "it. `cryptsetup erase` asks you to type YES, then removes every keyslot; luksDump afterwards should list "
             "none.")
@@ -361,19 +451,21 @@ def _hdd_steps(d: Disk, facts: dict | None) -> list[Step]:
             "The disk erases itself, including sectors it has set aside after errors, which no overwrite reaches. It "
             "first needs a temporary password (Eins below; any word works), which the erase removes again."
             + (f" The drive estimates {mins} minutes." if mins else "")),
-            commands=[f"sudo hdparm --user-master u --security-set-pass Eins {d.path}",
-                      f"sudo hdparm --user-master u {verb} Eins {d.path}"],
+            commands=[f"sudo hdparm --user-master u --security-set-pass Eins {_q(d.dev)}",
+                      f"sudo hdparm --user-master u {verb} Eins {_q(d.dev)}"],
             side_effects=["Don't interrupt it, or unplug the drive, until it finishes: an interrupted erase can leave the "
-                          f"drive locked with that password (sudo hdparm --user-master u --security-disable Eins {d.path} "
+                          f"drive locked with that password (sudo hdparm --user-master u --security-disable Eins {_q(d.dev)} "
                           "unlocks it)."]))
     steps.append(Step("Overwrite it once with zeros", (
         "One full pass is enough on a hard disk: data overwritten on its platters can't be read back. It takes "
         "hours on a large disk (about 2 to 3 hours per TB). It doesn't reach sectors the drive has remapped after "
         "errors; ATA Secure Erase does."),
-        commands=[f"sudo dd if=/dev/zero of={d.path} bs=16M oflag=direct status=progress",
-                  f"sudo cmp {d.path} /dev/zero"],
+        commands=[f"sudo dd if=/dev/zero of={_q(d.dev)} bs=16M oflag=direct conv=nocreat status=progress",
+                  f"sudo cmp {_q(d.dev)} /dev/zero"],
         side_effects=["dd ends with \"No space left on device\": that is the end of the disk, as expected.",
-                      f"cmp checks the result: \"EOF on {d.path}\" means every byte is zero; \"differ\" means it isn't."]))
+                      "conv=nocreat: if the drive has gone (unplugged, or named otherwise now), dd stops with \"No such "
+                      "file or directory\" rather than writing a file of that name in /dev.",
+                      f"cmp checks the result: \"EOF on {_q(d.dev)}\" means every byte is zero; \"differ\" means it isn't."]))
     return steps
 
 
@@ -385,34 +477,36 @@ def _flash_firmware_steps(d: Disk, kind: str, facts: dict | None) -> list[Step]:
         san = nv.get("sanitize") or {}
         cmds = []
         if san.get("crypto"):
-            cmds.append(f"sudo nvme sanitize {d.controller} --sanact=4")
+            cmds.append(f"sudo nvme sanitize {_q(d.controller)} --sanact=4")
         if san.get("block"):
-            cmds.append(f"sudo nvme sanitize {d.controller} --sanact=2")
+            cmds.append(f"sudo nvme sanitize {_q(d.controller)} --sanact=2")
         if cmds:
-            cmds.append(f"sudo nvme sanitize-log {d.controller}")
-        fmt = f"sudo nvme format {d.path} --ses={'2' if nv.get('format_crypto') else '1'}"
+            cmds.append(f"sudo nvme sanitize-log {_q(d.controller)}")
+        fmt = f"sudo nvme format {_q(d.dev)} --ses={'2' if nv.get('format_crypto') else '1'}"
         return [Step("The drive's own erase (NVMe)", (
             ("Sanitize erases every part of the drive, including blocks it keeps out of sight; sanitize-log shows its "
              "progress. Format with secure erase is the older command." if cmds else
              "Format with secure erase (--ses=2 erases the drive's key where it encrypts, 1 erases user data).")
             + ("" if facts else " Read what the drive says (above) to see which kinds it supports.")),
-            commands=cmds + [fmt], side_effects=[caveat, "Needs nvme-cli (the nvme command)."])]
+            commands=cmds + [fmt], side_effects=[caveat, "Needs nvme-cli (the nvme command)."]
+            + (["Sanitize is the controller's: it erases every namespace on it, not only this one (nvme-cli takes the "
+                "namespace's name for the controller's commands)."] if cmds else []))]
     if kind == "emmc":
         return [Step("The drive's own erase (eMMC)", "blkdiscard's secure mode asks the chip to erase every block.",
-                     commands=[f"sudo blkdiscard --secure {d.path}"], side_effects=[caveat])]
+                     commands=[f"sudo blkdiscard --secure {_q(d.dev)}"], side_effects=[caveat])]
     ata = (facts or {}).get("ata") or {}
     san = ata.get("sanitize") or {}
     cmds = []
     if san.get("crypto"):
-        cmds.append(f"sudo hdparm --yes-i-know-what-i-am-doing --sanitize-crypto-scramble {d.path}")
+        cmds.append(f"sudo hdparm --yes-i-know-what-i-am-doing --sanitize-crypto-scramble {_q(d.dev)}")
     if san.get("block"):
-        cmds.append(f"sudo hdparm --yes-i-know-what-i-am-doing --sanitize-block-erase {d.path}")
+        cmds.append(f"sudo hdparm --yes-i-know-what-i-am-doing --sanitize-block-erase {_q(d.dev)}")
     if cmds:
-        cmds.append(f"sudo hdparm --sanitize-status {d.path}")
+        cmds.append(f"sudo hdparm --sanitize-status {_q(d.dev)}")
     if not facts or ata.get("supported"):
         verb = "--security-erase-enhanced" if ata.get("enhanced") else "--security-erase"
-        cmds += [f"sudo hdparm --user-master u --security-set-pass Eins {d.path}",
-                 f"sudo hdparm --user-master u {verb} Eins {d.path}"]
+        cmds += [f"sudo hdparm --user-master u --security-set-pass Eins {_q(d.dev)}",
+                 f"sudo hdparm --user-master u {verb} Eins {_q(d.dev)}"]
     if not cmds:
         return [Step("The drive's own erase (SATA SSD)", (
             "This drive says it has neither Sanitize nor ATA Secure Erase, so there is no erase it can be asked to do. "

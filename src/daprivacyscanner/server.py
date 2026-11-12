@@ -2612,6 +2612,7 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
         host = make_host()
         try:
             d = await asyncio.to_thread(retire.find, host, str(body.get("disk", "")))
+            retire.same_drive(d, body.get("drive") if isinstance(body.get("drive"), list) else None)
         except retire.Refused as e:
             return JSONResponse({"error": str(e)}, status_code=400)
         problem = await with_root(host)
@@ -2627,14 +2628,16 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
 
     @app.post("/api/tools/retire/guide", dependencies=[Depends(auth)])
     async def tools_retire_guide(request: Request):
-        """Body {"disk", "typed", "kind", "from_start"}: the steps for that drive, once `typed` is its name."""
+        """Body {"disk", "typed", "kind", "from_start", "drive"}: the steps for that drive, once `typed` is its name.
+        `drive`: the identity the listing gave it (retire.identity); another drive under that name now is refused."""
         from .tools import retire
         body = await body_of(request)
         name = str(body.get("disk", ""))
         try:
             g = await asyncio.to_thread(retire.guide, make_host(), name, str(body.get("typed", "")),
                                         body.get("kind") if isinstance(body.get("kind"), str) else None,
-                                        body.get("from_start") is True, app.state.erase_facts.get(name))
+                                        body.get("from_start") is True, app.state.erase_facts.get(name),
+                                        body.get("drive") if isinstance(body.get("drive"), list) else None)
         except retire.Refused as e:
             return JSONResponse({"error": str(e)}, status_code=400)
         return {"guide": g.to_dict()}

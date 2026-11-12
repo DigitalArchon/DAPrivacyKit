@@ -594,7 +594,9 @@ yourself. It is honest about what works:
 - **Hard disk**: one pass of zeros, checked, or the drive's own Secure Erase.
 - **USB stick or SD card**: there is no reliable erase. Destroy it if it held secrets unencrypted.
 
-The drive the system runs from is refused.
+The drive the system runs from is refused. The commands name the drive by its lasting name
+(`/dev/disk/by-id/…`, with its model and serial), which stays with it when another drive is plugged in or the
+computer is suspended or restarted; the first command shows the drive, so you can check it is the one you mean.
 
 ### Before you travel
 

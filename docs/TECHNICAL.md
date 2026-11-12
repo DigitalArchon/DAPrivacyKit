@@ -1623,7 +1623,14 @@ deletion needs confirmation and is refused while a program holds one.
 **Retire a drive** (`tools/retire.py`; helper `erase_facts`): every whole drive with its kind, transport,
 serial, SMR status, LUKS and plain partitions, and what is mounted or open. Drives holding the running
 system are refused. Commands only, run by the user, each naming the exact device, shown only after the user
-types the drive's name:
+types the drive's name. The device is named by its lasting name in `/dev/disk/by-id` (`retire.by_id_names`, the
+one with the bus, model and serial first, its partitions' `-partN` for `cryptsetup`), since the user pastes the
+commands later and `/dev/sdX` changes when a drive is plugged in or out, after a suspend (the Unfreeze step's) or a
+restart; a drive without one is named by `/dev/sdX`, and the guide says to check it before each command. Every guide
+starts with `lsblk -d -o PATH,MODEL,SERIAL,SIZE` on that name; `dd` gets `conv=nocreat` (a name that has gone
+otherwise becomes a regular file in devtmpfs); and the page sends the drive's identity as it listed it (model,
+serial, size, WWN: `retire.identity`) with the request for the commands and for its facts, refused for another
+drive under that name (`same_drive`):
 
 - **Hard disk:** ATA Secure Erase where supported, not frozen and not behind USB; and one zero pass with
   `dd`, checked with `cmp` (rule 8's second exception: overwriting works on a known hard disk, apart from
@@ -1637,7 +1644,7 @@ types the drive's name:
 
 What the drive supports comes from `erase_facts` (smartctl/hdparm identify words; NVMe Identify Controller
 OACS, FNA and SANICAP via the helper's ioctl), read on request and kept for the session only, with the
-drive they came from (its model, serial and size, `retire.identity`): another drive given its name later
+drive they came from (its model, serial, size and WWN, `retire.identity`): another drive given its name later
 (sdb is whichever drive came second) doesn't get them.
 
 ---

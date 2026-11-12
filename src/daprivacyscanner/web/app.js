@@ -2581,7 +2581,9 @@ function retireDrive(d, data, answers, render, m) {
   const show = h("button", { class: "primary" }, "Show the commands");
   show.addEventListener("click", async () => {
     try {
-      const r = await api("POST", "/api/tools/retire/guide", { disk: d.name, typed: typed.value, kind: answers.kind, from_start: answers.from_start });
+      // the drive as it was listed: another drive under that name now (re-lettered after a suspend) is refused
+      const r = await api("POST", "/api/tools/retire/guide", { disk: d.name, drive: d.identity, typed: typed.value,
+        kind: answers.kind, from_start: answers.from_start });
       const g = r.guide;
       fill(out, h("p", {}, g.intro), g.steps.map((st, i) => guideStep(st, i + 1, async () => {})));
     } catch (e) { fill(out, h("div", { class: "warnbox bad" }, e.message)); }
@@ -2590,7 +2592,7 @@ function retireDrive(d, data, answers, render, m) {
   readFacts.addEventListener("click", async () => {
     readFacts.disabled = true; readFacts.textContent = S.adminActive ? "Reading…" : "Waiting for authorization…";
     try {
-      const r = await api("POST", "/api/tools/retire/facts", { disk: d.name });
+      const r = await api("POST", "/api/tools/retire/facts", { disk: d.name, drive: d.identity });
       data.facts[d.name] = r.facts; S.adminActive = !!r.admin_active; renderTop(); render();
     } catch (e) { toast(e.message, "error", 10000); readFacts.disabled = false; readFacts.textContent = "Read what the drive says (administrator access)"; }
   });

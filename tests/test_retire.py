@@ -86,8 +86,14 @@ def test_drives_their_kind_and_what_holds_the_system(host):
     assert d["nvme1n1"].controller == "/dev/nvme1" and d["sdb"].size == 7814037168 * 512
 
 
+def work(g) -> list:
+    """The steps after the first, which only shows the drive (lsblk) to check it is the one meant."""
+    assert g.steps[0].title == "Check it is this drive" and g.steps[0].commands[0].startswith("lsblk -d -o ")
+    return g.steps[1:]
+
+
 def commands(g) -> list[str]:
-    return [c for st in g.steps for c in st.commands]
+    return [c for st in work(g) for c in st.commands]
 
 
 def test_the_name_must_be_typed_and_the_system_drive_is_refused(host):
@@ -102,10 +108,10 @@ def test_the_name_must_be_typed_and_the_system_drive_is_refused(host):
 
 def test_hard_disk_overwrite_unmounting_first(host):
     g = RT.guide(host, "sda", "sda")
-    assert g.advice and g.steps[0].title == "Unmount it" and g.steps[0].commands == ["udisksctl unmount -b /dev/sda1"]
+    assert g.advice and work(g)[0].title == "Unmount it" and work(g)[0].commands == ["udisksctl unmount -b /dev/sda1"]
     assert any("SMR" in st.title for st in g.steps)
     cmds = commands(g)
-    assert "sudo dd if=/dev/zero of=/dev/sda bs=16M oflag=direct status=progress" in cmds
+    assert "sudo dd if=/dev/zero of=/dev/sda bs=16M oflag=direct conv=nocreat status=progress" in cmds
     assert "sudo cmp /dev/sda /dev/zero" in cmds
     assert not any("security-erase" in c for c in cmds)              # not without knowing it is supported and not frozen
     facts = {"ata": {"supported": True, "frozen": False, "enhanced": True, "enhanced_minutes": 480, "erase_minutes": 470,
@@ -128,17 +134,17 @@ def test_nothing_but_a_hard_disk_is_offered_an_overwrite(host, name, kind):
 
 def test_an_external_disk_the_user_says_is_a_hard_disk(host):
     cmds = commands(RT.guide(host, "sdd", "sdd", kind="hdd"))
-    assert "sudo dd if=/dev/zero of=/dev/sdd bs=16M oflag=direct status=progress" in cmds
+    assert "sudo dd if=/dev/zero of=/dev/sdd bs=16M oflag=direct conv=nocreat status=progress" in cmds
     assert not any("security" in c for c in cmds)                     # never ATA security through a USB adapter
     unsure = RT.guide(host, "sdd", "sdd")
-    assert unsure.steps[0].title == "There is no reliable erase" and "can't tell" in unsure.steps[0].text
+    assert work(unsure)[0].title == "There is no reliable erase" and "can't tell" in work(unsure)[0].text
 
 
 def test_ssd_crypto_erase_and_firmware_erase(host):
     g = RT.guide(host, "sdb", "sdb", from_start=True)
-    titles = [st.title for st in g.steps]
-    assert titles[0] == "Unmount it" and g.steps[0].commands == ["sudo cryptsetup close backup"]
-    crypto = g.steps[1]
+    titles = [st.title for st in work(g)]
+    assert titles[0] == "Unmount it" and work(g)[0].commands == ["sudo cryptsetup close backup"]
+    crypto = work(g)[1]
     assert crypto.title.startswith("Destroy the keys") and "strong option" not in crypto.title   # sdb2 isn't encrypted
     assert crypto.commands == ["sudo cryptsetup erase /dev/sdb1", "sudo cryptsetup luksDump /dev/sdb1"]
     assert any("/dev/sdb2 isn't encrypted" in e for e in crypto.side_effects)
@@ -150,7 +156,7 @@ def test_ssd_crypto_erase_and_firmware_erase(host):
 def test_nvme_sanitize_from_its_facts(host):
     facts = {"nvme": {"format": True, "format_crypto": True, "sanitize": {"crypto": True, "block": True, "overwrite": False}}}
     g = RT.guide(host, "nvme1n1", "nvme1n1", from_start=True, facts=facts)
-    assert g.steps[0].title == "Destroy the keys (crypto-erase) — the strong option here"
+    assert work(g)[0].title == "Destroy the keys (crypto-erase) — the strong option here"
     assert commands(g)[2:] == ["sudo nvme sanitize /dev/nvme1 --sanact=4", "sudo nvme sanitize /dev/nvme1 --sanact=2",
                                "sudo nvme sanitize-log /dev/nvme1", "sudo nvme format /dev/nvme1n1 --ses=2"]
 
@@ -178,14 +184,14 @@ def test_an_encrypted_external_drive_is_unmounted_inside_out(tmp_path):
         (real / "removable").write_text("0\n")
         (h.root / "sys/block").mkdir(parents=True, exist_ok=True)
         os.symlink(real, h.root / "sys/block" / name)
-    assert RT.guide(h, "sdf", "sdf").steps[0].commands == ["udisksctl unmount -b /dev/mapper/luks-ab12",
+    assert RT.guide(h, "sdf", "sdf").steps[1].commands == ["udisksctl unmount -b /dev/mapper/luks-ab12",
                                                            "sudo cryptsetup close luks-ab12"]
     d = RT.find(h, "sdg")
     assert d.volume_groups == ["my-vg"]
-    assert RT.guide(h, "sdg", "sdg").steps[0].commands == ["udisksctl unmount -b /dev/mapper/my--vg-data",
+    assert RT.guide(h, "sdg", "sdg").steps[1].commands == ["udisksctl unmount -b /dev/mapper/my--vg-data",
                                                            "sudo vgchange -an my-vg", "sudo cryptsetup close luks-cd34"]
-    assert RT.guide(h, "sdh", "sdh").steps[0].commands == ["udisksctl unmount -b /dev/sdh"]   # no partition table
-    assert RT.guide(h, "sdi", "sdi").steps[0].commands == ["udisksctl unmount -b /dev/mapper/vault-plain",
+    assert RT.guide(h, "sdh", "sdh").steps[1].commands == ["udisksctl unmount -b /dev/sdh"]   # no partition table
+    assert RT.guide(h, "sdi", "sdi").steps[1].commands == ["udisksctl unmount -b /dev/mapper/vault-plain",
                                                            "udisksctl unmount -b /dev/mapper/luks-ef56",
                                                            "sudo cryptsetup close luks-ef56", "sudo vgchange -an vault"]
 
@@ -233,7 +239,7 @@ def test_an_ssd_with_no_erase_of_its_own_says_so(host):
 
 def test_virtual_disk(host):
     g = RT.guide(host, "vda", "vda")
-    assert [st.title for st in g.steps] == ["Delete it on the host"] and not commands(g)
+    assert [st.title for st in work(g)] == ["Delete it on the host"] and not commands(g)
 
 
 # ------------------------------------------------------------------ the helper's erase_facts
