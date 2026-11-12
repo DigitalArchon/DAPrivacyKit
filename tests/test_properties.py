@@ -668,9 +668,6 @@ def test_btrfs_a_leaf_with_a_right_checksum_and_any_items_never_raises(items, da
     assert all(helper._good_name(name) for _, _, name, _ in out)
 
 
-@pytest.mark.xfail(strict=True, reason="helper.parse_btrfs_leaf (helper.py:3323-3327): every item's offset past the "
-                   "block makes `low` (the lowest) huge, and the loop over item slots up to low // 25 reads past the "
-                   "block: struct.error, which names_step doesn't catch, so one planted leaf ends the btrfs listing")
 def test_btrfs_item_offsets_past_the_block_are_ignored():
     assert helper.parse_btrfs_leaf(btrfs_leaf([(257, 96, 1, 0xFFFFFFF0, 40)], b""), btrfs_fs(), {5}) == []
 
@@ -760,8 +757,8 @@ def test_btrfs_real_leaves_with_bytes_changed_and_their_checksum_made_right(real
 @given(st.binary(min_size=0x24b, max_size=0x300))
 def test_btrfs_superblock_any_bytes(sb):
     sb = sb[:0x40] + b"_BHRfS_M" + sb[0x48:]
-    fs = helper.parse_btrfs_superblock(sb)
-    assert fs is not None and len(fs["fsid"]) == 16
+    fs = helper.parse_btrfs_superblock(sb)            # refused (None) when its sizes are impossible, never a crash
+    assert fs is None or len(fs["fsid"]) == 16
 
 
 @given(st.binary(min_size=16, max_size=16), st.integers(0, 2**32 - 1), st.integers(1, 2**32 - 1), st.integers(0, 2**32 - 1))

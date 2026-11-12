@@ -366,12 +366,10 @@ def test_btrfs_superblock_and_leaves_parse_for_every_checksum_type(unpacked, nam
         at = i - 32
         if at >= 0 and at % BLOCK == 0 and data[at + 100] == 0:
             ok = helper._btrfs_csum_ok(data[at:at + fs["nodesize"]], kind)
-            if kind == 1:
-                assert ok is None                    # xxhash64 isn't in the standard library
-            elif int.from_bytes(data[at + 48:at + 56], "little"):  # a real block (the planted ones are said below)
+            if int.from_bytes(data[at + 48:at + 56], "little"):  # a real block (the planted ones are said below)
                 checked += ok is True
         i = data.find(fs["fsid"], i + 1)
-    assert kind == 1 or checked >= 3
+    assert checked >= 3
 
 
 @pytest.mark.parametrize("name", BTRFS)
@@ -390,9 +388,6 @@ def test_btrfs_the_listing_names_the_deleted_files_in_folders_the_caller_may_ope
     assert {n for names in got.values() for n in names} <= deleted | planted     # nothing still there, nothing made up
 
 
-@pytest.mark.xfail(strict=True, reason="helper.parse_btrfs_leaf accepts any block with the fsid, owner and a right "
-                   "checksum, so a file whose contents are laid out as a leaf adds made-up names to a folder it isn't "
-                   "in (the 2026-11 review; the helper agent is fixing it)")
 @pytest.mark.parametrize("name", BTRFS)
 @pytest.mark.parametrize("which", ["planted-by-a-file.txt", "planted-bytenr-zero.txt"])
 def test_btrfs_a_file_laid_out_as_a_leaf_adds_no_names(disk, name, which):
