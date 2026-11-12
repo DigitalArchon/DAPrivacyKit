@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 from .. import ini
 from ..host import Host
@@ -10,7 +11,31 @@ from ..model import Evidence, Note, Outcome
 from . import Check, Scan, register
 from ._util import Tally, absent, failed, human_size, link_note, own_dir, passed, read_text, tally, unknown, warned
 
-BROAD_FS = ("host", "host-os", "host-etc", "home")
+BROAD_FS = ("host", "host-os", "host-etc", "home", "~", "/", "/home", "/var/home")
+# a folder the app could change its own permissions or the user's session through: Flatpak's overrides (and the apps'
+# exports) are in xdg-data, autostart entries and the shell's start files run outside any sandbox at the next login
+_DATA = "your programs' data, Flatpak's own permission overrides among them"
+_CONFIG = "every program's settings, what starts at login among them"
+ESCAPE_FS = {"xdg-data": _DATA, "~/.local/share": _DATA, "~/.local": _DATA,
+             "xdg-data/flatpak": "Flatpak's own permission overrides",
+             "~/.local/share/flatpak": "Flatpak's own permission overrides",
+             "xdg-data/applications": "the menu's launchers", "~/.local/share/applications": "the menu's launchers",
+             "xdg-config": _CONFIG, "~/.config": _CONFIG,
+             "xdg-config/autostart": "what starts at login", "~/.config/autostart": "what starts at login",
+             "~/.bashrc": "the shell's start file", "~/.profile": "the login shell's start file",
+             "~/.zshrc": "the shell's start file", "~/.bash_profile": "the login shell's start file"}
+# folders of secrets: keys, the keyring (even read-only)
+SECRET_FS = {"~/.ssh": "SSH keys", "~/.gnupg": "GnuPG keys", "xdg-data/keyrings": "the login keyring",
+             "~/.local/share/keyrings": "the login keyring", "~/.password-store": "pass's passwords"}
+# bus names an app may talk to that reach past its sandbox: the secrets of every app, a way to run commands outside it
+# (systemd starts any unit for the asker; dconf writes any setting, custom shortcuts' commands among them)
+BUS_NAMES = {"org.freedesktop.Flatpak": "can run commands outside its sandbox (org.freedesktop.Flatpak)",
+             "org.freedesktop.systemd1": "can start programs outside its sandbox through systemd",
+             "ca.desrt.dconf": "can change any desktop setting, shortcut commands among them (dconf)",
+             "org.freedesktop.secrets": "can read every saved password in the keyring (Secret Service)",
+             "org.kde.kwalletd5": "can read the KDE wallet", "org.kde.kwalletd6": "can read the KDE wallet",
+             "org.kde.kwalletd": "can read the KDE wallet"}
+ESCAPE_NAMES = frozenset({"org.freedesktop.Flatpak", "org.freedesktop.systemd1"})
 
 
 def flatpak_apps(host: Host) -> list[str] | None:
@@ -20,29 +45,76 @@ def flatpak_apps(host: Host) -> list[str] | None:
     return [ln.strip() for ln in r.stdout.splitlines() if ln.strip() and ln.strip() != "Application ID"]
 
 
+def _fs_name(item: str) -> tuple[str, bool]:
+    """A filesystems entry as (folder, read-only): "home:ro" -> ("home", True), "~/.ssh" -> ("~/.ssh", False)."""
+    name, _, mode = item.rpartition(":")
+    if name and mode in ("ro", "rw", "create"):
+        return name.rstrip("/") or "/", mode == "ro"
+    return item.rstrip("/") or "/", False
+
+
 def _merge_list(base: str, override: str) -> list[str]:
     items = [x for x in base.split(";") if x]
     for x in (y for y in override.split(";") if y):
         if x.startswith("!"):
-            items = [i for i in items if i.split(":")[0] != x[1:].split(":")[0]]
+            items = [i for i in items if _fs_name(i)[0] != _fs_name(x[1:])[0]]
         else:
-            items.append(x)
+            items = [i for i in items if _fs_name(i)[0] != _fs_name(x)[0]] + [x]
     return items
 
 
+def override_files(scan: Scan, app: str) -> list[tuple[str, Path]]:
+    """(shown as, path) of the overrides Flatpak applies to `app`, in its order: the system's for every app (global),
+    then for this one, then the user's the same way. `flatpak override --filesystem=host` with no app writes global:
+    every app gets it, the check's per-app list never showed it."""
+    user = scan.paths.data_home / "flatpak" / "overrides"
+    return [("/var/lib/flatpak/overrides/global", scan.host.sys_path("/var/lib/flatpak/overrides/global")),
+            (f"/var/lib/flatpak/overrides/{app}", scan.host.sys_path(f"/var/lib/flatpak/overrides/{app}")),
+            (scan.host.display(user / "global"), user / "global"), (scan.host.display(user / app), user / app)]
+
+
 def flatpak_permissions(scan: Scan, app: str) -> dict:
-    """The app's permissions with user and system overrides applied."""
+    """The app's permissions with the global and its own overrides applied, system then user."""
     r = scan.host.run_flatpak("info", "--show-permissions", app)
     perms = ini.parse(r.stdout) if r.ok else {}
-    for f in (scan.host.sys_path(f"/var/lib/flatpak/overrides/{app}"), scan.paths.data_home / "flatpak" / "overrides" / app):
+    for _, f in override_files(scan, app):
         over = ini.parse(read_text(scan.host, f) or "")
         for group, keys in over.items():
             for k, v in keys.items():
-                if group == ("Context",) and k in ("filesystems", "devices", "sockets", "shared"):
+                if group == ("Context",) and k in ("filesystems", "devices", "sockets", "shared", "features"):
                     perms.setdefault(group, {})[k] = ";".join(_merge_list(perms.get(group, {}).get(k, ""), v))
                 else:
                     perms.setdefault(group, {})[k] = v
     return perms
+
+
+def broad_permissions(perms: dict) -> tuple[list[str], bool]:
+    """What in an app's permissions reaches past its sandbox, in words, and whether any of it lets it out (run
+    commands, change its own permissions or what starts at login)."""
+    ctx = perms.get(("Context",), {})
+    what, escapes = [], False
+    for item in (x for x in ctx.get("filesystems", "").split(";") if x and not x.startswith("!")):
+        name, ro = _fs_name(item)
+        if name in BROAD_FS or name.startswith(("/home/", "/var/home/")) and name.count("/") <= 2:
+            what.append(item)
+        elif name in ESCAPE_FS and not ro:
+            what.append(f"{item} ({ESCAPE_FS[name]}: it can widen its own permissions or run things at login)")
+            escapes = True
+        elif name in SECRET_FS:
+            what.append(f"{item} ({SECRET_FS[name]})")
+    if "all" in ctx.get("devices", "").split(";"):
+        what.append("all devices")
+    sockets = ctx.get("sockets", "").split(";")
+    if "session-bus" in sockets:
+        what.append("whole session bus")
+    if "system-bus" in sockets:
+        what.append("whole system bus")
+    for group in (("Session Bus Policy",), ("System Bus Policy",)):
+        for name, policy in perms.get(group, {}).items():
+            if policy in ("talk", "own") and name in BUS_NAMES:
+                what.insert(0, BUS_NAMES[name] + (" on the system bus" if group[0].startswith("System") else ""))
+                escapes |= name in ESCAPE_NAMES
+    return what, escapes
 
 
 @register
@@ -56,26 +128,26 @@ class FlatpakBroadPerms(Check):
         if not apps:
             return absent("No Flatpak apps are installed.")
         ev, broad, escape = [], [], []
+        for shown, f in override_files(scan, "global")[::2]:            # the system's and the user's global overrides
+            what, _ = broad_permissions(ini.parse(read_text(scan.host, f) or ""))
+            if what:
+                ev.append(Evidence.val(f"Every app ({shown})", ", ".join(what)[:200]))
         for app in apps:
-            perms = flatpak_permissions(scan, app)
-            ctx = perms.get(("Context",), {})
-            fs = [x for x in ctx.get("filesystems", "").split(";") if x.split(":")[0] in BROAD_FS]
-            devices = "all" in ctx.get("devices", "").split(";")
-            bus = "session-bus" in ctx.get("sockets", "").split(";")
-            can_escape = perms.get(("Session Bus Policy",), {}).get("org.freedesktop.Flatpak") == "talk"
-            what = fs + (["all devices"] if devices else []) + (["whole session bus"] if bus else [])
+            what, can_escape = broad_permissions(flatpak_permissions(scan, app))
             if can_escape:
                 escape.append(app)
-                what.insert(0, "can run commands outside its sandbox (org.freedesktop.Flatpak)")
             if what:
                 broad.append(app)
                 ev.append(Evidence.val(app, ", ".join(what)[:200]))
         notes = [Note("info", "Narrowing permissions",
                       "Flatseal, or `flatpak override --user --nofilesystem=home <app>`, can take a permission away; "
-                      "some apps then lose features.")] if broad else []
+                      "some apps then lose features. A permission given to every app (a global override) is taken "
+                      "away with `flatpak override --user --nofilesystem=host` (no app named), or `sudo flatpak "
+                      "override --nofilesystem=host` for the system's.")] if broad else []
         if escape:
-            return failed(f"{', '.join(escape)} can run commands outside {'their' if len(escape) > 1 else 'its'} "
-                          f"sandbox; {len(broad)} of {len(apps)} Flatpak apps have broad access in all.", *ev, notes=notes)
+            return failed(f"{', '.join(escape)} can get out of {'their' if len(escape) > 1 else 'its'} sandbox (run "
+                          "commands outside it, or widen its own permissions); "
+                          f"{len(broad)} of {len(apps)} Flatpak apps have broad access in all.", *ev, notes=notes)
         if broad:
             return failed(f"{len(broad)} of {len(apps)} Flatpak apps have broad access to your files or devices.",
                           *ev, notes=notes)

@@ -21,21 +21,41 @@ BUS_NAMES = {
 
 @guide("sbx.flatpak_broad_perms")
 def flatpak_broad(check, scan, outcome):
-    from ..sandbox import BROAD_FS, flatpak_permissions
+    from ... import ini
+    from .. import sandbox as sb
+    from .._util import read_text
     steps = []
-    for app in evidence(outcome, value=""):
-        perms = flatpak_permissions(scan, app)
+    labels = evidence(outcome, value="")
+    for n, (shown, path) in enumerate(sb.override_files(scan, "global")[::2]):
+        if f"Every app ({shown})" not in labels:
+            continue
+        # a global override gives it to every app; the system's (the first) takes administrator access
+        ctx = ini.parse(read_text(scan.host, path) or "").get(("Context",), {})
+        fs = sorted({name for name, _ in (sb._fs_name(x) for x in ctx.get("filesystems", "").split(";")
+                                          if x and not x.startswith("!"))})
+        what = sb.broad_permissions(ini.parse(read_text(scan.host, path) or ""))[0]
+        steps.append(Step("Every app", f"{shown} gives every Flatpak app {', '.join(what)}. Take it away for all of them "
+                          "(an app that needs it can be given it back alone: flatpak override --user "
+                          "--filesystem=FOLDER APP):",
+                          commands=[("sudo flatpak override " if n == 0 else "flatpak override --user ")
+                                    + " ".join(f"--nofilesystem={x}" for x in fs)] if fs else []))
+    for app in labels:
+        if app.startswith("Every app ("):
+            continue
+        perms = sb.flatpak_permissions(scan, app)
         ctx = perms.get(("Context",), {})
-        fs = sorted({x.split(":")[0] for x in ctx.get("filesystems", "").split(";") if x.split(":")[0] in BROAD_FS})
+        fs = sorted({name for name, ro in (sb._fs_name(x) for x in ctx.get("filesystems", "").split(";") if x)
+                     if name in sb.BROAD_FS or name in sb.SECRET_FS or (name in sb.ESCAPE_FS and not ro)})
         bus = perms.get(("Session Bus Policy",), {})
-        names = [n for n in BUS_NAMES if bus.get(n) == "talk"]
+        names = [n for n in sb.BUS_NAMES if bus.get(n) in ("talk", "own")]
         if not fs and not names:
             continue
         flags = [f"--nofilesystem={x}" for x in fs] + [f"--no-talk-name={n}" for n in names]
         effects = ["The app can still open files you pick in its file dialog, but can't browse your folders itself. "
                    "Some apps (IDEs, games launchers) stop working properly: revert it from History if so."] if fs else []
         effects += [f"Talking to {n} lets it {BUS_NAMES[n][0]}. {BUS_NAMES[n][1]} Revert it from History if the app "
-                    "needs that." for n in names]
+                    "needs that." if n in BUS_NAMES else f"Talking to {n}, it {sb.BUS_NAMES[n]}. Revert it from History "
+                    "if the app needs that." for n in names]
         overrides = scan.paths.data_home / "flatpak" / "overrides" / app
         steps.append(Step(app, options=[option(check, f"Take away {', '.join(fs + names)}", [FileCommand(
             ["flatpak", "override", "--user", *flags, app], overrides, "narrow its permissions",

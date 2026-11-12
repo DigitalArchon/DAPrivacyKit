@@ -3282,13 +3282,22 @@ checks:
     scope: user
     tier: guided
     detect:
-      - 'flatpak list --app --columns=application; flatpak info --show-permissions <id>; flatpak override --show <id>'
-      - 'Flag filesystems=home|host|host-os|host-etc, devices=all, session bus access'
-      - 'Flag talk access to org.freedesktop.Flatpak as critical (allows escaping the sandbox)'
-    fix: 'flatpak override --user --nofilesystem=home <id> (and similar); suggest Flatseal.'
+      - 'flatpak list --app --columns=application; flatpak info --show-permissions <id>; then the overrides in Flatpak''s
+        order: /var/lib/flatpak/overrides/global, /var/lib/flatpak/overrides/<id>, ~/.local/share/flatpak/overrides/global,
+        ~/.local/share/flatpak/overrides/<id> (global: flatpak override with no app, which gives it to every app, listed
+        as "Every app" too)'
+      - 'Flag filesystems=home|host|host-os|host-etc|~|/|/home (or one account''s /home/NAME), devices=all, session or
+        system bus access; secrets (~/.ssh, ~/.gnupg, the keyring''s folder, even read-only); and, writable, folders an app
+        escapes through: xdg-data and ~/.local/share/flatpak (Flatpak''s own overrides), xdg-config and its autostart, the
+        menu''s launchers, the shells'' start files'
+      - 'Flag talk (or own) access to org.freedesktop.Flatpak and org.freedesktop.systemd1 (session or system bus) as
+        escaping the sandbox, and to org.freedesktop.secrets, KWallet (org.kde.kwalletd5/6) and dconf (ca.desrt.dconf)'
+    fix: 'flatpak override --user --nofilesystem=home <id> (and similar, --no-talk-name=); a global override taken away
+      with flatpak override --user (or sudo flatpak override for the system''s) and no app; suggest Flatseal.'
     remedy: >
-      These Flatpak apps can read your whole home folder. Guide… removes that access per app; they can
-      still open files you pick.
+      These Flatpak apps can reach well past their sandbox: your whole home folder, your keys or saved passwords, or a
+      way to run commands outside it. Guide… takes that access away per app (and for every app, where one setting gives
+      it to all of them); they can still open files you pick.
 
   - id: sbx.flatpak_caches
     title: Flatpak apps keep separate caches and history

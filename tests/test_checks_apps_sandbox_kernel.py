@@ -150,8 +150,50 @@ def flatpak_host(tmp_path, **kw):
 
 def test_flatpak_broad_perms(cat, tmp_path):
     o = detect(cat, "sbx.flatpak_broad_perms", make_scan(flatpak_host(tmp_path)))
-    assert o.status is Status.FAIL and o.summary.startswith("org.remmina.Remmina can run commands outside its sandbox")
+    assert o.status is Status.FAIL and o.summary.startswith("org.remmina.Remmina can get out of its sandbox")
     assert set(ev(o)) == {"org.remmina.Remmina", "com.example.Editor"}
+
+
+def test_a_global_override_widens_every_app(cat, tmp_path):
+    """`flatpak override --filesystem=host` with no app writes overrides/global: every app had it, and the check
+    passed, reading only each app's own file."""
+    from test_guides import build
+    narrow = {"org.mozilla.firefox": PERMS["org.mozilla.firefox"]}
+    commands = {("flatpak", "list", "--app", "--columns=application"): "org.mozilla.firefox\n",
+                ("flatpak", "info", "--show-permissions", "org.mozilla.firefox"): narrow["org.mozilla.firefox"]}
+    host = make_host(tmp_path, commands=commands)
+    assert detect(cat, "sbx.flatpak_broad_perms", make_scan(host)).status is Status.PASS
+    host = make_host(tmp_path / "b", commands=commands,
+                     home_files={".local/share/flatpak/overrides/global": "[Context]\nfilesystems=host;\n"})
+    o = detect(cat, "sbx.flatpak_broad_perms", make_scan(host))
+    assert o.status is Status.FAIL and ev(o) == {"Every app (~/.local/share/flatpak/overrides/global)": "host",
+                                                 "org.mozilla.firefox": "host"}
+    g = build(cat, host, "sbx.flatpak_broad_perms")
+    assert next(s for s in g.steps if s.title == "Every app").commands == ["flatpak override --user --nofilesystem=host"]
+    host = make_host(tmp_path / "c", commands=commands, files={"/var/lib/flatpak/overrides/global": "[Context]\nfilesystems=home;\n"})
+    g = build(cat, host, "sbx.flatpak_broad_perms")
+    assert next(s for s in g.steps if s.title == "Every app").commands == ["sudo flatpak override --nofilesystem=home"]
+
+
+@pytest.mark.parametrize("perms, escapes, said", [
+    ("[Context]\nsockets=system-bus;\n", False, "whole system bus"),
+    ("[Context]\nfilesystems=xdg-config/autostart;\n", True, "what starts at login"),
+    ("[Context]\nfilesystems=xdg-config/autostart:ro;\n", False, None),        # read-only: can't add one
+    ("[Context]\nfilesystems=xdg-data;\n", True, "Flatpak's own permission overrides"),
+    ("[Context]\nfilesystems=~/.ssh:ro;\n", False, "SSH keys"),
+    ("[Context]\nfilesystems=/home;\n", False, "/home"),
+    ("[Context]\nfilesystems=/home/alice/Documents;\n", False, None),          # one folder of the home
+    ("[Session Bus Policy]\norg.freedesktop.secrets=talk\n", False, "every saved password"),
+    ("[Session Bus Policy]\norg.kde.kwalletd6=talk\n", False, "KDE wallet"),
+    ("[Session Bus Policy]\norg.freedesktop.systemd1=talk\n", True, "through systemd"),
+    ("[Session Bus Policy]\nca.desrt.dconf=talk\n", False, "dconf"),
+    ("[System Bus Policy]\norg.freedesktop.systemd1=talk\n", True, "on the system bus"),
+])
+def test_broad_permissions_beyond_home_and_host(perms, escapes, said):
+    from daprivacyscanner import ini
+    from daprivacyscanner.checks.sandbox import broad_permissions
+    what, out = broad_permissions(ini.parse(perms))
+    assert out is escapes and (said in ", ".join(what) if said else not what)
 
 
 def test_flatpak_user_override_narrows(cat, tmp_path):
