@@ -1606,9 +1606,26 @@ holds.
 - **Clearing on ext4** (as the user, after a dry-run plan and confirmation; never synced folders, never
   other users'): *fillers* for small folders (empty files with names as long as each deleted one, a round
   at a time, re-read until the names are gone; the folder stays the same inode) or a *rebuild* for large
-  indexed folders (a new folder with the same group, mode, flags, xattrs and ACLs, every entry moved with
-  `renameat2(RENAME_NOREPLACE)`, then swapped with `RENAME_EXCHANGE` while the name is still the folder
-  they came from, rolled back on failure). Fillers
+  indexed folders (a new folder with the same group, mode, flags, xattrs and ACLs; every file, link and special
+  file given a second name in it, a hard link, so the folder keeps every file at its own path until the swap,
+  and only its subfolders, and what can't be linked (protected_hardlinks, EMLINK), moved with
+  `renameat2(RENAME_NOREPLACE)`, last; then swapped with `RENAME_EXCHANGE` while the name is still the folder
+  they came from; then the old folder's names reconciled (`_reconcile`: a second name of the same file dropped,
+  what was made meanwhile moved in, a file saved over meanwhile put in place of the stale link, one deleted
+  meanwhile deleted); rolled back on failure). Emptying the folder at its live path before the swap had left
+  it partly or wholly empty to a backup, a sync client's scan or an app starting, for as long as the moves
+  took (the review of 2026-11-12). A folder encrypted with fscrypt isn't rebuilt. Each folder is looked at
+  again just before it is done (holders, watchers, mounts), since the folders before it can take minutes. While
+  a folder is done, a recovery note (`rebuild.Note`, `$XDG_STATE_HOME/daprivacyscanner/names-interrupted.json`,
+  0600: the folder's place, the temporary names, the fillers' lengths; a lock in the runtime folder tells a
+  running copy's from an interrupted one) is kept, and deleted when that folder is done, whatever the outcome:
+  after a crash, a logout or a power cut the panel offers **Finish it** (`rebuild.recover`: the entries sorted
+  back by identity, the hidden folder removed, fillers left in the folder removed), and a clean-up waits until
+  it is done. Only folders the last listing showed can be planned, cleaned or checked (`names_listed`, their
+  paths only, forgotten with the listing). The plan says what the moves mean for programs reading the folder
+  meanwhile, what the app can't see (other accounts' and the system's programs, NFS, Samba and virtual
+  machines' shares), and, on Linux 5.13 and later, that these clean-ups reach only names left in folders'
+  own records before, Clear the journal being the one to use first. Fillers
   are also used wherever a folder can't be swapped (the home itself, a disk's top folder, one with a disk
   mounted in it) or TRIM never reaches the drive. Either is refused for a folder that isn't the user's, is
   immutable or append-only, or is watched (inotify/fanotify marks from `/proc/PID/fdinfo`) by a program

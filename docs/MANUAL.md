@@ -572,7 +572,11 @@ filesystem, and see which names remain. The list is shown once and never saved.
     Clearing the journal removes them with the rest.
   - Names an older kernel left in a folder's own records: tick the folders and click **Clean the chosen
     folders…**. The app overwrites the old names in place (or rebuilds a large folder, **Rebuild
-    instead…**). It won't touch folders a sync service uses, or ones a program is using.
+    instead…**: every file stays in the folder while it runs). It won't touch folders a sync service uses,
+    or ones a program is using; it can't see other accounts' programs, the system's, or a folder shared over
+    the network or with a virtual machine, so stop those yourself. If the app is ended part-way (a crash, a
+    power cut), the panel offers **Finish it** next time. On current kernels (Linux 5.13 and later) names of
+    recently deleted files are in the journal, so clear the journal first.
 - **btrfs**: **Trim now and check again**.
 
 Clearing takes the names off the filesystem. A drive's flash chips can keep an old copy until the drive

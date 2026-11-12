@@ -716,22 +716,24 @@ def test_extended_attributes_go_with_a_rebuilt_folder(tmp_path):
 def test_a_rebuild_that_fails_halfway_puts_everything_back(tmp_path, monkeypatch):
     top = tmp_path / "home"
     docs = top / "Documents"
-    docs.mkdir(parents=True)
+    (docs / "sub").mkdir(parents=True)
+    (docs / "sub/s.txt").write_text("s")
     for i in range(5):
         (docs / f"{i}.txt").write_text(str(i))
-    real, moved = R.MOVE, []
+    real, linked = R.LINK, []
 
-    def move(src, name, dst):
-        if len(moved) == 3:
-            moved.append(None)                                                    # once
+    def link(src, name, dst):
+        if len(linked) == 3:
+            linked.append(None)                                                   # once
             raise OSError(5, "Input/output error")
-        moved.append(name)
+        linked.append(name)
         return real(src, name, dst)
-    monkeypatch.setattr(R, "MOVE", move)
+    monkeypatch.setattr(R, "LINK", link)
     with pytest.raises(OSError):
         R.rebuild(top, "Documents")
-    monkeypatch.setattr(R, "MOVE", real)
-    assert sorted(os.listdir(docs)) == [f"{i}.txt" for i in range(5)] and os.listdir(top) == ["Documents"]
+    monkeypatch.setattr(R, "LINK", real)
+    assert sorted(os.listdir(docs)) == [f"{i}.txt" for i in range(5)] + ["sub"] and os.listdir(top) == ["Documents"]
+    assert all(os.stat(docs / f"{i}.txt").st_nlink == 1 for i in range(5)) and os.listdir(docs / "sub") == ["s.txt"]
 
 
 @pytest.mark.parametrize("noreplace", [True, False])
@@ -753,31 +755,42 @@ def test_moving_never_replaces_an_entry_already_there(tmp_path, monkeypatch, nor
 
 
 def test_a_file_saved_into_the_old_folder_meanwhile_is_never_overwritten(tmp_path, monkeypatch):
-    """A program saves a.txt again while the entries are being moved (it holds no file open, so
-    holders() didn't stop it), and the roll-back then meets its name: it stops rather than replace
-    the newer copy, and the result names the folder the rest are in, with the commands."""
+    """A program saves a.txt again while the entries are carried over (it holds no file open, so holders() didn't stop
+    it), writing a new copy and renaming it over the old, and the rebuild then fails: undoing it removes only the second
+    names it made, so the newer copy is what the folder has. A subfolder moved out whose name a program took meanwhile
+    can't go back: it stops rather than replace it, and the result names the folder it is in, with the commands."""
     top = tmp_path / "home"
     docs = top / "Documents"
-    docs.mkdir(parents=True)
-    for n in ("a.txt", "b.txt", "c.txt"):
+    (docs / "sub").mkdir(parents=True)
+    (docs / "sub/kept.txt").write_text("in the subfolder")
+    for n in ("a.txt", "b.txt"):
         (docs / n).write_text("old " + n)
-    real, calls = R.MOVE, []
+    real_link, real_move, calls = R.LINK, R.MOVE, []
+
+    def link(src, name, dst):
+        calls.append(name)
+        ok = real_link(src, name, dst)
+        if name == "a.txt":                                     # saved again meanwhile, as editors save
+            (docs / ".a.txt.tmp").write_text("saved meanwhile")
+            os.replace(docs / ".a.txt.tmp", docs / "a.txt")
+        return ok
 
     def move(src, name, dst):
-        calls.append(name)
-        if len(calls) == 2:
-            (docs / calls[0]).write_text("saved meanwhile")         # a program saves the first one again, in the old folder
+        real_move(src, name, dst)
+        if name == "sub" and not (docs / "sub").exists():
+            (docs / "sub").mkdir()                              # a program makes a folder of that name in the old one
+            (docs / "sub/theirs.txt").write_text("theirs")
             raise OSError(5, "Input/output error")
-        return real(src, name, dst)
+    monkeypatch.setattr(R, "LINK", link)
     monkeypatch.setattr(R, "MOVE", move)
     with pytest.raises(R.Incomplete) as e:
         R.rebuild(top, "Documents")
-    first = calls[0]
-    assert (docs / first).read_text() == "saved meanwhile"
+    assert (docs / "a.txt").read_text() == "saved meanwhile" and (docs / "b.txt").read_text() == "old b.txt"
+    assert os.stat(docs / "b.txt").st_nlink == 1                                  # its second name is gone
     hidden = [n for n in os.listdir(top) if n != "Documents"]
     assert len(hidden) == 1 and e.value.folder == hidden[0] and e.value.count == 1
-    assert (top / hidden[0] / first).read_text() == f"old {first}"                # nothing lost either
-    assert first in e.value.reason
+    assert (top / hidden[0] / "sub/kept.txt").read_text() == "in the subfolder"   # nothing lost either
+    assert os.listdir(docs / "sub") == ["theirs.txt"]
 
     r = R.result({"encrypted": True, "no_trim": "", "mount": "/"}, [{"path": "~/Documents", "rel": "Documents", "method": "rebuild",
                   "error": e.value.reason, "leftover": f"~/{hidden[0]}", "leftover_count": 1}], None, None, True)
@@ -818,15 +831,16 @@ def test_a_folder_renamed_and_replaced_while_it_is_rebuilt_is_left_as_it_was(tmp
         (docs / n).write_text(n)
     if not exchange:
         monkeypatch.setattr(R, "EXCHANGE", lambda parent, a, b: False)
-    real = R.MOVE
+    real = R.LINK
 
-    def move(src, name, dst):
-        real(src, name, dst)
+    def link(src, name, dst):
+        ok = real(src, name, dst)
         if not (top / "Documents.old").exists():
             os.rename(docs, top / "Documents.old")                       # renamed, and another folder put there
             docs.mkdir()
             (docs / "theirs.txt").write_text("someone else's")
-    monkeypatch.setattr(R, "MOVE", move)
+        return ok
+    monkeypatch.setattr(R, "LINK", link)
     with pytest.raises(R.Refused, match="renamed or replaced"):
         R.rebuild(top, "Documents")
     assert sorted(os.listdir(top)) == ["Documents", "Documents.old"]
@@ -933,7 +947,9 @@ def test_a_clean_up_rebuilds_fills_trims_and_checks(root, monkeypatch):
     assert f["~/Documents"]["state"] == "partly" and "aren't trimmed yet" in f["~/Documents"]["text"]
     assert f["~"]["state"] == "done" and "fillers written in 1 round" in f["~"]["text"]
     assert any("TRIM test shows" in x for x in r["explanation"]) and r["trimmed"] == 4096
-    assert (home / "Documents/keep.txt").read_text() == "x" and sorted(os.listdir(home)) == [".cache", "Documents", "link"]
+    assert (home / "Documents/keep.txt").read_text() == "x" and sorted(os.listdir(home)) == [".cache", ".local", "Documents",
+                                                                                           "link"]
+    assert not (home / ".local/state/daprivacyscanner" / R.NOTE_NAME).exists()          # the note goes once done
 
 
 def test_the_server_lists_plans_and_cleans(cat, root, monkeypatch):

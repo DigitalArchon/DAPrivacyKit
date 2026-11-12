@@ -6,13 +6,16 @@ of them) and trims. Nothing is kept: no undo log entry (entries are moved, not c
 nothing to put back), no paths written anywhere.
 
 Rebuilding a folder: a new folder beside it with the same permissions, group, access control lists,
-extended attributes and attribute flags; every entry renamed into it (the same filesystem, so nothing
-is copied; links, hard links and special files move the same way); the two swapped in one step
-(renameat2 RENAME_EXCHANGE, so the path never goes missing) and the old one, now empty, removed. Its
-blocks, the deleted names in them included, become free space, which fstrim then trims. Refused while
-any program has something in it open (holders: "Close X first"), with a socket in it (a program
-listens there), or when it is immutable. Watchers (sync clients, file managers, indexers) follow the
-old folder and lose track until they look again.
+extended attributes and attribute flags; every file, link and special file given a second name in it (a
+hard link: nothing is copied, and the folder keeps every file at its own path meanwhile), then its
+subfolders moved into it, last; the two swapped in one step (renameat2 RENAME_EXCHANGE, so the path never
+goes missing); then the old folder's names go, what programs did in it meanwhile followed into the new one
+(_reconcile), and the old folder is removed. Its blocks, the deleted names in them included, become free
+space, which fstrim then trims. Refused while any program has something in it open (holders: "Close X
+first"), with a socket in it (a program listens there), when it is immutable, or encrypted with fscrypt.
+Watchers (sync clients, file managers, indexers) follow the old folder and lose track until they look
+again. While a folder is done, a note in the state folder says which (Note), so a crash in the middle is
+finished from the panel (recover).
 
 Fillers, the default for a small folder (one block of entries, not indexed) and for folders that
 can't be renamed (the home itself, a disk's top folder, one with a disk mounted in it) or where TRIM
@@ -39,6 +42,7 @@ from __future__ import annotations
 import ctypes
 import errno
 import fcntl
+import json
 import os
 import re
 import secrets
@@ -59,6 +63,9 @@ FILLER_ROUNDS = 60
 RENAME_NOREPLACE, RENAME_EXCHANGE = 1, 2
 FS_IOC_GETFLAGS, FS_IOC_SETFLAGS = 0x80086601, 0x40086602
 FS_IMMUTABLE_FL, FS_APPEND_FL, FS_INDEX_FL, FS_CASEFOLD_FL = 0x10, 0x20, 0x1000, 0x40000000
+FS_ENCRYPT_FL = 0x800
+ENCRYPTED = ("It is encrypted with fscrypt (a folder of its own encryption): a new folder wouldn't have its key, and its "
+             "entries can't be moved into one that doesn't.")
 # attribute flags a folder's owner may set, copied to the rebuilt folder: sync, compression, nodump,
 # noatime, nocompress, journal data, dirsync, topdir, nocow, project inherit, casefold
 COPIED_FLAGS = 0x8 | 0x4 | 0x40 | 0x80 | 0x400 | 0x4000 | 0x10000 | 0x20000 | 0x800000 | 0x20000000 | FS_CASEFOLD_FL
@@ -286,6 +293,8 @@ def item(host: Host, t: dict, r: dict, rel: str, procs: _Procs, seen: N.Seen, pr
         if it.method == "rebuild":
             if parent is None or not os.access(".", os.W_OK | os.X_OK, dir_fd=parent):
                 it.blockers.append("You can't create a folder beside it.")
+            if flags & FS_ENCRYPT_FL:
+                it.blockers.append(ENCRYPTED)
             users = sorted(holders(procs, path))
             if users:
                 it.blockers.append(f"Close {', '.join(users)} first: {'it is' if len(users) == 1 else 'they are'} using "
@@ -325,9 +334,10 @@ def plan(host: Host, mount: str, rels: list[str], rebuild_rels: list[str] = ()) 
     for i in ok:
         if i.method == "rebuild":
             steps.append(f"Rebuild {i.display}: make a new folder beside it with the same permissions, group, access "
-                         f"control lists and extended attributes, move its {i.entries} "
-                         f"{'entry' if i.entries == 1 else 'entries'} into it (renamed: nothing is copied), swap the two "
-                         "in one step and remove the old one, now empty.")
+                         f"control lists and extended attributes, give each of its {i.entries} "
+                         f"{'entry' if i.entries == 1 else 'entries'} a second name in it (a hard link: nothing is "
+                         "copied, and the folder keeps every file meanwhile) and move its subfolders into it, swap the "
+                         "two in one step, then remove the old one's names, and the old folder.")
         else:
             steps.append(f"Fillers in {i.display}: write empty files named with underscores and a number, as long as the "
                          "deleted names, a round at a time, reading the folder's records after each round, until the "
@@ -339,11 +349,28 @@ def plan(host: Host, mount: str, rels: list[str], rebuild_rels: list[str] = ()) 
         steps.append("Read the folders, the records they had and the journal's copies of them again for the names, and "
                      "show what is left.")
     effects = []
+    if ok and N.ext4_wipes_names(host):
+        effects.append("This kernel (Linux 5.13 or later) overwrites a name in its folder's own records as its file is "
+                       "deleted, so the names these clean-ups reach were left there before: by an older kernel, or "
+                       "another system using this disk. Names of files deleted lately are in the journal instead, and "
+                       "Clear the journal is what removes those, safely and at once: it is the one to use first.")
     if any(i.method == "rebuild" for i in ok):
         effects.append("A rebuilt folder is a new folder at the same place: programs that watch folders (sync clients, "
                        "file managers, search indexers) may lose track of it until they look again, and an open file "
                        "manager window may need refreshing. The temporary name it had (.name.rebuild-…) stays in the "
                        "folder above as a deleted name, and the list says so when it shows it.")
+        effects.append("While it runs, every file stays in the folder (they get a second name in the new one, which "
+                       "doesn't copy them); only its subfolders are missing from it, for the moment it takes to move "
+                       "them. A program reading the folder just then (a backup run, a sync client's scan) can miss them "
+                       "for that run. The files' change time (ctime) moves, so a backup tool that goes by it (borg) "
+                       "reads them again once.")
+    if ok:
+        effects.append("What the app can't see before it starts: programs of other accounts and the system's (a backup "
+                       "or Docker running as root, a virtual machine given the folder), and the folder shared over the "
+                       "network (NFS, Samba) or into a virtual machine. Stop those first if any of them uses it.")
+        effects.append(f"While a folder is being done, a note of which one and what is under way is kept in {note_path(host)} "
+                       "(only the app reads it), and deleted as soon as that folder is done: if the app is ended part-way "
+                       "(a crash, a logout, a power cut), the panel then offers to finish it.")
     if any(i.method == "fillers" for i in ok):
         effects.append("Files appear in the folder for a moment and are deleted again; file managers and indexers may "
                        "notice them. Their names (such as ___12) then stay where the deleted names were, and the list "
@@ -415,6 +442,91 @@ def _move(src: int, name: str, dst: int) -> None:
 
 EXCHANGE = _exchange                           # tests replace them
 MOVE = _move
+
+
+def _link(src: int, name: str, dst: int) -> bool:
+    """A second name for `name` of folder `src` in folder `dst`: a hard link (linkat without AT_SYMLINK_FOLLOW, so a
+    symbolic link is linked as itself, never what it points to), and `src` keeps its own name for it. False where it
+    can't be linked (the kernel's protected_hardlinks keeps you from linking a file you don't own and can't write; a
+    file with ext4's 65,000 links): it is moved instead. A name already taken in `dst` raises FileExistsError."""
+    try:
+        os.link(name, name, src_dir_fd=src, dst_dir_fd=dst, follow_symlinks=False)
+        return True
+    except FileExistsError:
+        raise
+    except OSError as e:
+        if e.errno in (errno.EPERM, errno.EACCES, errno.EMLINK):
+            return False
+        raise
+
+
+LINK = _link                                   # tests replace it
+
+
+def _ident(fd: int, name: str) -> tuple[int, int] | None:
+    try:
+        st = os.stat(name, dir_fd=fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return None
+    return st.st_dev, st.st_ino
+
+
+def _carry(old: int, new: int, linked: dict, moved: list) -> None:
+    """Every entry of `old` into `new`. Files, links and special files are hard-linked (LINK): `old` keeps them, so
+    the folder stays whole for every program reading it until the swap (emptying it at its live path first, as
+    before, left ~/Documents partly or wholly empty for that time to a backup, a sync client's scan or an app
+    starting). Folders, and what can't be linked, are moved (MOVE) last, so the time they are missing is the time
+    their renames take. Fills `linked` (name -> the file's identity) and `moved` as it goes, for undoing."""
+    later = []
+    for n in os.listdir(old):
+        st = os.stat(n, dir_fd=old, follow_symlinks=False)
+        if stat.S_ISDIR(st.st_mode) or not LINK(old, n, new):
+            later.append(n)
+            continue
+        linked[n] = _ident(new, n)
+    for n in later:
+        MOVE(old, n, new)
+        moved.append(n)
+
+
+def _uncarry(old: int, new: int, linked: dict, moved: list) -> None:
+    """Before the swap: what _carry did, undone. Moved entries go back (never over a name taken meanwhile:
+    FileExistsError), and the second names it made are removed where they still name the file they were made for;
+    a file a program deleted from the folder meanwhile is then gone, as the program meant. The second names first,
+    which is always safe, so a move that can't go back leaves only what was moved in the new folder."""
+    for n, ident in linked.items():
+        if _ident(new, n) == ident:
+            os.unlink(n, dir_fd=new)
+    for n in reversed(moved):
+        MOVE(new, n, old)
+
+
+def _reconcile(old: int, new: int, linked: dict) -> int:
+    """After the swap: the old folder, hidden now, still holds every file's first name, and what programs did in it
+    while the entries were carried over. A name for the same file as in the new folder is dropped; one the new folder
+    lacks (made meanwhile) moves into it; one a program saved over meanwhile (a new file under that name, while the new
+    folder still has the link to the old one) takes the old one's place there. A file deleted meanwhile is deleted
+    from the new folder too. What is left (both changed) stays in the old folder, which the caller names. Returns how
+    many came over."""
+    names = os.listdir(old)
+    came = 0
+    for n in names:
+        mine, theirs = _ident(old, n), _ident(new, n)
+        if mine is None:
+            continue
+        if theirs is None:
+            MOVE(old, n, new)
+            came += 1
+        elif mine == theirs:
+            os.unlink(n, dir_fd=old)               # a folder has one name, so this is a file's second
+        elif linked.get(n) == theirs and _renameat2(old, n, new, n, RENAME_EXCHANGE):
+            os.unlink(n, dir_fd=old)               # the link to the version it replaced
+            came += 1
+    there = set(names)
+    for n, ident in linked.items():
+        if n not in there and _ident(new, n) == ident:
+            os.unlink(n, dir_fd=new)
+    return came
 
 
 def _move_all(src: int, dst: int) -> int:
@@ -498,11 +610,13 @@ def _finish(old: int, new: int, st: os.stat_result) -> list[str]:
     return notes
 
 
-def rebuild(top: Path, rel: str) -> dict:
-    """Rebuilds the folder at `rel` under `top` (see the module docstring). Returns {"moved", "notes"}.
-    On a failure before the swap, everything is moved back and the new folder removed. Where that
-    can't be done, or something fails after the swap, entries left in the second folder raise
-    Incomplete, which names it: no entry is ever replaced or deleted."""
+def rebuild(top: Path, rel: str, record: Callable[[dict], None] = lambda info: None) -> dict:
+    """Rebuilds the folder at `rel` under `top` (see the module docstring). Returns {"moved", "notes"}: how many
+    entries the new folder took over. Files are hard-linked into the new folder, so the folder keeps them at its own
+    path until the swap; only its subfolders are moved, last (_carry). On a failure before the swap, that is undone
+    and the new folder removed. Where that can't be done, or something fails after the swap, entries left in the
+    second folder raise Incomplete, which names it: no entry is ever replaced or deleted. `record` is told the names
+    used before the new folder is made (the recovery note, `Interrupted`)."""
     parent, old = open_folder(top, rel)
     if parent is None:
         os.close(old)
@@ -510,16 +624,22 @@ def rebuild(top: Path, rel: str) -> dict:
     name = rel.rsplit("/", 1)[-1]
     tag = secrets.token_hex(4)
     tmp = f".{name}.rebuild-{tag}" if len(os.fsencode(name)) <= 230 else f".rebuild-{tag}"
+    gone = f".{tmp}-old" if len(os.fsencode(tmp)) < 250 else f".old-{tag}"
     try:
         st = os.fstat(old)
-        if st.st_uid != os.geteuid() or _flags(old) & (FS_IMMUTABLE_FL | FS_APPEND_FL):
+        flags = _flags(old)
+        if st.st_uid != os.geteuid() or flags & (FS_IMMUTABLE_FL | FS_APPEND_FL):
             raise Refused("That folder can't be rebuilt.")
+        if flags & FS_ENCRYPT_FL:
+            raise Refused(ENCRYPTED)
+        record({"tmp": tmp, "gone": gone, "dev": st.st_dev, "ino": st.st_ino})
         os.mkdir(tmp, 0o700, dir_fd=parent)
         new = os.open(tmp, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent)
-        moved = 0
+        linked: dict[str, tuple[int, int]] = {}
+        moved: list[str] = []
         try:
             notes = _prepare(old, new, st)
-            moved = _move_all(old, new)
+            _carry(old, new, linked, moved)
             notes += _finish(old, new, st)
             os.fsync(new)
             # the swap goes by name: the name must still be the folder its entries came from (renamed and another
@@ -531,9 +651,9 @@ def rebuild(top: Path, rel: str) -> dict:
             if now is None or (now.st_dev, now.st_ino) != (st.st_dev, st.st_ino):
                 raise Refused("it was renamed or replaced while its entries were moved")
         except BaseException as e:
-            back = None                          # why moving the entries back stopped, if it did
+            back = None                          # why undoing stopped, if it did
             try:
-                _move_all(new, old)
+                _uncarry(old, new, linked, moved)
                 os.rmdir(tmp, dir_fd=parent)
             except OSError as b:
                 back = b
@@ -546,20 +666,20 @@ def rebuild(top: Path, rel: str) -> dict:
         if EXCHANGE(parent, name, tmp):
             gone = tmp
         else:                                    # no RENAME_EXCHANGE: the name is missing for a moment
-            gone = f".{tmp}-old" if len(os.fsencode(tmp)) < 250 else f".old-{tag}"
             os.rename(name, gone, src_dir_fd=parent, dst_dir_fd=parent)
             try:
                 os.rename(tmp, name, src_dir_fd=parent, dst_dir_fd=parent)
             except OSError as e:                 # put the old one back where it was
                 os.rename(gone, name, src_dir_fd=parent, dst_dir_fd=parent)
                 raise Incomplete(_why(e), tmp, _entries(parent, tmp)) from e
-        # anything created in the old folder after the moves follows into the new one
+        # the old folder's names go: each file is in the new one; what programs did meanwhile follows into it
+        came = 0
         try:
             left = os.open(gone, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent)
             try:
                 now = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent)
                 try:
-                    moved += _move_all(left, now)
+                    came = _reconcile(left, now, linked)
                     os.fsync(now)
                 finally:
                     os.close(now)
@@ -570,9 +690,248 @@ def rebuild(top: Path, rel: str) -> dict:
             raise Incomplete(_why(e), gone, _entries(parent, gone)) from e
         os.utime(name, ns=(st.st_atime_ns, st.st_mtime_ns), dir_fd=parent, follow_symlinks=False)
         os.fsync(parent)
-        return {"moved": moved, "notes": notes}
+        return {"moved": len(linked) + len(moved) + came, "notes": notes}
     finally:
         os.close(old)
+        os.close(parent)
+
+
+# ------------------------------------------------------------------ the recovery note
+
+NOTE_NAME = "names-interrupted.json"
+
+
+def note_path(host: Host) -> Path:
+    from ..paths import PathResolver
+    return PathResolver(host.home, host.environ).state_home / "daprivacyscanner" / NOTE_NAME
+
+
+def _lock_path(host: Host) -> Path:
+    """The lock that tells a running copy's note from an interrupted one: in the runtime folder (memory), which
+    every running copy shares and nothing outlives, so no empty file of it stays on the disk."""
+    base = host.environ.get("XDG_RUNTIME_DIR")
+    return Path(base) / "daprivacyscanner-names.lock" if base and os.path.isdir(base) else \
+        note_path(host).with_suffix(".lock")
+
+
+class Note:
+    """The recovery note, kept only while a folder is rebuilt or filled: $XDG_STATE_HOME/daprivacyscanner/
+    names-interrupted.json (0600), with the folder's place (under the home, or the disk's top), the temporary names a
+    rebuild uses and the fillers made so far; deleted as soon as that folder is done, whatever the outcome. A crash,
+    a logout or a power cut in between leaves it, and the panel then finishes or undoes what was interrupted
+    (`recover`): no entries left in a hidden .NAME.rebuild-… folder that nothing remembers, no fillers left in a
+    live folder. A lock (_lock_path) is held while it is in use, so a copy of the app that is running one isn't
+    taken for one interrupted."""
+
+    def __init__(self, host: Host, r: dict, rel: str, kind: str):
+        self.path, self.lock_path = note_path(host), _lock_path(host)
+        self.data = {"kind": kind, "scope": r["scope"], "root": r["root"], "rel": rel, "started": time.time()}
+        self.lock: int | None = None
+
+    def __enter__(self) -> "Note":
+        self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        self.lock = os.open(self.lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+        try:
+            fcntl.flock(self.lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            os.close(self.lock)
+            self.lock = None
+            raise Refused("Another copy of the app is cleaning a folder now.") from None
+        if self.path.exists():                       # an interrupted one, not finished yet: never written over
+            self._release()
+            raise Refused(UNFINISHED)
+        self.write()
+        return self
+
+    def write(self, **more) -> None:
+        self.data.update(more)
+        tmp = self.path.with_name(f".{self.path.name}.{secrets.token_hex(4)}")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+        try:
+            os.write(fd, json.dumps(self.data).encode())
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.replace(tmp, self.path)
+
+    def _release(self) -> None:
+        if self.lock is not None:
+            os.close(self.lock)
+            self.lock = None
+
+    def __exit__(self, *exc) -> None:
+        try:
+            self.path.unlink(missing_ok=True)
+        finally:
+            self._release()
+
+
+UNFINISHED = ("A clean-up of a folder was interrupted (the app ended while it ran): finish it first (the panel offers to), "
+              "so nothing of it is left half-done.")
+
+
+def _read_note(host: Host) -> tuple[dict | None, int | None]:
+    """(the note, the lock held on it) when one is left and no copy of the app is using it; (None, None) otherwise."""
+    path = note_path(host)
+    if not path.exists():
+        return None, None
+    try:
+        lock = os.open(_lock_path(host), os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    except OSError:
+        return None, None
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        os.close(lock)
+        return None, None                            # running in a copy of the app now
+    try:
+        note = json.loads(path.read_text())
+        if not isinstance(note, dict) or note.get("kind") not in ("rebuild", "fillers") or \
+                not isinstance(note.get("rel"), str) or note.get("scope") not in ("home", "mount"):
+            raise ValueError
+    except (OSError, ValueError):
+        note = {"kind": "unreadable"}
+    return note, lock
+
+
+def _shown(note: dict) -> str:
+    top = "~" if note.get("scope") == "home" else str(note.get("root", "")).rstrip("/")
+    return top + (f"/{note['rel']}" if note.get("rel") else "")
+
+
+def interrupted(host: Host) -> dict | None:
+    """What the panel says of a clean-up a crash or power cut interrupted: {"kind", "path", "text"}, or None."""
+    note, lock = _read_note(host)
+    if lock is not None:
+        os.close(lock)
+    if note is None:
+        return None
+    if note["kind"] == "unreadable":
+        return {"kind": "unreadable", "path": "", "text": f"A note an interrupted clean-up left ({note_path(host)}) can't be "
+                "read. Finishing removes it; look in the folders you cleaned for a hidden .NAME.rebuild-… folder, or for "
+                "empty files named with underscores and a number."}
+    what = ("its entries were being moved into a new folder" if note["kind"] == "rebuild" else
+            "empty files (fillers) were being written into it")
+    return {"kind": note["kind"], "path": _shown(note),
+            "text": f"Cleaning {_shown(note)} was interrupted while {what}. Finish it: the app puts everything back where "
+                    "it belongs" + (" and removes the fillers" if note["kind"] == "fillers" else "") + "."}
+
+
+def recover(host: Host) -> dict:
+    """Finishes or undoes what the note says was interrupted, then deletes the note. Returns {"text", "commands"}:
+    what was done, and the commands for what couldn't be put back (an entry whose name was taken meanwhile)."""
+    note, lock = _read_note(host)
+    if note is None:
+        return {"text": "Nothing was interrupted.", "commands": []}
+    try:
+        if note["kind"] == "unreadable":
+            return {"text": "The note was removed.", "commands": []}
+        top = N.top_of(host, {"scope": note["scope"], "root": note["root"]})
+        if note["kind"] == "fillers":
+            return _recover_fillers(top, note)
+        return _recover_rebuild(top, note)
+    finally:
+        note_path(host).unlink(missing_ok=True)
+        os.close(lock)
+
+
+def _recover_fillers(top: Path, note: dict) -> dict:
+    try:
+        parent, fd = open_folder(top, note["rel"])
+    except Refused:
+        return {"text": f"{_shown(note)} isn't there any more: nothing was left to remove.", "commands": []}
+    if parent is not None:
+        os.close(parent)
+    # fillers are empty files of the user's, named with underscores and a number, as long as the names they were
+    # for, made since the clean-up started (a file of the same name the user had before is passed over, as making them
+    # passed it over)
+    lengths = {x for x in note.get("lengths") or [] if isinstance(x, int)}
+    since = float(note.get("started") or 0) - 2
+    removed = 0
+    try:
+        for n in os.listdir(fd):
+            if not N.FILLER.match(n) or len(os.fsencode(n)) not in lengths:
+                continue
+            try:
+                st = os.stat(n, dir_fd=fd, follow_symlinks=False)
+                if stat.S_ISREG(st.st_mode) and st.st_size == 0 and st.st_uid == os.geteuid() and st.st_ctime >= since:
+                    os.unlink(n, dir_fd=fd)
+                    removed += 1
+            except FileNotFoundError:
+                continue
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    return {"text": f"{removed} {'filler' if removed == 1 else 'fillers'} left in {_shown(note)} removed; nothing of yours "
+                    "was touched.", "commands": []}
+
+
+def _sort_back(src: int, dst: int) -> int:
+    """`src`'s entries back into `dst`, as an interrupted rebuild left them: a second name of a file `dst` has is
+    removed, an entry `dst` lacks moves into it, and one whose name `dst` has for something else stays. Returns how
+    many stay."""
+    left = 0
+    for n in os.listdir(src):
+        mine, theirs = _ident(src, n), _ident(dst, n)
+        if mine is None:
+            continue
+        if theirs is None:
+            MOVE(src, n, dst)
+        elif mine == theirs:
+            os.unlink(n, dir_fd=src)
+        else:
+            left += 1
+    return left
+
+
+def _recover_rebuild(top: Path, note: dict) -> dict:
+    rel = note["rel"]
+    up, name = rel.rsplit("/", 1) if "/" in rel else ("", rel)
+    try:
+        g, parent = open_folder(top, up)
+    except Refused:
+        return {"text": f"The folder {_shown(note)} was in isn't there any more.", "commands": []}
+    if g is not None:
+        os.close(g)
+    tmp, gone, orig = str(note.get("tmp", "")), str(note.get("gone", "")), (note.get("dev"), note.get("ino"))
+    try:
+        if not N.REBUILT.match(tmp) or (gone and not N.REBUILT.match(gone)):
+            return {"text": "The note named no folder of the rebuild's: nothing was changed.", "commands": []}
+        ids = {n: _ident(parent, n) for n in (name, tmp, gone) if n}
+        old = next((n for n in (name, gone, tmp) if n and ids.get(n) == tuple(orig)), None)
+        if old is None:                          # the folder itself is gone: what the rebuild made is all there is
+            old = next((n for n in (tmp, gone) if n and ids.get(n) is not None), None)
+            if old is not None and ids.get(name) is None:
+                os.rename(old, name, src_dir_fd=parent, dst_dir_fd=parent)
+                return {"text": f"{_shown(note)} is back, from the new folder the rebuild had made.", "commands": []}
+            other = old
+        else:
+            if old != name and ids.get(name) is None:
+                os.rename(old, name, src_dir_fd=parent, dst_dir_fd=parent)  # between the two renames: put it back
+                ids[name], ids[old], old = ids[old], None, name
+            # the other folder of the two: the new one before the swap (at tmp), the old one after it (where it went)
+            other = tmp if old == name else old
+        into = name
+        if other is None or ids.get(other) is None or ids.get(into) is None:
+            return {"text": f"{_shown(note)} is as it should be: nothing of the rebuild was left.", "commands": []}
+        src = os.open(other, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent)
+        dst = os.open(into, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent)
+        try:
+            left = _sort_back(src, dst)
+            os.fsync(dst)
+        finally:
+            os.close(src)
+            os.close(dst)
+        if not left:
+            os.rmdir(other, dir_fd=parent)
+            return {"text": f"{_shown(note)} is whole again: every entry is in it, and the folder the rebuild used is "
+                            "removed.", "commands": []}
+        above = _shown(note).rsplit("/", 1)[0] if "/" in _shown(note) else _shown(note)
+        return {"text": f"{_shown(note)} is whole again but for {left} {'entry' if left == 1 else 'entries'} whose name "
+                        f"was taken there meanwhile, left in {above}/{other}: look at {'it' if left == 1 else 'them'} "
+                        "and move back what you want to keep (the command below replaces nothing).",
+                "commands": _leftover_commands(f"{above}/{other}", _shown(note), left)}
+    finally:
         os.close(parent)
 
 
@@ -590,10 +949,11 @@ def filler_names(length: int):
 
 
 def fillers(top: Path, rel: str, left: list[str], recheck: Callable[[], list[str]],
-            cancelled: Callable[[], bool] = lambda: False) -> dict:
+            cancelled: Callable[[], bool] = lambda: False, record: Callable[[list[int]], None] = lambda lengths: None) -> dict:
     """Writes fillers into the folder until the names in `left` are gone from its records
     (`recheck` reads them again through the helper) or the cap is reached, then deletes them.
-    Returns {"written", "rounds", "left"}."""
+    `record` is told, before each round, the lengths of the names it will make (the recovery note: what a crash
+    in the middle leaves can be told from the user's own files). Returns {"written", "rounds", "left"}."""
     parent, fd = open_folder(top, rel)
     if parent is not None:
         os.close(parent)
@@ -610,9 +970,14 @@ def fillers(top: Path, rel: str, left: list[str], recheck: Callable[[], list[str
                 except FileExistsError:
                     continue                     # a file of the user's has that name: the next one
             return None
+        lengths: set[int] = set()
         while left and len(made) < FILLERS_MAX and rounds < FILLER_ROUNDS:
             if cancelled():
                 break
+            now = lengths | {len(os.fsencode(n)) for n in left}
+            if now != lengths:
+                record(sorted(now))
+                lengths = now
             for n in left:
                 if len(made) >= FILLERS_MAX:
                     break
@@ -673,28 +1038,39 @@ def run(host: Host, mount: str, rels: list[str], privileged: Callable[[], object
     done: list[dict] = [{"path": i.display, "rel": i.rel, "method": i.method, "skipped": " ".join(i.blockers)}
                         for i in items if i.blockers]
     treated = []
+    if todo and interrupted(host):
+        raise Refused(UNFINISHED)
     try:
         for n, i in enumerate(todo):
             if job.get("cancel"):
                 raise N.Stopped("Stopped.")
             begin(f"f{n}")
             out = {"path": i.display, "rel": i.rel, "method": i.method}
+            # looked at again just before: the folders before it can take minutes (fillers), and a program may have
+            # opened, or started watching, this one meanwhile
+            now = item(host, t, r, i.rel, _Procs(host), seen, "rebuild" if i.method == "rebuild" else "")
+            if now.blockers or now.method != i.method:
+                out["skipped"] = " ".join(now.blockers) or "What can be done for it changed since the plan: plan it again."
+                done.append(out)
+                continue
             try:
-                if i.method == "rebuild":
-                    try:
-                        out.update(rebuild(top, i.rel))
-                    except Incomplete as e:
-                        above = i.display.rsplit("/", 1)[0] if "/" in i.display else i.display
-                        out.update(error=e.reason, leftover=f"{above}/{e.folder}", leftover_count=e.count)
-                else:
-                    first = helper().call("names_folder", {"path": i.rel}, CHECK_TIMEOUT)["left"]
-                    out.update(fillers(top, i.rel, first,
-                                       lambda rel=i.rel: helper().call("names_folder", {"path": rel}, CHECK_TIMEOUT)["left"],
-                                       lambda: bool(job.get("cancel"))))
-                    out["listed_left"] = len(first)
-                    # fillers that left names: a rebuild reaches them, where one is possible here
-                    out["can_rebuild"] = bool(out["left"]) and \
-                        N.remedy(host, t, r, i.rel, seen, "rebuild")["method"] == "rebuild"
+                with Note(host, r, i.rel, i.method) as note:
+                    if i.method == "rebuild":
+                        try:
+                            out.update(rebuild(top, i.rel, lambda info: note.write(**info)))
+                        except Incomplete as e:
+                            above = i.display.rsplit("/", 1)[0] if "/" in i.display else i.display
+                            out.update(error=e.reason, leftover=f"{above}/{e.folder}", leftover_count=e.count)
+                    else:
+                        first = helper().call("names_folder", {"path": i.rel}, CHECK_TIMEOUT)["left"]
+                        out.update(fillers(top, i.rel, first,
+                                           lambda rel=i.rel: helper().call("names_folder", {"path": rel},
+                                                                           CHECK_TIMEOUT)["left"],
+                                           lambda: bool(job.get("cancel")), lambda lengths: note.write(lengths=lengths)))
+                        out["listed_left"] = len(first)
+                        # fillers that left names: a rebuild reaches them, where one is possible here
+                        out["can_rebuild"] = bool(out["left"]) and \
+                            N.remedy(host, t, r, i.rel, seen, "rebuild")["method"] == "rebuild"
                 treated.append(i.rel)
             except Refused as e:
                 out["error"] = str(e)

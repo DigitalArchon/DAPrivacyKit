@@ -4705,7 +4705,23 @@ async function openNames(mount = null) {
       go.disabled = true; go.textContent = data.admin_active ? "Starting…" : "Waiting for authorization…";
       if (!await start()) { go.disabled = false; go.textContent = "Find them"; }
     });
+    // a clean-up of a folder a crash, a logout or a power cut interrupted (rebuild.Note): finished or undone, as you
+    const interrupted = data.interrupted ? (() => {
+      const finish = h("button", { class: "small primary" }, "Finish it");
+      const box = h("div", { class: "warnbox" }, h("b", {}, "Interrupted: "), data.interrupted.text, " ", finish);
+      finish.addEventListener("click", async () => {
+        finish.disabled = true;
+        try {
+          const r = await api("POST", "/api/tools/names/recover");
+          data.interrupted = null;
+          fill(box, r.text, r.commands?.length ? commandBlock(r.commands) : null);
+          box.className = "notebox small";
+        } catch (e) { toast(e.message, "error", 10000); finish.disabled = false; }
+      });
+      return box;
+    })() : null;
     return [
+      interrupted,
       h("p", {}, "When you delete a file, its name often stays on the disk: on ext4 in the journal (and, under older kernels, "
         + "in the folder's own records), on btrfs in old copies of the records. This lists the names of deleted files that can still be read, and clears them where it safely can."),
       h("div", { class: "notebox small" }, h("b", {}, "Who could read them: "), "someone with administrator access to this unlocked "

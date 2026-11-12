@@ -258,6 +258,7 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
     # (ext4); Remove metadata, reading or cleaning files and folders; Tor or Mullvad Browser into the RAM disk
     # (download, verify, unpack); What does this app keep?, the watch, then its result (memory only)
     jobs = app.state.jobs = Jobs(app.state)
+    app.state.names_listed = None          # (mount, the folders the last listing showed): what may be cleaned
     app.state.trim_cleaned = False         # leftovers of an unfinished TRIM test were looked for
     app.state.erase_facts = {}             # Retire a drive: what each drive said about erasing, this session only
     app.state.trial = None                 # Try an app: the one trial, its sandbox and its report (memory only)
@@ -1974,6 +1975,8 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
                     raise names.Stopped("Stopped: nothing was listed.")
                 job["result"] = await in_thread(names.scan, host, mount, lambda: admin.get(prompt=False), job,
                                                 trim_passed(mount), name="names")
+            # the folders it showed (their paths, never the names): a clean-up or check may name only these
+            app.state.names_listed = (mount, frozenset(f["rel"] for f in job["result"]["folders"]))
             job["state"] = "done"
         except names.Stopped as e:
             job["state"], job["error"] = "stopped", str(e)
@@ -1989,12 +1992,13 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
     @app.get("/api/tools/names", dependencies=[Depends(auth)])
     async def tools_names():
         """The filesystems whose names can be listed."""
-        from .tools import names
+        from .tools import names, rebuild
         host = make_host()
         targets = await asyncio.to_thread(names.targets, host)
         for t in targets:
             t["trim_passed"] = trim_passed(t["mount"])
-        return {"targets": targets, "admin_active": admin.active(), "busy": trim_running()}
+        return {"targets": targets, "admin_active": admin.active(), "busy": trim_running(),
+                "interrupted": await asyncio.to_thread(rebuild.interrupted, host)}
 
     @app.post("/api/tools/names/start", dependencies=[Depends(auth)])
     async def tools_names_start(request: Request):
@@ -2030,6 +2034,7 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
                 job["cancel"] = True
                 if job["state"] not in ("asking", "running"):
                     setattr(app.state, attr, None)
+        app.state.names_listed = None
         h = admin.get(prompt=False) if admin.active() else None
         if h is not None and not trim_running():
             try:
@@ -2038,16 +2043,45 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
                 pass
         return {"job": None}
 
+    def not_listed(mount: str, rels: list[str]) -> JSONResponse | None:
+        """Folders the last listing didn't show (the page names them; a clean-up must never reach further)."""
+        listed = app.state.names_listed
+        if listed is None or listed[0] != mount or not set(rels) <= listed[1]:
+            return JSONResponse({"error": "Those folders weren't in the list of deleted names: list the names again."},
+                                status_code=409)
+        return None
+
+    @app.get("/api/tools/names/interrupted", dependencies=[Depends(auth)])
+    async def tools_names_interrupted():
+        """A clean-up of a folder that a crash, a logout or a power cut interrupted (rebuild.Note), if any."""
+        from .tools import rebuild
+        return {"interrupted": await asyncio.to_thread(rebuild.interrupted, make_host())}
+
+    @app.post("/api/tools/names/recover", dependencies=[Depends(auth)])
+    async def tools_names_recover():
+        """Finishes or undoes it (as the user: the folders are theirs), then forgets the note."""
+        from .tools import rebuild
+        if app.state.clean_job is not None and app.state.clean_job["state"] in ("asking", "running"):
+            return JSONResponse({"error": "A clean-up is running."}, status_code=409)
+        try:
+            return await asyncio.to_thread(rebuild.recover, make_host())
+        except OSError as e:
+            return JSONResponse({"error": f"It couldn't be finished: {e.strerror or e}."}, status_code=409)
+
     @app.post("/api/tools/names/plan", dependencies=[Depends(auth)])
     async def tools_names_plan(request: Request):
         """Body {"mount", "folders": [path under the listing's top], "rebuild": [those to rebuild
-        rather than fill]}: what cleaning them would do now (the dry run). Changes nothing."""
+        rather than fill]}: what cleaning them would do now (the dry run). Changes nothing. Only folders the last
+        listing showed."""
         from .tools import rebuild
         body = await body_of(request)
         mount, rels, again = body.get("mount"), body.get("folders"), body.get("rebuild") or []
         if not isinstance(mount, str) or not isinstance(rels, list) or not all(isinstance(x, str) for x in rels) \
                 or not 0 < len(rels) <= 500 or not isinstance(again, list) or not all(isinstance(x, str) for x in again):
             return JSONResponse({"error": "Choose the folders to clean."}, status_code=400)
+        refused = not_listed(mount, rels)
+        if refused:
+            return refused
         try:
             return {"plan": await asyncio.to_thread(rebuild.plan, make_host(), mount, rels, again),
                     "admin_active": admin.active()}
@@ -2100,6 +2134,9 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
             return JSONResponse({"error": "The TRIM test or another listing is still running."}, status_code=409)
         if keeps_running():
             return watching()
+        refused = not_listed(mount, rels)
+        if refused:
+            return refused
         job = Job("clean", "asking", phase="Starting", steps=[], result=None, error="", mount=mount, started=time.time())
         try:
             jobs.start(job, lambda j: run_clean_job(j, mount, rels, again))
@@ -2123,6 +2160,9 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
             return JSONResponse({"error": "Which folders?"}, status_code=400)
         if trim_running():
             return JSONResponse({"error": "The TRIM test or another listing is still running."}, status_code=409)
+        refused = not_listed(mount, rels)
+        if refused:
+            return refused
         try:
             with admin.hold():
                 return {"result": await in_thread(rebuild.recheck, make_host(), mount, rels,
