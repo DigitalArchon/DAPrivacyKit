@@ -604,7 +604,7 @@ def user_names(host: Host) -> tuple[str, list[str]]:
 
 
 # Logins and name words that name nobody (a test account's "test", a live session's "user"): a hostname that
-# contains one ("GPUTestPC") doesn't identify its owner
+# contains one ("BuildTestPC") doesn't identify its owner
 GENERIC_NAMES = frozenset({
     "admin", "administrator", "user", "users", "test", "tester", "testing", "guest", "root", "live", "liveuser",
     "demo", "default", "owner", "home", "family", "office", "work", "student", "dev", "developer", "local", "localhost",
@@ -613,14 +613,14 @@ GENERIC_NAMES = frozenset({
 # what follows a name in a hostname made of words run together ("alicepc", "alicelaptop", "jsmithsmacbook")
 _DEVICE_TAIL = re.compile(r"s?(?:pc|laptop|desktop|computer|mac|macbook|book|box|tower|workstation|notebook|thinkpad|"
                           r"server|nb|ws)?\d*")
-# the words of a hostname: split at separators and where the case changes ("GPUTestPC": GPU, Test, PC)
+# the words of a hostname: split at separators and where the case changes ("BuildTestPC": GPU, Test, PC)
 _WORDS = re.compile(r"[A-Z]+(?=[A-Z][a-z])|[A-Z]?[a-z]+|[A-Z]+|\d+")
 
 
 def mentions_name(text: str, login: str, words: list[str]) -> str | None:
     """The login or a word of the full name that `text` (a hostname, a Bluetooth alias) contains as a word of its own,
     possibly followed by a possessive s and a device word ("alice-laptop", "AlicesPC", "jsmith-pc", "alicepc"); never
-    a name inside another word ("ann" in "planner"), nor a login that names nobody ("test" in "GPUTestPC")."""
+    a name inside another word ("ann" in "planner"), nor a login that names nobody ("test" in "BuildTestPC")."""
     words_of = [t.lower() for part in re.split(r"[^A-Za-z0-9]+", text) for t in _WORDS.findall(part)]
     # a word may span a case change or a separator ("JSmithLaptop", "jo-anne-pc"): runs of up to three, from a word's start
     tokens = ["".join(words_of[i:i + n]) for i in range(len(words_of)) for n in (1, 2, 3) if i + n <= len(words_of)]

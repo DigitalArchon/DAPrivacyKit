@@ -1,6 +1,6 @@
 """The tools review of 2026-10-17: bubblewrap's init was the sandbox's PID 1, and everything in the sandbox could read
 its environment (the user, the home folder, SESSION_MANAGER with the computer's name), its command line (every folder
-it binds, in the user's home) and its open files (the start log's path). Tested on p330 and CachyOS."""
+it binds, in the user's home) and its open files (the start log's path). Tested on a lab machine and CachyOS."""
 
 from __future__ import annotations
 

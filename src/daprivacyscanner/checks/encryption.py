@@ -1313,7 +1313,7 @@ class Trash(Check):
 
 # ------------------------------------------------------------------ boot
 
-# EFI_GLOBAL_VARIABLE, the UEFI specification's vendor GUID of SecureBoot, SetupMode, BootOrder... (seen on a P330:
+# EFI_GLOBAL_VARIABLE, the UEFI specification's vendor GUID of SecureBoot, SetupMode, BootOrder... (seen on a lab PC:
 # SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c; a wrong one made every UEFI machine "not supported")
 EFI_GLOBAL = "8be4df61-93ca-11d2-aa0d-00e098032b8c"
 EFI_SECURE_BOOT = f"/sys/firmware/efi/efivars/SecureBoot-{EFI_GLOBAL}"

@@ -631,7 +631,7 @@ def test_docker_finding_says_docker_user_rules_arent_read(cat, tmp_path):
     ("alice-laptop", "alice", [], "alice"), ("AlicesPC", "alice", [], "alice"), ("jsmith-pc", "jsmith", [], "jsmith"),
     ("alicepc", "alice", [], "alice"), ("JSmithLaptop", "jsmith", [], "jsmith"),
     ("Alice's MacBook Pro", "x", ["Alice", "Smith"], "Alice"),
-    ("GPUTestPC", "test", ["Test"], None), ("planner", "bob", ["Ann"], None), ("annual-report", "bob", ["Ann"], None),
+    ("BuildTestPC", "test", ["Test"], None), ("planner", "bob", ["Ann"], None), ("annual-report", "bob", ["Ann"], None),
     ("alicetest", "alice", [], None)])
 def test_mentions_name_matches_whole_words(text, login, words, found):
     assert mentions_name(text, login, words) == found

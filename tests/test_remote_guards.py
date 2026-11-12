@@ -13,7 +13,7 @@ from conftest import make_host, make_scan, sample
 from test_guides import apply, build, options, revert, rooted, system  # noqa: F401 - the fixture
 from test_ssh_checks import ED
 
-SSH_ENV = {"SSH_CONNECTION": "192.168.1.199 40022 192.168.1.213 2222"}
+SSH_ENV = {"SSH_CONNECTION": "203.0.113.5 40022 198.51.100.7 2222"}
 UFW = {"/etc/ufw/ufw.conf": "ENABLED=no\n"}
 
 

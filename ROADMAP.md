@@ -174,7 +174,7 @@ couldn't show. Grouped by what each needs.
 - In the GPU runs, Tor Browser in Xephyr sometimes took 2 to 3 minutes to finish the fingerprint page against 35
   seconds (2 of 4 runs, 2026-10-09); every run fetched httpbin.org through Tor, so probably that request,
   unconfirmed.
-- Shader caches and start scripts (br.shader_cache, br.start_script, NO_SHADER_CACHE; 2026-11-10). Tried on the P330
+- Shader caches and start scripts (br.shader_cache, br.start_script, NO_SHADER_CACHE; 2026-11-10). Tried on a lab PC
   (Mint 22.3, NVIDIA 580, Mesa 25) and the CachyOS VM (Plasma 6.7, Mesa 26, the AUR's mullvad-browser-bin), both
   fixes through the API and reverted. Tor Browser tried too (2026-11-11, the AUR's tor-browser-bin 16.0.1 on the CachyOS
   VM, its menu entry started by gtk-launch, a simulated update; through the API and reverted). Still to try: Cinnamon's

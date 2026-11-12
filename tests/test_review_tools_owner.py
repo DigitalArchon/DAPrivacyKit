@@ -1,5 +1,5 @@
 """The tools review of 2026-10-17: what a copy of the app opened is that copy's (owner.py). Every right-click entry
-starts a copy of its own, and quitting one closed ~/TempBrowser under another (seen on p330); one opening its Try an
+starts a copy of its own, and quitting one closed ~/TempBrowser under another (seen on a lab machine); one opening its Try an
 app panel removed the trial another was running. Another copy is a real process here, holding the locks."""
 
 from __future__ import annotations

@@ -44,7 +44,7 @@ def _gone(pid: int, within: float = 5.0) -> bool:
 def test_the_command_ends_when_the_app_is_killed():
     """An observed trial ran on after the app was killed: pasta was adopted by init, and bubblewrap answers to pasta.
     TETHER, started by a stand-in for the app from a worker thread as the server does, kills its command when the
-    app's process ends (on p330-2: pasta, bubblewrap and the program gone at once)."""
+    app's process ends (on a lab machine: pasta, bubblewrap and the program gone at once)."""
     app = subprocess.Popen([sys.executable, "-I", "-c", """
 import subprocess, sys, threading, time, os
 def start():
@@ -333,7 +333,7 @@ ME, FWD = "10.0.2.15", "169.254.0.1"
 
 
 def test_two_sites_on_one_address_are_two_hosts():
-    """Found live on p330-2: two TLS connections to 1.1.1.1 naming one.one.one.one and site-b.example were shown as
+    """Found live on a lab machine: two TLS connections to 1.1.1.1 naming one.one.one.one and site-b.example were shown as
     one host, named by the last DNS answer for the address, and one.one.one.one as looked up and never connected to."""
     p = [eth(ip4(ME, FWD, 17, udp(4000, 53, _query(1, "one.one.one.one")))),
          eth(ip4(FWD, ME, 17, udp(53, 4000, _answer(1, "one.one.one.one", "1.1.1.1")))),
@@ -359,7 +359,7 @@ def test_two_sites_on_one_address_are_two_hosts():
 
 
 def test_dns_over_tcp_is_read_and_a_hung_lookup_is_one_connection():
-    """Found live on p330-2: DNS over TCP wasn't read (the forwarder showed as a host by its address), and one lookup
+    """Found live on a lab machine: DNS over TCP wasn't read (the forwarder showed as a host by its address), and one lookup
     hanging on a server that didn't answer, its SYN sent again and again, counted as about five connections."""
     q, a = _query(7, "tcp.example"), _answer(7, "tcp.example", "203.0.113.5")
     framed_q, framed_a = struct.pack(">H", len(q)) + q, struct.pack(">H", len(a)) + a

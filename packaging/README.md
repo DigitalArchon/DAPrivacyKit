@@ -165,7 +165,7 @@ could be anything else:
    signing (sub)key, `<fingerprint>!`).
 6. `packaging/build-appimage.sh release v<version>`: refuses a tag that isn't signed by a pinned key or isn't
    `v<version>` of its commit; builds it twice, compared, into `dist/release/v<version>/` with `BUILD-INFO`.
-7. `packaging/second-build.sh v<version> HOST`: another machine (git and rootless Podman; the lab's `p330`) gets a
+7. `packaging/second-build.sh v<version> HOST`: another machine (git and rootless Podman, e.g. a second PC of your own) gets a
    bundle of that one commit, builds it with a builder image and downloads of its own (`FRESH=1`), and its AppImage
    and `.zsync` must be the same bytes; only then is `second-build.txt` written. A machine you can't reach over ssh:
    run `packaging/verify-release.sh v<version> <the SHA-256 here>` there, and record what it printed with

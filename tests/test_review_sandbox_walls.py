@@ -216,7 +216,7 @@ POLICY = D.Policy([*S.FENCE_V4, *S.FENCE_V6, "203.0.113.0/24", "2001:db8:1::/64"
 
 @pytest.mark.parametrize("name, qtype, refused", [
     ("example.com", 1, None), ("mullvad.net", 28, None), ("_dmarc.example.com", 16, None),
-    ("_gateway", 1, "one label"), ("_outbound", 1, "one label"), ("mintdev", 1, "one label"),
+    ("_gateway", 1, "one label"), ("_outbound", 1, "one label"), ("devbox", 1, "one label"),
     ("printer.local", 1, "a local name"), ("nas.lan", 1, "a local name"), ("OPNsense.localdomain", 1, "a local name"),
     ("box.home.arpa", 1, "a local name"),
     ("1.1.168.192.in-addr.arpa", 12, "a local address's name"), ("168.192.in-addr.arpa", 6, "a local address's name"),

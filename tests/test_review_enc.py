@@ -1,4 +1,4 @@
-"""Encryption and kernel checks corrected after the review of 2026-10-17 (what a P330 with Mint 22.3, the Ubuntu 26.04,
+"""Encryption and kernel checks corrected after the review of 2026-10-17 (what a lab PC with Mint 22.3, the Ubuntu 26.04,
 Fedora 44 and Omarchy VMs showed, and what reading the checks against their fixes found)."""
 
 import pytest
@@ -27,7 +27,7 @@ def _efi(host, secure_boot: bytes | None):
                                          (b"\x01", "on (the firmware's SecureBoot setting)"),
                                          (None, "off (the firmware doesn't support Secure Boot)")])
 def test_the_secure_boot_variable_is_read_under_the_efi_global_guid(cat, tmp_path, value, said):
-    """The variable is SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c (seen on the P330, where mokutil says
+    """The variable is SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c (seen on a lab PC, where mokutil says
     "SecureBoot disabled"): a wrong GUID made every UEFI machine "doesn't support Secure Boot"."""
     host = make_host(tmp_path)
     _efi(host, value)
@@ -48,7 +48,7 @@ MINT = {"/etc/os-release": "ID=linuxmint\nID_LIKE=\"ubuntu debian\"\n", MOK: "de
 
 
 def test_secure_boot_guide_enrols_the_drivers_key_first_where_it_isnt(cat, tmp_path):
-    """On the P330 NVIDIA's DKMS module is signed by a key of the machine's own that is neither enrolled nor waiting:
+    """On a lab PC NVIDIA's DKMS module is signed by a key of the machine's own that is neither enrolled nor waiting:
     turning Secure Boot on would leave the driver unloaded, so its enrolment comes first."""
     said = CommandResult((), 1, "", f"Failed to accesss kernel trusted keyring: Required key not available\n"
                                     f"{MOK} is not enrolled\n")
@@ -477,7 +477,7 @@ def _guide(cat, check_id, host, devices, **ctx):
 
 
 def test_random_key_swap_on_lvm_inside_luks_names_the_volume(cat, tmp_path):
-    """The P330: swap on a logical volume inside LUKS. The step printed "cryptswap PARTUUID=<PARTUUID of /dev/dm-2>":
+    """A lab PC: swap on a logical volume inside LUKS. The step printed "cryptswap PARTUUID=<PARTUUID of /dev/dm-2>":
     a logical volume has no PARTUUID."""
     import json
     from daprivacyscanner import blockdev
