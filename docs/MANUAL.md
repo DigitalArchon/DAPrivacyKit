@@ -189,6 +189,13 @@ Click a row for its details:
 These are listed first, never hidden. Most need administrator access: use **Scan with administrator
 access** at the top of the list. A check that couldn't look is never counted as a pass.
 
+Others can't be told from this computer: a browser the app doesn't know (it reads Firefox, LibreWolf, Waterfox,
+Zen and Floorp, and Chrome, Chromium, Brave, Edge, Vivaldi, Opera, Helium, ungoogled-chromium and Cromite), a
+setting left at a default the app doesn't know for that browser, a clipboard manager on a desktop without one of its
+own (Hyprland, Sway, COSMIC), or a public DNS service answering while your lookups may leave outside the VPN. The
+result says what wasn't read, and a pass only ever says what was: "none of the clipboard managers the app knows",
+"the media players the app reads".
+
 ### Accepting a risk
 
 If a finding is a risk you have decided to live with, open it and click **Accept the risk…**. You can add

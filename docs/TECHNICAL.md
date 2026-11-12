@@ -297,6 +297,23 @@ of a `sys_path` in the check modules), and a command's output is taken with `_ut
 Process names come from `procnames.comm`, which reads /proc/PID/comm as bytes (the kernel cuts a name mid-character at
 15 bytes, and any process can set its own).
 
+**Browsers.** `browsers.yaml` is the one registry of where each browser keeps its profiles (`profiles`: a family,
+Chromium or Firefox, and each edition's folders, native, Flatpak and Snap), and of what it ships its settings as
+(`defaults`, read from its own source: Firefox's `firefox.js`, `librewolf.cfg`, the forks' `omni.ja`, Chromium's
+features; a fork `inherits` the rest from its upstream). `_util.chromium_dirs` and `mozilla_profiles` go by it, so
+every settings check reads every browser it lists (Zen, Waterfox, Floorp, Helium, ungoogled-chromium, Cromite with
+Firefox, LibreWolf and the Chromium family). A setting a profile leaves unset is its browser's default, and one no
+table gives is "couldn't tell", never upstream's assumed; a Chromium-family default that changed with a version
+(HTTPS-First mode on by default from 157) goes by the folder's `Last Version`. An installed browser the checks have
+no reader for is named in a note and makes the result partial; with nothing read, the check couldn't check rather
+than saying no profiles were found. Firefox's `/etc` policies count for its native install and Snap only, Chromium's
+managed policies for native installs only.
+
+**What a pass claims.** A pass says only what was read: the firewall's verdict leaves out Docker's published
+ports (forwarded before its input rules), the system's DNS is judged on the links lookups go to, a package mirror
+list is "over HTTPS" only when it asks for HTTPS mirrors, a clipboard or crash-reporting pass names the programs it
+knows, and an online test's public resolver or hosting network passes only where this computer's own routes agree.
+
 Databases are only read through `sqlite_count()`: read-only, `immutable=1`, so a scan never takes a lock
 on an app's database. An immutable reader doesn't see a write-ahead log, where an app using one keeps its newest records
 until a checkpoint (KDE's activity database, Klipper's history, Vorta's settings): when the `-wal` file holds records,
