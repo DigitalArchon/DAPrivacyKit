@@ -8,6 +8,7 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING, Literal, Mapping
 
 from ..model import Evidence, Note, Outcome
 from . import Check, Scan, register
@@ -28,6 +29,10 @@ CHROMIUM_BUILTIN = frozenset({5, 10})
 CHROMIUM_POLICY = frozenset({7, 9})
 BROAD = re.compile(r"^(<all_urls>|(\*|https?|wss?)://\*/.*)$")
 
+if TYPE_CHECKING:
+    from ..browsers import Browser
+    from ..vpn import Provider
+
 
 def _browsers(scan: Scan) -> tuple[list[MozProfile], list[tuple[BrowserDir, list[Path]]]]:
     """Every Firefox-family profile and Chromium-family user data folder of the browsers in browsers.yaml's registry
@@ -40,7 +45,7 @@ def _browsers(scan: Scan) -> tuple[list[MozProfile], list[tuple[BrowserDir, list
 
 # ------------------------------------------------------------------ what the checks read, and each browser's defaults
 
-def _browser_of(p: MozProfile | BrowserDir):
+def _browser_of(p: MozProfile | BrowserDir) -> Browser | None:
     """The browsers.yaml entry of a profile (by its folder's name), or None (Thunderbird)."""
     from ..browsers import load
     return load().by_folder(p.app if isinstance(p, MozProfile) else p.browser)
@@ -209,17 +214,17 @@ def crash_dumps(scan: Scan) -> list[CrashDumps]:
             how = "" if p.install == "native" else f", {p.install}"
             out.append(CrashDumps(f"{p.app}{how}", p.app, root / "Crash Reports" / "pending", files, "mozilla"))
     from .apps import BROWSER_DIRS
-    apps = [(d, d.name) for d in children(scan.paths.config_home)]
+    apps = [(a, a.name) for a in children(scan.paths.config_home)]
     for fp in scan.paths.flatpak_apps():
-        apps += [(d, fp) for d in children(scan.paths.flatpak_root / fp / "config")]
-    for d, owner in apps:
-        if d.name in BROWSER_DIRS or not isdir(d / "Crashpad") or not (isdir(d / "GPUCache") or isdir(d / "Code Cache")):
+        apps += [(a, fp) for a in children(scan.paths.flatpak_root / fp / "config")]
+    for a, owner in apps:
+        if a.name in BROWSER_DIRS or not isdir(a / "Crashpad") or not (isdir(a / "GPUCache") or isdir(a / "Code Cache")):
             continue
         files = []
         for sub in ("pending", "completed", "new", "attachments"):
-            files += files_under(d / "Crashpad" / sub)[0]
+            files += files_under(a / "Crashpad" / sub)[0]
         if files:
-            out.append(CrashDumps(f"{d.name} (Electron)", owner, d / "Crashpad", files, "electron"))
+            out.append(CrashDumps(f"{a.name} (Electron)", owner, a / "Crashpad", files, "electron"))
     return out
 
 
@@ -425,7 +430,8 @@ def pending_note(pending: list[Extension]) -> list[Note]:
                  "it until it next starts, and then forgets it.")]
 
 
-def vpn_extensions(scan: Scan, firefox, chromium, pending: list[Extension] | None = None) -> list[tuple[Extension, object]]:
+def vpn_extensions(scan: Scan, firefox, chromium,
+                   pending: list[Extension] | None = None) -> list[tuple[Extension, Provider]]:
     """Enabled extensions of VPN providers in vpn-providers.yaml: (extension, provider). Those removed but still listed
     until the browser starts go in `pending`."""
     from ..vpn import load
@@ -447,8 +453,8 @@ class VpnExtensions(ProfileCheck):
         pending: list[Extension] = []
         try:
             found = vpn_extensions(scan, firefox, chromium, pending)
-        except DataError as e:
-            return unknown(f"The app's list of VPN providers couldn't be read: {e}")
+        except DataError as err:
+            return unknown(f"The app's list of VPN providers couldn't be read: {err}")
         if not found:
             return passed("No VPN extension from a provider the app knows of is installed.", notes=pending_note(pending))
         ev, notes, bad, findings = [], pending_note(pending), [], {"vpn_avoid": False, "vpn_closed_client": False,
@@ -527,10 +533,12 @@ class HistoryRetention(ProfileCheck):
             policy = chromium_policy(scan, d)
             days = chromium_default(d, "history_days", installed)
             kept = f"kept for {days} days" if isinstance(days, int) else "kept (for how long, the browser decides)"
+            is_brave = d.browser.startswith("Brave")
             for prof in profiles:
                 prefs = read_json(scan.host, prof / "Preferences") or {}
-                brave = (lambda what, prefs=prefs: dig(prefs, *BRAVE_ON_EXIT.format(what).split(".")) is True) \
-                    if d.browser.startswith("Brave") else (lambda what: False)  # noqa: E731
+
+                def brave(what: str, prefs: dict = prefs, on: bool = is_brave) -> bool:
+                    return on and dig(prefs, *BRAVE_ON_EXIT.format(what).split(".")) is True
                 if policy.get("ClearBrowsingDataOnExitList"):
                     state = "cleared when it closes (policy)"
                 elif brave("browsing_history") and brave("cookies"):
@@ -620,7 +628,7 @@ class PrivateDownloadLeak(Check):
         from .apps import kde_activity_count, kde_recent_paths
         apps = sum(1 for p in kde_recent_paths(scan) if p.startswith(prefix))
         activity = kde_activity_count(scan, prefix) or 0
-        related = ("desk.recent_files", "desk.thumbnails", "desk.indexers")
+        related: tuple[str, ...] = ("desk.recent_files", "desk.thumbnails", "desk.indexers")
         if apps:
             ev.append(Evidence.count("Downloads in KDE apps' lists of what they opened", apps))
             related += ("app.kde_recent_files",)
@@ -823,7 +831,7 @@ def chromium_https_default(d: BrowserDir, installed: set[str] | None = None) -> 
 def chromium_https_only(browser: str | BrowserDir, prefs: dict, policy,
                         installed: set[str] | None = None) -> tuple[bool | None, str]:
     d = browser if isinstance(browser, BrowserDir) else None
-    name = d.browser if d else browser
+    name = browser.browser if isinstance(browser, BrowserDir) else browser
     if name.startswith("Brave"):
         setting = dig(prefs, "profile", "default_content_setting_values", "httpsUpgrades")
         if setting is None:               # where its source suggests an every-site rule would be; not seen written
@@ -924,7 +932,7 @@ def chromium_site_permissions(scan: Scan, d: BrowserDir, prof: Path) -> tuple[di
     return counts, defaults
 
 
-def _permission_summary(counts: dict, defaults: dict) -> str:
+def _permission_summary(counts: Mapping, defaults: Mapping) -> str:
     parts = []
     for name, *_ in SITE_PERMISSIONS:
         n = counts.get(name)
@@ -943,7 +951,8 @@ class SitePermissions(ProfileCheck):
 
     def judge(self, scan: Scan, firefox, chromium) -> Outcome:
         ev, allowed, everyone, unread = [], 0, [], []
-        rows = [(p.label, *firefox_site_permissions(scan, p)) for p in firefox]
+        rows: list[tuple[str, Mapping[str, int | None], Mapping[str, int]]] = [
+            (p.label, *firefox_site_permissions(scan, p)) for p in firefox]
         rows += [(f"{d.label}, {prof.name}", *chromium_site_permissions(scan, d, prof))
                  for d, profiles in chromium for prof in profiles]
         for label, counts, defaults in rows:
@@ -1234,7 +1243,7 @@ SYSTEM_APP_DIRS = (("/usr/share/applications", "package"), ("/usr/local/share/ap
 
 @dataclass
 class FoundBrowser:
-    browser: object | None          # browsers.Browser, or None for one the app doesn't know
+    browser: Browser | None         # None for one the app doesn't know
     name: str
     installs: list[str]             # "package", "Flatpak", "Snap", "AppImage", "this account", ...
     desktop_ids: list[str]
@@ -1267,7 +1276,12 @@ def _pins(scan: Scan) -> tuple[dict[str, list[str]], list[Path]]:
     AppImages pinned by path."""
     pinned: dict[str, list[str]] = {}
     files: list[Path] = []
-    add = lambda ids, where: [pinned.setdefault(i, []).append(where) for i in ids if isinstance(i, str)]  # noqa: E731
+
+    def add(ids: list, where: str) -> None:
+        for i in ids:
+            if isinstance(i, str):
+                pinned.setdefault(i, []).append(where)
+
     for schema, where in (("org.gnome.shell", "GNOME dash"), ("org.cinnamon", "Cinnamon menu favourites")):
         v = scan.gnome.gsettings(schema, "favorite-apps")
         if isinstance(v, list):
@@ -1389,7 +1403,7 @@ def _cite(f) -> str:
     return f"{f.text} (Source: {f.source}, checked {f.verified.isoformat()}.)"
 
 
-def browser_notes(b, kind: str = "info") -> list[Note]:
+def browser_notes(b: Browser, kind: Literal["info", "risk", "limitation"] = "info") -> list[Note]:
     """The app's view of a browser, then its receipts by topic."""
     from ..browsers import TOPIC_TITLES, TOPICS
     notes = [Note(kind, "DA Privacy Kit's view", b.why)] if b.why else []
@@ -1420,12 +1434,13 @@ class SurveillanceBrowsers(Check):
         bad = [f for f in found if f.browser is not None and f.browser.cls == "surveillance"]
         default, did, how = _default_of(scan, found)
         known = did is not None
-        is_bad_default = known and default is not None and default.browser is not None and \
-            default.browser.cls == "surveillance"
+        bad_default = default.browser if known and default is not None and default.browser is not None and \
+            default.browser.cls == "surveillance" else None
+        is_bad_default = bad_default is not None
         findings = {
-            "chrome_or_edge_installed": any(f.browser.no_ublock for f in bad),
+            "chrome_or_edge_installed": any(f.browser is not None and f.browser.no_ublock for f in bad),
             "surveillance_default": is_bad_default if known else None,
-            "chrome_or_edge_default": (is_bad_default and default.browser.no_ublock) if known else None,
+            "chrome_or_edge_default": (bad_default is not None and bad_default.no_ublock) if known else None,
         }
         ev = [Evidence.val(f.name, f.describe()) for f in bad]
         ev.append(Evidence.val("Default browser", default.name if default else (did or f"unknown ({how})")))
@@ -1433,10 +1448,11 @@ class SurveillanceBrowsers(Check):
             return passed("None of them was found on this computer.", *ev, findings=findings)
         notes = []
         for f in bad:
-            notes += [Note(n.kind if n.title != "DA Privacy Kit's view" else "risk", f"{f.name}: {n.title}", n.text)
-                      for n in browser_notes(f.browser)]
+            if f.browser is not None:
+                notes += [Note(n.kind if n.title != "DA Privacy Kit's view" else "risk", f"{f.name}: {n.title}", n.text)
+                          for n in browser_notes(f.browser)]
         names = " and ".join(dict.fromkeys(f.name for f in bad))
-        tail = f", and {default.name} is your default browser" if is_bad_default else ""
+        tail = f", and {default.name} is your default browser" if is_bad_default and default is not None else ""
         if not known:
             notes.append(Note("limitation", "The default browser couldn't be found", how[:200]))
         return failed(f"{names} {'is' if len(bad) == 1 else 'are'} installed{tail}.", *ev, notes=notes,
@@ -1543,6 +1559,8 @@ class ContentBlocking(Check):
         ev, lacking, partial, unused, blocks = [], [], [], [], False
         for f in known:
             b = f.browser
+            if b is None:
+                continue
             judged = default is not None and default.browser is b or (did is None)
             if b.blocking == "builtin":
                 ev.append(Evidence.val(f.name, b.blocker))
@@ -1787,8 +1805,10 @@ def effective_entries(scan: Scan, found: list[FoundBrowser]) -> list[tuple[str, 
     out = []
     for f in found:
         name = SHADER_BROWSERS.get(f.key)
+        if not name:
+            continue
         by_id: dict[str, list[Path]] = {}
-        for p in f.paths if name else ():
+        for p in f.paths:
             if p.suffix == ".desktop":
                 by_id.setdefault(p.name, []).append(p)
         for paths in by_id.values():
@@ -1839,8 +1859,8 @@ def shader_copies(scan: Scan, found: list[FoundBrowser]) -> list[BrowserCopy]:
             add(skipped[1], skipped[2], skipped=skipped, entry=entry)
         unpacker = _unpacker(scan, prog)
         if unpacker is not None:
-            mine = (read_text(host, entry) or "").startswith(SHADER_ENTRY_MARK) and below is not None
-            add(unpacker[1], name, entry=entry, unpacked=(unpacker[0], below if mine else entry))
+            mine = (read_text(host, entry) or "").startswith(SHADER_ENTRY_MARK)
+            add(unpacker[1], name, entry=entry, unpacked=(unpacker[0], below if mine and below is not None else entry))
     for base, flatpak in [(scan.paths.data_home / "torbrowser", None)] + [
             (host.home / ".var/app" / i / "data/torbrowser", i) for i in LAUNCHER_FLATPAKS]:
         for arch in children(base / "tbb"):
@@ -2010,7 +2030,7 @@ class StartScript(Check):
         for name, entry, _ in effective_entries(scan, found):
             ev.append(Evidence.path(f"{name}'s menu entry", host.display(entry)))
         for s in skipped:
-            if s.stale:
+            if s.launcher is None:                       # stale: the app's entry, out of date
                 ev.append(Evidence.val(f"{s.name}: the menu entry the app made", "out of date: the package's has "
                                                                                     "changed since"))
             else:
@@ -2073,7 +2093,7 @@ LIB_DIRS = ("/usr/lib/x86_64-linux-gnu", "/usr/lib64", "/usr/lib", "/usr/lib/aar
 EGL_VENDORS = "/usr/share/glvnd/egl_vendor.d"
 
 
-def _cache_off(env: dict[str, str], var: str) -> bool:
+def _cache_off(env: Mapping[str, str], var: str) -> bool:
     v = env.get(var, "").strip().lower()
     if var == NVIDIA_CACHE:
         return v in ("0", "false", "no", "off")
@@ -2164,7 +2184,7 @@ class ShaderCache(Check):
                         lapsing.append(c)
                     else:
                         states.append("Mesa's cache blocked for it")
-                elif not isfile(c.script):
+                elif c.script is None or not isfile(c.script):
                     states.append("Mesa's cache on from its first start, in its own folder (not started yet)")
                 else:
                     states.append("Mesa's cache on, in its own folder")
@@ -2178,7 +2198,7 @@ class ShaderCache(Check):
                     states.append("NVIDIA's cache off when started from the menu")
                 elif c.turns_off_nvidia(host):
                     states.append("NVIDIA's cache off in its " + ("start script" if c.launcher is None else "package's program"))
-                elif c.unpacked_by is not None and not isfile(c.script):
+                elif c.unpacked_by is not None and (c.script is None or not isfile(c.script)):
                     states.append("NVIDIA's cache: its start script decides, from its first start (not started yet)")
                 else:
                     states.append("NVIDIA's cache on")
@@ -2217,6 +2237,8 @@ class ShaderCache(Check):
                               "next login; games and other 3D programs then work out their graphics again each time "
                               "they start."))
         for c in lasting:
+            if c.unpacked_by is None:       # never: kept only with a package's program that unpacks it
+                continue
             notes.append(Note("limitation", "Typed in a terminal",
                               f"{host.display(c.unpacked_by)} unpacks {c.name} again whenever its package is updated, "
                               "emptying its folder, and any block the app put there with it. Started from the menu, a "

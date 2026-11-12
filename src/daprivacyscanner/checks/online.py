@@ -14,6 +14,7 @@ import xml.etree.ElementTree as ET
 from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING, cast
 
 from .. import network as net
 from .. import vpn
@@ -26,6 +27,16 @@ from .kernel import (DNF5_NO_RUNTIME, dnf5_away_from_home, dnf_security, is_dnf5
                      no_pass_when_unsupported, package_names, updates_outcome)
 from ._util import absent, failed, installed, passed, unknown, warned
 
+if TYPE_CHECKING:
+    from ..online import Net
+
+    class OnlineScan(Scan):
+        """A Scan as an online test sees it: OnlineCheck.detect runs one only with the network and its settings."""
+        net: Net
+        online: dict
+else:
+    OnlineScan = Scan
+
 
 class OnlineCheck(Check):
     def hosts(self, settings: dict) -> list[str]:
@@ -35,9 +46,9 @@ class OnlineCheck(Check):
     def detect(self, scan: Scan) -> Outcome:
         if scan.net is None or scan.online is None:
             return unknown("Online tests run only when you start them.")
-        return self.detect_online(scan)
+        return self.detect_online(cast(OnlineScan, scan))
 
-    def detect_online(self, scan: Scan) -> Outcome:
+    def detect_online(self, scan: OnlineScan) -> Outcome:
         raise NotImplementedError
 
 
@@ -124,7 +135,7 @@ class ObservedTraffic(OnlineCheck):
         return ["nobody (it watches); without administrator access, your DNS resolver sees lookups of the known "
                 "phone-home host names"]
 
-    def detect_online(self, scan: Scan) -> Outcome:
+    def detect_online(self, scan: OnlineScan) -> Outcome:
         seconds = int(scan.online.get("observe_seconds", 60))
         names_by_ip: dict[str, set[str]] = {}
         asked: dict[str, int] = {}
@@ -172,7 +183,7 @@ class ObservedTraffic(OnlineCheck):
         other: dict[str, set[str]] = {}
         for c in conns:
             names = names_by_ip.get(c["peer"], set())
-            matched = {phone_home(n) for n in names if phone_home(n)}
+            matched = {ph for ph in map(phone_home, names) if ph}
             if matched:
                 # an address several services share (a CDN) can't be pinned on one of them
                 labels = sorted({m[0] for m in matched})
@@ -229,7 +240,7 @@ class DnsEncryptionInUse(OnlineCheck):
     def hosts(self, settings):
         return ["your DNS server"]
 
-    def detect_online(self, scan: Scan) -> Outcome:
+    def detect_online(self, scan: OnlineScan) -> Outcome:
         mode = _resolved_dot(scan)
         if mode is None:
             return absent("DNS over TLS isn't configured (see net.dns_unencrypted).")
@@ -276,7 +287,7 @@ class DnsLeak(OnlineCheck):
     def hosts(self, settings):
         return [host_of(settings["dns_leak"]), "your DNS resolvers"]
 
-    def detect_online(self, scan: Scan) -> Outcome:
+    def detect_online(self, scan: OnlineScan) -> Outcome:
         base = scan.online["dns_leak"].rstrip("/")
         domain = host_of(base)
         r = scan.net.http_get(f"{base}/id")
@@ -309,9 +320,9 @@ class DnsLeak(OnlineCheck):
             ev.append(Evidence.val("The service's conclusion", conclusion[:200]))
         try:
             data = vpn.load()
-        except vpn.DataError as e:
-            return unknown(f"The app's list of VPN providers couldn't be read: {e}", *ev)
-        kinds = {}
+        except vpn.DataError as err:
+            return unknown(f"The app's list of VPN providers couldn't be read: {err}", *ev)
+        kinds: dict[str, list[dict]] = {}
         for e in resolvers:
             kinds.setdefault(_resolver_kind(e, you, data), []).append(e)
         if "other" in kinds:
@@ -384,7 +395,7 @@ class DnssecValidation(OnlineCheck):
     def hosts(self, settings):
         return ["your DNS resolver", settings["dnssec_failed"]]
 
-    def detect_online(self, scan: Scan) -> Outcome:
+    def detect_online(self, scan: OnlineScan) -> Outcome:
         good, bad = scan.online["dnssec_valid"], scan.online["dnssec_failed"]
         if not scan.net.resolve(good).addresses:
             return unknown(f"DNS isn't working ({good} didn't resolve), so this couldn't be tested.")
@@ -402,7 +413,7 @@ class NxdomainRewrite(OnlineCheck):
     def hosts(self, settings):
         return ["your DNS resolver"]
 
-    def detect_online(self, scan: Scan) -> Outcome:
+    def detect_online(self, scan: OnlineScan) -> Outcome:
         name = f"daps-{secrets.token_hex(10)}.com"
         r = scan.net.resolve(name)
         if r.error and r.error != "not found":
@@ -437,7 +448,7 @@ class VpnIpv6Leak(OnlineCheck):
     def hosts(self, settings):
         return [host_of(settings["ip_echo_v4"]), host_of(settings["ip_echo_v6"])]
 
-    def detect_online(self, scan: Scan) -> Outcome:
+    def detect_online(self, scan: OnlineScan) -> Outcome:
         vpns = set(net.carrying_vpn_links(scan.host))
         v4 = scan.net.http_get(scan.online["ip_echo_v4"])
         v6 = scan.net.http_get(scan.online["ip_echo_v6"])
@@ -511,7 +522,7 @@ def _address(text: str, family: int) -> str | None:
     return str(a) if a.version == family else None
 
 
-def _echo(scan: Scan, url: str, family: int) -> str | None:
+def _echo(scan: OnlineScan, url: str, family: int) -> str | None:
     r = scan.net.http_get(url)
     return _address(r.text(), family) if r.ok else None
 
@@ -524,7 +535,7 @@ def _json(r) -> dict:
     return d if isinstance(d, dict) else {}
 
 
-def _owner(scan: Scan, address: str) -> str:
+def _owner(scan: OnlineScan, address: str) -> str:
     """Who owns an address, from RIPEstat's prefix overview: "AS1221 ASN-TELSTRA Telstra Limited"."""
     r = scan.net.http_get(f"{scan.online['ip_owner']}?{urllib.parse.urlencode({'resource': address})}")
     asns = (_json(r).get("data") or {}).get("asns") or []
@@ -540,7 +551,7 @@ class VpnExit(OnlineCheck):
         return [host_of(settings[k]) for k in ("ip_echo_v4", "ip_echo_v6", "ip_echo_v4b", "ip_echo_v6b", "ip_owner")] + [
             "am.i.mullvad.net, only if Mullvad is your VPN", "api.ivpn.net, only if IVPN is your VPN"]
 
-    def exit(self, scan: Scan, data, family: int, check: str | None) -> Exit | str:
+    def exit(self, scan: OnlineScan, data, family: int, check: str | None) -> Exit | str:
         """One IP version's exit, or why it couldn't be told."""
         e = Exit(family)
         a = _echo(scan, scan.online[f"ip_echo_v{family}"], family)
@@ -570,11 +581,11 @@ class VpnExit(OnlineCheck):
             e.kind = "other"
         return e
 
-    def detect_online(self, scan: Scan) -> Outcome:
+    def detect_online(self, scan: OnlineScan) -> Outcome:
         try:
             data = vpn.load()
-        except vpn.DataError as e:
-            return unknown(f"The app's list of VPN providers couldn't be read: {e}")
+        except vpn.DataError as err:
+            return unknown(f"The app's list of VPN providers couldn't be read: {err}")
         host = scan.host
         tunnels = net.vpn_links(host)
         carrying = net.carrying_vpn_links(host, tunnels)
@@ -732,7 +743,7 @@ class UpnpForwards(OnlineCheck):
     def hosts(self, settings):
         return ["your router (local network only)"]
 
-    def detect_online(self, scan: Scan) -> Outcome:
+    def detect_online(self, scan: OnlineScan) -> Outcome:
         replies = scan.net.ssdp_search(IGD)
         locations = []
         for rep in replies:
@@ -745,7 +756,7 @@ class UpnpForwards(OnlineCheck):
         mine = local_ipv4(scan)
         forwards, all_count = [], 0
         for loc in locations:
-            host = urllib.parse.urlsplit(loc).hostname
+            host = urllib.parse.urlsplit(loc).hostname or ""       # there is one: its LOCATION was matched to it
             d = scan.net.http_get(loc, timeout=5)
             for kind, ctrl in upnp_controls(d.text(), loc) if d.ok else []:
                 if not _same_lan_host(ctrl, host):
@@ -763,7 +774,7 @@ class UpnpForwards(OnlineCheck):
                     if _soap_field(body, "NewInternalClient") in mine and _soap_field(body, "NewEnabled") != "0":
                         forwards.append((_soap_field(body, "NewExternalPort"), _soap_field(body, "NewInternalPort"),
                                          _soap_field(body, "NewProtocol"), _soap_field(body, "NewPortMappingDescription")))
-        ev = [Evidence.val("UPnP router", ", ".join(urllib.parse.urlsplit(x).hostname for x in locations)),
+        ev = [Evidence.val("UPnP router", ", ".join(urllib.parse.urlsplit(x).hostname or "" for x in locations)),
               Evidence.count("Port forwards on the router", all_count)]
         ev += [Evidence.val(f"Internet port {ext}/{proto}", f"→ this machine's port {port}" + (f" ({desc[:60]})" if desc else ""))
                for ext, port, proto, desc in forwards[:15]]
@@ -802,7 +813,7 @@ class TlsInterception(OnlineCheck):
     def hosts(self, settings):
         return list(settings["tls_sites"])
 
-    def detect_online(self, scan: Scan) -> Outcome:
+    def detect_online(self, scan: OnlineScan) -> Outcome:
         ev, intercepted, untrusted, unknown_issuer, reached = [], [], [], [], 0
         for site in scan.online["tls_sites"]:
             if scan.stopped():
@@ -884,7 +895,7 @@ class UpdatesRefreshed(OnlineCheck):
         lines = [ln for ln in r.stdout.splitlines() if "/" in ln and "[upgradable" in ln]
         return package_names("apt", r.stdout), sum(1 for ln in lines if "-security" in ln), ""
 
-    def detect_online(self, scan: Scan) -> Outcome:
+    def detect_online(self, scan: OnlineScan) -> Outcome:
         host = scan.host
         ev, names, security, why = [], None, None, ""
         if installed(host, "apt-get"):
@@ -959,7 +970,7 @@ class Ipv6Reachable(OnlineCheck):
     def hosts(self, settings):
         return [host_of(settings["port_probe"])] if settings.get("port_probe") else []
 
-    def detect_online(self, scan: Scan) -> Outcome:
+    def detect_online(self, scan: OnlineScan) -> Outcome:
         from .network import firewall_rules
         if not scan.context["ipv6_global"]:
             return absent("This machine has no public IPv6 address.")
@@ -983,7 +994,9 @@ class Ipv6Reachable(OnlineCheck):
         if probe and addrs:
             # a service the probe gave no answer for (down, an HTTP error, an answer without "open": true or false)
             # wasn't tested, nor was one on UDP, which it doesn't probe: neither is "not reachable"
-            open_, closed, unanswered = [], [], []
+            open_: list[str] = []
+            closed: list[str] = []
+            unanswered: list[str] = []
             untested = [s.label() for s in candidates if s.proto != "tcp"]
             for s in candidates:
                 if s.proto != "tcp":
