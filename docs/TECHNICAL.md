@@ -730,7 +730,7 @@ Tor Browser and Mullvad Browser already keep no history between sessions. This t
    libraries' state all live in a tmpfs (`~/TempBrowser`) mounted without swap where the kernel allows it.
    Closing it overwrites every file with zeros and unmounts it.
 2. **Containment.** The browser runs in a bubblewrap sandbox. The assumption is that a website may get
-   past the browser's own protections (Firefox's content sandbox). The outer sandbox then keeps that
+   past the browser's own protections (Firefox's content sandbox). The app's sandbox then keeps that
    compromised browser from your files, keys, keyring, session bus, other programs, this computer's
    identity, and (for Tor Browser) any network but Tor's.
 3. **A verified, current copy.** The browser is downloaded from the project's own servers, verified
@@ -983,12 +983,14 @@ built by hand (stdlib only), as Flatpak's own filter does:
 
 By profile: **strict** (no namespaces of any kind through `clone` or `unshare`, no `mount`, `umount`, `pivot_root`,
 `chroot` or `setns`) for Xephyr's sandbox, the viewer's, tor's, the unpacking sandboxes and trials, which also get
-bubblewrap's `--disable-userns` where it has it (0.8+); **browser** (namespaces and `chroot` allowed, which Firefox's
-content sandbox and Chromium's need; no mounts, `pivot_root` or `setns`) for Mullvad Browser's sandbox and Tor
-Browser's inner one; **nesting** (namespaces, mounts and the new mount API: bubblewrap 0.13 makes its binds read-only
-with `mount_setattr` and doesn't fall back, tested on CachyOS) for Tor Browser's outer sandbox, whose gate starts
-tor's and the browser's sandboxes, and for a trial or Box ticked to start sandboxes of its own. Filters stack: tor's
-and the browser's are held to the outer one's too.
+bubblewrap's `--disable-userns` where it has it (0.8+), and Tor Browser's gate; **browser** (namespaces and `chroot`
+allowed, which Firefox's content sandbox and Chromium's need; no mounts, `pivot_root` or `setns`) for Mullvad Browser's
+sandbox and Tor Browser's; **nesting** (namespaces, mounts and the new mount API: bubblewrap 0.13 makes its binds
+read-only with `mount_setattr` and doesn't fall back, tested on CachyOS) for a trial or Box ticked to start sandboxes
+of its own. Filters stack: what runs in a sandbox inside another is held to both. Under Ubuntu's AppArmor profile for
+bubblewrap (`bwrap-userns-restrict`, Ubuntu 26.04) what bubblewrap starts has no capabilities, so namespaces stay out
+of reach whatever the profile allows: Firefox's own sandbox then runs without its namespaces, its own filter kept, and
+the panel says so (`sandbox.bwrap_confined`).
 
 The program checks which system-call table a call came through: x86-64's, and i386's, which a 64-bit program reaches
 with `int 0x80` (an x86-64-only filter lets it past everything: the numbers differ), each with its own numbers;
@@ -1001,14 +1003,18 @@ i386 table refused; files, threads, fork and Unix and IP sockets working).
 How it gets there (`sandbox.Filter`, `make_filter`): a memory file passed to bubblewrap (`--seccomp FD`); under pasta,
 which passes its command nothing but stdin, stdout and stderr, a file in the runtime folder opened as descriptor 3 by
 a shell just before bubblewrap (`Filter.wrap`), which bubblewrap reads and closes before anything runs inside
-(tested: nothing in the sandbox holds it). Tor Browser's gate gets tor's and the browser's programs in its
-configuration and makes their descriptors itself (`torgate.with_filters`, for `@SECCOMP:profile@` placeholders).
+(tested: nothing in the sandbox holds it). Tor Browser's keeper gets the programs for tor's, the gate's and the
+browser's sandboxes in its configuration and makes their descriptors itself (`torgate.with_filters`, for
+`@SECCOMP:profile@` placeholders).
 
 What a namespace of its own still reaches, under the browser and nesting profiles: traffic control and the rest of
 routing netlink in a network namespace it makes, which the filter can't look into. Live-tested (2026-11-12): both
 browsers on a private Xvfb on Mint 22.3 (bubblewrap 0.9, Tor Browser in Xephyr, check.torproject.org) and on KDE
 Plasma 6.7 Wayland on CachyOS (bubblewrap 0.13.1): Tor bootstrapped, pages loaded, Firefox's content processes had
-user namespaces of their own and three filters (ours, the outer one's, their own).
+user namespaces of their own and three filters (ours, the then outer one's, their own). Tor Browser 16.0.1 in the
+side-by-side sandboxes (section 7.12), the same day: on Ubuntu 26.04 (GNOME, Wayland, bubblewrap 0.11.1, AppArmor)
+and on CachyOS; on Ubuntu Firefox's content processes stayed in the browser's user namespace (AppArmor, above), with
+two filters (ours, their own); on CachyOS they had their own.
 
 **Programs that start sandboxes of their own** (`seccomp.nesting_reason`, `installed_reason`): Electron and Chromium
 (whose sandbox needs a user namespace), CEF, Qt WebEngine, WebKitGTK and glycin (GNOME's image loaders, in
@@ -1059,7 +1065,7 @@ credentials, a Firefox policy of the computer's). So `/etc` is an empty tmpfs ho
 
 - `resolv.conf`, depending on the network (sections 7.12, 7.13).
 
-**`/proc` masks**, in the innermost sandbox only: `/proc/cmdline` is covered with `ro quiet` (the real one
+**`/proc` masks**, in the browsers' sandboxes and tor's: `/proc/cmdline` is covered with `ro quiet` (the real one
 names the disks' UUIDs), and `/proc/sys/kernel/random/boot_id` with a new random UUID at every start (the
 real one is the same for every session until a restart, which would let sessions be linked);
 `/proc/partitions` and `/proc/swaps` with their header line only (the disks' names and sizes, swap's file or
@@ -1067,10 +1073,10 @@ device); `/proc/bus` (the input devices' list, with a Bluetooth keyboard's or mo
 devices' serial numbers; PCI's), `/proc/scsi` (the disks' models) and, unless the graphics card is given,
 `/proc/driver` (`nvidia/gpus/*/information` holds the card's serial number, readable whether or not the card
 was given: matched `nvidia-smi` on the lab) with an empty tmpfs made read-only; each only where this kernel
-has it (`proc_masks`, a mount point must already be there). Only the
-innermost sandbox gets these: once a file of a procfs is covered, the kernel refuses to let anything
-inside mount a procfs of its own (tested), which Tor Browser's inner sandbox needs to do. Firefox's own
-sandbox doesn't.
+has it (`proc_masks`, a mount point must already be there). Only a sandbox nothing inside of which mounts a
+procfs gets these: once a file of a procfs is covered, the kernel refuses to let anything inside mount a procfs
+of its own (tested), which a bubblewrap inside it would need to do. Firefox's own sandbox doesn't, nor does tor:
+the browsers' sandboxes and tor's get them (Tor Browser's no longer start one inside another, section 7.12).
 
 **Environment** (`sandbox._env`), and nothing else:
 
@@ -1156,8 +1162,8 @@ computer is also scoped with `LANDLOCK_SCOPE_ABSTRACT_UNIX_SOCKET | LANDLOCK_SCO
 connect to abstract Unix sockets outside its domain (the session's hidden sockets, XWayland's) or signal
 processes outside it. Applied by a few lines of python3 inside the sandbox (`sandbox.LANDLOCK`,
 `landlock_create_ruleset` with only `scoped = 3`, `PR_SET_NO_NEW_PRIVS`, `landlock_restrict_self`) just
-before `exec`. It is applied to Mullvad Browser's sandbox and to Tor Browser's outer sandbox (tor). Tor
-Browser's inner sandbox has its own network namespace, which already separates abstract sockets.
+before `exec`. It is applied to Mullvad Browser's sandbox and to tor's (just before tor). Tor Browser's sandbox
+and the gate's have network namespaces of their own, which already separate abstract sockets.
 
 **Output.** The browser's own stdin, stdout and stderr go to `/dev/null` (`sh -c 'exec "$0" "$@"
 </dev/null >/dev/null 2>&1'`); only the sandbox's set-up errors reach the start log, a memory file
@@ -1282,41 +1288,49 @@ on the computer's network, connect to an address it was given, and `module-nativ
 TCP listener. Under Tor Browser that connection reveals the real address. The panel lists this under the
 box, and asks again before Tor Browser starts with sound.
 
-### 7.12 Tor Browser's network: two sandboxes and a filter
+### 7.12 Tor Browser's network: three sandboxes side by side and a filter
 
-Tor Browser has no network of its own. It runs as two nested sandboxes, and tor in a third:
+Tor Browser has no network of its own. It runs in a sandbox of its own, beside tor's and the gate's, all three
+started by a keeper outside any sandbox:
 
 ```
 host
-└─ python3 KEYRING wrapper
-   └─ bwrap  OUTER   --unshare-all --share-net   (computer's network; Landlock scopes)
-      │   /etc with the computer's resolver (tor and its transports need DNS)
-      │   tor's data folder writable here; tor/ folder at /run/user/1000/tor
-      │   sandbox identity files at /run/identity
-      └─ python3 -I -c <torgate.py source> <config>
-         ├─ bwrap  TOR  --unshare-user --unshare-pid …   (the outer one's network; no display, sound or profile)
-         │  └─ tor  (Tor Browser's own binary, from its folder) and its pluggable transports
-         │     SocksPort    unix:/run/user/1000/tor/socks
-         │     ControlPort  unix:/run/user/1000/tor/tor-control  (cookie auth)
-         ├─ control-port filter, listening on /run/user/1000/tor/control (0600)
-         └─ bwrap  INNER  --unshare-all   (own network namespace: loopback only)
-               /etc built from the outer one's, no resolv.conf at all
-               /proc masks; tor's data folder covered by an empty tmpfs
-               only the socks and control sockets of tor/ bound in
-               TOR_SKIP_LAUNCH=1  TOR_SOCKS_IPC_PATH=…/socks  TOR_CONTROL_IPC_PATH=…/control
-               └─ start-tor-browser → firefox
+└─ python3 KEYRING wrapper → python3 -I -c <torgate.py source> <config>   the keeper: no sandbox, reads only
+   │                                                                    exit statuses and the gate's "ready"
+   ├─ bwrap  GATE  --unshare-all  (own network namespace: loopback only; strict filter, --disable-userns)
+   │     only the tor/ folder, at /run/user/1000/tor; /etc of its own, no resolv.conf
+   │  └─ python3 -I -c <torgate.py source> <gate config>   the control-port filter, listening on
+   │        /run/user/1000/tor/control (0600); tor's log on its stdin, "ready" on its stdout
+   ├─ bwrap  TOR   --unshare-all --share-net  (computer's network; Landlock scopes; strict filter, --disable-userns)
+   │     /etc of its own with the computer's resolver (tor and its transports need DNS); /proc masks
+   │     TorBrowser/Tor read-only, Data/Tor writable, tor/ at /run/user/1000/tor; nothing of the browser's
+   │  └─ tor  (Tor Browser's own binary, from its folder) and its pluggable transports
+   │        SocksPort    unix:/run/user/1000/tor/socks
+   │        ControlPort  unix:/run/user/1000/tor/tor-control  (cookie auth)
+   └─ bwrap  BROWSER  --unshare-all  (own network namespace: loopback only; browser filter)
+         /etc of its own, no resolv.conf at all; /proc masks; tor's data folder covered by an empty tmpfs
+         only the socks and control sockets bound in, from tor-sockets/ (below)
+         TOR_SKIP_LAUNCH=1  TOR_SOCKS_IPC_PATH=…/socks  TOR_CONTROL_IPC_PATH=…/control
+         └─ STAY → start-tor-browser → firefox
 ```
 
-**The gate** (`tools/torgate.py`) is passed as source with `python3 -I -c` (the AppImage that started it
+**Why side by side.** Until 2026-11-12 the browser's sandbox and tor's were started by the gate inside an outer
+sandbox. Ubuntu's AppArmor profile for bubblewrap (`bwrap-userns-restrict`, on in Ubuntu 26.04) runs whatever a
+bubblewrap starts in its `unpriv_bwrap` profile, without capabilities even as root of a namespace of its own, so a
+bubblewrap started inside one can't make its namespaces: Tor Browser didn't start there at all ("No permissions to
+create a new namespace"; the kernel's log: `apparmor="DENIED" operation="capable" profile="unpriv_bwrap"
+comm="bwrap" capname="sys_admin"`). Each is now the first bubblewrap, started by the keeper, which that profile
+allows; no profile is added or changed. What each holds is no more than before, and the filter now runs with no
+network and nothing of the browser's (it was in the outer sandbox, on the computer's network, with the display's
+socket, the profile and the browser's processes).
+
+**The keeper** (`tools/torgate.py`, `keep`) is passed as source with `python3 -I -c` (the AppImage that started it
 may be unmounted by the time the browser closes) and imports nothing of the app's. It:
 
-1. applies Landlock's scopes when the kernel has them;
-2. starts tor, in a sandbox of its own inside the outer one:
+1. starts the gate's sandbox, then tor's (each with `--die-with-parent`, its options read from a memory file,
+   `--args`, since its own init is its PID 1, and its filter's descriptor made from the program in the
+   configuration), tor's output going to the gate through a pipe:
    ```
-   bwrap --die-with-parent --unshare-user --unshare-pid --unshare-ipc --unshare-uts --unshare-cgroup-try
-         --new-session --cap-drop ALL  <the system, read-only>  --ro-bind /etc /etc
-         --proc /proc --dev /dev --tmpfs /tmp  --ro-bind <TorBrowser/Tor> (tor and its transports)
-         --bind <Data/Tor>  --bind /run/user/1000/tor  --chdir <Browser> --
    tor --defaults-torrc <Data/Tor>/torrc-defaults -f /run/user/1000/tor/torrc
        DataDirectory <Data/Tor>  ClientOnionAuthDir <Data/Tor>/onion-auth
        GeoIPFile <Data/Tor>/geoip  GeoIPv6File <Data/Tor>/geoip6
@@ -1324,26 +1338,43 @@ may be unmounted by the time the browser closes) and imports nothing of the app'
        +__SocksPort "unix:/run/user/1000/tor/socks IPv6Traffic PreferIPv6 KeepAliveIsolateSOCKSAuth"
        CookieAuthentication 1  CookieAuthFile /run/user/1000/tor/control_auth_cookie
    ```
-   with `HOME`, a minimal `PATH` and `LD_LIBRARY_PATH` for tor's own libraries; it waits up to 60 seconds
-   for the sockets and cookie. The outer sandbox holds what the inner one binds from it: the display's socket
-   and X cookie, sound's socket, the browser's profile and Downloads; and its processes see the inner ones.
-   tor needs none of it, and its pluggable transports parse what the network sends them (Snowflake's: WebRTC
-   from volunteers' proxies), so tor and they run without it (found in the review of 2026-10-17: tor's `/tmp`
-   held `.X11-unix` and `.Xauthority`; since, empty, and the profile out of sight, tested on Mint 22.3 and
-   CachyOS). Its own PID namespace means tor can no longer watch the gate by its PID
-   (`__OwningControllerProcess`): it dies with the gate instead (`--die-with-parent`);
-3. follows tor's log: `Bootstrapped N%` lines update `status.json` (`starting`, `connecting`, `connected`,
-   `failed`, `stopped`, with progress, summary and the last warning). The panel reads it every 2 seconds
-   while the browser runs;
-4. asks tor for its version on its own connection (for the PROTOCOLINFO reply);
-5. listens on the browser's control socket and filters every connection (below);
-6. runs the inner sandbox and waits for it; on exit (or SIGTERM) it closes the filter, stops tor (`halt`:
-   `SIGNAL HALT` over its control port, so that it saves its state, as on SIGTERM, then waited for; a signal to
-   tor's bubblewrap would end tor at once, unsaved; SIGTERM, then SIGKILL after 10 seconds, only if it hasn't
-   gone: tested, tor gone and its state file written in about a second), and removes the sockets. The inner
-   sandbox's command lasts as long as any browser process does (`sandbox.STAY`, above, its PID 1), and the inner
-   sandbox is started with `--die-with-parent`: when its command is over, or the gate is gone, it is killed and everything
-   in it with it. A browser is never left running with tor gone.
+   with `HOME`, a minimal `PATH` and `LD_LIBRARY_PATH` for tor's own libraries (`--setenv`, after
+   `--clearenv`). tor and its pluggable transports, which parse what the network sends them (Snowflake's: WebRTC
+   from volunteers' proxies), get nothing of the browser's: its display's socket and X cookie, sound's socket,
+   profile and Downloads (found in the review of 2026-10-17: tor's `/tmp` held `.X11-unix` and `.Xauthority`).
+   Its own PID namespace means tor can't watch the gate by its PID (`__OwningControllerProcess`): it dies with
+   the keeper instead (`--die-with-parent`);
+2. waits for the gate's "ready" (up to 90 seconds): tor's sockets and cookie are there, its filter listens. Then
+   it hard-links the two sockets the browser may use into `tor-sockets/`, a folder of the app's that no sandbox is
+   given, and checks there that each is a socket of the user's (`link_sockets`): tor's sandbox can write in `tor/`,
+   and bubblewrap resolves a bind's source on the computer, so a link tor left in a socket's place would have had a
+   file of the home bound into the browser's sandbox. A hard link of a link is a link, refused there, and nothing
+   can swap it between the check and the bind;
+3. starts the browser's sandbox (its PID 1 is `sandbox.STAY`, so it lasts as long as any browser process does) and
+   waits for it. If the gate ends first, the browser goes too (SIGTERM, then SIGKILL after 5 seconds), as when it
+   died with the gate. SIGTERM to the keeper is passed to the browser's sandbox the same way;
+4. once the browser has ended, closes the pipe that tells the gate so; the gate stops tor (`halt`: `SIGNAL HALT`
+   over its control port, so that it saves its state, as on SIGTERM, then waited for by its log's end; a signal to
+   tor's bubblewrap would end tor at once, unsaved). What is left after that is ended (SIGTERM, then SIGKILL), the
+   links removed, and the keeper ends with the browser's status. Killing the keeper ends all three at once
+   (`--die-with-parent`; tested on Ubuntu 26.04: nothing left).
+
+**The gate** (`gate`), in its sandbox:
+
+1. follows tor's log on its stdin: `Bootstrapped N%` lines update `status.json` (`starting`, `connecting`,
+   `connected`, `failed`, `stopped`, with progress, summary and the last warning). The panel reads it every 2
+   seconds while the browser runs. It waits up to 60 seconds for the sockets and cookie, else says why
+   ("tor didn't start: …") and ends, and the keeper starts no browser;
+2. asks tor for its version on its own connection (for the PROTOCOLINFO reply);
+3. listens on the browser's control socket and filters every connection (below), then says "ready";
+4. when told the browser has ended, closes the filter, halts tor and removes the sockets.
+
+Live-tested on 2026-11-12 with Tor Browser 16.0.1: on Ubuntu 26.04 (GNOME, Wayland, bubblewrap 0.11.1, AppArmor's
+profile on) check.torproject.org said the browser uses Tor, the security level was Safest with no restart asked and
+no bar, a page's no-JavaScript fallback was taken; the gate had only a loopback interface and the tor folder; Quit
+halted tor (its state file written at that moment) and left nothing running; killing the gate ended the browser and
+tor. On CachyOS (KDE Plasma, Wayland, bubblewrap 0.13.1, the compositor's marked socket) the same, with Firefox's own
+content processes in namespaces of their own.
 
 **The control-port filter.** Each browser connection gets its own upstream connection to tor,
 authenticated by the filter with the cookie, which the browser never sees. The browser's commands are
