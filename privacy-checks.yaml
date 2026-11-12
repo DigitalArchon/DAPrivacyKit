@@ -2772,6 +2772,12 @@ checks:
       - 'xfce4-clipman: $XDG_CACHE_HOME/xfce4/clipman/'
       - 'GNOME extensions (e.g. Clipboard Indicator): check the extension''s cache directory; Pano: $XDG_DATA_HOME/pano@elhan.io/'
       - 'Diodon: $XDG_DATA_HOME/diodon/'
+      - 'Managers people add where the desktop has none: Omarchy 4.0.6''s clipboard menu
+        ($XDG_STATE_HOME/omarchy/clipboard-history.json, up to 300 items, and clipboard-images/: read on the lab), cliphist
+        ($XDG_CACHE_HOME/cliphist/db), clipse (~/.config/clipse/clipboard_history.json and tmp_files/); an empty list is
+        no history. The fix names them and their own clear command (Omarchy''s menu, cliphist wipe, clipse -clear)'
+      - 'Nothing found on a desktop whose managers the app doesn''t know (Hyprland, Sway, niri, COSMIC, LXQt...): couldn''t
+        check, naming the managers it knows; elsewhere the pass says only that none of those it knows saves a history'
     fix: >
       Klipper on Plasma 6: KeepClipboardContents off, its history cleared through Klipper itself
       (clearClipboardHistory over D-Bus, while it still runs), then the Clipboard entry turned off in the

@@ -1484,6 +1484,23 @@ apps:
       notes: https://www.openssh.com/releasenotes.html
       source: https://github.com/openssh/openssh-portable
 
+  - id: omarchy
+    name: "Omarchy"
+    packages: [omarchy]
+    checked: "4.0.6"
+    basis: current
+    checked_on: 2026-11-12
+    checks: [desk.clipboard_history]
+    data: [state:omarchy]
+    relies_on: >-
+      Its clipboard menu's history (the shell's clipboard plugin, Clipboard.qml and capture.sh):
+      $XDG_STATE_HOME/omarchy/clipboard-history.json (a JSON list, up to 300) and clipboard-images/ (read on the lab
+      VM, 2026-11-12)
+    upstream:
+      repology: omarchy
+      notes: https://github.com/basecamp/omarchy/releases
+      source: https://github.com/basecamp/omarchy
+
   - id: geoclue
     name: "GeoClue"
     packages: [geoclue2, geoclue-2.0, geoclue]

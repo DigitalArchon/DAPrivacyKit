@@ -464,3 +464,36 @@ def test_screen_recordings_and_translated_folders(cat, tmp_path):
         ".config/spectaclerc": "[ImageSave]\ntranslatedScreenshotsFolder=Képernyőképek\n"})
     o = detect(cat, "desk.screenshots", make_scan(host, desktop=("kde",), plasma_major=6))
     assert o.status is Status.WARN and o.summary.startswith("2 screenshots and screen recordings are kept")
+
+
+# ------------------------------------------------------------------ clipboard managers of the user's choosing
+
+@pytest.mark.parametrize("files, status", [
+    # Omarchy 4.0.6's clipboard menu, as found on the lab
+    ({".local/state/omarchy/clipboard-history.json": '[{"type": "text", "text": "x"}]\n'}, Status.FAIL),
+    ({".local/state/omarchy/clipboard-history.json": "[]\n"}, Status.UNKNOWN),        # empty: nothing kept
+    ({".local/state/omarchy/clipboard-images/ab.png": "png"}, Status.FAIL),
+    ({".cache/cliphist/db": "bolt"}, Status.FAIL),
+    ({".config/clipse/clipboard_history.json": '{"clipboardHistory": [{"value": "x"}]}'}, Status.FAIL),
+    ({".config/clipse/clipboard_history.json": '{"clipboardHistory": []}'}, Status.UNKNOWN),
+    ({}, Status.UNKNOWN),                       # Hyprland: history comes from a program the user picks
+], ids=["omarchy", "omarchy-empty", "omarchy-pictures", "cliphist", "clipse", "clipse-empty", "nothing-known"])
+def test_clipboard_managers_on_desktops_without_their_own(cat, tmp_path, files, status):
+    host = make_host(tmp_path, home_files=files)
+    o = clip(cat, host, desktop=("hyprland",))
+    assert o.status is status, (o.summary, ev(o))
+    assert "No clipboard history is saved" not in o.summary
+
+
+def test_clipboard_nothing_found_on_a_known_desktop_claims_only_what_was_read(cat, tmp_path):
+    o = clip(cat, make_host(tmp_path), desktop=("gnome",))
+    assert o.status is Status.PASS and o.summary.startswith("None of the clipboard managers the app knows")
+
+
+def test_the_clipboard_fix_names_what_it_doesnt_clear(cat, tmp_path):
+    from daprivacyscanner.checks import load_all
+    from daprivacyscanner.model import Outcome
+    host = make_host(tmp_path, home_files={".cache/cliphist/db": "bolt"})
+    check = load_all()["desk.clipboard_history"](cat["desk.clipboard_history"])
+    plan = check.plan_fix(make_scan(host, desktop=("hyprland",)), Outcome(Status.FAIL, "x"))
+    assert any("cliphist wipe" in s for s in plan.side_effects)

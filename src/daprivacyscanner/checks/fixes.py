@@ -891,6 +891,14 @@ def clipboard(check, scan, outcome):
             InUse(label, names=() if stop or comes_back is None else procs, held=(root,))))
         if comes_back:
             effects.append(comes_back)
+    # the stores of the managers people add to Hyprland, Sway and Omarchy: said, not deleted (each clears its own)
+    from .desktop import NAMED_CLIPBOARD_STORES
+    bases = {"config": p.config_home, "cache": p.cache_home, "state": p.state_home}
+    clear = {"Omarchy's clipboard": "its clipboard menu's Clear", "cliphist": "cliphist wipe", "clipse": "clipse -clear"}
+    for label in dict.fromkeys(label for label, kind, rel, pattern in NAMED_CLIPBOARD_STORES
+                               if files_under(bases[kind] / rel, pattern=pattern)[0]):
+        effects.append(f"{label} isn't cleared by this fix: clear it with {clear[label]}, and see its settings for "
+                       "keeping no history.")
     if files_under(p.data_home / "pano@elhan.io", pattern=CLIPBOARD_FILES)[0]:
         # it runs inside GNOME Shell, which holds its database open and can't be closed
         effects.append("Pano runs inside GNOME Shell, so its history can't be deleted from outside: clear it from "

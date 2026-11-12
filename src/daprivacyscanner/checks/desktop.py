@@ -500,6 +500,35 @@ CLIPBOARD_STORES = (
     ("Pano (GNOME extension)", "data", "pano@elhan.io"),
     ("Diodon", "data", "diodon"),
 )
+# stores whose files are named exactly: (label, base, folder, file names), the pictures beside them included
+# Omarchy 4.0.6's clipboard menu keeps every copy in $XDG_STATE_HOME/omarchy (clipboard-history.json, up to 300, and
+# clipboard-images/), read on the lab; cliphist (Hyprland, Sway, niri) its database in $XDG_CACHE_HOME/cliphist/db;
+# clipse its history in ~/.config/clipse
+NAMED_CLIPBOARD_STORES = (
+    ("Omarchy's clipboard", "state", "omarchy", re.compile(r"^clipboard-history\.json$")),
+    ("Omarchy's clipboard", "state", "omarchy/clipboard-images", None),
+    ("cliphist", "cache", "cliphist", re.compile(r"^db$")),
+    ("clipse", "config", "clipse", re.compile(r"^clipboard_history\.json$")),
+    ("clipse", "config", "clipse/tmp_files", None),
+)
+# desktops whose own clipboard manager, and the ones people add to them, the app reads: elsewhere (Hyprland, Sway,
+# niri, COSMIC, LXQt...) history comes from a program of the user's choosing, and finding none of those the app knows
+# proves nothing
+CLIPBOARD_KNOWN_DESKTOPS = frozenset({"gnome", "kde", "x-cinnamon", "cinnamon", "xfce", "mate", "ubuntu", "unity"})
+
+
+def _holds_items(f: Path) -> bool:
+    """A history file with something in it: not an empty JSON list (Omarchy's "[]") or object of empty lists."""
+    import json
+    if f.suffix != ".json":
+        return True
+    try:
+        data = json.loads(f.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return True                                 # there and unreadable: not known to be empty
+    if isinstance(data, dict):
+        return any(v for v in data.values() if isinstance(v, (list, dict))) or not data
+    return bool(data)
 
 # Klipper, KDE's clipboard manager: on Plasma 6 a library inside plasmashell, loaded by the Clipboard applet
 # (in the system tray); its history is ~/.local/share/klipper/history3.sqlite (with -wal, -shm) and a data/
@@ -640,18 +669,41 @@ class ClipboardHistory(Check):
                                               f"({human_size(q.tab_bytes)})"))
             else:
                 ev.append(Evidence.val(label, "keeps its history in memory only" if q.tab else "doesn't keep what you copy"))
+        bases = {"data": scan.paths.data_home, "config": scan.paths.config_home, "cache": scan.paths.cache_home,
+                 "state": scan.paths.state_home}
         for label, kind, rel in CLIPBOARD_STORES:
-            base = {"data": scan.paths.data_home, "config": scan.paths.config_home, "cache": scan.paths.cache_home}[kind]
-            t = tally(base / rel, pattern=CLIPBOARD_FILES)
+            t = tally(bases[kind] / rel, pattern=CLIPBOARD_FILES)
             if t.files and t.bytes:
                 found.append(label)
                 ev.append(Evidence.val(label, t.describe()))
+        named: dict[str, Tally] = {}
+        for label, kind, rel, pattern in NAMED_CLIPBOARD_STORES:
+            folder = bases[kind] / rel
+            if pattern is not None and not any(pattern.search(f.name) and _holds_items(f) for f in children(folder)
+                                               if isfile(f)):
+                continue
+            t = tally(folder, pattern=pattern, max_depth=0 if pattern is not None else 2)
+            if t.files and t.bytes:
+                named.setdefault(label, Tally()).__iadd__(t)
+        for label, t in named.items():
+            found.append(label)
+            ev.append(Evidence.val(label, t.describe()))
         # said as it is: a manager turned off whose old history is still there isn't saving anything
         parts = ([f"Clipboard history is saved to disk by {', '.join(dict.fromkeys(found))}."] if found else []) + \
             [f"{x}; its old history is still on the disk." for x in left]
         if parts:
             return failed(" ".join(parts), *ev)
-        return passed("No clipboard history is saved to disk.", *ev)
+        known = ("Klipper, CopyQ, GPaste, Clipman, Diodon, the GNOME extensions Clipboard Indicator and Pano, cliphist, "
+                 "clipse and Omarchy's")
+        names = scan.context.desktop.names
+        if names and not set(names) & CLIPBOARD_KNOWN_DESKTOPS:
+            return unknown(f"Couldn't check: on {scan.context.desktop.label}, clipboard history comes from a program "
+                           "you choose, and none of those the app knows keeps one here.", *ev,
+                           notes=[Note("limitation", "The clipboard managers the app knows",
+                                       f"{known}. If you use another, look in its settings for whether it keeps what "
+                                       "you copy across restarts.")])
+        return passed("None of the clipboard managers the app knows saves a clipboard history to disk.", *ev,
+                      notes=[Note("info", "The clipboard managers the app knows", known + ".")])
 
 
 @register
