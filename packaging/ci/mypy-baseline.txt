@@ -6,10 +6,10 @@ src/daprivacyscanner/app.py assignment 1
 src/daprivacyscanner/app.py func-returns-value 1
 src/daprivacyscanner/app.py misc 2
 src/daprivacyscanner/app.py union-attr 2
-src/daprivacyscanner/server.py arg-type 19
+src/daprivacyscanner/server.py arg-type 18
 src/daprivacyscanner/server.py index 3
 src/daprivacyscanner/server.py misc 1
-src/daprivacyscanner/server.py union-attr 9
+src/daprivacyscanner/server.py union-attr 6
 src/daprivacyscanner/tools/browser.py arg-type 2
 src/daprivacyscanner/tools/browser.py assignment 2
 src/daprivacyscanner/tools/browser.py attr-defined 2

@@ -1,7 +1,6 @@
 # ruff: what it found when packaging/check.sh came in (2026-11-12), per file and error code, to burn
 # down. packaging/ci/ratchet.py fails a run on more than this; packaging/check.sh --rebaseline rewrites it.
 src/daprivacyscanner/about.py PLW1514 1
-src/daprivacyscanner/app.py B904 1
 src/daprivacyscanner/app.py PLW1514 1
 src/daprivacyscanner/server.py ASYNC240 2
 src/daprivacyscanner/server.py B023 1

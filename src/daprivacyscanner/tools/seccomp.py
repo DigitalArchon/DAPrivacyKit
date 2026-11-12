@@ -53,6 +53,7 @@ import os
 import platform
 import stat
 import struct
+from collections.abc import Callable
 
 # seccomp_data: int nr, __u32 arch, __u64 instruction_pointer, __u64 args[6]
 NR, ARCH, ARGS = 0, 4, 16
@@ -120,20 +121,23 @@ def supported() -> bool:
     return platform.machine() in ("x86_64", "amd64")
 
 
+Ref = int | str                                         # a number, or a label a jump goes to
+
+
 class _Asm:
     """Classic BPF with labels: a conditional jump goes at most 255 instructions on (jt, jf), JA anywhere ahead."""
 
     def __init__(self) -> None:
-        self.code: list[tuple[int, object, object, object]] = []
+        self.code: list[tuple[int, Ref, Ref, Ref]] = []
         self.labels: dict[str, int] = {}
 
     def at(self, name: str) -> None:
         self.labels[name] = len(self.code)
 
-    def op(self, code: int, k: object = 0, jt: object = 0, jf: object = 0) -> None:
+    def op(self, code: int, k: Ref = 0, jt: Ref = 0, jf: Ref = 0) -> None:
         self.code.append((code, jt, jf, k))
 
-    def _off(self, i: int, target: object, limit: int) -> int:
+    def _off(self, i: int, target: Ref, limit: int) -> int:
         if isinstance(target, int):
             return target
         off = self.labels[str(target)] - i - 1
@@ -216,11 +220,11 @@ def _socket(families: tuple[int, ...]):
     return emit
 
 
-def _rules(profile: str, table: dict[str, int]) -> list[tuple[int, object]]:
+def _rules(profile: str, table: dict[str, int]) -> list[tuple[int, Callable[[_Asm, str], None]]]:
     """(number, emit) for every call the profile acts on, in this table; the rest are allowed."""
     if profile not in PROFILES:
         raise ValueError(f"no such profile: {profile}")
-    rules: dict[str, object] = {}
+    rules: dict[str, Callable[[_Asm, str], None]] = {}
     for name in DENIED:
         rules[name] = _errno(EPERM)
     for name in MISSING:
@@ -241,7 +245,7 @@ def _rules(profile: str, table: dict[str, int]) -> list[tuple[int, object]]:
     return sorted((table[n], emit) for n, emit in rules.items() if n in table)
 
 
-def _dispatch(a: _Asm, rules: list[tuple[int, object]], p: str) -> None:
+def _dispatch(a: _Asm, rules: list[tuple[int, Callable[[_Asm, str], None]]], p: str) -> None:
     """The call's number (in A) looked up among `rules`, halving: at most a few comparisons for a call the filter
     lets through, which most are."""
     if len(rules) <= 4:
@@ -408,6 +412,7 @@ def _squashfs_names(path: str) -> bytes | None:
             table = f.read(end - dir_start)
     except (OSError, struct.error, IndexError, ValueError):
         return None
+    unpack: Callable[[bytes], bytes]
     if compressor == 1:
         unpack = zlib.decompress
     elif compressor in (2, 4):
@@ -415,7 +420,7 @@ def _squashfs_names(path: str) -> bytes | None:
         unpack = lambda b: lzma.decompress(b, format=fmt)  # noqa: E731
     elif compressor == 6:
         try:
-            from compression import zstd                # Python 3.14
+            from compression import zstd  # type: ignore[import-not-found,unused-ignore]  # Python 3.14+
         except ImportError:
             return None
         unpack = zstd.decompress

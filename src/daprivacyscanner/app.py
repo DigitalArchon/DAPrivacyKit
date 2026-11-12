@@ -825,7 +825,7 @@ def main(argv: list[str] | None = None) -> None:
     try:
         cat = catalogue.load()
     except catalogue.CatalogueError as e:
-        raise SystemExit(str(e))
+        raise SystemExit(str(e)) from None
 
     if args.capture:
         from pathlib import Path
@@ -875,7 +875,7 @@ def main(argv: list[str] | None = None) -> None:
         sock = _listen(args.port)                  # bound here and handed over: never closed and bound again
     except OSError as e:
         raise SystemExit(f"The app's server couldn't listen on 127.0.0.1:{args.port or 'a free port'}: "
-                         f"{e.strerror or e}.")
+                         f"{e.strerror or e}.") from None
     port = sock.getsockname()[1]
     windows: list = []                         # the app window, once made: its file dialog serves the tools
     guards: list[CloseGuard] = []              # and what its close asks first
