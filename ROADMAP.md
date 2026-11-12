@@ -161,8 +161,8 @@ Built and unit-tested, some live on the lab VMs; what still needs a real system:
   FUSE and with APPIMAGE_EXTRACT_AND_RUN; APPIMAGELAUNCHER_DISABLE honoured; the kept old copy by hard link on ext4 and
   btrfs, by two renames on FAT/exFAT; Restart now in the window and with --browser; copies Gear Lever or
   AppImageLauncher integrated.
-- Release: a release made the new way (signed tag, release build, second build, signing with the subkey), and the
-  update check downloading it on a lab VM.
+- Release: the second build from the pushed tag (second-build.sh's default, cloned from GitHub on the other
+  machine), and the update check downloading the release on a lab VM.
 
 ### The repository made public, and the first release
 

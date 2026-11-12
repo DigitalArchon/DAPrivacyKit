@@ -389,13 +389,13 @@ def test_a_release_signed_by_the_apps_own_key_and_saying_its_version_is_verified
     assert verdict["version"] == NEW and staged.inside == NEW
     assert staged.sha256 == hashlib.sha256(staged.file.read_bytes()).hexdigest()
     assert verdict["signed_at"] and abs(verdict["signed_at"] - time.time()) < 600
-    # a successor pinned now verifies too
+    # any key the project pins verifies, a second one too
     host, f, staged = staged_copy(tmp_path / "s", keys, new_copy(), keys.other_sub)
     p = K.parse({"schema_version": 1, "projects": [{
         "id": "digitalarchon", "name": "Digital Archon", "signs": "r", "source": "https://example.org",
         "key_from": "https://example.org/k", "checked": dt.date(2026, 11, 12), "files": ["DAPrivacyKit-*.AppImage"],
         "how": "x", "keys": [{"fingerprint": keys.primary, "name": "a"},
-                             {"fingerprint": keys.other, "name": "b", "role": "successor"}],
+                             {"fingerprint": keys.other, "name": "b"}],
         "key": keys.gpg("--armor", "--export", keys.primary, keys.other).stdout.decode()}]})[0]
     assert U.verify(host, staged, "0.1.0b9", projects=[p])["version"] == NEW
 

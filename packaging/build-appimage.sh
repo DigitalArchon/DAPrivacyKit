@@ -2,10 +2,9 @@
 # Build DA Privacy Kit's AppImage reproducibly with rootless Podman (see packaging/README.md).
 #   packaging/build-appimage.sh build         AppImage of HEAD -> dist/ (+ .sha256, .zsync)
 #   packaging/build-appimage.sh check         build HEAD twice from scratch and compare the hashes
-#   packaging/build-appimage.sh release REF   a release: REF (its signed tag, v<version>) built from its own commit,
-#                                             twice, compared -> dist/release/REF/ with BUILD-INFO; what
-#                                             packaging/second-build.sh and packaging/sign-release.sh work from.
-#                                             REF may be any commit, to try it: such a build can't be signed
+#   packaging/build-appimage.sh release REF   a release's tag (v<version>) built from its own commit, twice, compared
+#                                             -> dist/release/REF/ with BUILD-INFO: what packaging/second-build.sh
+#                                             compares the other machine's build with. REF may be any commit, to try it
 #   packaging/build-appimage.sh dev           AppImage of the working tree (tracked and new, unignored files) ->
 #                                             dist/dev/DAPrivacyKit-<version>+dev.<commit>[.dirty]-x86_64.AppImage,
 #                                             for trying changes before committing them: never a release's name,
@@ -16,7 +15,6 @@
 # Only committed files are built (the commit's tree, as git stores it), except by dev and lock; SOURCE_DATE_EPOCH
 # is the commit's time. The builder image is made from the Containerfile and pins.sh of what is built.
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"         # verify-tag.sh is beside it
 cd "$(git rev-parse --show-toplevel)"
 mode="${1:-build}"
 ref="${2:-HEAD}"
@@ -34,12 +32,9 @@ if [ "$mode" = build ] || [ "$mode" = check ]; then
 fi
 if [ "$mode" = release ]; then
     if git rev-parse -q --verify "refs/tags/$ref" >/dev/null; then
-        # a release's tag must be signed by a release key the app pins (docs/release-key.asc of this checkout)
-        "$HERE/verify-tag.sh" "$ref" || { echo "Not building $ref: its tag isn't signed by a pinned release key." >&2
-                                          exit 1; }
         kind="tag"
     else
-        echo "Note: $ref is not a tag: built to try the release steps, it can't be signed." >&2
+        echo "Note: $ref is not a tag: built to try the release steps." >&2
         kind="commit"
     fi
 fi

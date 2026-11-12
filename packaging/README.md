@@ -60,7 +60,7 @@ You need rootless [Podman](https://podman.io) (`sudo apt install podman`).
 ```bash
 packaging/build-appimage.sh build        # dist/DAPrivacyKit-<version>-x86_64.AppImage (+ .sha256, .zsync)
 packaging/build-appimage.sh check        # build twice from scratch, compare: must be identical
-packaging/build-appimage.sh release TAG  # a release: its signed tag, twice, into dist/release/TAG (below)
+packaging/build-appimage.sh release TAG  # a tag, twice, into dist/release/TAG, for second-build.sh (below)
 packaging/build-appimage.sh dev          # the working tree, uncommitted changes included: never a release
 packaging/verify-release.sh TAG          # build a release's tag afresh and compare with its published checksum
 packaging/test-appimage.sh               # smoke-test it, extracted, on Ubuntu, Debian, Fedora, Arch, CachyOS
@@ -135,9 +135,7 @@ packaging/verify-release.sh v<version>                          # the release is
 packaging/verify-release.sh v<version> DAPrivacyKit-<version>-x86_64.AppImage    # ... and so is your file
 ```
 
-`verify-release.sh` first checks the tag's own signature (`verify-tag.sh`: a good signature whose primary key is in
-`docs/release-key.asc` of your clone, never the tag's own copy; tags before 0.1.0b9 carry none, and it says so),
-and that the tag is `v<version>` of the commit it names. Then it checks the tag out beside your working tree (which
+`verify-release.sh` first checks that the tag is `v<version>` of the commit it names. Then it checks the tag out beside your working tree (which
 it doesn't touch), builds it as `build-appimage.sh build` does, and compares the result with the published checksum
 (fetched over HTTPS from the release page), with a `.sha256` file or checksum you give it, or with the AppImage you
 downloaded. It exits 0 when they are the same; when they differ it keeps its build in `dist/verify/`, and
@@ -151,9 +149,6 @@ file) or `gpg --verify` with the release key (below).
 
 ## Releasing
 
-A signature says "this is what the tag builds to", so it is made only once that is shown, and never on a file that
-could be anything else:
-
 1. Update the version in `pyproject.toml` and `src/daprivacyscanner/__init__.py` (a test ties them), commit.
 2. `.venv/bin/python packaging/check-signing-keys.py`: every fingerprint in `signing-keys.yaml` is
    still on its project's page (re-export a key whose subkeys have changed, and commit).
@@ -163,24 +158,24 @@ could be anything else:
    record each with `--mark APP VERSION [--tested]`. `--installed` compares this computer's versions instead.
 4. `make release-check` (`packaging/check.sh --release`): on a clean tree, every check and suite, the AppImage
    built twice and compared, and the smoke test extracted and mounted on every distribution.
-5. A signed tag: `git tag -s v<version> -m 'DA Privacy Kit <version>'` (with `user.signingkey` the release key's
-   signing (sub)key, `<fingerprint>!`).
-6. `packaging/build-appimage.sh release v<version>`: refuses a tag that isn't signed by a pinned key or isn't
-   `v<version>` of its commit; builds it twice, compared, into `dist/release/v<version>/` with `BUILD-INFO`.
-7. `packaging/second-build.sh v<version> HOST`: another machine (git and rootless Podman, e.g. a second PC of your own) gets a
-   bundle of that one commit, builds it with a builder image and downloads of its own (`FRESH=1`), and its AppImage
-   and `.zsync` must be the same bytes; only then is `second-build.txt` written. A machine you can't reach over ssh:
-   run `packaging/verify-release.sh v<version> <the SHA-256 here>` there, and record what it printed with
-   `packaging/second-build.sh v<version> --record SHA256 ZSYNC_SHA256 "that machine"`.
-8. Sign: `DAPS_SIGNING_KEYS='<signing key fingerprint>!' packaging/sign-release.sh v<version>` (below).
-9. Attach the AppImage, its `.sha256`, its `.zsync` and the three `.asc` files to the release (the `.zsync` must be
-   on the latest release for AppImage updaters). Publish it as a release, neither a draft nor a pre-release, tagged
-   `v<version>`, with the AppImage and its `.asc` under exactly those names: Check for updates… in every copy takes
-   GitHub's latest release only in that form, and only with an `.asc` signature by a key that copy pins (during a
-   key change, the old key's too: docs/RELEASE-KEYS.md). Its notes end with the Verify section sign-release.sh prints:
-   `gpg --verify` on the `.asc` with the key's fingerprint, `sha256sum -c` on the `.sha256`, the SHA-256 itself, and
-   `packaging/verify-release.sh v<version>` for anyone who wants to rebuild it from the tag and compare.
-10. After publishing, run `packaging/verify-release.sh v<version>` yourself: it fetches the published checksum and
+5. Tag (`git tag -a v<version> -m 'DA Privacy Kit <version>'`) and build: `packaging/build-appimage.sh build`
+   (dist/: the AppImage, its `.sha256` and its `.zsync`).
+6. Optional, a build on another machine: `packaging/build-appimage.sh release v<version>`, then, once the tag is
+   pushed, `packaging/second-build.sh v<version> HOST` (git and rootless Podman there): it clones the tag from
+   GitHub, checks it names the same commit as here, builds it with a builder image and downloads of its own
+   (`FRESH=1`), and its AppImage and `.zsync` must be the same bytes. Two builds here share this machine's builder
+   image and download cache; the other machine's catch a tampered one. `--from-here` sends the commit from this
+   machine instead (before pushing). A machine you can't reach over ssh: run `packaging/verify-release.sh v<version>`
+   there and record what it printed with `packaging/second-build.sh v<version> --record SHA256 ZSYNC_SHA256 "where"`.
+7. Sign (below): the AppImage and its `.sha256`.
+8. Attach the AppImage, its `.sha256`, the two `.asc` files and the `.zsync` (AppImage updaters read it from the
+   latest release; it needs no signature: it holds the AppImage's own checksums). Publish it as a release, neither
+   a draft nor a pre-release, tagged `v<version>`, with the AppImage and its `.asc` under exactly those names: Check
+   for updates… in every copy takes GitHub's latest release only in that form, with an `.asc` by the key it pins.
+   Its notes end with a Verify section: `gpg --verify` on the `.asc` with the key's fingerprint, `sha256sum -c` on
+   the `.sha256`, the SHA-256 itself, and `packaging/verify-release.sh v<version>` for anyone who wants to rebuild it
+   from the tag and compare.
+9. After publishing, run `packaging/verify-release.sh v<version>` yourself: it fetches the published checksum and
    builds the tag again, so what is on the release page is known to be what the tag builds to.
 
 The build writes the date of the release's commit into the package (`_built.py`, from `SOURCE_DATE_EPOCH`, so it
@@ -189,24 +184,17 @@ asks only when clicked); from that date it says, once its copy is more than 90 d
 that a newer one is probably out and where (`about.LINKS["releases"]`): at the top of the page, with Check for
 updates…, and in the text report, which also carries the version.
 
-Signing: `DAPS_SIGNING_KEYS='<fingerprint>! [<fingerprint>!...]' packaging/sign-release.sh TAG` signs only
-`dist/release/TAG/` as step 6 built it: the tag verified again, `BUILD-INFO` of the tag's commit, the AppImage,
-its `.sha256` and its `.zsync` unchanged since (their hashes), no other AppImage beside them, and the second
-machine's hashes the same. Each file gets one `.asc` holding a signature by every key named (during a key change,
-the new signing subkey and the old key), each checked with gpgv against the tag's own `docs/release-key.asc`: it
-refuses a key the release doesn't pin. `--check TAG` runs every check without a key.
-
-The release key today is Digital Archon Release Signing, `3AA5 C061 33BB C05A 4151  EA41 5B59 48EB 785E D3AF`, an
-ed25519 key used only for this: its public half is `docs/release-key.asc`, the `digitalarchon` entry of
-`signing-keys.yaml` (so Verify a download recognises the app's own releases) and the README; the private half and
-its revocation certificate are kept by its owner, backed up offline, never on a machine where automated agents
-run. It has no expiry on purpose: every copy of the app carries the public key and never fetches keys, so an
-extended expiry would never reach old copies, which would then call new releases signed by an expired key. For the
-same reason a lost or stolen key can't be revoked in copies already out, so it is to be replaced by a certify-only
-primary key kept offline, its signing subkey on a hardware token and a successor key pinned now:
-[docs/RELEASE-KEYS.md](../docs/RELEASE-KEYS.md) is the owner's procedure, with every command. The app is ready for
-it: only primary keys are pinned, subkeys count when their primary binds them, and a key marked `role: successor`
-verifies too (`tools/keys.py`).
+Signing: `DAPS_SIGNING_KEY=<fingerprint> packaging/sign-release.sh` makes a detached `.asc` for the AppImage and
+its `.sha256`, checked with gpgv before it finishes; attach both. The release key is Digital Archon Release Signing,
+`3AA5 C061 33BB C05A 4151  EA41 5B59 48EB 785E D3AF`, an ed25519 key used only for this: its public half is `docs/release-key.asc`, the
+`digitalarchon` entry of `signing-keys.yaml` (so Verify a download, and Check for updates…, recognise the app's own
+releases) and the README; the private half and its revocation certificate are kept by its owner, backed up offline,
+never on a machine where automated agents run. It has no expiry on purpose: every copy of the app carries the public
+key and never fetches keys, so an extended expiry would never reach old copies, which would then call new releases
+signed by an expired key. If it is ever lost or compromised, publish the revocation certificate, make a new key and
+release with it, and say so on the release page: copies already out trust the old key until they are updated.
+On a machine without the repository: check the files' SHA-256 against the build, then `gpg --local-user
+<fingerprint> --armor --detach-sign FILE` for each.
 
 Rebuild and re-release when a pinned dependency has a security fix: the locks don't move by
 themselves. WebKitGTK and GTK update with the system.

@@ -695,7 +695,7 @@ warning the online tests give (it goes out directly, as they do).
    (seen on 2026-11-12) or `objects.githubusercontent.com` (before 2025): those are the only redirects followed.
    Refused before anything is contacted where the AppImage couldn't be replaced, and where there isn't room.
 3. **Verify** (`verify`): Verify a download on it with the `digitalarchon` project of `signing-keys.yaml` alone (its
-   pinned primaries, the subkeys they bind, a `role: successor`; never the user's keyring, never another project's
+   pinned primary and the subkeys it binds; never the user's keyring, never another project's
    key): anything but *verified* by it, over the file itself, is refused and deleted; so is a signature dated in the
    future. Then the version the file itself says it is (`read_version`): a file's name says nothing (an older
    release, genuinely signed, renamed as the latest, passes the signature check), and its contents can't be read

@@ -10,7 +10,7 @@ itself: no timer, no check at start-up.
    filesystem so the replacement is one rename, through online.Net.download (github.com, which redirects to its file
    servers, ASSET_HOSTS: only those are followed), capped at the size the release gives; Stop ends it.
 3. `verify`: Verify a download with the app's own release key alone (the `digitalarchon` project of
-   signing-keys.yaml: its pinned primaries, the subkeys they bind, a successor): anything but *verified* by it is
+   signing-keys.yaml: its pinned primary and the subkeys it binds): anything but *verified* by it is
    refused and deleted. Then the version the file itself says it is: the verified file is run once with --version
    (`read_version`), under the host's environment and a timeout. A file's name says nothing (an older release,
    signed and genuine, renamed as the latest, passes the signature check), and its contents can't be read without

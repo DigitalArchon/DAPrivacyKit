@@ -1,7 +1,7 @@
 """The release process and what ties it together: the version, the counts the docs give, the licences and update
-information the AppImage carries, the release key's successor and signing subkeys (tools/keys.py), and the scripts
-that build, check and sign a release (packaging/*.sh), run against scratch repositories with throwaway keys made
-here, and a fake podman."""
+information the AppImage carries, the release key's signing subkeys (tools/keys.py), and the scripts that build,
+check and sign a release (packaging/*.sh), run against scratch repositories with throwaway keys made here, and a fake
+podman."""
 
 from __future__ import annotations
 
@@ -51,8 +51,8 @@ def test_the_counts_the_docs_give_are_the_catalogues():
 
 
 def test_the_release_key_file_is_the_key_the_app_pins():
-    """docs/release-key.asc is what verify-tag.sh and sign-release.sh check with; signing-keys.yaml what the app
-    verifies its own releases with: the same keys, subkeys included."""
+    """docs/release-key.asc is the key users check a download with by hand; signing-keys.yaml what the app verifies
+    its own releases (and its updates) with: the same keys, subkeys included."""
     data = yaml.safe_load((ROOT / "signing-keys.yaml").read_text(encoding="utf-8"))
     entry = next(p for p in data["projects"] if p["id"] == "digitalarchon")
     pinned = {k["fingerprint"] for k in entry["keys"]}
@@ -231,20 +231,18 @@ def _armor(data: bytes) -> bytes:
 
 
 @needs_gpg
-def test_a_successor_key_pinned_now_verifies_and_is_marked(tmp_path, keys):
+def test_a_project_may_pin_two_keys_and_a_key_holds_nothing_but_its_fingerprint_and_name(tmp_path, keys):
     block = keys.public(keys.primary, keys.other)
     p = _project(block, [{"fingerprint": keys.primary, "name": "Release key"},
-                         {"fingerprint": keys.other, "name": "Release key (successor)", "role": "successor"}])
-    assert p.successors == (keys.other,) and p.key_name(keys.other) == "Release key (successor)"
+                         {"fingerprint": keys.other, "name": "Release key 2"}])
+    assert p.key_name(keys.other) == "Release key 2"
     f = tmp_path / "file"
     f.write_bytes(b"x")
     keys.sign(f, keys.other_sub)
     assert V.verify(_host(tmp_path), f, projects=[p]).level == "verified"
-    with pytest.raises(K.DataError, match="role current or successor"):
+    with pytest.raises(K.DataError, match="nothing else"):
         _project(block, [{"fingerprint": keys.primary, "name": "a"}, {"fingerprint": keys.other, "name": "b",
                                                                         "role": "spare"}])
-    with pytest.raises(K.DataError, match="needs a current one"):
-        _project(keys.public(keys.other), [{"fingerprint": keys.other, "name": "b", "role": "successor"}])
 
 
 def test_the_bundled_keys_still_load_with_every_subkey_bound():
@@ -304,21 +302,6 @@ def _tag(repo: Path, env: dict, signer: str | None, name: str = "v1.0") -> None:
     subprocess.run(["git", "-c", "gpg.program=gpg", *argv], cwd=repo, env=env, check=True, capture_output=True)
 
 
-@needs_gpg
-def test_verify_tag_accepts_only_a_tag_signed_by_a_pinned_key(tmp_path, keys):
-    env = _git_env(tmp_path, keys.home)
-    repo = _repo(tmp_path, env, keys.public(keys.primary))
-    _tag(repo, env, keys.sub)
-    r = _sh("verify-tag.sh", "v1.0", cwd=repo, env=env)
-    assert r.returncode == 0 and keys.primary in r.stdout
-    _tag(repo, env, keys.other_sub, "v1.1")                      # a good signature, by a key the file doesn't hold
-    assert _sh("verify-tag.sh", "v1.1", cwd=repo, env=env).returncode == 1
-    _tag(repo, env, None, "v1.2")                                # annotated, unsigned: what tags before 0.1.0b9 are
-    r = _sh("verify-tag.sh", "v1.2", cwd=repo, env=env)
-    assert r.returncode == 3 and "not signed" in r.stderr
-    assert _sh("verify-tag.sh", "v9", cwd=repo, env=env).returncode == 2
-
-
 def _release_dir(repo: Path, env: dict, *, second: str | None = None) -> tuple[Path, str]:
     """dist/release/v1.0 as build-appimage.sh release and second-build.sh leave it."""
     r = _sh("build-appimage.sh", "release", "v1.0", cwd=repo, env=env)
@@ -335,67 +318,69 @@ def _release_dir(repo: Path, env: dict, *, second: str | None = None) -> tuple[P
 
 
 @needs_gpg
-def test_a_release_is_signed_only_as_built_from_its_signed_tag_and_built_again_elsewhere(tmp_path, keys):
+def test_sign_release_signs_each_appimage_in_dist_and_its_checksum_with_the_key_named(tmp_path, keys):
+    """The owner's way: the AppImage and its .sha256, signed with the release key (DAPS_SIGNING_KEY, its full
+    fingerprint), each signature checked with gpgv against that key alone."""
     env = _git_env(tmp_path, keys.home)
     repo = _repo(tmp_path, env, keys.public(keys.primary))
-    _tag(repo, env, keys.sub)
-    d, sha = _release_dir(repo, env)
+    dist = repo / "dist"
+    dist.mkdir()
     name = "DAPrivacyKit-1.0-x86_64.AppImage"
-    assert _sh("sign-release.sh", "--check", "v1.0", cwd=repo, env=env).returncode == 0
-    r = _sh("sign-release.sh", "v1.0", cwd=repo, env={**env, "DAPS_SIGNING_KEYS": keys.sub + "!"})
-    assert r.returncode == 0, r.stderr
-    (tmp_path / "pub.asc").write_bytes(keys.public(keys.primary))
-    ring = tmp_path / "pub.gpg"
-    ring.write_bytes(K.dearmor((tmp_path / "pub.asc").read_bytes()))
-    for f in (name, f"{name}.sha256", f"{name}.zsync"):
-        v = subprocess.run(["gpgv", "--status-fd", "1", "--keyring", str(ring), str(d / f"{f}.asc"), str(d / f)],
-                           capture_output=True, text=True)
-        assert v.returncode == 0 and f"VALIDSIG {keys.sub}" in v.stdout and v.stdout.split()[-1] == keys.primary
-    # a key change: the new subkey and the old key sign together, and the tag's keys must hold both (here they don't)
-    r = _sh("sign-release.sh", "v1.0", cwd=repo, env={**env, "DAPS_SIGNING_KEYS": f"{keys.sub}! {keys.other_sub}!"})
-    assert r.returncode == 1 and "1 good of 2" in r.stderr and not (d / f"{name}.asc").exists()
+    (dist / name).write_bytes(b"appimage 1.0")
+    (dist / f"{name}.sha256").write_text(hashlib.sha256(b"appimage 1.0").hexdigest() + f"  {name}\n")
+    # a copy in the scratch repository: the script works on the dist/ beside its own folder, never this checkout's
+    script = repo / "packaging/sign-release.sh"
+    script.parent.mkdir(exist_ok=True)
+    shutil.copy(ROOT / "packaging/sign-release.sh", script)
 
-    # what it refuses
-    def refused(why: str, **extra) -> None:
-        r = _sh("sign-release.sh", "v1.0", cwd=repo, env={**env, "DAPS_SIGNING_KEYS": keys.sub + "!", **extra})
-        assert r.returncode == 1 and why in r.stderr, r.stderr
-    (d / f"{name}").write_bytes(b"changed after the build")
-    refused("doesn't match the AppImage")
-    (d / f"{name}").write_bytes(b"appimage 1.0")
-    (d / "DAPrivacyKit-1.0+dev.abc-x86_64.AppImage").write_bytes(b"a dev build")
-    refused("other builds are in")
-    (d / "DAPrivacyKit-1.0+dev.abc-x86_64.AppImage").unlink()
-    (d / "second-build.txt").unlink()
-    refused("no second build")
+    def sign(key: str) -> subprocess.CompletedProcess:
+        return subprocess.run(["bash", str(script)], cwd=tmp_path, env={**env, "DAPS_SIGNING_KEY": key},
+                              capture_output=True, text=True, timeout=120)
+    r = sign(keys.primary)
+    assert r.returncode == 0, r.stderr
+    ring = tmp_path / "pub.gpg"
+    ring.write_bytes(K.dearmor(keys.public(keys.primary)))
+    for f in (name, f"{name}.sha256"):
+        v = subprocess.run(["gpgv", "--status-fd", "1", "--keyring", str(ring), str(dist / f"{f}.asc"), str(dist / f)],
+                           capture_output=True, text=True)
+        assert v.returncode == 0 and v.stdout.split("VALIDSIG", 1)[1].split()[-1] == keys.primary
+    r = sign(keys.primary[-16:])
+    assert r.returncode == 2 and "full fingerprint" in r.stderr
 
 
 @needs_gpg
-def test_a_release_whose_second_build_differs_is_never_recorded_or_signed(tmp_path, keys):
+def test_a_release_built_from_an_annotated_tag_and_built_again_elsewhere_is_recorded(tmp_path, keys):
     env = _git_env(tmp_path, keys.home)
     repo = _repo(tmp_path, env, keys.public(keys.primary))
-    _tag(repo, env, keys.sub)
-    d, _ = _release_dir(repo, env, second="0" * 64)
-    assert not (d / "second-build.txt").exists()
-    r = _sh("sign-release.sh", "v1.0", cwd=repo, env={**env, "DAPS_SIGNING_KEYS": keys.sub + "!"})
-    assert r.returncode == 1 and "no second build" in r.stderr
+    _tag(repo, env, None)                                        # annotated, unsigned: how releases are tagged
+    d, sha = _release_dir(repo, env)
+    second = (d / "second-build.txt").read_text()
+    assert f"appimage_sha256={sha}" in second and "host=a test machine" in second
 
 
 @needs_gpg
-def test_an_unsigned_tag_is_neither_built_as_a_release_nor_signed(tmp_path, keys):
+def test_a_release_whose_second_build_differs_is_never_recorded(tmp_path, keys):
     env = _git_env(tmp_path, keys.home)
     repo = _repo(tmp_path, env, keys.public(keys.primary))
     _tag(repo, env, None)
-    r = _sh("build-appimage.sh", "release", "v1.0", cwd=repo, env=env)
-    assert r.returncode == 1 and "isn't signed by a pinned release key" in r.stderr
-    r = _sh("sign-release.sh", "v1.0", cwd=repo, env={**env, "DAPS_SIGNING_KEYS": keys.sub + "!"})
-    assert r.returncode == 1 and "must be a tag signed" in r.stderr
+    d, _ = _release_dir(repo, env, second="0" * 64)
+    assert not (d / "second-build.txt").exists()
+
+
+def test_a_second_build_of_a_commit_comes_from_here_never_from_github(tmp_path):
+    """Over ssh the other machine clones the pushed tag from GitHub; a commit, or a tag not pushed yet, is sent from
+    here only when asked (--from-here), and nothing is contacted before that is settled."""
+    env = _git_env(tmp_path)
+    repo = _repo(tmp_path, env, b"")
+    r = _sh("second-build.sh", "HEAD", "somehost", cwd=repo, env=env)
+    assert r.returncode == 2 and "--from-here" in r.stderr and not (tmp_path / "podman.calls").exists()
 
 
 @needs_gpg
 def test_a_tag_naming_another_version_isnt_built(tmp_path, keys):
     env = _git_env(tmp_path, keys.home)
     repo = _repo(tmp_path, env, keys.public(keys.primary), version="1.1")
-    _tag(repo, env, keys.sub)
+    _tag(repo, env, None)
     r = _sh("build-appimage.sh", "release", "v1.0", cwd=repo, env=env)
     assert r.returncode == 1 and "version is 1.1" in r.stderr
 

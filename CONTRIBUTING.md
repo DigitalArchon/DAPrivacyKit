@@ -62,13 +62,10 @@ number), and the checks are [privacy-checks.yaml](privacy-checks.yaml) (read its
 
 ## Releases, and how to check one
 
-Releases are made as [packaging/README.md](packaging/README.md#releasing) describes: `make release-check`, a tag
-signed with the release key, `packaging/build-appimage.sh release TAG` (two builds here, compared), a third build
-on another machine that must give the same bytes (`packaging/second-build.sh`), and only then
-`packaging/sign-release.sh TAG`, which signs that build and refuses anything else. The AppImage is reproducible:
-anyone can rebuild a release from its tag and compare (`packaging/verify-release.sh TAG`), and from 0.1.0b9 the
-tag's own signature is checked first. The release keys, and the move to an offline primary key with a signing
-subkey on a token, are in [docs/RELEASE-KEYS.md](docs/RELEASE-KEYS.md).
+Releases are made as [packaging/README.md](packaging/README.md#releasing) describes: `make release-check`, a tag,
+the AppImage built and signed with the release key. The AppImage is reproducible: built twice and compared here,
+optionally once more on another machine from the pushed tag (`packaging/second-build.sh`), and anyone can rebuild a
+release from its tag and compare (`packaging/verify-release.sh TAG`).
 
 ## Licence
 

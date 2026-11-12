@@ -1,21 +1,28 @@
 #!/bin/bash
-# The second build a release needs before it is signed: another machine builds the same commit from a clean copy of
-# it, with a builder image and downloads of its own, and its AppImage and .zsync must be this machine's, byte for byte.
-#   packaging/second-build.sh REF HOST                  over ssh: HOST needs git and rootless Podman
+# An optional check before a release goes out: another machine builds the same tag, with a builder image and downloads
+# of its own, and its AppImage and .zsync must be this machine's, byte for byte. Two builds here share this machine's
+# builder image, download cache, Podman and kernel, so they prove the build is deterministic, not that what went into
+# it was clean; the other machine makes the image again from nothing and fetches every download again (checked
+# against the pins), so a tampered cache or image here shows as a difference.
+#   packaging/second-build.sh TAG HOST                  over ssh: HOST clones the pushed TAG from GitHub (read-only)
+#                                                       and builds it; the tag must name the commit it names here
+#   packaging/second-build.sh REF HOST --from-here      over ssh, before pushing: this machine sends the commit (a git
+#                                                       bundle of that one ref, history included)
 #   packaging/second-build.sh REF --record SHA256 ZSYNC_SHA256 "where it was built"
 #                                                       a build made elsewhere by hand: on that machine, in a clone
 #                                                       with the tag, `packaging/verify-release.sh REF` builds it
 #                                                       (and prints both checksums) without fetching anything else
 # REF is what `packaging/build-appimage.sh release REF` built into dist/release/REF/ (a tag, or a commit to try the
-# steps). The result is dist/release/REF/second-build.txt, which packaging/sign-release.sh requires; nothing is
-# written when the hashes differ (exit status 1). Over ssh, only the commit's own objects are copied (a git bundle of
-# that one ref, history included), cloned into ~/daprivacyscanner-second-build on HOST, built there with FRESH=1 (the
-# builder image made again from nothing, every download fetched again and checked against the pins), and the clone
-# removed after; HOST's builder image and download cache stay for the next time. FRESH=0 reuses the builder image
-# HOST made itself last time (a retry after a failed build: it is still that machine's own, never this one's).
+# steps). When the two match, dist/release/REF/second-build.txt records it; nothing is written when they differ (exit
+# status 1). Cloned into ~/daprivacyscanner-second-build on HOST, built there with FRESH=1, and the clone removed
+# after; HOST's builder image and download cache stay for the next time. FRESH=0 reuses the builder image HOST made
+# itself last time (a retry after a failed build: it is still that machine's own, never this one's). Signing doesn't
+# depend on it (packaging/sign-release.sh).
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
-[ $# -ge 2 ] || { echo "usage: $0 REF HOST | $0 REF --record SHA256 ZSYNC_SHA256 DESCRIPTION" >&2; exit 2; }
+[ $# -ge 2 ] || { echo "usage: $0 TAG HOST | $0 REF HOST --from-here | $0 REF --record SHA256 ZSYNC_SHA256 DESCRIPTION" >&2
+                  exit 2; }
+REPOSITORY="https://github.com/DigitalArchon/DAPrivacyKit.git"
 ref="$1"; shift
 dir="dist/release/$ref"
 info() { sed -n "s/^$2=//p" "$1" | tail -1; }
@@ -29,27 +36,48 @@ if [ "$1" = --record ]; then
     got="${2,,}" got_z="${3,,}" where="$4"
 else
     host="$1"
+    from_here=0
+    if [ "${2:-}" = --from-here ]; then from_here=1
+    elif [ $# -gt 1 ]; then echo "usage: $0 TAG HOST | $0 REF HOST --from-here" >&2; exit 2
+    elif ! git rev-parse -q --verify "refs/tags/$ref" >/dev/null; then
+        echo "$ref is not a tag: the other machine clones a pushed tag from GitHub. To build a commit (or a tag not" \
+             "pushed yet) from this machine's copy: $0 $ref $host --from-here" >&2
+        exit 2
+    fi
     command -v ssh >/dev/null || { echo "ssh is needed" >&2; exit 2; }
     WORK="$(mktemp -d)"
     trap 'git update-ref -d refs/daprivacyscanner/second-build 2>/dev/null || true; rm -rf "$WORK"' EXIT
-    git update-ref refs/daprivacyscanner/second-build "$commit"       # a bundle carries refs: this one, for a moment
-    git bundle create -q "$WORK/src.bundle" refs/daprivacyscanner/second-build
     # shellcheck disable=SC2088  # expanded on HOST, in the commands below
     remote='~/daprivacyscanner-second-build'
     # shellcheck disable=SC2029  # $remote and $commit are meant to expand here, $HOME on the other side
     ssh "$host" "command -v git >/dev/null && command -v podman >/dev/null || { echo 'git and podman are needed on $host' >&2; exit 2; }
                  rm -rf $remote && mkdir -p $remote"
-    scp -q "$WORK/src.bundle" "$host:daprivacyscanner-second-build/src.bundle"
+    if [ "$from_here" = 1 ]; then
+        git update-ref refs/daprivacyscanner/second-build "$commit"   # a bundle carries refs: this one, for a moment
+        git bundle create -q "$WORK/src.bundle" refs/daprivacyscanner/second-build
+        scp -q "$WORK/src.bundle" "$host:daprivacyscanner-second-build/src.bundle"
+        fetch="git init -q src && cd src && git fetch -q ../src.bundle refs/daprivacyscanner/second-build"
+    else
+        # the published tag, as anyone gets it: its commit must be this one (a tag moved on GitHub, or a different
+        # commit pushed under its name, is a difference, not a build)
+        fetch="git -c advice.detachedHead=false clone -q --single-branch --branch $ref $REPOSITORY src && cd src
+               [ \"\$(git rev-parse HEAD)\" = $commit ] || { echo 'the tag $ref on GitHub names another commit'; exit 3; }"
+    fi
     if [ "${FRESH:-1}" = 1 ]; then
         echo "Building $ref ($commit) on $host: a fresh builder image and every download again, so a while."
     else
         echo "Building $ref ($commit) on $host, with the builder image it made itself before."
     fi
     # shellcheck disable=SC2029
-    ssh "$host" "set -e; cd $remote && git init -q src && cd src
-                 git fetch -q ../src.bundle refs/daprivacyscanner/second-build && git checkout -q --detach $commit
+    ssh "$host" "set -e; cd $remote && $fetch
+                 git checkout -q --detach $commit
                  FRESH=${FRESH:-1} DIST=\$HOME/daprivacyscanner-second-build/out packaging/build-appimage.sh build" \
-        > "$WORK/remote.log" 2>&1 || { tail -30 "$WORK/remote.log" >&2; echo "The build on $host failed." >&2; exit 2; }
+        > "$WORK/remote.log" 2>&1 || {
+            rc=$?; tail -30 "$WORK/remote.log" >&2
+            # shellcheck disable=SC2029
+            ssh "$host" "rm -rf $remote" || true
+            if [ "$rc" = 3 ]; then echo "DIFFERENT: the tag $ref on GitHub isn't $commit, as it is here." >&2; exit 1; fi
+            echo "The build on $host failed." >&2; exit 2; }
     # shellcheck disable=SC2029
     got="$(ssh "$host" "sha256sum $remote/out/$name | cut -d' ' -f1")"
     # shellcheck disable=SC2029

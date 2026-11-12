@@ -377,9 +377,6 @@ class Project:
     unsigned: bool = False                       # it publishes no signature: `how` says what there is
     # SHA-256s the project publishes on its own site for files it doesn't sign: (file, sha256, page)
     checksums: tuple[tuple[str, str, str], ...] = ()
-    # primary keys pinned now for when the current one has to be retired (lost, compromised): copies never fetch
-    # keys, so a successor counts only if it was in the copy already. It verifies like any key listed.
-    successors: tuple[str, ...] = ()
 
     def matches(self, filename: str) -> bool:
         return any(fnmatch.fnmatchcase(filename, pat) for pat in self.files)
@@ -440,18 +437,14 @@ def parse(data: object) -> list[Project]:
                                p["checked"], tuple(str(x) for x in p["files"]), _text(p["how"]), (), b"",
                                note=_text(p.get("note")), unsigned=True, checksums=tuple(sums)))
             continue
-        pins, successors = [], []
+        pins = []
         for k in p["keys"]:
             fpr = str((k or {}).get("fingerprint", "")).upper()
             if not _FPR.match(fpr) or not (k or {}).get("name"):
                 raise DataError(f"{where}: each key needs a 40-digit fingerprint and a name")
-            if set(k) - {"fingerprint", "name", "role"} or k.get("role", "current") not in ("current", "successor"):
-                raise DataError(f"{where}: a key has a fingerprint, a name and, optionally, role current or successor")
+            if set(k) - {"fingerprint", "name"}:
+                raise DataError(f"{where}: a key has a fingerprint and a name, nothing else")
             pins.append((fpr, _text(k["name"])))
-            if k.get("role") == "successor":
-                successors.append(fpr)
-        if len(successors) == len(pins):
-            raise DataError(f"{where}: a successor key needs a current one beside it")
         try:
             binary = dearmor(str(p["key"]))
             infos = parse_keys(binary)
@@ -463,8 +456,7 @@ def parse(data: object) -> list[Project]:
                             f"pinned with it ({', '.join(f for f, _ in pins)})")
         out.append(Project(p["id"], _text(p["name"]), _text(p["signs"]), p["source"], _text(p["key_from"]),
                            p["checked"], tuple(str(x) for x in p["files"]), _text(p["how"]), tuple(pins), binary,
-                           tuple(s for k in infos for s in k.subkeys), _text(p.get("note")), checksums=tuple(sums),
-                           successors=tuple(successors)))
+                           tuple(s for k in infos for s in k.subkeys), _text(p.get("note")), checksums=tuple(sums)))
     if not out:
         raise DataError(f"{DATA_NAME}: no projects")
     return out
