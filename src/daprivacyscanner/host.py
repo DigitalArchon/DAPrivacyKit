@@ -17,7 +17,8 @@ if TYPE_CHECKING:
     from .privileged import Privileged
 
 DEFAULT_TIMEOUT = 15.0
-NOT_FOUND = 127
+NOT_FOUND = 127                 # the program isn't installed (as a shell says it)
+CANT_RUN = 126                  # it is there but couldn't be started: not executable, a wrong format, its input unopenable
 TIMED_OUT = 124
 
 
@@ -34,8 +35,14 @@ class CommandResult:
 
     @property
     def missing(self) -> bool:
-        """The program isn't installed."""
+        """The program isn't installed. Only that: one that is there but couldn't be started is `cant_run`, a failure
+        like any other (never "not installed", which checks take for "not on this machine")."""
         return self.returncode == NOT_FOUND
+
+    @property
+    def cant_run(self) -> bool:
+        """The program is there but couldn't be started (permission denied, a wrong format, its input unopenable)."""
+        return self.returncode == CANT_RUN
 
 
 class CommandRunner:
@@ -62,14 +69,22 @@ class SystemRunner(CommandRunner):
         argv = tuple(argv)
         if not self.which(argv[0]):
             return CommandResult(argv, NOT_FOUND, "", f"{argv[0]}: not found")
+        # every other failure is said as such: any OSError used to read as "not installed" (a program that may not be
+        # run, a wrong format, an input that couldn't be opened), and checks took that for "not on this machine"
         try:
-            with open(stdin, "rb") if stdin is not None else open(os.devnull, "rb") as source:
+            source = open(stdin, "rb") if stdin is not None else open(os.devnull, "rb")
+        except OSError as e:
+            return CommandResult(argv, CANT_RUN, "", f"{argv[0]}: its input couldn't be opened ({e.strerror or e})")
+        try:
+            with source:
                 p = subprocess.run(argv, capture_output=True, text=True, errors="replace", timeout=timeout,
                                    stdin=source, env={**self._env, **env} if env else self._env)
         except subprocess.TimeoutExpired:
             return CommandResult(argv, TIMED_OUT, "", f"timed out after {timeout:g} s")
+        except FileNotFoundError as e:          # gone since `which` looked, or a script whose interpreter isn't there
+            return CommandResult(argv, NOT_FOUND, "", f"{argv[0]}: not found ({e.strerror or e})")
         except OSError as e:
-            return CommandResult(argv, NOT_FOUND, "", str(e))
+            return CommandResult(argv, CANT_RUN, "", f"{argv[0]} couldn't be started ({e.strerror or e})")
         return CommandResult(argv, p.returncode, p.stdout, p.stderr)
 
     def which(self, name: str) -> bool:
