@@ -27,9 +27,11 @@ _LOCK = threading.Lock()
 
 
 def _locks(host: Host) -> Path:
+    # the runtime folder as the host has it (the same path on the real machine; a fixture's own tree in tests, whose
+    # locks once piled up in the real /run/user/UID)
     runtime = host.environ.get("XDG_RUNTIME_DIR") or ""
-    base = Path(runtime) if runtime and os.path.isdir(runtime) else Path(host.environ.get("XDG_CACHE_HOME") or
-                                                                         host.home / ".cache")
+    base = host.sys_path(runtime) if runtime.startswith("/") and host.sys_path(runtime).is_dir() else \
+        Path(host.environ.get("XDG_CACHE_HOME") or host.home / ".cache")
     d = base / "daprivacyscanner" / "owners"
     d.mkdir(mode=0o700, parents=True, exist_ok=True)
     if d.is_symlink() or d.stat().st_uid != os.getuid():
