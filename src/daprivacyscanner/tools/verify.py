@@ -324,6 +324,8 @@ def parse_gpg_status(text: str) -> list[dict]:
             sigs.append(cur)
             if word == "NEWSIG":
                 continue
+        if cur is None:                     # a line before any signature's first is about none of them
+            continue
         if word in ("GOODSIG", "EXPSIG", "EXPKEYSIG", "REVKEYSIG", "BADSIG"):
             cur["status"] = {"GOODSIG": "good", "EXPSIG": "expired", "EXPKEYSIG": "expired",
                              "REVKEYSIG": "revoked", "BADSIG": "bad"}[word]

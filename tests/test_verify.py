@@ -192,6 +192,15 @@ def test_parse_gpg_status():
         "status"] == "expired"
 
 
+def test_a_status_line_before_any_signature_is_passed_over():
+    """NO_PUBKEY before a signature's first line (NEWSIG, or ERRSIG from a gpgv that doesn't print NEWSIG) was written
+    into no signature at all: TypeError, and Verify a download failed with an error instead of a verdict."""
+    assert V.parse_gpg_status("[GNUPG:] NO_PUBKEY 300F846BA25BAE09\n") == []
+    s = V.parse_gpg_status("[GNUPG:] NO_PUBKEY 300F846BA25BAE09\n[GNUPG:] NEWSIG\n"
+                           "[GNUPG:] BADSIG 300F846BA25BAE09 x\n")
+    assert [x["status"] for x in s] == ["bad"]
+
+
 # ------------------------------------------------------------------ verdicts, with the real gpgv
 
 @needs_gpgv
