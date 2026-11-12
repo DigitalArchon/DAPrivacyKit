@@ -4108,8 +4108,10 @@ function trialCapNote(cap, why) {
       + `and ${cap.tasks} processes and threads: a program that asks for memory or starts processes without end is `
       + "killed by the system instead of taking the computer with it.");
   }
+  const said = (why || "").trim();
   return h("div", { class: "notebox info small" }, h("b", {}, "Nothing limits what it takes of the computer here. "),
-    (why || "") + " A program that asks for memory until there is none, or starts processes without end, can make the "
+    (said && !".!?".includes(said.slice(-1)) ? said + "." : said) + " A program that asks for memory until there is "
+    + "none, or starts processes without end, can make the "
     + "rest of the session stall or be killed. Save your work before you start it.");
 }
 
