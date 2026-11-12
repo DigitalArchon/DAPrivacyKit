@@ -40,7 +40,11 @@ else
     ssh "$host" "command -v git >/dev/null && command -v podman >/dev/null || { echo 'git and podman are needed on $host' >&2; exit 2; }
                  rm -rf $remote && mkdir -p $remote"
     scp -q "$WORK/src.bundle" "$host:daprivacyscanner-second-build/src.bundle"
-    echo "Building $ref ($commit) on $host: a fresh builder image and every download again, so a while."
+    if [ "${FRESH:-1}" = 1 ]; then
+        echo "Building $ref ($commit) on $host: a fresh builder image and every download again, so a while."
+    else
+        echo "Building $ref ($commit) on $host, with the builder image it made itself before."
+    fi
     # shellcheck disable=SC2029
     ssh "$host" "set -e; cd $remote && git init -q src && cd src
                  git fetch -q ../src.bundle refs/daprivacyscanner/second-build && git checkout -q --detach $commit
