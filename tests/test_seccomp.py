@@ -66,7 +66,9 @@ def test_every_profile_refuses_the_dangerous_calls_in_both_tables(profile):
             if name in table:
                 assert run(prog, table[name], arch=arch) == err(errno.EPERM), (profile, name, arch)
         for name in S.MISSING:
-            assert run(prog, table[name], arch=arch) == err(errno.ENOSYS), (profile, name, arch)
+            # a bubblewrap inside (the nesting profile) needs the new mount API: 0.13 uses mount_setattr, no fallback
+            want = ALLOW if profile == S.NESTING and name in S.MOUNT_API else err(errno.ENOSYS)
+            assert run(prog, table[name], arch=arch) == want, (profile, name, arch)
 
 
 @pytest.mark.parametrize("profile", S.PROFILES)

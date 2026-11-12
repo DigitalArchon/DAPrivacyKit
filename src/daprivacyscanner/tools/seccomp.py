@@ -13,7 +13,8 @@ sandboxed program needs is refused:
 - tracing other programs (ptrace), the performance counters (perf_event_open), bpf and userfaultfd;
 - io_uring, clone3 and the new mount API (open_tree, move_mount, fsopen, fsconfig, fsmount, fspick, mount_setattr,
   open_tree_attr), refused as missing (ENOSYS), so that programs fall back to the calls they replace: clone3's
-  arguments are in memory, where a filter can't look, and clone then gets the same checks as ever;
+  arguments are in memory, where a filter can't look, and clone then gets the same checks as ever (the new mount API
+  not under the nesting profile, below);
 - personality other than Linux's own (and asking which it is), typing into a terminal (TIOCSTI), the console's
   copy and paste (TIOCLINUX) and changing a terminal's line discipline (TIOCSETD);
 - sockets of any family but Unix, IPv4, IPv6 and netlink (refused as unsupported, EAFNOSUPPORT, as Flatpak does), and
@@ -26,9 +27,11 @@ And by profile (PROFILES), what makes namespaces and mounts:
   bubblewrap's --disable-userns;
 - browser: namespaces and chroot allowed, which Firefox's own sandbox (Tor and Mullvad Browser's, and Chromium's,
   in Electron apps) needs for its content processes; mount, pivot_root and setns still refused;
-- nesting: namespaces, mounts and pivot_root allowed as well, for a bubblewrap started inside the sandbox: Tor
-  Browser's outer sandbox (the gate, which starts tor's and the browser's sandboxes), and programs that start
-  sandboxes of their own with bubblewrap (WebKitGTK's web processes, glycin's image loaders, GNOME's thumbnailer).
+- nesting: namespaces, mounts and pivot_root allowed as well, the new mount API too (bubblewrap 0.13 makes its binds
+  read-only with mount_setattr and doesn't fall back: "Can't bind mount /usr on /usr: mount_setattr() failed",
+  tested on CachyOS), for a bubblewrap started inside the sandbox: Tor Browser's outer sandbox (the gate, which starts
+  tor's and the browser's sandboxes), and programs that start sandboxes of their own with bubblewrap (WebKitGTK's web
+  processes, glycin's image loaders, GNOME's thumbnailer).
 Filters stack: what runs in a sandbox inside another is held to both.
 
 A namespace of its own still reaches some of what a user namespace opens up (traffic control through routing
@@ -102,8 +105,8 @@ DENIED = ("syslog", "uselib", "acct", "modify_ldt", "vm86", "vm86old", "quotactl
           "set_mempolicy_home_node", "perf_event_open", "ptrace", "bpf", "userfaultfd", "kexec_load", "kexec_file_load",
           "init_module", "finit_module", "delete_module", "reboot", "swapon", "swapoff", "iopl", "ioperm",
           "lookup_dcookie", "open_by_handle_at")
-MISSING = ("clone3", "io_uring_setup", "io_uring_enter", "io_uring_register", "open_tree", "move_mount", "fsopen",
-           "fsconfig", "fsmount", "fspick", "mount_setattr", "open_tree_attr")
+MOUNT_API = ("open_tree", "move_mount", "fsopen", "fsconfig", "fsmount", "fspick", "mount_setattr", "open_tree_attr")
+MISSING = ("clone3", "io_uring_setup", "io_uring_enter", "io_uring_register", *MOUNT_API)
 MOUNTING = ("mount", "umount", "umount2", "pivot_root", "setns")
 
 STRICT, BROWSER, NESTING = "strict", "browser", "nesting"
@@ -219,7 +222,8 @@ def _rules(profile: str, table: dict[str, int]) -> list[tuple[int, object]]:
     for name in DENIED:
         rules[name] = _errno(EPERM)
     for name in MISSING:
-        rules[name] = _errno(ENOSYS)
+        if not (profile == NESTING and name in MOUNT_API):
+            rules[name] = _errno(ENOSYS)
     if profile == STRICT:
         rules["clone"] = _masked(0, NS_CLONE, EPERM)
         rules["unshare"] = _masked(0, NS_UNSHARE, EPERM)
