@@ -280,12 +280,17 @@ def flow(c, disk, spawned):
 
 def test_the_graphics_card_only_when_the_page_asks_for_it(cat, host, monkeypatch):  # noqa: F811
     asked = []
-    monkeypatch.setattr(B, "start", lambda *a: asked.append(a[-1]) or {"sandboxed": True, "gpu": a[-1]})
+    monkeypatch.setattr(B, "start", lambda *a: asked.append(a[-2:]) or {"sandboxed": True, "gpu": a[-2]})
     with client(cat, host) as c:
         for gpu in (None, False, "yes", 1, True):
             body = {"browser": "mullvad"} | ({} if gpu is None else {"gpu": gpu})
             assert c.post("/api/tools/browser/start", headers=H, json=body).status_code == 200
-    assert asked == [False, False, False, False, True]
+        # this display on X11 only when the page says so, in so many words (the opt-out: sandbox.own_display)
+        for real in (None, "yes", 1, True):
+            body = {"browser": "mullvad"} | ({} if real is None else {"real_display": real})
+            assert c.post("/api/tools/browser/start", headers=H, json=body).status_code == 200
+    assert [g for g, _ in asked[:5]] == [False, False, False, False, True]
+    assert [r for _, r in asked[5:]] == [False, False, False, True]
 
 
 def test_an_unverified_download_is_removed(cat, host, x86, monkeypatch):  # noqa: F811

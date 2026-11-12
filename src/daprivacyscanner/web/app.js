@@ -2903,8 +2903,10 @@ async function openBrowserTool(reloadTools) {
   try { data = await api("GET", "/api/tools/browser"); } catch (e) { toast(e.message, "error"); return; }
   const body = h("div", { class: "browser-tool" });
   let timer = null, closed = false;
-  // how it starts: in the sandbox (when it can be), sound and the graphics card off unless asked; kept while the panel is open
-  const opts = { sandbox: !!data.sandbox?.available, sound: false, nested: false, gpu: false };
+  // how it starts: in the sandbox (when it can be), sound and the graphics card off unless asked; on X11 in a display of
+  // its own wherever Xephyr is installed, this display only when the user says so (real_display); kept while it is open
+  const opts = { sandbox: !!data.sandbox?.available, sound: false, nested: !!data.sandbox?.xephyr?.available, gpu: false,
+    real_display: false };
   const stopFollowing = () => { closed = true; clearTimeout(timer); reloadTools?.(); };
   modal({ title: "Tor or Mullvad Browser in memory", wide: true, body, buttons: [{ label: "Close", kind: "primary" }],
     onClose: stopFollowing });
@@ -3156,30 +3158,52 @@ function browserSandbox(data, opts) {
     if (sb.apparmor) out.push(browserAppArmor());
   }
   if (sb.display === "x11") {
-    const nestedBox = h("input", { type: "checkbox", checked: opts.nested, disabled: !sb.xephyr?.available,
-      onchange: (e) => { opts.nested = e.target.checked; } });
-    out.push(h("div", { class: "notebox risk small" }, h("b", {}, "This is an X11 session. "),
-      "X11 doesn't keep programs apart: any program you run can see what the browser shows and what you type into it, "
-      + "and a browser that had been taken over could do the same to every other window, even type into a terminal, "
-      + "which no sandbox stops. A Wayland session keeps each program to its own windows."
-      + (sb.available ? " Here the sandbox protects your files and your address, not your screen, unless the browser "
-        + "has a display of its own:" : ""),
-      sb.available ? h("div", { class: "orow" }, h("label", {}, nestedBox, " Give it a display of its own (Xephyr)")) : null,
-      sb.available ? h("div", { class: "muted" }, sb.xephyr?.available
-        ? "It then opens in one window that is a separate X display: the browser can't see or type into your other "
-          + "windows. Not the other way round: that window is still a window of this X11 session, so another program "
-          + "here could read what it shows or type into it. The cost: copy and paste between it and your other windows "
-          + "doesn't work (type addresses in), "
-          + "its window has no title bar of its own inside, and keyboard layouts other than the computer's may need "
-          + "setting again inside. It closes by itself a few seconds after the browser."
-        : ["This needs Xephyr, a nested X server, which isn't installed"
-          + (sb.xephyr?.install ? ":" : " (your distribution's Xephyr package)."),
-          sb.xephyr?.install ? commandBlock([sb.xephyr.install]) : null]) : null,
-      h("div", { class: "orow" }, guide("sbx.x11_session", "How to use Wayland…"))));
+    out.push(x11Display(sb, opts, "the browser", "sbx.x11_session", guide));
   } else if (sb.display === "wayland" && sb.available) {
     out.push(waylandNote(sb, WAYLAND_WHO.browser));
   }
   return out;
+}
+
+// On X11 every program with a window can read what other windows show and what is typed into them (XRecord), and type
+// into them (XTEST), a terminal included: a sandbox given the X server's socket loses its other walls. So a sandbox gets
+// a display of its own (Xephyr) wherever Xephyr is installed, unticked only by choice; without Xephyr, this display
+// only after the user ticks that it may, the risk named, with the command that installs Xephyr (sandbox.own_display:
+// the server refuses otherwise). `o`: the panel's options (nested, real_display); `who`: the words for it.
+function x11Display(sb, o, who, guideId, guide, flatpak = false) {
+  const has = !!sb.xephyr?.available && !flatpak;
+  const risk = h("div", { class: "warnbox small" }, `On this display, ${who} could read what every other window shows `
+    + "and what you type into them, and type into them itself, even into a terminal: a website or program that got "
+    + "that far would get past the rest of the sandbox that way.");
+  const shown = () => { risk.hidden = has ? !!o.nested : !o.real_display; };
+  const box = has
+    ? h("input", { type: "checkbox", checked: !!o.nested, onchange: (e) => { o.nested = e.target.checked;
+        o.real_display = !e.target.checked; shown(); } })
+    : h("input", { type: "checkbox", checked: !!o.real_display, onchange: (e) => { o.real_display = e.target.checked;
+        shown(); } });
+  shown();
+  return h("div", { class: "notebox risk small" }, h("b", {}, "This is an X11 session. "),
+    "X11 doesn't keep programs apart: any program you run can see what other windows show and what you type into "
+    + "them, and type into them, a terminal included, which no sandbox stops by itself. A Wayland session keeps each "
+    + "program to its own windows.",
+    sb.available === false ? null : has ? [
+      h("div", { class: "orow" }, h("label", {}, box, " Give it a display of its own (Xephyr)")),
+      h("div", { class: "muted" }, `It then opens in one window that is a separate X display: ${who} can't see or type `
+        + "into your other windows. Not the other way round: that window is still a window of this X11 session, so "
+        + "another program here could read what it shows or type into it. The cost: copy and paste between it and your "
+        + "other windows doesn't work, there is no window manager inside ("
+        + (who === "the browser" ? "its window has no title bar of its own inside" : "its main window fills the display, "
+          + "dialogs open over it") + "), its graphics are drawn by the processor, and keyboard layouts other than the "
+        + "computer's may need setting again inside. It closes by itself a few seconds after the last window in it.")]
+    : flatpak ? h("div", {}, "A Flatpak app is given this display: Flatpak's own sandbox can't be given a display of its own.")
+    : [h("div", {}, "A display of its own (Xephyr, a nested X server) would keep it from your other windows, but it "
+        + "isn't installed" + (sb.xephyr?.install ? ". Install it, then close this panel and open it again:" : " (your "
+        + "distribution's Xephyr package).")),
+      sb.xephyr?.install ? commandBlock([sb.xephyr.install]) : null],
+    sb.available !== false && (flatpak || !has)
+      ? h("div", { class: "orow" }, h("label", {}, box, ` Let ${who} use this display anyway`)) : null,
+    risk,
+    h("div", { class: "orow" }, guide(guideId, "How to use Wayland…")));
 }
 
 // What a Wayland desktop still gives a sandboxed program beyond its own windows, asked of the desktop itself
@@ -3421,8 +3445,10 @@ function browserTor(b, reload) {
   return h("div", { class: "small" },
     h("div", { class: "orow" }, h("label", {}, "Connect to Tor ", select), save, b.running ? state : null),
     linesRow,
+    // tor's own words (its log, or what its sandbox wrote): quoted as tor's, never as the app's
     b.running && c && c.state !== "connected" && (c.summary || c.problem)
-      ? h("div", { class: "muted" }, [c.summary, c.problem].filter(Boolean).join(" · ")) : null,
+      ? h("div", { class: "muted" }, "Tor says: ", [c.summary, c.problem].filter(Boolean).map(s => `“${s}”`).join(" · "))
+      : null,
     h("div", { class: "muted" }, "In the sandbox, Tor Browser's own Connect page and bridge settings are off (it doesn't "
       + "start Tor itself there): choose here. Bridges help where Tor is blocked, and hide from your network that you "
       + "use Tor. Without the sandbox, Tor Browser's own settings apply."));
@@ -3572,10 +3598,26 @@ function browserOutbox(b, data, reload, showBtn) {
 // with no network, so it can't fetch anything (tools/viewer.py). The page names the viewer and shows the
 // command it runs first.
 async function viewOffline(b, f, btn) {
-  let plan;
-  try { plan = (await api("POST", "/api/tools/browser/view", { browser: b.id, name: f.name, open: false })).viewer; }
-  catch (e) { toast(e.message, "error", 12000); return; }
-  const x11 = (await api("GET", "/api/tools/browser").catch(() => ({})))?.sandbox?.display === "x11";
+  let plan, answer;
+  try {
+    answer = await api("POST", "/api/tools/browser/view", { browser: b.id, name: f.name, open: false });
+    plan = answer.viewer;
+  } catch (e) { toast(e.message, "error", 12000); return; }
+  // on X11 a display of its own (Xephyr) wherever it is installed and the viewer isn't a Flatpak app; else this display
+  // only when ticked, the risk named (viewer.view refuses otherwise)
+  const x11 = answer.display === "x11", own = x11 && answer.xephyr && !plan.flatpak;
+  const anyway = h("input", { type: "checkbox" });
+  const x11Part = !x11 ? null : own
+    ? h("p", { class: "small muted" }, "This is an X11 session: it opens in a display of its own (one window, Xephyr), so "
+      + "it can't see or type into your other windows. No copy and paste between it and them; it closes by itself a few "
+      + "seconds after the viewer.")
+    : h("div", { class: "warnbox small" }, "This is an X11 session. "
+      + (plan.flatpak ? "A Flatpak app is given this display: " : "A display of its own (Xephyr) isn't installed"
+        + (answer.xephyr_install ? ` (${answer.xephyr_install}), so it would be given this display: ` : ", so it would be given this display: "))
+      + "a file that took the viewer over could then read what every other window shows and what you type into them, "
+      + "and type into them itself, even into a terminal.",
+      !plan.flatpak && answer.xephyr_install ? commandBlock([answer.xephyr_install]) : null,
+      h("div", { class: "orow" }, h("label", {}, anyway, " Open it on this display anyway")));
   const ok = await confirmModal(`Open ${f.name} with no network?`, [
     h("p", {}, `It opens in ${plan.app}, your usual app for this kind of file, `
       + (plan.flatpak ? "in Flatpak's own sandbox with what it usually asks for taken away (the network, your folders, "
@@ -3585,7 +3627,7 @@ async function viewOffline(b, f, btn) {
     ...(plan.notes || []).map(n => h("p", { class: "small" }, n)),
     f.warnings.filter(w => !w.startsWith("can fetch things")).length
       ? h("ul", { class: "small" }, f.warnings.filter(w => !w.startsWith("can fetch things")).map(w => h("li", {}, w))) : null,
-    x11 ? h("p", { class: "small muted" }, "This is an X11 session: the app can still see and type into other windows.") : null,
+    x11Part,
     h("div", { class: "small muted" }, plan.flatpak ? "It runs (the copy's folder gets a random name in place of <random>):"
       : "It runs, inside bubblewrap with no network (bwrap --unshare-all …):"),
     commandBlock([plan.command]),
@@ -3593,7 +3635,8 @@ async function viewOffline(b, f, btn) {
   if (!ok) return;
   btn.disabled = true;
   try {
-    const r = await api("POST", "/api/tools/browser/view", { browser: b.id, name: f.name, open: true, check: f.check });
+    const r = await api("POST", "/api/tools/browser/view", { browser: b.id, name: f.name, open: true, check: f.check,
+                                                              real_display: x11 && !own && anyway.checked });
     toast(`${f.name} is opening in ${r.viewer.app}, with no network.`, "ok");
   } catch (e) { toast(e.message, "error", 15000); } finally { btn.disabled = false; }
 }
@@ -3674,7 +3717,7 @@ function mullvadVpnNote(vpn) {
     + "without the VPN, turn it back on in Settings, Privacy & Security, DNS over HTTPS (Max Protection, Mullvad's own).");
 }
 
-function browserCards(data, reload, opts = { sandbox: true, sound: false, nested: false, gpu: false }) {
+function browserCards(data, reload, opts = { sandbox: true, sound: false, nested: false, gpu: false, real_display: false }) {
   const rd = data.ramdisk;
   const usable = rd.open && !rd.noexec && !rd.other;
   const cards = data.browsers.map(b => {
@@ -3702,6 +3745,7 @@ function browserCards(data, reload, opts = { sandbox: true, sound: false, nested
                                           wayland_context: sb.wayland_context === true } : undefined;
           const r = await api("POST", "/api/tools/browser/start", { browser: b.id, sandbox: opts.sandbox, sound: opts.sound,
                                                                      nested: !!(opts.sandbox && opts.nested),
+                                                                     real_display: !!(opts.sandbox && !opts.nested && opts.real_display),
                                                                      gpu: !!(opts.sandbox && opts.gpu), expect });
           const net = { tor: ", with no network but Tor's", private: ", on a network of its own", shared: "" }[r.started?.network] || "";
           toast(`${b.name} is starting from the RAM disk${r.started?.sandboxed ? `, in its sandbox${net}` : ""}`
@@ -4063,8 +4107,14 @@ function trialReady(data, t, call) {
   const st = data.status, flat = t.kind === "flatpak";
   let program = t.candidates[0]?.rel || "";
   // the graphics card off by default (the owner's decision of 2026-11-12): its drivers, in the kernel and in the
-  // program, then handle what the program sends them, which is the widest way out of a sandbox there is here
-  const o = { network: "off", gpu: false, sound: false, nested: false, decoys: true };
+  // program, then handle what the program sends them, which is the widest way out of a sandbox there is here; on X11
+  // a display of its own wherever Xephyr is installed (x11Display); sandboxes of its own as the trial guessed
+  const o = { network: "off", gpu: false, sound: false, nested: !!st.xephyr?.available && !flat, real_display: false,
+    nesting: !!t.nesting, decoys: true };
+  const guide = (id, label) => {
+    const spec = S.state.catalogue.find(s => s.id === id);
+    return spec ? h("button", { class: "small", onclick: () => openGuide(spec) }, label) : null;
+  };
   const args = h("input", { type: "text", class: "path", autocomplete: "off", spellcheck: "false", placeholder: "none",
     "aria-label": "Arguments" });
   const radio = (value, label, note, disabled) => h("label", { class: "check" },
@@ -4110,14 +4160,14 @@ function trialReady(data, t, call) {
       + "program trying to break out would look first. Without it, drawing is done by the processor", !!st.gpu),
     tick("sound", "Sound", "this computer's sound server, outside the sandbox", !!st.sound),
     st.sound ? soundNote : null,
-    tick("nested", "A display of its own", "it can't see or type into your other windows (needs Xephyr); no copy and paste with them",
-      st.display === "x11" && !flat && !!st.xephyr?.available),
+    tick("nesting", "Let it start sandboxes of its own", (t.nesting ? `it looks like ${t.nesting}, which won't start, or `
+      + "shows nothing, without them. " : "Electron and Chromium apps, and apps built on WebKitGTK, need it. ")
+      + "The cost: the kernel's namespaces and mounts are within its reach then, so a program built to break out "
+      + "through a flaw in them has more to work with", !flat),
     flat ? h("p", { class: "small muted" }, "A Flatpak app puts itself in a group of Flatpak's own, which this app "
       + "doesn't set limits on: nothing here limits the memory or the number of processes it takes.")
       : trialCapNote(st.capped, st.capped_why),
-    st.display === "x11" ? h("div", { class: "notebox risk small" }, h("b", {}, "This is an X11 session. "),
-        "Any program with a window can read what other windows show and what you type into them, and type into them. "
-        + "Close anything sensitive first" + (flat || !st.xephyr?.available ? "." : ", or give it a display of its own."))
+    st.display === "x11" ? x11Display(st, o, "the program", "sbx.x11_session", guide, flat)
       : st.display === "wayland" && !flat ? waylandNote(st, WAYLAND_WHO.program) : null,
     h("div", { class: "orow" }, start, discard, keepAsBox(t))];
 }
@@ -4142,6 +4192,7 @@ function trialHow(how) {
   return [how.engine_name, net[how.network], how.nested ? "a display of its own" : how.display === "wayland" ? "Wayland" : "X11",
     how.gpu ? "the graphics card" : "no graphics card", how.sound ? "sound" : null,
     how.capped ? `at most ${fmtSize(how.capped.memory)} of memory and ${how.capped.tasks} processes` : null,
+    how.nesting ? "sandboxes of its own allowed" : null,
     how.decoys ? `${how.decoys} decoy files` : "no decoys"].filter(Boolean).join(" · ");
 }
 

@@ -286,11 +286,11 @@ def test_a_programs_sandbox_holds_a_logouts_sigterm_and_a_flatpaks_doesnt(host, 
     spawned = []
     spawn = lambda argv, **kw: spawned.append(argv) or SimpleNamespace(pid=1 << 22, stdout=None)     # noqa: E731
     t = a_trial(tmp_path, argv=["/app/tool"])
-    trial.start(host, t, {}, spawn)
+    trial.start(host, t, {"real_display": True}, spawn)
     trial.stop(host, t)
     assert spawned[-1][3] == trial.TETHER and spawned[-1][4:6] == [str(os.getpid()), "--hold"] and trial.STAY in spawned[-1]
     f = a_trial(tmp_path / "f", kind="flatpak", argv=["org.x.App"], flatpak="org.x.App")
-    trial.start(host, f, {"network": "on"}, spawn)
+    trial.start(host, f, {"network": "on", "real_display": True}, spawn)
     trial.stop(host, f)
     assert spawned[-1][3] == trial.TETHER and "--hold" not in spawned[-1] and "flatpak" in spawned[-1]
     assert trial.tethered(host, ["/usr/bin/Xephyr"]) == [sandbox.PYTHON, "-I", "-c", trial.TETHER, str(os.getpid()),
@@ -519,7 +519,10 @@ def test_a_trial_through_the_api(cat, host):
         assert c.post("/api/tools/trial/prepare", headers=H, json={"path": str(src)}).status_code == 409      # one at a time
         r = c.post("/api/tools/trial/start", headers=H, json={"network": "on"})
         assert r.status_code == 400 and "never shares this computer's network" in r.json()["error"]
-        t = c.post("/api/tools/trial/start", headers=H, json={"network": "off", "gpu": True, "args": "--verbose 'two words'"}).json()["trial"]
+        r = c.post("/api/tools/trial/start", headers=H, json={"network": "off", "gpu": True, "args": "--verbose 'two words'"})
+        assert r.status_code == 400 and "tick that it may use this display" in r.json()["error"]      # no Xephyr here
+        t = c.post("/api/tools/trial/start", headers=H, json={"network": "off", "gpu": True, "args": "--verbose 'two words'",
+                                                             "real_display": True}).json()["trial"]
         assert t["state"] == "running" and t["how"]["network"] == "off" and t["how"]["decoys"] == 34 and t["how"]["display"] == "x11"
         argv, kw = spawned[0]
         assert argv[argv.index("--") + 1:] == ["/app/tool.sh", "--verbose", "two words"] and kw["start_new_session"] is True
@@ -550,14 +553,16 @@ def test_an_installed_app_and_a_flatpak_through_the_api(cat, host):
     with TestClient(create_app("t0ken", cat, make_host=lambda: host, spawn_app=spawn)) as c:
         t = c.post("/api/tools/trial/prepare", headers=H, json={"app": "foo.desktop"}).json()["trial"]
         assert t["kind"] == "installed" and t["command"] == "/usr/bin/foo"
-        c.post("/api/tools/trial/start", headers=H, json={"decoys": False})
+        c.post("/api/tools/trial/start", headers=H, json={"decoys": False, "real_display": True})
         assert c.post("/api/tools/trial/stop", headers=H).json()["trial"]["result"]["decoys_planted"] == 0
         c.post("/api/tools/trial/discard", headers=H)
         t = c.post("/api/tools/trial/prepare", headers=H, json={"app": "org.x.App.desktop"}).json()["trial"]
         assert t["kind"] == "flatpak" and t["command"] == "--branch=stable --command=app org.x.App"
         r = c.post("/api/tools/trial/start", headers=H, json={"network": "observed"})
         assert r.status_code == 400 and "can't be observed" in r.json()["error"]
-        t = c.post("/api/tools/trial/start", headers=H, json={"network": "on"}).json()["trial"]
+        r = c.post("/api/tools/trial/start", headers=H, json={"network": "on"})
+        assert r.status_code == 400 and "a Flatpak app is given this display" in r.json()["error"]
+        t = c.post("/api/tools/trial/start", headers=H, json={"network": "on", "real_display": True}).json()["trial"]
         argv, kw = spawned[-1]
         assert t["how"]["engine"] == "flatpak" and "--share=network" in argv and "--sandbox" in argv
         home = host.root / "run/user/1000/daprivacyscanner-trial" / t["id"] / "home"
@@ -581,7 +586,7 @@ def test_a_flatpak_isnt_started_while_it_is_open_already(host, tmp_path):
         trial.start(host, t, {"network": "on"}, spawn)
     assert not spawned and t.state == "ready" and not list(t.home.iterdir()), "nothing planted, nothing started"
     host.runner.handlers["flatpak"] = lambda argv: CommandResult(argv, 0, "4243 org.x.Other\n" if "ps" in argv else "")
-    trial.start(host, t, {"network": "on"}, spawn)
+    trial.start(host, t, {"network": "on", "real_display": True}, spawn)
     assert len(spawned) == 1 and t.state == "running", "another app open is no reason"
     trial.stop(host, t)
 
@@ -597,7 +602,7 @@ def test_a_trial_in_memory_is_ended_before_it_fills_the_runtime_folder(host, tmp
     monkeypatch.setattr(trial, "room", lambda folder: left["now"])
     spawn = lambda argv, **kw: SimpleNamespace(pid=1 << 22, stdout=None)     # noqa: E731
     t = a_trial(tmp_path, argv=["/app/tool"])
-    trial.start(host, t, {}, spawn)
+    trial.start(host, t, {"real_display": True}, spawn)
     try:
         time.sleep(0.3)
         assert t.state == "running", "with room left it runs on"
@@ -616,7 +621,7 @@ def test_a_trial_in_memory_is_ended_before_it_fills_the_runtime_folder(host, tmp
     # on the disk, the session's room isn't at stake: not watched
     t3 = a_trial(tmp_path / "3", argv=["/app/tool"])
     t3.where = "disk"
-    trial.start(host, t3, {}, spawn)
+    trial.start(host, t3, {"real_display": True}, spawn)
     assert t3.room is None and t3.state == "running"
     trial.stop(host, t3)
     assert trial.status(host)["room_kept"] == trial.ROOM_KEPT

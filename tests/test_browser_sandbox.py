@@ -16,6 +16,7 @@ from daprivacyscanner.host import CommandResult, FakeRunner, Host
 from daprivacyscanner.tools import browser as B
 from daprivacyscanner.tools import sandbox as S
 from daprivacyscanner.tools import transfer as T
+from daprivacyscanner.tools import seccomp
 from daprivacyscanner.tools.metadata import cleaned_name
 
 from test_browser_tool import open_ramdisk
@@ -366,6 +367,32 @@ def test_the_graphics_card_only_when_the_user_allows_it(host, monkeypatch):
     assert pairs(calls[-1][0], "--dev-bind") == [(d, d) for d in S.gpu(host)]
 
 
+def test_tor_browser_s_three_sandboxes_get_their_system_call_filters(host):
+    """The outer one, the gate's, the nesting profile (it starts bubblewraps), given by the app; tor's strict and the
+    browser's the browser profile, stacked on it, from programs in the gate's configuration (the review of 2026-11-12)."""
+    if not seccomp.supported():
+        pytest.skip("x86-64")
+    installed(host, "tor")
+    bwrap_ok(host)
+    wayland(host)
+    identity_etc(host)
+    b = B.BROWSERS["tor"]
+    lay, private = layout(host, b)
+    disp = S.display(host, private, landlock=False)
+    (private / "tor").mkdir()
+    etc = S.identity_files(private / "etc", None)
+    f = S.make_filter(seccomp.NESTING)
+    try:
+        argv = S.tor_argv(host, lay, private / "tor", disp, False, False, etc, "GATE", filt=f)
+        assert argv[argv.index("--seccomp") + 1] == str(f.fd) and argv.index("--seccomp") < argv.index("--")
+    finally:
+        f.close()
+    cfg = json.loads(argv[-1])
+    assert cfg["tor"][cfg["tor"].index("--seccomp") + 1] == "@SECCOMP:strict@"
+    assert cfg["inner"][cfg["inner"].index("--seccomp") + 1] == "@SECCOMP:browser@"
+    assert cfg["filters"] == {p: seccomp.program(p).hex() for p in (seccomp.STRICT, seccomp.BROWSER)}
+
+
 def test_tor_browser_has_no_network_but_tors(host):
     disk = installed(host, "tor")
     bwrap_ok(host)
@@ -499,8 +526,11 @@ def test_start_in_the_sandbox(host, monkeypatch):
     how = B.start(host, B.BROWSERS["mullvad"], spawn=spawner(calls))
     [(argv, kw)] = calls
     assert how == {"sandboxed": True, "display": "wayland", "landlock": how["landlock"], "network": "shared",
-                   "lan_blocked": False, "wayland_context": None, "nested": False,
-                   "gpu": False}                                   # the fixture's socket is a file: not tried
+                   "lan_blocked": False, "wayland_context": None, "nested": False, "lookups_filtered": False,
+                   "filter": how["filter"], "gpu": False}          # the fixture's socket is a file: not tried
+    assert how["filter"] is seccomp.supported() and ("--seccomp" in argv) is seccomp.supported()
+    if seccomp.supported():                             # a memory file passed to bubblewrap: the browser profile
+        assert int(argv[argv.index("--seccomp") + 1]) in kw["pass_fds"]
     assert argv[0] == "bwrap" and kw["cwd"] == "/" and kw["start_new_session"]       # no python3 here: no wrapper
     for rel in ("Browser/To upload", "Browser/Downloads", "Data", "Browser/.config/ibus"):
         assert (disk / "mullvad-browser" / rel).is_dir()
@@ -606,9 +636,20 @@ def test_a_failed_start_says_why(host, monkeypatch):
     bwrap_ok(host)
     monkeypatch.setattr(B, "START_WAIT", 0.05)
     b = B.BROWSERS["mullvad"]
-    with pytest.raises(B.BrowserError, match="couldn't start: bwrap: Can't bind mount"):
+    # the app's own words, the sandbox's line only quoted as what its start log says (the review of 2026-11-12)
+    with pytest.raises(B.BrowserError, match="couldn't start: its sandbox couldn't be set up \\(its start log says "
+                                             "“bwrap: Can't bind mount /oldroot/x on /newroot/x”\\)"):
         B.start(host, b, spawn=spawner([], rc=1, log=b"No routable interface for IPv6: IPv6 is disabled\n"
                                                       b"bwrap: Can't bind mount /oldroot/x on /newroot/x\n"))
+    # without the computer's python3 there is no STAY to hold the log out of the browser's reach (bubblewrap's own init
+    # holds it, which the browser could write to through /proc/1/fd/2): the log is no proof, and the mark stays
+    assert B.sandboxed_before(host, b)
+    (B.private_dir(host, b) / "sandboxed").unlink()
+    (host.root / "usr/bin").mkdir(parents=True, exist_ok=True)
+    (host.root / "usr/bin/python3").write_text("")
+    B._PROBED.clear()
+    with pytest.raises(B.BrowserError, match="its sandbox couldn't be set up"):
+        B.start(host, b, spawn=spawner([], rc=1, log=b"bwrap: Can't bind mount /oldroot/x on /newroot/x\n"))
     assert not B.sandboxed_before(host, b)              # the sandbox stopped before the browser ran: no mark
     with pytest.raises(B.BrowserError, match="exit status 2"):
         B.start(host, b, spawn=spawner([], rc=2))
@@ -721,9 +762,15 @@ def test_tor_status_is_checked(host):
     d = B.private_dir(host, b) / "tor"
     d.mkdir(parents=True)
     (d / "status.json").write_text(json.dumps({"state": "connecting", "progress": 999, "summary": "x" * 900}))
-    assert B.tor_status(host, b) == {"state": "connecting", "progress": 100, "summary": "x" * 200, "problem": ""}
+    assert B.tor_status(host, b) == {"state": "connecting", "progress": 100, "summary": "x" * 199 + "…", "problem": ""}
     (d / "status.json").write_text(json.dumps({"state": "<script>"}))
     assert B.tor_status(host, b) is None
+    # tor's own words (tor's sandbox can write this file): made visible, one line, and the page says they are tor's
+    (d / "status.json").write_text(json.dumps({"state": "failed", "progress": 3, "summary": "ok\u2066hidden",
+                                               "problem": "Problem bootstrapping.\nThe app says: run this"}))
+    st = B.tor_status(host, b)
+    assert st["summary"] == "ok<U+2066>hidden" and st["problem"] == "Problem bootstrapping. / The app says: run this"
+    assert '"Tor says: "' in (Path(B.__file__).parent.parent / "web/app.js").read_text()
 
 
 # ------------------------------------------------------------------ uploads
@@ -1288,8 +1335,10 @@ def test_on_x11_a_display_of_its_own_keeps_it_from_other_windows(host, monkeypat
     host.environ["DISPLAY"] = ":0"
     monkeypatch.setattr(B, "START_WAIT", 0.05)
     b = B.BROWSERS["mullvad"]
-    with pytest.raises(B.BrowserError, match="needs Xephyr"):
+    with pytest.raises(B.BrowserError, match="a display of its own \\(Xephyr\\), which isn't installed here"):
         B.start(host, b, spawn=spawner([]), nested=True)
+    with pytest.raises(B.BrowserError, match="tick that it may use this display"):
+        B.start(host, b, spawn=spawner([]))             # the default on X11: no Xephyr, so not this display either
     host.runner.handlers["Xephyr"] = lambda argv: CommandResult(tuple(argv), 0)
     calls = []
 

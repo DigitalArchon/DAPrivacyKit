@@ -31,6 +31,7 @@ import sys
 import threading
 import time
 
+NO_FILTER = "The sandbox's system-call filter couldn't be made"     # browser.NEVER_RAN knows it: before the browser ran
 WAIT_FOR_TOR = 60                   # seconds for tor to open its sockets
 MAX_LINE = 65536
 MAX_CONNECTIONS = 16                # the browser opens one or two control connections; a flood is refused
@@ -365,6 +366,40 @@ def _kill(proc):
         pass
 
 
+FILTER_MARK = re.compile(r"@SECCOMP:([a-z]+)@")
+
+
+def with_filters(argv, programs):
+    """`argv` (a bubblewrap's command) with each filter's placeholder (sandbox.gate_filter) replaced by a descriptor of
+    that filter, a memory file made here from `programs` (profile -> the program, in hex): (argv, the descriptors to
+    pass, which the caller closes once it has started it). A placeholder for a filter not given is refused."""
+    out, fds = [], []
+    try:
+        for a in argv:
+            m = FILTER_MARK.fullmatch(a)
+            if m is None:
+                out.append(a)
+                continue
+            fd = os.memfd_create("seccomp-" + m.group(1))
+            fds.append(fd)
+            os.write(fd, bytes.fromhex(programs[m.group(1)]))
+            os.lseek(fd, 0, os.SEEK_SET)
+            out.append(str(fd))
+    except (KeyError, ValueError, OSError):
+        for fd in fds:
+            os.close(fd)
+        raise
+    return out, fds
+
+
+def _close(fds):
+    for fd in fds:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+
+
 def main(cfg):
     if cfg.get("landlock"):
         apply_landlock()
@@ -377,12 +412,20 @@ def main(cfg):
     argv = [a.replace("@PID@", str(os.getpid())) for a in cfg["tor"]]
     os.makedirs(argv[argv.index("ClientOnionAuthDir") + 1], mode=0o700, exist_ok=True)
     tail = []
+    filters = cfg.get("filters") or {}
+    try:
+        argv, fds = with_filters(argv, filters)
+    except (KeyError, ValueError, OSError):
+        status.update(state="failed", problem="")
+        sys.exit(NO_FILTER)
     try:
         tor = subprocess.Popen(argv, cwd=cfg["cwd"], env=cfg["tor_env"], stdin=subprocess.DEVNULL,
-                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, pass_fds=fds)
     except OSError as e:
-        status.update(state="failed", problem=str(e))
-        sys.exit(f"tor couldn't be started: {e}")
+        status.update(state="failed", problem="")
+        sys.exit(f"tor couldn't be started: {e.strerror or e}")
+    finally:
+        _close(fds)
     threading.Thread(target=follow, args=(tor, status, tail), daemon=True).start()
     deadline = time.monotonic() + WAIT_FOR_TOR
     while not all(os.path.exists(p) for p in (cfg["upstream"], cfg["socks"], cfg["cookie"])):
@@ -397,7 +440,16 @@ def main(cfg):
         cookie = f.read()
     TOR_VERSION[0] = tor_version(cfg["upstream"], cookie) or TOR_VERSION[0]
     srv = listen(cfg["control"], cfg["upstream"], cookie)
-    inner = subprocess.Popen(cfg["inner"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
+    try:
+        inner_argv, fds = with_filters(cfg["inner"], filters)
+    except (KeyError, ValueError, OSError):
+        halt(cfg["upstream"], cookie, tor)
+        status.update(state="stopped")
+        sys.exit(NO_FILTER)
+    try:
+        inner = subprocess.Popen(inner_argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, pass_fds=fds)
+    finally:
+        _close(fds)
 
     end = ender(inner, 5)
     signal.signal(signal.SIGTERM, end)

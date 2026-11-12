@@ -102,6 +102,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..host import Host
+from . import seccomp
 
 BWRAP = "bwrap"
 PASTA = "pasta"
@@ -123,6 +124,12 @@ DNS_FORWARD = "169.254.0.1"                          # pasta forwards DNS sent h
 # the sandbox's resolv.conf under pasta: its forwarder, with EDNS0 so that a large answer comes over UDP rather than
 # needing TCP, which pasta 2024-02-20 (Mint 22.3, Ubuntu 24.04) doesn't forward (_DNS_TCP)
 FORWARD_RESOLV = f"nameserver {DNS_FORWARD}\noptions edns0\n"
+# The lookups' filter (tools/dnsfilter.py) in pasta's namespace, in front of the forwarder: the sandbox's resolv.conf
+# names it, and the fence lets only its own queries, marked DNS_MARK, reach the forwarder (dns_filter). Where the
+# computer has no python3 the sandbox asks the forwarder itself (FORWARD_RESOLV), and the panel says so.
+DNS_FILTER = "127.0.0.1"
+FILTER_RESOLV = f"nameserver {DNS_FILTER}\noptions edns0\n"
+DNS_MARK = 0x5EC
 # whether pasta's forwarder takes DNS over TCP, by pasta's program, as probe_fence found (connecting from inside):
 # pasta 2026-01-20 forwards it to the computer's resolver, 2024-02-20 sent the connection on to the address itself,
 # where it timed out (tested). The fence lets TCP to the forwarder through only where it works; elsewhere it is
@@ -143,7 +150,10 @@ PASTA_MAC = "9a:55:9a:55:9a:55"
 PASTA_IF = "eth0"
 PASTA_V4 = (("10.0.2.15", "10.0.2.2"), ("10.0.3.15", "10.0.3.2"), ("172.31.250.15", "172.31.250.2"))   # each a /24
 PASTA_V6 = ("fd00::15", "fe80::9855:9aff:fe55:9a55")
-PASTA_OPTS = ("--config-net", "--quiet", "--no-map-gw", "-t", "none", "-u", "none", "-T", "none", "-U", "none",
+# --no-icmp: pasta passes the namespace's pings on from ping sockets of the computer's, to any host, which the fence's
+# routes don't see as a connection to a service (the review of 2026-11-12; Try an app had it already); nothing in a
+# sandbox needs to ping
+PASTA_OPTS = ("--config-net", "--quiet", "--no-map-gw", "--no-icmp", "-t", "none", "-u", "none", "-T", "none", "-U", "none",
               "--dns-forward", DNS_FORWARD, "-M", PASTA_MAC, "-I", PASTA_IF)
 # refused inside pasta's namespace (prohibit rules ahead of the main table, so no route can be more specific):
 # this network, private and shared address space (CGNAT, Tailscale), link-local, benchmarking, multicast and
@@ -151,7 +161,29 @@ PASTA_OPTS = ("--config-net", "--quiet", "--no-map-gw", "-t", "none", "-u", "non
 # (host_networks) and every route pasta copied but the default one (fence). pasta's DNS forwarder is let through first.
 FENCE_V4 = ("0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "169.254.0.0/16", "172.16.0.0/12", "192.0.0.0/24",
             "192.168.0.0/16", "198.18.0.0/15", "224.0.0.0/3")
-FENCE_V6 = ("fc00::/7", "fe80::/10", "ff00::/8")
+# NAT64 (RFC 6052's well-known prefix, 64:ff9b::/96, and RFC 8215's local-use one, 64:ff9b:1::/48, here taken as its
+# /96): on an IPv6-only network with NAT64, an IPv4 address written in it is reached through the network's translator,
+# so 64:ff9b::c0a8:101 is the router at 192.168.1.1 (the review of 2026-11-12). Only those forms of the refused IPv4
+# ranges, and of the computer's own IPv4 networks (nat64), are refused: the rest of the prefix is how such a network
+# reaches the IPv4 internet. A network-specific prefix (a provider's own) can't be known from here, and isn't refused.
+NAT64_PREFIXES = ("64:ff9b::", "64:ff9b:1::")
+LOOPBACK_V4 = "127.0.0.0/8"
+
+
+def nat64(nets_v4) -> list[str]:
+    """The IPv4 networks `nets_v4` as NAT64 writes them, in each of NAT64_PREFIXES (a /96 with the IPv4 address in its
+    last 32 bits)."""
+    import ipaddress
+    out = []
+    for prefix in NAT64_PREFIXES:
+        base = int(ipaddress.IPv6Address(prefix))
+        for n in nets_v4:
+            net = ipaddress.ip_network(n, strict=False)
+            out.append(str(ipaddress.IPv6Network((base | int(net.network_address), 96 + net.prefixlen))))
+    return out
+
+
+FENCE_V6 = ("fc00::/7", "fe80::/10", "ff00::/8", *nat64((*FENCE_V4, LOOPBACK_V4)))
 # The computer's own networks, listed on the computer just before pasta starts (pasta connects from the computer's
 # side, so the namespace's own routes say nothing of them): every address of the computer's, on every interface, and
 # the network each is on, and the routes to particular networks, from every routing table. Without them the browser
@@ -247,10 +279,16 @@ os.execv(sys.argv[1], sys.argv[1:])
 # the exec into its unpriv_bwrap domain clears the signal bubblewrap set before it, so the browser ran on with tor gone
 # (found on Ubuntu 26.04 by the trial's fixes, 2026-10-17; trial.STAY does the same). For Mullvad Browser's sandbox,
 # whose bubblewrap only ends after STAY, it changes nothing.
+# It also makes itself undumpable (prctl 4, 0) before it starts anything: it holds the start log as its stderr, which
+# bubblewrap gave it, and a dumpable process's /proc/PID/fd can be opened by anything of the same user in its PID
+# namespace, so a browser a website took over could have written into the log (through /proc/1/fd/2) what the app
+# then showed as its own words, or the lines that say the browser never ran, which would have shed the mark that it
+# ran sandboxed (the review of 2026-11-12). Undumpable, its /proc entries are root's, and nothing inside is.
 STAY = """\
 import ctypes, os, sys
 folder, prog = sys.argv[1] + "/", sys.argv[2:]
 libc = ctypes.CDLL(None, use_errno=True)
+libc.prctl(4, 0, 0, 0, 0)
 libc.prctl(36, 1, 0, 0, 0)
 libc.prctl(1, 9, 0, 0, 0)
 first = os.fork()
@@ -368,6 +406,51 @@ def read_log(fd: int, limit: int = 4000) -> str:
         return os.pread(fd, limit, max(0, size - limit)).decode("utf-8", "replace")
     except OSError:
         return ""
+
+
+# Text a sandboxed program could have written (a start log, a viewer's output, tor's status) is never shown as the
+# app's own words (the review of 2026-11-12: a profile with hostile code, or a hostile document, could put a sentence of
+# its choosing after "couldn't start:"). A start's reason is the app's, matched from what only the sandbox's own set-up
+# writes (START_REASONS); the program's lines, where they help, are shown as its own output: quoted, one line, cut
+# short, with control characters and those that reorder or hide text shown as their codes (visible).
+START_REASONS = (("bwrap: ", "its sandbox couldn't be set up"),
+                 ("pasta: ", "its network of its own (pasta) couldn't be set up"),
+                 ("The local network could not be fenced off", "the local network couldn't be fenced off"),
+                 ("Landlock could not be applied", "Landlock's limits couldn't be applied"),
+                 ("A keyring of its own could not be made", "a keyring of its own couldn't be made"),
+                 ("system-call filter couldn't be made", "its system-call filter couldn't be made"),
+                 ("tor couldn't be started", "tor couldn't be started"),
+                 ("tor didn't start", "tor didn't start"))
+# control characters (C0, DEL, C1), the line and paragraph separators, and the characters that reorder or hide text:
+# bidirectional marks, embeddings, overrides and isolates, zero-width ones, the byte-order mark, invisible operators
+HIDDEN_CHARS = re.compile(r"[\x00-\x1f\x7f-\x9f\xad\u061c\u180e\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff\ufff9-\ufffb]")
+
+
+def visible(text: str, limit: int = 300) -> str:
+    """`text` as it can be shown as a program's own words: one line, at most `limit` characters, every hidden or
+    reordering character as its code (U+202E)."""
+    one = " / ".join(ln.strip() for ln in str(text).splitlines() if ln.strip())
+    shown = HIDDEN_CHARS.sub(lambda m: f"<U+{ord(m.group()):04X}>", one)
+    return shown if len(shown) <= limit else shown[:limit - 1] + "…"
+
+
+def program_said(text: str, limit: int = 300) -> str:
+    """A program's own output, marked as such: quoted (visible)."""
+    return f"“{visible(text, limit)}”"
+
+
+def start_reason(text: str, rc: int, own_output: bool = True) -> str:
+    """Why a start stopped at once, in the app's own words from START_REASONS, with the line that said it quoted as
+    the program's output; else by its exit status, with its last lines quoted where `own_output` (a viewer's: its
+    own stderr is the log; never a browser's, whose output goes nowhere)."""
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip() and not quiet_line(ln)]
+    for mark, why in START_REASONS:
+        hit = next((ln for ln in reversed(lines) if mark in ln), None)
+        if hit is not None:
+            return f"{why} (its start log says {program_said(hit, 240)})"
+    if lines and own_output:
+        return f"it stopped at once (exit status {rc}); the last it printed: {program_said(' / '.join(lines[-3:]), 300)}"
+    return f"it stopped at once (exit status {rc})"
 
 
 def fresh_keyring(host: Host, argv: list[str]) -> list[str]:
@@ -632,6 +715,93 @@ def namespaces(share_net: bool) -> list[str]:
             "--uid", str(UID_IN), "--gid", str(UID_IN), "--hostname", "localhost", "--clearenv"]
 
 
+# ------------------------------------------------------------------ the system-call filter (tools/seccomp.py)
+
+# Under pasta the filter can't come as a descriptor: pasta passes its command nothing but stdin, stdout and stderr
+# (tested). So it is a file of the app's in the private folder, opened as this descriptor just before bubblewrap, by
+# the shell in Filter.wrap; bubblewrap reads and closes it before anything runs inside (tested with 0.9: nothing in
+# the sandbox has it, so its path, which names the user, isn't shown there). A single digit: dash's redirections
+# take no more.
+FILTER_FD = 3
+OPEN_FILTER = f'exec {FILTER_FD}<"$0" || exit 1; exec "$@"'
+
+
+@dataclass
+class Filter:
+    """One sandbox's system-call filter (seccomp.PROFILES): a memory file passed to bubblewrap's process (`fd`, which
+    the caller passes, pass_fds, and then closes), or under pasta a file opened on its far side (`file`). Neither on a
+    computer the filter can't be built for (seccomp.supported): then bubblewrap gets no --seccomp."""
+    profile: str
+    fd: int | None = None
+    file: Path | None = None
+
+    def argv(self) -> list[str]:
+        if self.file is not None:
+            return ["--seccomp", str(FILTER_FD)]
+        return ["--seccomp", str(self.fd)] if self.fd is not None else []
+
+    def wrap(self, argv: list[str]) -> list[str]:
+        """`argv` (bubblewrap's command) after the shell that opens the file, under pasta; else as it is."""
+        return ["/bin/sh", "-c", OPEN_FILTER, str(self.file), *argv] if self.file is not None else argv
+
+    def fds(self) -> tuple[int, ...]:
+        return (self.fd,) if self.fd is not None else ()
+
+    def close(self) -> None:
+        if self.fd is not None:
+            try:
+                os.close(self.fd)
+            except OSError:
+                pass
+            self.fd = None
+
+
+def make_filter(profile: str, folder: Path | None = None) -> Filter:
+    """`profile`'s filter for one start: a memory file, or, `folder` given (the sandbox is started by pasta), a file
+    there (filter_folder), which no sandbox is given."""
+    if not seccomp.supported():
+        return Filter(profile)
+    if folder is not None:
+        path = folder / f"daprivacyscanner-seccomp-{profile}"
+        seccomp.write(path, profile)
+        return Filter(profile, file=path)
+    return Filter(profile, fd=seccomp.memfd(profile))
+
+
+def filter_folder(host: Host, private: Path) -> Path:
+    """Where a filter file goes for a start under pasta: the runtime folder when it is a folder of the user's (its path
+    names their number, not their name: pasta's command line, which holds it, is no business of anyone else's, but the
+    app keeps the home folder's path out of every sandbox's command), else the start's private folder."""
+    runtime = host.environ.get("XDG_RUNTIME_DIR") or ""
+    try:
+        st = os.stat(runtime, follow_symlinks=False) if runtime.startswith("/") else None
+    except OSError:
+        st = None
+    if st is not None and stat.S_ISDIR(st.st_mode) and st.st_uid == os.getuid() and not runtime.startswith(str(host.home)):
+        return Path(runtime)
+    return private
+
+
+_BWRAP_HELP: dict[str, str] = {}
+
+
+def bwrap_has(host: Host, option: str) -> bool:
+    """Whether this bubblewrap knows `option` (its --help, read once per program)."""
+    bwrap = program(host, BWRAP)
+    if not bwrap:
+        return False
+    if bwrap not in _BWRAP_HELP:
+        r = host.run(bwrap, "--help", timeout=10)
+        _BWRAP_HELP[bwrap] = (r.stdout or "") + (r.stderr or "")
+    return option in _BWRAP_HELP[bwrap]
+
+
+def no_new_userns(host: Host) -> list[str]:
+    """bubblewrap's own refusal of further user namespaces inside (0.8 and later), for the strict sandboxes: on top of
+    the filter, which refuses them anyway (where it can be built)."""
+    return ["--unshare-user", "--disable-userns"] if bwrap_has(host, "--disable-userns") else []
+
+
 def probe(host: Host) -> str | None:
     """Why the sandbox can't be used here, or None. Runs a sandbox like the browser's around `true`."""
     bwrap = program(host, BWRAP)
@@ -772,7 +942,7 @@ def host_networks(host: Host, c: Computer | None = None) -> tuple[list[str], lis
 
 
 def fence(host: Host, proxies: bool = True, networks: tuple[list[str], list[str]] | None = None,
-          dns_tcp: bool | None = None) -> list[str] | None:
+          dns_tcp: bool | None = None, filtered: bool = False) -> list[str] | None:
     """What runs first in pasta's namespace, as its root: the FENCE rules, the computer's own networks (host_networks,
     listed now, before pasta starts: the local networks' prefixes, which on IPv6, and on some IPv4 networks, are
     public addresses no fixed list covers, the computer's addresses on every interface, a VPN's routes), and every
@@ -783,16 +953,25 @@ def fence(host: Host, proxies: bool = True, networks: tuple[list[str], list[str]
     for DNS alone (port 53: UDP, and TCP where `dns_tcp`, by default where probe_fence found pasta's forwarder
     takes it), not for anything else at its address; a route listing that fails counts as a failure too (it isn't
     hidden by the pipe). `proxies`: FENCE_ALLOWED is let through (Mullvad Browser's; not for a program on trial).
-    `networks`: host_networks' answer, when the caller has it already."""
+    `networks`: host_networks' answer, when the caller has it already. `filtered`: the lookups' filter
+    (dns_filter) runs in front of the forwarder, and only its own queries (UDP, marked DNS_MARK) are let through.
+    The computer's own IPv4 networks are refused in NAT64's forms too (nat64)."""
     ip = program(host, "ip")
     if not ip:
         return None
     host4, host6 = networks or host_networks(host)
+    host6 = [*host6, *nat64(host4)]
     if dns_tcp is None:
         dns_tcp = _DNS_TCP.get(program(host, PASTA) or "", False)
     fail = "{ echo 'The local network could not be fenced off' >&2; exit 1; }"
-    dns = " && ".join(f"{ip} rule add lookup main to {DNS_FORWARD} ipproto {proto} dport 53 pref 50"
-                      for proto in (("udp", "tcp") if dns_tcp else ("udp",)))
+    mark = f" fwmark {DNS_MARK:#x}" if filtered else ""
+    dns = " && ".join(f"{ip} rule add lookup main to {DNS_FORWARD} ipproto {proto} dport 53{mark} pref 50"
+                      for proto in (("udp", "tcp") if dns_tcp and not filtered else ("udp",)))
+    if filtered:
+        # the forwarder's answers are checked against the routes as they come in (reverse-path filtering, loose on
+        # Ubuntu and Mint, and copied into new namespaces), by a lookup that carries no mark: it met the prohibit rule
+        # and the answers were dropped (tested). Off in pasta's namespace alone, whose only interface is pasta's.
+        dns += "".join(f" && echo 0 > /proc/sys/net/ipv4/conf/{c}/rp_filter" for c in ("all", "default", PASTA_IF))
     v4 = " && ".join(f"{ip} rule add prohibit to {n} pref 100" for n in FENCE_V4)
     v6 = " && ".join(f"{ip} -6 rule add prohibit to {n} pref 100" for n in FENCE_V6)
     allowed = "; ".join(f"{ip} rule add lookup main to {n} ipproto tcp dport {port} pref 40 2>/dev/null"
@@ -809,6 +988,50 @@ def fence(host: Host, proxies: bool = True, networks: tuple[list[str], list[str]
               f"if [ -e /proc/net/if_inet6 ]; then {v6} || {fail}; {refuse(6, host6)}own 6 || {fail}; fi; "
               'exec "$0" "$@"')
     return ["/bin/sh", "-c", script]
+
+
+def lookups_filtered(host: Host, fenced: bool) -> bool:
+    """Whether a start under pasta puts the lookups' filter in front of the forwarder (dns_filter): where it is fenced
+    and the computer has python3."""
+    return fenced and host.sys_path(PYTHON).exists()
+
+
+def lookups_resolv(host: Host, fenced: bool) -> str:
+    """The sandbox's resolv.conf under pasta: the filter's address, or the forwarder's where there is no filter."""
+    return FILTER_RESOLV if lookups_filtered(host, fenced) else FORWARD_RESOLV
+
+
+def dns_filter(host: Host, proxies: bool, networks: tuple[list[str], list[str]] | None = None) -> list[str]:
+    """The lookups' filter (tools/dnsfilter.py) as the command after the fence: the computer's python3 with its source,
+    refusing what the fence refuses (FENCE_V4, FENCE_V6, the computer's own networks and their NAT64 forms) but for
+    Mullvad's proxies where `proxies`; then the command after it. [] where the computer has no python3: the sandbox's
+    resolv.conf then names the forwarder (FORWARD_RESOLV), and the panel says the lookups go to this computer's
+    resolver as they are."""
+    import json
+    if not lookups_filtered(host, True):
+        return []
+    host4, host6 = networks or host_networks(host)
+    cfg = {"upstream": DNS_FORWARD, "mark": DNS_MARK,
+           "refuse": [*FENCE_V4, *FENCE_V6, *host4, *host6, *nat64(host4)],
+           "allow": [n for n, _port in FENCE_ALLOWED] if proxies else [],
+           "filter": seccomp.program(seccomp.STRICT).hex() if seccomp.supported() else ""}
+    return [PYTHON, "-I", "-c", Path(__file__).with_name("dnsfilter.py").read_text(), json.dumps(cfg)]
+
+
+def pasta_command(host: Host, a: list[str], pasta: str, proxies: bool, fenced: bool = True,
+                  filt: "Filter | None" = None, extra: tuple[str, ...] = ()) -> tuple[list[str], bool]:
+    """A bubblewrap command `a` in pasta's network: pasta's options (and `extra`), the fence (`fenced`; SandboxError
+    when it can't be set: iproute2's ip missing), the lookups' filter (where the fence is and python3 is there),
+    the shell that opens the system-call filter's file (`filt`), then bubblewrap. Returns the command and whether
+    the lookups are filtered (the sandbox's resolv.conf then names DNS_FILTER: FILTER_RESOLV)."""
+    if fenced and not program(host, "ip"):
+        raise SandboxError("The local network can't be fenced off (iproute2's ip isn't installed).")
+    networks = host_networks(host) if fenced else None
+    lookups = dns_filter(host, proxies, networks) if fenced else []
+    f = fence(host, proxies=proxies, networks=networks, filtered=bool(lookups)) if fenced else None
+    if fenced and f is None:
+        raise SandboxError("The local network can't be fenced off (iproute2's ip isn't installed).")
+    return [pasta, *pasta_opts(host), *extra, "--", *(f or []), *lookups, *(filt.wrap(a) if filt else a)], bool(lookups)
 
 
 def fence_check(host: Host, also: tuple[str, ...] = (), dns_tcp: bool = False) -> list[str]:
@@ -1022,7 +1245,8 @@ def screen_size(host: Host) -> str:
     return f"{min(NESTED_MAX[0], max(800, room[0]))}x{min(NESTED_MAX[1], max(600, room[1]))}"
 
 
-def nested(host: Host, private: Path, title: str, size: str, die_with_parent: bool = True) -> Nested | None:
+def nested(host: Host, private: Path, title: str, size: str, die_with_parent: bool = True,
+           filt: Filter | None = None, fill: bool = False) -> Nested | None:
     """Xephyr's sandbox and the display the browser then gets; None outside a local X11 session. Writes its
     authority files and socket folder into `private` (the app's folder in the RAM disk, never shown to the
     browser). Xephyr reaches the computer's X server by its socket's path (no network of its own, so not
@@ -1030,7 +1254,10 @@ def nested(host: Host, private: Path, title: str, size: str, die_with_parent: bo
     its own, and ends when the browser's last connection closes (-terminate). `die_with_parent`: all of the
     sandbox ends with whatever started bubblewrap (a trial's, under TETHER); without it, killing bubblewrap's
     process left its init, the focus keeper and Xephyr running. The browser's display outlives the app with the
-    browser, so it doesn't (browser._end_nested ends it by its processes)."""
+    browser, so it doesn't (browser._end_nested ends it by its processes). `filt`: Xephyr's system-call filter (strict;
+    the caller passes its descriptor and closes it). `fill`: the focus keeper also sizes each main window to the whole
+    display (xfocus.py), for a program on trial, a Box's app or a viewer, which open at a size of their own; never the
+    browser's, whose window the browser sizes itself (resistFingerprinting)."""
     m = re.fullmatch(r"(?:unix)?:(\d+)(?:\.\d+)?", host.environ.get("DISPLAY", ""))
     if not m or not host.sys_path(f"/tmp/.X11-unix/X{m.group(1)}").exists():
         return None
@@ -1052,7 +1279,8 @@ def nested(host: Host, private: Path, title: str, size: str, die_with_parent: bo
     for name, data in files.items():
         _write_private(private / name, data)
     xephyr, bwrap = _need(host, XEPHYR), _need(host, BWRAP)
-    argv = [bwrap, *(["--die-with-parent"] if die_with_parent else []), *namespaces(False), *system(host),
+    argv = [bwrap, *(["--die-with-parent"] if die_with_parent else []), *namespaces(False), *no_new_userns(host),
+            *(filt.argv() if filt else []), *system(host),
             "--bind", str(x11), "/tmp/.X11-unix",
             "--ro-bind", f"/tmp/.X11-unix/X{outer}", f"/tmp/.X11-unix/X{outer}",
             "--ro-bind", str(private / "xauth-xephyr"), "/tmp/.xephyr-auth",
@@ -1063,7 +1291,7 @@ def nested(host: Host, private: Path, title: str, size: str, die_with_parent: bo
         argv += ["--ro-bind", str(private / "xauth-computer"), "/tmp/.Xauthority", "--setenv", "XAUTHORITY", "/tmp/.Xauthority"]
     # under the focus keeper (tools/xfocus.py, by the computer's python3): without a window manager in Xephyr the
     # focus follows the pointer, and the browser's menus closed as soon as it moved onto them
-    keeper = [PYTHON, "-I", "-c", Path(__file__).with_name("xfocus.py").read_text()] \
+    keeper = [PYTHON, "-I", "-c", Path(__file__).with_name("xfocus.py").read_text(), *(["--fill"] if fill else [])] \
         if host.sys_path(PYTHON).exists() else []
     argv += ["--", *keeper, xephyr, f":{inner}", "-auth", "/tmp/.xephyr-auth", "-nolisten", "tcp", "-nolisten", "local",
              "-terminate", str(TERMINATE_AFTER), "-no-host-grab", "-resizeable", "-screen", size, "-title", title]
@@ -1071,6 +1299,34 @@ def nested(host: Host, private: Path, title: str, size: str, die_with_parent: bo
                            (str(private / "xauth-browser"), "/tmp/.Xauthority")],
                    {"DISPLAY": f":{seen}", "XDG_SESSION_TYPE": "x11", "XAUTHORITY": "/tmp/.Xauthority"})
     return Nested(argv, x11 / f"X{inner}", disp)
+
+
+def shared_x11_words(what: str, install: str = "") -> str:
+    """Why a sandbox on X11 isn't given this display unless the user says so (own_display), and how to have one of
+    its own instead."""
+    return (f"On X11, {what} given this display could read what every other window shows and what you type into "
+            "them, and type into them itself, a terminal included: the sandbox's other walls wouldn't hold then. So it "
+            "gets a display of its own (Xephyr), which isn't installed here"
+            + (f": install it ({install}) and start it again" if install else ": install your distribution's Xephyr "
+               "package and start it again")
+            + ", or tick that it may use this display, knowing that.")
+
+
+def own_display(host: Host, disp: Display, nested: bool | None, real_display: bool, what: str = "the program",
+                install: str = "") -> bool:
+    """Whether a sandbox on this computer's own X11 display gets a display of its own (Xephyr): the default wherever
+    Xephyr is installed (the owner's decision of 2026-11-12: XTEST and XRecord let any client type into other windows
+    and read every key, so the X server's socket undid the sandbox); this display only when the user has said it may
+    (`real_display`, the panel's opt-out, which names the risk). `nested`: what the panel asked (True: a display of its
+    own, which refuses where Xephyr is missing; None or False: the default). Raises SandboxError, with what to do, where
+    it would get neither. Never on Wayland or without a local X11 display."""
+    if disp.kind != "x11" or disp.network:
+        return False
+    if real_display and not nested:
+        return False
+    if program(host, XEPHYR):
+        return True
+    raise SandboxError(shared_x11_words(what, install))
 
 
 def sound(host: Host) -> tuple[str, str] | None:
@@ -1209,7 +1465,7 @@ def _program(lay: Layout, landlock: bool, stay: bool = True) -> list[str]:
 
 def browser_argv(host: Host, lay: Layout, disp: Display, with_sound: bool, landlock: bool,
                  etc: dict[str, Path], pasta: str | None, fenced: bool = True, sync_fd: int | None = None,
-                 gpu: tuple[str, ...] = (), stay: bool = True) -> list[str]:
+                 gpu: tuple[str, ...] = (), stay: bool = True, filt: Filter | None = None) -> list[str]:
     """Mullvad Browser's sandbox (or Tor Browser's when it is started by itself, which isn't done):
     one bubblewrap, in pasta's network namespace when `pasta` is its path (fenced off from the local
     network first, `fenced`), else on the computer's network. `etc`: identity_files' files. `sync_fd`:
@@ -1219,9 +1475,11 @@ def browser_argv(host: Host, lay: Layout, disp: Display, with_sound: bool, landl
     foreground, never --detach: bubblewrap, and pasta around it, end with their command, so the command is
     STAY around the start script (`stay`; without python3 the script alone, and a browser that restarts
     itself is then left without pasta's network; bubblewrap's own init is the sandbox's PID 1 then, so the caller
-    seals its options, sealed())."""
+    seals its options, sealed()). `filt`: its system-call filter (the browser profile: Firefox's own sandbox makes
+    namespaces), under pasta a file (make_filter with the private folder)."""
     bwrap = _need(host, BWRAP)
-    a = [bwrap, *namespaces(True), *system(host, etc=False), *etc_argv(host, etc, "own" if "resolv.conf" in etc else "host"),
+    a = [bwrap, *namespaces(True), *(filt.argv() if filt else []), *system(host, etc=False),
+         *etc_argv(host, etc, "own" if "resolv.conf" in etc else "host"),
          *proc_masks(str(etc["cmdline"].parent), bool(gpu), host), *_gpu_argv(gpu)]
     a += _folder(lay, outer=False, inside=False)
     a += ["--bind", str(lay.session), SESSION_IN, "--perms", "0700", "--dir", RUNTIME_IN]
@@ -1232,18 +1490,26 @@ def browser_argv(host: Host, lay: Layout, disp: Display, with_sound: bool, landl
     a += ["--chdir", f"{lay.inside}/{Path(lay.script).parent}", "--", *_program(lay, landlock, stay)]
     if not pasta:
         return a
-    f = fence(host) if fenced else None
-    if fenced and f is None:
-        raise SandboxError("The local network can't be fenced off (iproute2's ip isn't installed), as the panel said "
-                           "it would be: Mullvad Browser wasn't started. Open the panel again to see what changed.")
-    return [pasta, *pasta_opts(host), "--", *(f or []), *a]
+    try:
+        cmd, _filtered = pasta_command(host, a, pasta, proxies=True, fenced=fenced, filt=filt)
+    except SandboxError as e:
+        raise SandboxError(f"{str(e).rstrip('.')}, as the panel said it would be: Mullvad Browser wasn't started. Open "
+                           "the panel again to see what changed.") from None
+    return cmd
 
 
 TOR_ENV = {"TOR_SKIP_LAUNCH": "1", "TOR_SOCKS_IPC_PATH": SOCKS_IN, "TOR_CONTROL_IPC_PATH": CONTROL_IN}
 
 
+def gate_filter(profile: str) -> list[str]:
+    """--seccomp for a bubblewrap the gate starts (tor's, the browser's): a placeholder the gate puts its own
+    descriptor of that filter in place of (torgate.with_filters); nothing where the filter can't be built."""
+    return ["--seccomp", f"@SECCOMP:{profile}@"] if seccomp.supported() else []
+
+
 def tor_argv(host: Host, lay: Layout, tor_dir: Path, disp: Display, with_sound: bool, landlock: bool,
-             etc: dict[str, Path], gate: str, sync_fd: int | None = None, gpu: tuple[str, ...] = ()) -> list[str]:
+             etc: dict[str, Path], gate: str, sync_fd: int | None = None, gpu: tuple[str, ...] = (),
+             filt: Filter | None = None) -> list[str]:
     """Tor Browser's two sandboxes: the outer one, on the computer's network, runs `gate`
     (tools/torgate.py's source) in the host's python3, which starts tor (in a sandbox of its own, inside the
     outer one) and the control-port filter, then the inner sandbox, with no network, around the browser. `tor_dir` (in the app's private
@@ -1253,7 +1519,9 @@ def tor_argv(host: Host, lay: Layout, tor_dir: Path, disp: Display, with_sound: 
     graphics card's device files when the user allowed it, in both (the inner one binds them from the outer's /dev).
     The inner sandbox's command is STAY, so the gate keeps tor for as long as a browser process runs, and it
     dies with the gate (--die-with-parent: its init too, once its command is over): a browser is never left
-    running with tor gone."""
+    running with tor gone. The system-call filters: `filt` the outer one's (nesting: the gate starts bubblewraps),
+    tor's strict, the browser's the browser profile, each stacked on the outer one's; the gate makes the inner
+    ones' descriptors from the programs in its configuration ("filters")."""
     import json
     bwrap = _need(host, BWRAP)
     snd = sound(host) if with_sound else None
@@ -1268,7 +1536,8 @@ def tor_argv(host: Host, lay: Layout, tor_dir: Path, disp: Display, with_sound: 
     # (__OwningControllerProcess): it dies with the gate (--die-with-parent), which stops it over its control port
     # first (torgate.halt), so that it saves its state.
     box = [bwrap, "--die-with-parent", "--unshare-user", "--unshare-pid", "--unshare-ipc", "--unshare-uts",
-           "--unshare-cgroup-try", "--new-session", "--cap-drop", "ALL", *system(host, etc=False),
+           "--unshare-cgroup-try", "--new-session", "--cap-drop", "ALL", *gate_filter(seccomp.STRICT),
+           *system(host, etc=False),
            "--ro-bind", "/etc", "/etc", "--ro-bind", programs, programs, "--bind", data, data,
            "--bind", TOR_DIR_IN, TOR_DIR_IN, "--chdir", f"{lay.inside}/Browser", "--"]
     tor = [*box, f"{programs}/tor", "--defaults-torrc", f"{data}/torrc-defaults",
@@ -1277,7 +1546,7 @@ def tor_argv(host: Host, lay: Layout, tor_dir: Path, disp: Display, with_sound: 
            "+__ControlPort", f"unix:{TOR_DIR_IN}/tor-control",
            "+__SocksPort", f"unix:{SOCKS_IN} IPv6Traffic PreferIPv6 KeepAliveIsolateSOCKSAuth",
            "CookieAuthentication", "1", "CookieAuthFile", f"{TOR_DIR_IN}/control_auth_cookie"]
-    inner = [bwrap, "--die-with-parent", *namespaces(False), *system(host, etc=False),
+    inner = [bwrap, "--die-with-parent", *namespaces(False), *gate_filter(seccomp.BROWSER), *system(host, etc=False),
              *etc_argv(host, etc, None, inner=True), *proc_masks(IDENTITY_IN, bool(gpu), host), *_gpu_argv(gpu)]
     inner += _folder(lay, outer=False, inside=True)
     inner += ["--bind", SESSION_IN, SESSION_IN, "--perms", "0700", "--dir", RUNTIME_IN,
@@ -1289,8 +1558,11 @@ def tor_argv(host: Host, lay: Layout, tor_dir: Path, disp: Display, with_sound: 
               "tor_env": {"HOME": HOME_IN, "PATH": "/usr/bin:/bin",
                           "LD_LIBRARY_PATH": f"{lay.inside}/Browser/TorBrowser/Tor"},
               "dir": TOR_DIR_IN, "upstream": f"{TOR_DIR_IN}/tor-control", "control": CONTROL_IN, "socks": SOCKS_IN,
-              "cookie": f"{TOR_DIR_IN}/control_auth_cookie", "status": f"{TOR_DIR_IN}/status.json", "inner": inner}
-    a = [bwrap, *namespaces(True), *system(host, etc=False), *etc_argv(host, etc, "host"), *_gpu_argv(gpu)]
+              "cookie": f"{TOR_DIR_IN}/control_auth_cookie", "status": f"{TOR_DIR_IN}/status.json", "inner": inner,
+              "filters": {p: seccomp.program(p).hex() for p in (seccomp.STRICT, seccomp.BROWSER)}
+              if seccomp.supported() else {}}
+    a = [bwrap, *namespaces(True), *(filt.argv() if filt else []), *system(host, etc=False), *etc_argv(host, etc, "host"),
+         *_gpu_argv(gpu)]
     a += _folder(lay, outer=True, inside=False)
     a += ["--bind", str(lay.session), SESSION_IN, "--perms", "0700", "--dir", RUNTIME_IN,
           "--bind", str(tor_dir), TOR_DIR_IN, "--ro-bind", str(etc["cmdline"].parent), IDENTITY_IN]

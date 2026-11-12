@@ -54,7 +54,7 @@ from typing import Callable
 from ..fix import make_writable
 from ..host import Host
 from ..hostenv import host_env
-from . import activity, bait, homewatch, menu, pcap, ramdisk, sandbox, wayland
+from . import activity, bait, homewatch, menu, pcap, ramdisk, sandbox, seccomp, wayland
 from .viewer import _program, flatpak_open
 
 FOLDER = "daprivacyscanner-trial"
@@ -190,6 +190,7 @@ class Trial:
     binds: list[tuple[str, str]] = field(default_factory=list)      # a Box's: (a folder, where it is inside), writable
     portal_before: dict | None = None    # a Flatpak trial's: the autostart folder and the portals' records at the start
     short_of_room: int | None = None     # ended for it (RoomWatch): the room that was left in the runtime folder
+    nesting: str | None = None           # why it looks like a program that starts sandboxes of its own (seccomp.nesting_reason)
     # while it runs
     proc: object = None
     xephyr: object = None
@@ -223,7 +224,7 @@ class Trial:
                 "candidates": [{k: v for k, v in c.items() if k != "real"} for c in self.candidates],
                 "options": self.options, "how": self.how, "started": self.started, "ended": self.ended,
                 "exit": self.exit, "stopped": self.stopped, "notes": self.notes, "live": live, "result": self.result,
-                "now": time.time()}
+                "nesting": self.nesting, "now": time.time()}
 
 
 # Each trial's folder is locked (flock on the folder itself) by the copy of the app that made it, for as long as that
@@ -395,12 +396,15 @@ with open(src, "rb") as f:
 """
 
 
-def unpack_argv(host: Host, source: Path, dest: Path, limit: int = UNPACK_MAX, most: int = MEMBERS_MAX) -> list[str]:
+def unpack_argv(host: Host, source: Path, dest: Path, limit: int = UNPACK_MAX, most: int = MEMBERS_MAX,
+                filt: sandbox.Filter | None = None) -> list[str]:
     """The archive or .deb `source` unpacked into `dest` by the computer's python3 in a sandbox with no network,
     which sees only the file (read-only) and the folder: at most `limit` bytes and `most` files and folders. It ends
     with bubblewrap (--die-with-parent): at the time limit, or with the app killed, only bubblewrap was ended, and the
-    unpacker went on writing into the folder removed meanwhile (the review of 2026-11-04)."""
-    return [sandbox._need(host, sandbox.BWRAP), "--die-with-parent", *sandbox.namespaces(False), *sandbox.system(host),
+    unpacker went on writing into the folder removed meanwhile (the review of 2026-11-04). `filt`: its system-call
+    filter (strict), whose descriptor the caller passes."""
+    return [sandbox._need(host, sandbox.BWRAP), "--die-with-parent", *sandbox.namespaces(False),
+            *sandbox.no_new_userns(host), *(filt.argv() if filt else []), *sandbox.system(host),
             "--ro-bind", str(source), "/in/source", "--bind", str(dest), "/out", "--chdir", "/out",
             "--setenv", "PATH", "/usr/bin:/bin", "--",
             sandbox.PYTHON, "-I", "-c", UNPACK, "/in/source", "/out", str(limit), str(most)]
@@ -587,8 +591,13 @@ def prepare_file(host: Host, path: Path, where: str, run: Callable = subprocess.
         if sub.kind in ("archive", "deb"):
             if not sandbox.program(host, sandbox.BWRAP):
                 raise TrialError("Unpacking it safely needs bubblewrap (the bubblewrap package).")
-            r = run(unpack_argv(host, path, t.app, unpack_limit(place)), cwd="/", env=host_env(host.environ),
-                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=900)
+            filt = sandbox.make_filter(seccomp.STRICT)
+            try:
+                r = run(unpack_argv(host, path, t.app, unpack_limit(place), filt=filt), cwd="/", env=host_env(host.environ),
+                        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=900,
+                        **({"pass_fds": filt.fds()} if filt.fds() else {}))
+            finally:
+                filt.close()
             if r.returncode:
                 err = (r.stderr or b"").decode(errors="replace").strip().splitlines()
                 raise TrialError(f"{path.name} couldn't be unpacked: " + (err[-1][:300] if err else f"exit status {r.returncode}"))
@@ -598,6 +607,7 @@ def prepare_file(host: Host, path: Path, where: str, run: Callable = subprocess.
             t.candidates = candidates(t.app, sub.kind == "deb")
             if not t.candidates:
                 raise TrialError(f"Nothing in {path.name} looks like a program to start.")
+            t.nesting = seccomp.nesting_reason(path, folder=t.app)
             if sub.kind == "deb":
                 t.notes.append("The package is unpacked, not installed: what it depends on isn't installed for it, and "
                                "the set-up scripts it would run as root at installation aren't run.")
@@ -609,6 +619,7 @@ def prepare_file(host: Host, path: Path, where: str, run: Callable = subprocess.
             shutil.copyfile(path, dest)
             os.chmod(dest, 0o700)
             t.argv = [f"{APP_IN}/{dest.name}"]
+            t.nesting = seccomp.nesting_reason(dest)
             if sub.kind == "appimage":
                 t.env["APPIMAGE_EXTRACT_AND_RUN"] = "1"
                 t.notes.append("An AppImage can't mount itself inside a sandbox: it unpacks itself into the sandbox's "
@@ -656,7 +667,8 @@ def prepare_app(host: Host, app: menu.App, where: str) -> Trial:
     tid, folder = _make(host, where)
     return Trial(tid, folder, where, "installed", app.name, "an installed app", argv=[prog, *app.argv[1:]],
                  host_opt=prog.startswith("/opt/") or any(a.startswith("/opt/") for a in app.argv), env=dict(app.env),
-                 notes=["It starts as on a first run: none of your settings, accounts or files are there."])
+                 notes=["It starts as on a first run: none of your settings, accounts or files are there."],
+                 nesting=seccomp.installed_reason(str(host.sys_path(prog))))
 
 
 def choose(t: Trial, rel: str, extra: str = "") -> None:
@@ -999,6 +1011,7 @@ class Parts:
     sync_fd: int | None = None           # held open by bubblewrap: the marked Wayland socket's
     devices: tuple[str, ...] = ()
     sound: bool = False
+    filt: sandbox.Filter | None = None   # its system-call filter (strict, or nesting when ticked): sandbox.make_filter
 
 
 class Bubblewrap(Engine):
@@ -1023,7 +1036,12 @@ class Bubblewrap(Engine):
         # --die-with-parent: Stop ends bubblewrap, and the sandbox must go with it. Its own process is in a session
         # of its own (--new-session), so a signal to the group doesn't reach it: without this the program ran on
         # after Stop, its folder deleted under it (seen with KWrite on CachyOS)
-        a = [bwrap, "--die-with-parent", *sandbox.namespaces(bool(parts.pasta)), *sandbox.system(host, etc=False),
+        # strict: no namespaces of its own, also by bubblewrap's own --disable-userns; nesting (ticked, for a program
+        # that starts sandboxes of its own) lets it make them, mounts included (seccomp.py)
+        strict = parts.filt is None or parts.filt.profile == seccomp.STRICT
+        a = [bwrap, "--die-with-parent", *sandbox.namespaces(bool(parts.pasta)),
+             *(sandbox.no_new_userns(host) if strict else []), *(parts.filt.argv() if parts.filt else []),
+             *sandbox.system(host, etc=False),
              # bubblewrap 0.10 and later lay the package's /usr over the computer's themselves (the first source at
              # the bottom), before AppArmor's bwrap-userns-restrict profile takes the capabilities from what they start
              *(["--overlay-src", "/usr", "--overlay-src", deb_usr, "--ro-overlay", "/usr"] if native else []),
@@ -1069,16 +1087,17 @@ class Bubblewrap(Engine):
             a = [bwrap, "--die-with-parent", "--unshare-user", "--uid", "0", "--gid", "0", "--cap-add", "ALL",
                  "--dev-bind", "/", "/", "--", "/bin/sh", "-c", OVERLAY, "sh", sandbox._need(host, "mount"),
                  deb_usr, *a]
+        if parts.filt is not None:
+            a = parts.filt.wrap(a)                      # under pasta, the shell that opens the filter's file
         if not parts.pasta:
             return a
-        fence = sandbox.fence(host, proxies=False)
-        if fence is None:
-            raise sandbox.SandboxError("The local network can't be fenced off (iproute2's ip isn't installed).")
-        # --no-icmp: pasta sends the namespace's pings on from ping sockets of the computer's (and allows ping sockets
-        # in its namespace), and the packets are summed up as TCP and UDP only (tools/pcap.py): a program could send
-        # data in pings to any host while the list said it contacted nothing, wherever the computer's ping_group_range
-        # takes in the user, as systemd's default does (the review of 2026-11-04). A program on trial needs no ping.
-        return [parts.pasta, *sandbox.pasta_opts(host), "--no-icmp", "--pcap", str(parts.pcap), "--", *fence, *a]
+        # --no-icmp (among pasta's options, sandbox.pasta_opts): pasta sends the namespace's pings on from ping sockets of the computer's,
+        # and the packets are summed up as TCP and UDP only (tools/pcap.py): a program could send data in pings to any
+        # host while the list said it contacted nothing, wherever the computer's ping_group_range takes in the user, as
+        # systemd's default does (the review of 2026-11-04). A program on trial needs no ping. Then the fence and the
+        # lookups' filter (sandbox.pasta_command).
+        cmd, _filtered = sandbox.pasta_command(host, a, parts.pasta, proxies=False, extra=("--pcap", str(parts.pcap)))
+        return cmd
 
 
 class Flatpak(Engine):
@@ -1444,14 +1463,21 @@ def status(host: Host) -> dict:
 
 
 def _nested(host: Host, t: Trial, spawn: Callable):
-    """Xephyr in its own sandbox, started and waited for: (the display the program then gets, its process)."""
+    """Xephyr in its own sandbox, started and waited for: (the display the program then gets, its process). Its focus
+    keeper sizes the program's main windows to the display (fill): there is no window manager inside to do it."""
     if not sandbox.program(host, sandbox.XEPHYR):
         raise TrialError("A display of its own needs Xephyr, which isn't installed. Untick it, or install it.")
-    nest = sandbox.nested(host, t.private, f"Try an app: {t.name}", sandbox.screen_size(host))
-    if nest is None:
-        raise TrialError("A display of its own works on this computer's own X11 display only. Untick it.")
-    proc = spawn(tethered(host, sandbox.fresh_keyring(host, nest.argv)), cwd="/", env=host_env(host.environ),
-                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    filt = sandbox.make_filter(seccomp.STRICT)
+    try:
+        title = f"{t.name}, in its Box" if t.private_at is not None else f"Try an app: {t.name}"
+        nest = sandbox.nested(host, t.private, title, sandbox.screen_size(host), filt=filt, fill=True)
+        if nest is None:
+            raise TrialError("A display of its own works on this computer's own X11 display only. Untick it.")
+        proc = spawn(tethered(host, sandbox.fresh_keyring(host, nest.argv)), cwd="/", env=host_env(host.environ),
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
+                     **({"pass_fds": filt.fds()} if filt.fds() else {}))
+    finally:
+        filt.close()
     if not hasattr(proc, "poll"):
         return nest.display, proc
     deadline = time.monotonic() + NESTED_WAIT
@@ -1501,16 +1527,33 @@ def start(host: Host, t: Trial, options: dict, spawn: Callable = subprocess.Pope
             raise TrialError(f"{t.name} is open already: started now, it would hand this start to the copy that is open, "
                              f"which has your real files and its network, and end at once. Close {t.name} first, then "
                              "start it again.")
+    # sandboxes of its own (seccomp's nesting profile): as ticked, else as the trial guessed (seccomp.nesting_reason)
+    nesting = options["nesting"] is True if isinstance(options.get("nesting"), bool) else bool(t.nesting)
     t.options = {"network": network, "gpu": bool(options.get("gpu")), "sound": bool(options.get("sound")),
-                 "nested": bool(options.get("nested")), "decoys": options.get("decoys") is not False}
+                 "nested": bool(options.get("nested")), "decoys": options.get("decoys") is not False,
+                 "nesting": nesting and eng.id == "bubblewrap", "real_display": options.get("real_display") is True}
     what = "the app" if t.private_at is not None else "the program"         # a Box's, a trial's
     disp = sandbox.display(host, t.private, landlock=False, what=what)
+    # on X11 a display of its own wherever Xephyr is installed; this one only when the user said it may (own_display)
+    if disp.kind == "x11" and not disp.network:
+        from .browser import _install_command
+        if eng.id == "flatpak":
+            if not t.options["real_display"]:       # Flatpak gives it the X server's own socket: no Xephyr for it
+                raise TrialError(f"On X11, a Flatpak app is given this display, where it could read what every other "
+                                 f"window shows and what you type into them, and type into them itself, a terminal "
+                                 f"included. Tick that it may use this display, knowing that, to start it.")
+        else:
+            try:
+                t.options["nested"] = sandbox.own_display(host, disp, options.get("nested"), t.options["real_display"],
+                                                          what, _install_command(host, "Xephyr"))
+            except sandbox.SandboxError as e:
+                raise TrialError(str(e)) from None
     if disp.network:
         raise TrialError(f"{disp.note}: the sandbox, which never has the computer's own network, can't reach it. "
                          f"Start {what} from the computer's own desktop.")
     if disp.kind == "none":
         raise TrialError(disp.note or f"There is no display to show {what} on.")
-    sync, context, pasta_path, unmarked = None, None, None, False
+    sync, context, pasta_path, unmarked, filt = None, None, None, False, None
     if t.options["decoys"] and not t.decoys:
         t.decoys = bait.plant(t.home)
     ignore = FLATPAK_OWN if eng.id == "flatpak" else ()
@@ -1548,11 +1591,16 @@ def start(host: Host, t: Trial, options: dict, spawn: Callable = subprocess.Pope
                     raise TrialError("The local network can't be fenced off here, so the trial isn't given a network.")
                 t.flows = pcap.Flows(sandbox.DNS_FORWARD)      # its lookups go there: not a host contacted
                 t.reader = PipeReader(t.private / "packets", t.flows)
-            etc = sandbox.identity_files(t.private / "etc", sandbox.FORWARD_RESOLV if pasta_path else None)
+            # the lookups go through the filter in front of pasta's forwarder where python3 is there (sandbox.dns_filter)
+            etc = sandbox.identity_files(t.private / "etc", sandbox.lookups_resolv(host, True) if pasta_path else None)
         else:
             etc = {}
         devices = tuple(sandbox.gpu(host)) if t.options["gpu"] and t.xephyr is None and eng.id == "bubblewrap" else ()
-        parts = Parts(disp, etc, pasta_path, t.private / "packets" if pasta_path else None, sync, devices, t.options["sound"])
+        if eng.id == "bubblewrap":                      # under pasta a file of the app's, else a memory file
+            filt = sandbox.make_filter(seccomp.NESTING if t.options["nesting"] else seccomp.STRICT,
+                                       sandbox.filter_folder(host, t.private) if pasta_path else None)
+        parts = Parts(disp, etc, pasta_path, t.private / "packets" if pasta_path else None, sync, devices, t.options["sound"],
+                      filt)
         # bubblewrap's sandbox has STAY as its first process (python3 is there: tethered needs it too), Flatpak's doesn't
         cmd = tethered(host, sandbox.fresh_keyring(host, eng.command(host, t, parts)), hold=eng.id == "bubblewrap")
         # in a group of its own, with a limit on the memory and the processes it may take (`capped`). Outermost, and
@@ -1571,7 +1619,8 @@ def start(host: Host, t: Trial, options: dict, spawn: Callable = subprocess.Pope
             env = {**env, "HOME": str(t.home), **({"FLATPAK_USER_DIR": str(real)} if real.is_dir() else {})}
         t.how = {"engine": eng.id, "engine_name": eng.name, "network": network, "lan_blocked": network == "observed",
                  "display": disp.kind, "wayland_context": context, "wayland_failed": unmarked,
-                 "nested": t.xephyr is not None,
+                 "nested": t.xephyr is not None, "nesting": t.options["nesting"],
+                 "filter": filt is not None and (filt.fd is not None or filt.file is not None),
                  "gpu": bool(devices) or (eng.id == "flatpak" and t.options["gpu"]), "sound": t.options["sound"],
                  "decoys": sum(1 for k in t.decoys if not t.decoys[k].startswith("the folder ")),
                  "capped": None if cap_why else {"memory": memory_cap(host), "tasks": TASKS_MAX},
@@ -1584,10 +1633,13 @@ def start(host: Host, t: Trial, options: dict, spawn: Callable = subprocess.Pope
         through_stdin = bool(pasta_path) and sync is not None
         t.proc = spawn(cmd, cwd="/", env=env, stdin=sync if through_stdin else subprocess.DEVNULL,
                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True,
-                       pass_fds=(sync,) if sync is not None and not through_stdin else ())
+                       pass_fds=((sync,) if sync is not None and not through_stdin else ()) + (filt.fds() if filt else ()))
     except BaseException:
         _abort(t, sync)
         raise
+    finally:
+        if filt is not None:
+            filt.close()                                # bubblewrap has read it
     if sync is not None:
         os.close(sync)                                  # bubblewrap holds it now
     t.state, t.started = "running", time.time()
@@ -1605,7 +1657,7 @@ def start(host: Host, t: Trial, options: dict, spawn: Callable = subprocess.Pope
 
 
 SCRIPTS = {STAY: "<wait for everything it starts>", sandbox.KEYRING: "<a keyring of its own, no crash dumps>",
-           TETHER: "<end it if the app ends>"}
+           TETHER: "<end it if the app ends>", sandbox.OPEN_FILTER: "<open its system-call filter>"}
 
 
 def shown(cmd: list[str]) -> str:

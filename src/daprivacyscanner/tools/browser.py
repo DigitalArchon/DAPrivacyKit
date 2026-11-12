@@ -48,7 +48,7 @@ from typing import Callable
 from ..host import Host
 from ..procnames import comm
 from ..hostenv import host_env
-from . import owner, ramdisk, sandbox, transfer, wayland
+from . import owner, ramdisk, sandbox, seccomp, transfer, wayland
 
 PROJECT = "torbrowser"                  # signing-keys.yaml: the Tor Browser Developers key, which signs both
 MAX_ARCHIVE = 600 * 1024 * 1024
@@ -1357,8 +1357,11 @@ def tor_status(host: Host, b: Browser) -> dict | None:
     if not isinstance(d, dict) or d.get("state") not in ("starting", "connecting", "connected", "failed", "stopped"):
         return None
     pct = d.get("progress")
+    # summary and problem are tor's own words (its log's lines, or whatever tor's sandbox, which can write this file,
+    # put there): the panel shows them quoted as tor's, made visible (sandbox.visible)
     return {"state": d["state"], "progress": max(0, min(100, pct)) if isinstance(pct, int) else 0,
-            "summary": str(d.get("summary", ""))[:200], "problem": str(d.get("problem", ""))[:300]}
+            "summary": sandbox.visible(str(d.get("summary", "")), 200),
+            "problem": sandbox.visible(str(d.get("problem", "")), 300)}
 
 
 # ------------------------------------------------------------------ running it
@@ -1369,9 +1372,12 @@ _LOCK = threading.Lock()
 
 # What the start log holds when the sandbox, the gate or tor stopped before the browser ran: bubblewrap's own
 # errors, the Landlock and keyring wrappers' (sys.exit), the gate's and Xephyr's (_start_nested). The browser's own
-# output never reaches the log (QUIET sends it to /dev/null), so one of these says no website ever reached this copy.
+# output never reaches the log (QUIET sends it to /dev/null), and nothing in the sandbox can write to it afterwards
+# (STAY, which holds it, is undumpable: sandbox.STAY), so one of these says no website ever reached this copy. Without
+# STAY (no python3) bubblewrap's own init holds it, within the browser's reach: the log is then no proof (_start).
 NEVER_RAN = ("bwrap: ", "Landlock could not be applied", "A keyring of its own could not be made",
-             "tor couldn't be started", "tor didn't start", "pasta: ")
+             "tor couldn't be started", "tor didn't start", "pasta: ", "system-call filter couldn't be made",
+             "The local network could not be fenced off")
 
 
 def _file_text(log: Path) -> str:
@@ -1381,9 +1387,10 @@ def _file_text(log: Path) -> str:
         return ""
 
 
-def _log_reason(text: str, rc: int) -> str:
-    lines = [ln.strip() for ln in text.splitlines() if ln.strip() and not sandbox.quiet_line(ln)]
-    return "; ".join(lines[-3:])[:500] if lines else f"it stopped at once (exit status {rc})"
+def _log_reason(text: str, rc: int, own_output: bool = False) -> str:
+    """Why a start stopped at once, in the app's own words (sandbox.start_reason): a line of the log is shown only
+    quoted, as what the sandbox's programs wrote, never as the app's sentence."""
+    return sandbox.start_reason(text, rc, own_output)
 
 
 def _ended(rc: int) -> str:
@@ -1438,7 +1445,7 @@ def _watch(b: Browser, proc, log: int) -> None:
         time.sleep(0.1)
     rc = proc.poll()
     if rc not in (None, 0):
-        raise BrowserError(f"{b.name} couldn't start: {_log_reason(sandbox.read_log(log), rc)}")
+        raise BrowserError(f"{b.name} couldn't start: {_log_reason(sandbox.read_log(log), rc)}.")
     if rc is None:
         with _LOCK:
             _LAUNCHED[b.id] = proc
@@ -1464,9 +1471,11 @@ def _weaker(how: dict, expect: dict | None) -> str | None:
 
 def start(host: Host, b: Browser, spawn: Callable = subprocess.Popen, sandboxed: bool = True,
           with_sound: bool = False, net=None, nested: bool = False, expect: dict | None = None,
-          gpu: bool = False) -> dict:
+          gpu: bool = False, real_display: bool = False) -> dict:
     """Starts the browser: in the sandbox when asked and bubblewrap can run here, else as it is. `gpu`: the
-    sandbox gets the graphics card (sandbox.gpu) when the user allowed it.
+    sandbox gets the graphics card (sandbox.gpu) when the user allowed it. On X11 the sandbox gets a display of its
+    own (Xephyr) wherever Xephyr is installed (sandbox.own_display); this display only with `real_display`, the
+    panel's opt-out, which names what that costs.
     `net` (an online.Net, or what makes one) is used only for a copy set up more than a day ago, to
     check for a newer version first (check_before_start). `expect`: what the panel showed of the sandbox
     (EXPECTED): a start that would be weaker than that refuses, so what the user saw is what they get.
@@ -1483,7 +1492,7 @@ def start(host: Host, b: Browser, spawn: Callable = subprocess.Popen, sandboxed:
         raise BrowserError(f"{b.name} is being set up or started in another window of this app.")
     forget_problem(b)                                   # the last start's error: this start says its own
     try:
-        return _start(host, b, spawn, sandboxed, with_sound, net, nested, expect, gpu)
+        return _start(host, b, spawn, sandboxed, with_sound, net, nested, expect, gpu, real_display)
     finally:
         owner.let_go(busy)
         with _LOCK:
@@ -1491,7 +1500,7 @@ def start(host: Host, b: Browser, spawn: Callable = subprocess.Popen, sandboxed:
 
 
 def _start(host: Host, b: Browser, spawn: Callable, sandboxed: bool, with_sound: bool, net, nested: bool,
-           expect: dict | None, gpu: bool = False) -> dict:
+           expect: dict | None, gpu: bool = False, real_display: bool = False) -> dict:
     problem = ready(host)
     if problem:
         raise BrowserError(problem)
@@ -1512,6 +1521,7 @@ def _start(host: Host, b: Browser, spawn: Callable, sandboxed: bool, with_sound:
     folder, session, private = prepare(host, b)
     stdio: dict = {}                                    # under pasta, what goes in as stdin and stdout
     args = None                                         # bubblewrap's options, sealed (without python3)
+    filt = None                                         # the sandbox's system-call filter (sandbox.Filter)
     if sandboxed:
         sb = sandbox_status(host)
         if not sb["available"]:
@@ -1524,6 +1534,10 @@ def _start(host: Host, b: Browser, spawn: Callable, sandboxed: bool, with_sound:
         disp = sandbox.display(host, private, landlock)
         if disp.kind == "none":
             raise BrowserError(disp.note)
+        try:                                            # on X11, a display of its own unless the user said otherwise
+            nested = sandbox.own_display(host, disp, nested, real_display, b.name, _install_command(host, "Xephyr"))
+        except sandbox.SandboxError as e:
+            raise BrowserError(str(e)) from None
         xephyr, sync = None, None
         try:                                            # what is made from here on is undone if no spawn comes
             if nested and disp.kind == "x11":
@@ -1562,22 +1576,30 @@ def _start(host: Host, b: Browser, spawn: Callable, sandboxed: bool, with_sound:
                 (tor_dir / "status.json").unlink(missing_ok=True)
                 etc = sandbox.identity_files(private / "etc", None)
                 gate = (Path(__file__).with_name("torgate.py")).read_text()
-                argv = sandbox.tor_argv(host, lay, tor_dir, disp, with_sound, landlock, etc, gate, sync, devices)
+                # the outer sandbox starts tor's and the browser's sandboxes: the nesting profile; theirs stack on it
+                filt = sandbox.make_filter(seccomp.NESTING)
+                argv = sandbox.tor_argv(host, lay, tor_dir, disp, with_sound, landlock, etc, gate, sync, devices, filt)
                 network = "tor"
             else:
                 pasta = sandbox.program(host, sandbox.PASTA) if sb["pasta"]["available"] and not disp.network else None
-                etc = sandbox.identity_files(private / "etc", sandbox.FORWARD_RESOLV if pasta
-                                             else sandbox.resolver(host))
+                # under pasta the lookups' filter in front of its forwarder where it is fenced (sandbox.dns_filter)
+                etc = sandbox.identity_files(private / "etc", sandbox.lookups_resolv(host, sb["pasta"]["lan_blocked"])
+                                             if pasta else sandbox.resolver(host))
                 # pasta passes its command only stdin, stdout and stderr: the pipe goes in as stdin, held as --sync-fd 0;
                 # without python3 as stdout, --sync-fd 1, stdin then carrying bubblewrap's options (sealed, below)
                 stay = sb["python"]
+                # Firefox's own sandbox makes namespaces (the browser profile); under pasta the filter is a file
+                filt = sandbox.make_filter(seccomp.BROWSER, sandbox.filter_folder(host, private) if pasta else None)
                 argv = sandbox.browser_argv(host, lay, disp, with_sound, landlock, etc, pasta, sb["pasta"]["lan_blocked"],
-                                            (0 if stay else 1) if pasta and sync is not None else sync, devices, stay=stay)
+                                            (0 if stay else 1) if pasta and sync is not None else sync, devices, stay=stay,
+                                            filt=filt)
                 if pasta and sync is not None:
                     stdio = {"stdin" if stay else "stdout": sync}
                 network = "private" if pasta else "shared"
             how = {"sandboxed": True, "display": disp.kind, "landlock": landlock, "network": network,
                    "lan_blocked": network == "tor" or (network == "private" and sb["pasta"]["lan_blocked"]),
+                   "lookups_filtered": network == "private" and sandbox.lookups_filtered(host, sb["pasta"]["lan_blocked"]),
+                   "filter": filt is not None and (filt.fd is not None or filt.file is not None),
                    "wayland_context": context, "nested": xephyr is not None, "gpu": bool(devices)}
             short = _weaker(how, expect)
             if short:
@@ -1596,6 +1618,8 @@ def _start(host: Host, b: Browser, spawn: Callable, sandboxed: bool, with_sound:
             cmd, cwd, env = argv, "/", dict(sandbox.SPAWN_ENV)
         except BaseException:
             _abort(host, xephyr, sync)
+            if filt is not None:
+                filt.close()
             raise
     else:
         cmd, cwd, env = [str(script), "--detach"], str(script.parent), environment(host, b, session)
@@ -1611,7 +1635,8 @@ def _start(host: Host, b: Browser, spawn: Callable, sandboxed: bool, with_sound:
                              stdout=stdio.get("stdout", subprocess.DEVNULL), stderr=log, start_new_session=True)
             else:
                 proc = spawn(cmd, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=log,
-                             start_new_session=True, pass_fds=tuple(fd for fd in (sync, args) if fd is not None))
+                             start_new_session=True, pass_fds=tuple(fd for fd in (sync, args) if fd is not None)
+                             + (filt.fds() if filt is not None else ()))
         except OSError:
             _abort(host, xephyr, sync)
             sync = None
@@ -1623,13 +1648,15 @@ def _start(host: Host, b: Browser, spawn: Callable, sandboxed: bool, with_sound:
                 os.close(sync)                          # bubblewrap holds it now, for as long as the sandbox runs
             if args is not None:
                 os.close(args)                          # read by bubblewrap, which closes its own copy
+            if filt is not None:
+                filt.close()                            # the same
         try:
             _watch(b, proc, log)
         except BrowserError:
             _abort(host, xephyr, None)                  # it would wait for a browser that never comes
             # the mark stays unless the log says the sandbox stopped before the browser ran: a browser that ran, even
             # briefly, could have been reached (or, taken over, stopped itself with an error to shed the mark)
-            if sandboxed and not marked_before and _never_ran(sandbox.read_log(log)):
+            if sandboxed and not marked_before and (b.tor or sb["python"]) and _never_ran(sandbox.read_log(log)):
                 (private / "sandboxed").unlink(missing_ok=True)
             raise
     finally:
@@ -1674,17 +1701,22 @@ def _start_nested(host: Host, b: Browser, private: Path, disp, spawn: Callable):
         raise BrowserError("A display of its own needs Xephyr, which isn't installed"
                            + (f" ({_install_command(host, 'Xephyr')})." if _install_command(host, "Xephyr") else ".")
                            + " Untick it to start the browser on this display.")
-    nest = sandbox.nested(host, private, sandbox.XEPHYR_TITLE.format(name=b.name), sandbox.screen_size(host),
-                          die_with_parent=False)        # quitting the app leaves the browser running, in its display
-    if nest is None:
-        raise BrowserError("A display of its own works on this computer's own X11 display only. Untick it.")
-    log = private / "xephyr.log"
-    fd = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+    filt = sandbox.make_filter(seccomp.STRICT)
     try:
-        proc = spawn(sandbox.fresh_keyring(host, nest.argv), cwd="/", env=host_env(host.environ), stdin=subprocess.DEVNULL,
-                     stdout=subprocess.DEVNULL, stderr=fd, start_new_session=True)
+        nest = sandbox.nested(host, private, sandbox.XEPHYR_TITLE.format(name=b.name), sandbox.screen_size(host),
+                              die_with_parent=False, filt=filt)   # quitting the app leaves the browser running in it
+        if nest is None:
+            raise BrowserError("A display of its own works on this computer's own X11 display only. Untick it.")
+        log = private / "xephyr.log"
+        fd = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+        try:
+            proc = spawn(sandbox.fresh_keyring(host, nest.argv), cwd="/", env=host_env(host.environ),
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=fd, start_new_session=True,
+                         **({"pass_fds": filt.fds()} if filt.fds() else {}))
+        finally:
+            os.close(fd)
     finally:
-        os.close(fd)
+        filt.close()
     if not hasattr(proc, "poll"):
         return nest.display, proc                       # a test's stand-in
     deadline = time.monotonic() + NESTED_WAIT
@@ -1699,7 +1731,7 @@ def _start_nested(host: Host, b: Browser, private: Path, disp, spawn: Callable):
         time.sleep(0.1)
     if proc.poll() is None:
         _end_nested(host, proc)
-    raise BrowserError(f"Xephyr didn't open its display: {_log_reason(_file_text(log), proc.poll() or 0)}")
+    raise BrowserError(f"Xephyr didn't open its display: {_log_reason(_file_text(log), proc.poll() or 0, True)}.")
 
 
 # what a browser's sandbox runs around it, by process name (comm, at most 15 characters): its ancestors up to the
@@ -1777,7 +1809,7 @@ def _display_trees(host: Host, procs: dict[int, tuple[int, str]]) -> list[set[in
 
 
 DISPLAY_WAIT = 3.0                      # seconds a display of its own has to end once told to, before it is killed
-DISPLAY_NAME = "Xephyr (the browser's own display, which ends by itself within half a minute of the browser)"
+DISPLAY_NAME = "Xephyr (a display of its own, which ends by itself within half a minute of the program it was for)"
 
 
 def end_display(host: Host, path: Path, kill: Callable[[int, int], None] = os.kill) -> bool:
@@ -1789,10 +1821,13 @@ def end_display(host: Host, path: Path, kill: Callable[[int, int], None] = os.ki
     import signal
     if any(running(host, b) for b in BROWSERS.values()):
         return False
+    from . import viewer
     held = ramdisk.holders_on_device(host, path)
     if not held:
         return False
-    tree = set().union(*(t for t in _display_trees(host, _procs(host)) if t & set(held)))
+    # a viewer's display of its own (View offline… on X11) is the viewer's, not the browser's: it stays with it
+    theirs = set(viewer.displays())
+    tree = set().union(*(t for t in _display_trees(host, _procs(host)) if t & set(held) and not t & theirs))
     if not tree:
         return False
     for sig in (signal.SIGTERM, signal.SIGKILL):
@@ -1821,13 +1856,16 @@ def disk_users(host: Host, path: Path) -> list[str]:
     # only where its own processes hold something: one running from ~/TempBrowser holds nothing on ~/RAMDisk, and
     # closing that was refused ("Close Tor Browser first: it is using files in ~/RAMDisk")
     named = [b.name for b in BROWSERS.values() if set(running(host, b)) & set(held)]
-    display = set().union(*(t for t in _display_trees(host, procs) if t & set(held))) - tree if held else set()
+    viewers = viewer.displays() if held else {}         # a viewer's display of its own: named with that viewer
+    trees = _display_trees(host, procs) if held else []
+    display = set().union(*(t for t in trees if t & set(held) and not t & set(viewers))) - tree if held else set()
     if display & set(held):
         if not named:                                   # the browser has quit, and its display hasn't ended yet
             named.append(DISPLAY_NAME)
         tree |= display
     for pid, app in viewer.launched().items():
         vtree = _with_descendants(procs, {pid}) - tree
+        vtree |= set().union(*(t for t in trees if t & {d for d, v in viewers.items() if v == app})) - tree
         if vtree & set(held):
             named.append(f"{app} (opened by View offline…)")
             tree |= vtree

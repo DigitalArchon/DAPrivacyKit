@@ -409,6 +409,31 @@ def _overwrite(fd: int, size: int) -> int:
     return written
 
 
+def _chmod_entry(name: str, dir_fd: int, mode: int, folder: bool, dev: int) -> None:
+    """The entry `name` in the folder `dir_fd` given `mode`, never through a link: os.chmod(name, dir_fd=…) looks the
+    name up again and follows a link that was put there since it was checked (the review of 2026-11-12). Opened without
+    following links (O_NOFOLLOW) and changed by its descriptor (fchmod); one the user can't read, as when a file is made
+    unreadable, is opened as a path only (O_PATH, which needs no permission on it) and changed through
+    /proc/self/fd, which is that descriptor's own file, never a name looked up again. Either way only when it is still a
+    folder (or a regular file) on the RAM disk's device; else OSError."""
+    kind = stat.S_ISDIR if folder else stat.S_ISREG
+    flags = os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK | (os.O_DIRECTORY if folder else 0)
+    try:
+        fd, by_path = os.open(name, os.O_RDONLY | flags, dir_fd=dir_fd), False
+    except PermissionError:
+        fd, by_path = os.open(name, os.O_PATH | flags, dir_fd=dir_fd), True
+    try:
+        st = os.fstat(fd)
+        if not kind(st.st_mode) or st.st_dev != dev:
+            raise OSError(f"{name} isn't what it was a moment ago")
+        if by_path:
+            os.chmod(f"/proc/self/fd/{fd}", mode)
+        else:
+            os.fchmod(fd, mode)
+    finally:
+        os.close(fd)
+
+
 def wipe(path: Path, device: int | None = None, delete: bool = True) -> Wipe:
     """Overwrite the contents of every regular file under `path` with zeros, then delete everything
     in it. Only on the folder's own device (the RAM disk), never through a link, never in another filesystem
@@ -424,7 +449,7 @@ def wipe(path: Path, device: int | None = None, delete: bool = True) -> Wipe:
                 if st.st_dev != dev or not stat.S_ISDIR(st.st_mode):
                     dirs.remove(d)                        # a link, or another filesystem mounted inside: not ours
                 elif stat.S_IMODE(st.st_mode) & 0o700 != 0o700:
-                    os.chmod(d, stat.S_IMODE(st.st_mode) | 0o700, dir_fd=dfd)
+                    _chmod_entry(d, dfd, stat.S_IMODE(st.st_mode) | 0o700, True, dev)
             except OSError:
                 dirs.remove(d)
         for f in files:                                   # every one: a cap left the rest deleted, not overwritten
@@ -436,7 +461,7 @@ def wipe(path: Path, device: int | None = None, delete: bool = True) -> Wipe:
                 continue                                  # links, sockets, pipes: nothing to overwrite
             try:
                 if not st.st_mode & stat.S_IWUSR:
-                    os.chmod(f, stat.S_IMODE(st.st_mode) | stat.S_IWUSR, dir_fd=dfd)
+                    _chmod_entry(f, dfd, stat.S_IMODE(st.st_mode) | stat.S_IWUSR, False, dev)
                 fd = os.open(f, os.O_WRONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dfd)
             except OSError:
                 w.failed.append(os.path.join(os.path.relpath(top, root), f))

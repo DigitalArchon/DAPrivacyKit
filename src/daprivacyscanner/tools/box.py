@@ -65,6 +65,8 @@ class Box:
     network: str = "off"
     gpu: bool = True
     sound: bool = False
+    nesting: bool = False               # it may start sandboxes of its own (seccomp's nesting profile, as a trial's tick)
+    real_display: bool = False          # on X11: this display, where Xephyr isn't installed (as a trial's opt-out)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -155,7 +157,8 @@ def parse(text: str, slug: str) -> Box | None:
     if d["kind"] != "flatpak" and d["network"] == "on" or d["kind"] == "flatpak" and d["network"] == "observed":
         return None
     return Box(slug, d["name"], d["kind"], argv, env, flat if d["kind"] == "flatpak" else None, d.get("host_opt") is True,
-               d["network"], d.get("gpu") is True, d.get("sound") is True)
+               d["network"], d.get("gpu") is True, d.get("sound") is True, d.get("nesting") is True,
+               d.get("real_display") is True)
 
 
 def read(host: Host, slug: str) -> Box | None:
@@ -271,7 +274,10 @@ def as_trial(host: Host, box: Box) -> trial.Trial:
 
 
 def options(box: Box) -> dict:
-    return {"network": box.network, "gpu": box.gpu, "sound": box.sound, "nested": False, "decoys": False}
+    """What a run of the Box gets: as its box.json says. On X11 a display of its own wherever Xephyr is installed
+    (trial.start: sandbox.own_display), this display only where the guide's opt-out was ticked."""
+    return {"network": box.network, "gpu": box.gpu, "sound": box.sound, "nested": None, "decoys": False,
+            "nesting": box.nesting, "real_display": box.real_display}
 
 
 # ------------------------------------------------------------------ what is kept of each run

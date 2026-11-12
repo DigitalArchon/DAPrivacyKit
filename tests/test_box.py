@@ -438,7 +438,11 @@ def test_a_box_runs_in_a_trials_sandbox_with_its_own_home_and_the_exchange_folde
     assert t.home == f / "home" and t.private == host.root / "run/user/1000/daprivacyscanner-box-chat-app"
     assert stat.S_IMODE(t.private.stat().st_mode) == 0o700
     spawned = []
-    how = trial.start(host, t, B.options(a_box()), lambda argv, **kw: spawned.append(argv) or SimpleNamespace(pid=1 << 22, stdout=None))
+    # on the fixture's X11 display, with no Xephyr: this display only by the Box's own opt-out
+    with pytest.raises(trial.TrialError, match="tick that it may use this display"):
+        trial.start(host, B.as_trial(host, a_box()), B.options(a_box()), lambda argv, **kw: pytest.fail("started"))
+    how = trial.start(host, t, B.options(a_box(real_display=True)),
+                      lambda argv, **kw: spawned.append(argv) or SimpleNamespace(pid=1 << 22, stdout=None))
     try:
         argv = spawned[0]
         binds = [(argv[i + 1], argv[i + 2]) for i, a in enumerate(argv) if a == "--bind"]
@@ -483,7 +487,7 @@ def test_what_a_box_puts_in_its_exchange_folder_is_counted_apart(host):
     from what it wrote in its home, in the run's numbers."""
     f = set_up(host, a_box())
     t = B.as_trial(host, B.read(host, "chat-app"))
-    trial.start(host, t, B.options(a_box()), lambda argv, **kw: SimpleNamespace(pid=1 << 22, stdout=None))
+    trial.start(host, t, B.options(a_box(real_display=True)), lambda argv, **kw: SimpleNamespace(pid=1 << 22, stdout=None))
     try:
         time.sleep(0.2)
         for name in ("report.pdf", "photo.jpg"):                    # as the app saves them, through the bind
@@ -502,7 +506,7 @@ def test_what_a_box_puts_in_its_exchange_folder_is_counted_apart(host):
     for sub in ("home", "app", "private"):
         (own / sub).mkdir(parents=True)
     plain = trial.Trial("0a1b2c3d4e5f", own, "disk", "installed", "Chat", "an installed app", argv=["/usr/bin/chat"])
-    trial.start(host, plain, {}, lambda argv, **kw: SimpleNamespace(pid=1 << 22, stdout=None))
+    trial.start(host, plain, {"real_display": True}, lambda argv, **kw: SimpleNamespace(pid=1 << 22, stdout=None))
     trial.stop(host, plain)
     assert plain.result["exchange"] is None, "a trial has no Exchange folder"
 
@@ -533,7 +537,7 @@ def test_runs_are_kept_in_numbers_and_hosts_as_hashes(host):
 
 
 def test_the_launcher_runs_the_box_to_its_end_and_notes_that_it_runs(host):
-    set_up(host, a_box())
+    set_up(host, a_box(real_display=True))
     box = B.read(host, "chat-app")
     seen = []
 

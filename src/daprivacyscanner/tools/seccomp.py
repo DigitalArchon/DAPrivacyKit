@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import os
 import platform
+import stat
 import struct
 
 # seccomp_data: int nr, __u32 arch, __u64 instruction_pointer, __u64 args[6]
@@ -293,7 +294,7 @@ def memfd(profile: str) -> int:
 def write(path: str | os.PathLike, profile: str) -> None:
     """The filter written to a file of the app's (made new, owner only, never through a link): for a sandbox started
     by pasta, which passes its command nothing but stdin, stdout and stderr, so the descriptor is opened on the far side
-    (sandbox.with_filter_file)."""
+    (sandbox.Filter.wrap)."""
     tmp = f"{os.fspath(path)}.{os.urandom(4).hex()}"
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
     try:
@@ -301,3 +302,179 @@ def write(path: str | os.PathLike, profile: str) -> None:
     finally:
         os.close(fd)
     os.replace(tmp, path)
+
+
+# ------------------------------------------------------------------ programs that start sandboxes of their own
+
+# What says a program starts sandboxes of its own, which the strict profile (and --disable-userns) stop: Electron and
+# Chromium (their sandbox needs a user namespace, or they refuse to start: "No usable sandbox!"), CEF, Qt WebEngine,
+# WebKitGTK (its web processes run in bubblewrap), glycin (GNOME's image loaders, in bubblewrap). By file name in a
+# program's folder (an unpacked archive, an AppImage's listing) and by name inside the program (the libraries it
+# links, glycin's loaders' folder).
+NESTING_NAMES = {"chrome-sandbox": "an Electron or Chromium app", "app.asar": "an Electron app",
+                 "libcef.so": "built on Chromium (CEF)", "QtWebEngineProcess": "built on Qt WebEngine (Chromium)",
+                 "WebKitWebProcess": "built on WebKitGTK"}
+NESTING_MARKS = ((b"libwebkit2gtk-4.", "built on WebKitGTK"), (b"libwebkitgtk-6.", "built on WebKitGTK"),
+                 (b"libQt6WebEngineCore", "built on Qt WebEngine (Chromium)"),
+                 (b"libQt5WebEngineCore", "built on Qt WebEngine (Chromium)"), (b"libcef.so", "built on Chromium (CEF)"),
+                 (b"libglycin", "it loads pictures with glycin"), (b"glycin-loaders", "it loads pictures with glycin"),
+                 (b"chrome-sandbox", "an Electron or Chromium app"), (b"electron.asar", "an Electron app"))
+SCAN_MAX = 256 << 20                    # the most of one program read for those names
+TREE_MAX = 50000                        # the most names looked at in a program's folder
+LISTING_MAX = 16 << 20                  # the most of an AppImage's folder listing read, packed and unpacked
+
+
+def _scan(path: str, marks=NESTING_MARKS, most: int = SCAN_MAX) -> str | None:
+    """The first of `marks` found in the file (read in pieces, never through a link), or None."""
+    longest = max(len(m) for m, _ in marks)
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK)
+    except OSError:
+        return None
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None
+        tail, read = b"", 0
+        while read < most:
+            chunk = os.read(fd, 1 << 20)
+            if not chunk:
+                break
+            read += len(chunk)
+            data = tail + chunk
+            for m, why in marks:
+                if m in data:
+                    return why
+            tail = data[-longest:]
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+    return None
+
+
+def _in_listing(names) -> str | None:
+    for i, name in enumerate(names):
+        if i > TREE_MAX:
+            break
+        if name in NESTING_NAMES:
+            return NESTING_NAMES[name]
+        if name.endswith(".asar"):
+            return "an Electron app"
+        if name.startswith(("libQt6WebEngineCore.so", "libQt5WebEngineCore.so")):
+            return "built on Qt WebEngine (Chromium)"
+    return None
+
+
+def _tree_names(top: str):
+    count = 0
+    for _dir, dirs, files in os.walk(top):              # links aren't followed
+        for n in dirs + files:
+            count += 1
+            if count > TREE_MAX:
+                return
+            yield n
+
+
+def _squashfs_names(path: str) -> bytes | None:
+    """An AppImage's (type 2) folder listing: squashfs's directory table, appended to the runtime, unpacked where
+    Python can (gzip, xz, lzma; zstd from Python 3.14); None where it can't be read so. Nothing in it is run."""
+    import lzma
+    import zlib
+    try:
+        with open(path, "rb", buffering=0) as f:
+            head = f.read(64)
+            if head[:4] != b"\x7fELF" or head[4] != 2:
+                return None
+            shoff, = struct.unpack_from("<Q", head, 0x28)
+            shentsize, shnum = struct.unpack_from("<HH", head, 0x3A)
+            offset = shoff + shentsize * shnum
+            f.seek(offset)
+            sb = f.read(96)
+            if sb[:4] != b"hsqs":
+                return None
+            compressor, = struct.unpack_from("<H", sb, 20)
+            dir_start, frag_start, export_start = struct.unpack_from("<QQQ", sb, 72)
+            ends = [x for x in (frag_start, export_start) if dir_start < x < 1 << 62]
+            end = min(ends) if ends else dir_start + LISTING_MAX
+            if not 0 < end - dir_start <= LISTING_MAX:
+                return None
+            f.seek(offset + dir_start)
+            table = f.read(end - dir_start)
+    except (OSError, struct.error, IndexError, ValueError):
+        return None
+    if compressor == 1:
+        unpack = zlib.decompress
+    elif compressor in (2, 4):
+        fmt = lzma.FORMAT_XZ if compressor == 4 else lzma.FORMAT_ALONE
+        unpack = lambda b: lzma.decompress(b, format=fmt)  # noqa: E731
+    elif compressor == 6:
+        try:
+            from compression import zstd                # Python 3.14
+        except ImportError:
+            return None
+        unpack = zstd.decompress
+    else:
+        return None
+    out, i, size_out = [], 0, 0
+    try:
+        while i + 2 <= len(table) and size_out < LISTING_MAX:
+            h, = struct.unpack_from("<H", table, i)
+            size, raw = h & 0x7FFF, h & 0x8000
+            block = table[i + 2:i + 2 + size]
+            got = block if raw else unpack(block)
+            out.append(got)
+            size_out += len(got)
+            i += 2 + size
+    except Exception:  # noqa: BLE001 - a listing that can't be read says nothing
+        return None
+    return b"".join(out)
+
+
+def nesting_reason(path: str | os.PathLike, folder: str | os.PathLike | None = None) -> str | None:
+    """Why the program at `path` (and in `folder`: an unpacked archive's or package's tree) looks like one that starts
+    sandboxes of its own, in words ("an Electron app"), or None. A guess from names, never proof either way: the
+    trial's tick is the user's."""
+    path = os.fspath(path)
+    if folder is not None:
+        why = _in_listing(_tree_names(os.fspath(folder)))
+        if why:
+            return why
+    listing = _squashfs_names(path)
+    if listing is not None:
+        for name, why in (*((n.encode(), w) for n, w in NESTING_NAMES.items()), (b".asar", "an Electron app")):
+            if name in listing:
+                return why
+    return _scan(path)
+
+
+def installed_reason(program: str) -> str | None:
+    """nesting_reason for an installed program: the program itself, its folder and the one above it (an Electron
+    app's /usr/share/code/code beside chrome-sandbox and resources/app.asar), and for a script the programs it names
+    under /usr and /opt (/usr/bin/code is a script that runs /usr/share/code/code)."""
+    import re
+    real = os.path.realpath(program)
+    candidates = [real]
+    try:
+        with open(real, "rb") as f:
+            head = f.read(65536)
+    except OSError:
+        head = b""
+    if head.startswith(b"#!"):
+        candidates += [m.decode(errors="replace") for m in re.findall(rb"/(?:usr|opt)/[\w./+-]+", head)[:10]]
+    for c in candidates:
+        c = os.path.realpath(c)
+        here = os.path.dirname(c)
+        for d in (here, os.path.dirname(here)) if here not in ("/usr/bin", "/bin", "/usr/local/bin", "/usr/sbin") else ():
+            try:
+                names = os.listdir(d)
+                why = _in_listing(names)
+                if not why and "resources" in names:
+                    why = _in_listing(os.listdir(os.path.join(d, "resources")))
+            except OSError:
+                continue
+            if why:
+                return why
+        why = _scan(c)
+        if why:
+            return why
+    return None

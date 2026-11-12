@@ -390,7 +390,7 @@ def test_a_boxs_revert_takes_its_runs_and_the_exchange_mount_point(cat, tmp_path
 def test_a_box_run_removes_the_mount_point_it_made_and_keeps_what_is_in_one(tmp_path):
     from daprivacyscanner.tools import box as B
     host = box_host(tmp_path)
-    box = B.Box("chat-app", "Chat App", "installed", ["/usr/bin/chat"])
+    box = B.Box("chat-app", "Chat App", "installed", ["/usr/bin/chat"], real_display=True)
     f = B.folder(host, "chat-app")
     for sub in ("home", "Exchange"):
         (f / sub).mkdir(parents=True)

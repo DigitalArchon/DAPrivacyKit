@@ -187,7 +187,7 @@ def test_a_box_launcher_told_to_end_records_the_run_and_cleans_up(host, monkeypa
     import pytest
     from daprivacyscanner.tools import box as B, trial
     from test_box import a_box, set_up
-    set_up(host, a_box())
+    set_up(host, a_box(real_display=True))
     box = B.read(host, "chat-app")
     calls = []
 

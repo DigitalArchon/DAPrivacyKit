@@ -1797,9 +1797,10 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
 
     @app.post("/api/tools/browser/start", dependencies=[Depends(auth)])
     async def tools_browser_start(request: Request):
-        """Body {"browser", "sandbox": true, "sound": false, "nested": false, "gpu": false, "expect": {...}}: starts
-        it from the RAM disk, its caches and settings in there too, in the sandbox unless asked not to; on X11 in a
-        display of its own (Xephyr) when asked; with the graphics card when asked. `expect`: what the panel showed of the sandbox (B.EXPECTED):
+        """Body {"browser", "sandbox": true, "sound": false, "nested": false, "gpu": false, "real_display": false,
+        "expect": {...}}: starts it from the RAM disk, its caches and settings in there too, in the sandbox unless asked
+        not to; on X11 in a display of its own (Xephyr) wherever Xephyr is installed, this display only with
+        real_display (the panel's opt-out); with the graphics card when asked. `expect`: what the panel showed of the sandbox (B.EXPECTED):
         a start that would fall short of it is refused (409), so what the page showed is what the user gets."""
         from .tools import browser as B
         from .tools import sandbox as S
@@ -1815,7 +1816,7 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
         try:
             how = await asyncio.to_thread(B.start, host, b, spawn_browser, body.get("sandbox") is not False,
                                           body.get("sound") is True, make_net, body.get("nested") is True, expect,
-                                          body.get("gpu") is True)
+                                          body.get("gpu") is True, body.get("real_display") is True)
         except (B.BrowserError, S.SandboxError) as e:
             return JSONResponse({"error": str(e)}, status_code=409)
         except OSError as e:
@@ -1895,9 +1896,10 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
 
     @app.post("/api/tools/browser/view", dependencies=[Depends(auth)])
     async def tools_browser_view(request: Request):
-        """Body {"browser", "name", "open": bool, "check"}: which viewer would open a finished download, and
-        how (open false); or open it there, with no network (open true, only when the copy made out of the
-        browser's reach is what the page showed, `check`): tools/viewer.py."""
+        """Body {"browser", "name", "open": bool, "check", "real_display": bool}: which viewer would open a finished
+        download, and how (open false); or open it there, with no network (open true, only when the copy made out of
+        the browser's reach is what the page showed, `check`; on X11 in a display of its own, this display only with
+        real_display): tools/viewer.py."""
         from .tools import browser as B, sandbox as S, transfer, viewer
         body = await body_of(request)
         host = make_host()
@@ -1911,7 +1913,7 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
             if body.get("open") is True:
                 private = await asyncio.to_thread(B._dir, host, B.private_dir(host, b).name)
                 got = await asyncio.to_thread(viewer.view, host, b.folder, body.get("name"), private, spawn_browser,
-                                              body.get("check"))
+                                              body.get("check"), body.get("real_display") is True)
             else:
                 got = (await asyncio.to_thread(viewer.plan, host, b.folder, body.get("name"))).to_dict()
         except transfer.Changed as e:
@@ -1921,7 +1923,9 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
         except OSError as e:
             return JSONResponse({"error": f"It couldn't be opened: {e.strerror or e}"}, status_code=400)
         sb = await asyncio.to_thread(B.session_display, host)
-        return {"viewer": got, "display": sb}
+        xephyr = bool(await asyncio.to_thread(S.program, host, S.XEPHYR))
+        return {"viewer": got, "display": sb, "xephyr": xephyr,
+                "xephyr_install": await asyncio.to_thread(B._install_command, host, "Xephyr")}
 
     @app.post("/api/tools/browser/outbox", dependencies=[Depends(auth)])
     async def tools_browser_outbox(request: Request):

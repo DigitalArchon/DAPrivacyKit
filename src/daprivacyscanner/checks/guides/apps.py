@@ -491,13 +491,22 @@ def boxes(check, scan, outcome):
             kind, argv = "installed", [prog, *a.argv[1:]]
             host_opt = prog.startswith("/opt/") or any(x.startswith("/opt/") for x in a.argv)
     nets = ("off", "on") if kind == "flatpak" else ("off", "observed")
-    # a Box whose program is replaced keeps what it gets, unless changed here
+    # a Box whose program is replaced keeps what it gets, unless changed here; sandboxes of its own as its trial
+    # guessed (seccomp.nesting_reason), or an installed program's own folders say (seccomp.installed_reason)
+    from ...tools import seccomp
+    guess = (getattr(cur, "nesting", None) if source == "trial" else
+             seccomp.installed_reason(str(host.sys_path(argv[0]))) if kind == "installed" else None)
     net0, gpu0, sound0 = (target.network, target.gpu, target.sound) if target is not None else ("off", True, False)
+    nest0, real0 = (target.nesting, target.real_display) if target is not None else (bool(guess), False)
     network = Input.read(params, "network", "choice", net0, choices=nets)
     gpu = Input.read(params, "gpu", "bool", gpu0)
     sound = Input.read(params, "sound", "bool", sound0)
+    nesting = Input.read(params, "nesting", "bool", nest0) if kind != "flatpak" else False
+    x11 = not host.environ.get("WAYLAND_DISPLAY") and bool(host.environ.get("DISPLAY"))
+    xephyr = installed(host, "Xephyr")
+    real_display = Input.read(params, "real_display", "bool", real0) if x11 else real0
     box = B.Box(target.slug if target is not None else B.slug_of(name), name, kind, argv, env, flat, host_opt, network,
-                gpu, sound)
+                gpu, sound, nesting, real_display)
     f = B.folder(host, box.slug)
     shown = host.display(f)
     acts, blockers = [], []
@@ -591,7 +600,23 @@ def boxes(check, scan, outcome):
                            "record from the microphone, read your user name, this computer's name and which other "
                            "programs use sound, and ask the server to connect to any address or listen for "
                            "connections, on this computer's own network, so it could reach the internet and your local "
-                           "network even with no network of its own.")],
+                           "network even with no network of its own."),
+                *([Input("nesting", "Let it start sandboxes of its own", "bool", nesting, bool(guess),
+                         help=(f"It looks like {guess}, which won't start, or shows nothing, without them. "
+                               if guess else "Electron and Chromium apps, and apps built on WebKitGTK, need it. ")
+                              + "The cost: the kernel's namespaces and mounts are within the app's reach then, so an "
+                                "app built to break out through a flaw in them has more to work with.")]
+                  if kind != "flatpak" else []),
+                *([Input("real_display", "Let it use this display (X11)", "bool", real_display, False,
+                         help="On X11 the app gets a display of its own (Xephyr, one window; no copy and paste with your "
+                              "other windows)" + ("" if xephyr else ", which isn't installed here ("
+                              + (install(scan, debian="xserver-xephyr", fedora="xorg-x11-server-Xephyr",
+                                         arch="xorg-server-xephyr", suse="xorg-x11-server-Xephyr") or "the Xephyr package")
+                              + ")") + ". Tick this to give it this display instead, where it can read what every "
+                              "other window shows and what you type into them, and type into them itself, a terminal "
+                              "included." + (" A Flatpak app always gets this display on X11: without the tick it "
+                              "doesn't start." if kind == "flatpak" else ""))]
+                  if x11 else [])],
         options=[option(check, f"Replace the program of Box {box.name}" if target is not None else
                         f"Set up a Box for {box.name}", acts, blockers=blockers, recommended=True, side_effects=effects)],
         done=not acts and not blockers))

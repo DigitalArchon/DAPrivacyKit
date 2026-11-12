@@ -59,7 +59,7 @@ def test_it_opens_a_copy_with_no_network(host):
     calls = []
 
     def spawn(argv, **kw):
-        assert argv[1:3] == ["--args", str(kw["pass_fds"][-1])] and kw["env"] == V.sandbox.SPAWN_ENV
+        assert argv[1] == "--args" and int(argv[2]) in kw["pass_fds"] and kw["env"] == V.sandbox.SPAWN_ENV
         calls.append((unseal(argv), kw))
         p = Proc()
         p.pid = 4_194_400                       # above any pid_max: a viewer that has ended
@@ -69,6 +69,9 @@ def test_it_opens_a_copy_with_no_network(host):
     got = V.view(host, "tor-browser", "report.pdf", private, spawn, check(host, "report.pdf"))
     [(argv, kw)] = calls
     assert argv[0] == "bwrap" and "--unshare-all" in argv and "--share-net" not in argv      # no python3 in the fixture
+    if V.seccomp.supported():                           # its system-call filter: strict, a memory file passed to it
+        fd = int(argv[argv.index("--seccomp") + 1])
+        assert fd in kw["pass_fds"] and got["nesting"] is None
     copies = [src for src, dst in pairs(argv, "--ro-bind") if dst == "/home/user/report.pdf"]
     assert len(copies) == 1
     copy = copies[0]
@@ -170,7 +173,9 @@ def test_a_viewer_that_fails_says_why(host, monkeypatch):
     def spawn(argv, **kw):
         os.write(kw["stderr"], b"bwrap: execvp /usr/bin/xreader: No such file or directory\n")
         return Proc(rc=1)
-    with pytest.raises(V.ViewError, match="couldn't open it: bwrap: execvp"):
+    # the app's words; what the sandbox wrote only quoted (the review of 2026-11-12)
+    with pytest.raises(V.ViewError, match="couldn't open it: its sandbox couldn't be set up \\(its start log says "
+                                          "“bwrap: execvp /usr/bin/xreader: No such file or directory”\\)"):
         V.view(host, "tor-browser", "report.pdf", private, spawn, check(host, "report.pdf"))
 
 
@@ -243,7 +248,8 @@ def test_on_wayland_the_viewer_gets_a_socket_marked_as_a_sandbox_s(host, monkeyp
     w = made["write"]
     assert made["compositor"] == "/run/compositor-0" and made["path"].parent == private / "view"
     assert (str(made["path"]), "/run/user/1000/wayland-0") in pairs(argv, "--ro-bind")
-    assert argv[argv.index("--sync-fd") + 1] == str(w) and kw["pass_fds"][0] == w and len(kw["pass_fds"]) == 2   # and --args
+    assert argv[argv.index("--sync-fd") + 1] == str(w) and kw["pass_fds"][0] == w
+    assert len(kw["pass_fds"]) == 2 + V.seccomp.supported()                     # and --args, and the filter
     with pytest.raises(OSError):
         os.fstat(w)                                                     # the app's copy is closed
     os.close(made["read"])

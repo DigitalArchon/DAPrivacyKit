@@ -129,7 +129,11 @@ def test_the_fence_refuses_them_after_its_own_ranges_and_before_the_browser(tmp_
     script = S.fence(host)[2]
     four = ('for n in 192.0.2.0/24 192.88.99.1/32 198.51.100.0/24 203.0.113.0/24; do ip -4 rule add prohibit to "$n" '
             "pref 100 || { echo 'The local network could not be fenced off' >&2; exit 1; }; done; ")
-    six = ('for n in 2001:db8:1::/64 2001:db8:d0c::/64; do ip -6 rule add prohibit to "$n" pref 100 || '
+    # the computer's own IPv4 networks in NAT64's forms too (the review of 2026-11-12: 64:ff9b::c0a8:101 is 192.168.1.1
+    # through a network's translator)
+    nat = S.nat64(["192.0.2.0/24", "192.88.99.1/32", "198.51.100.0/24", "203.0.113.0/24"])
+    assert "64:ff9b::c000:200/120" in nat and "64:ff9b:1::c000:200/120" in nat
+    six = (f'for n in 2001:db8:1::/64 2001:db8:d0c::/64 {" ".join(nat)}; do ip -6 rule add prohibit to "$n" pref 100 || '
            "{ echo 'The local network could not be fenced off' >&2; exit 1; }; done; ")
     assert four in script and six in script
     assert script.index("prohibit to 224.0.0.0/3") < script.index(four) < script.index("own 4 ||")
@@ -173,7 +177,7 @@ def opts_of(argv):
     out: dict[str, list[str]] = {}
     i = 1
     while argv[i] != "--":
-        if argv[i] in ("-4", "-6", "--config-net", "--quiet", "--no-map-gw"):
+        if argv[i] in ("-4", "-6", "--config-net", "--quiet", "--no-map-gw", "--no-icmp"):
             out.setdefault(argv[i], [])
             i += 1
         else:
@@ -225,8 +229,9 @@ def test_the_browser_and_a_trial_start_pasta_with_them(tmp_path):
     assert o["-I"] == ["eth0"] and "10.0.2.15" in o["-a"]
     from daprivacyscanner.tools import trial
     source = Path(trial.__file__).read_text()
-    assert "sandbox.pasta_opts(host)" in source and "sandbox.PASTA_OPTS" not in source
-    assert "*pasta_opts(host)" in Path(S.__file__).read_text().split("def browser_argv")[1]
+    assert "sandbox.pasta_command(" in source and "sandbox.PASTA_OPTS" not in source
+    assert "pasta_command(" in Path(S.__file__).read_text().split("def browser_argv")[1]
+    assert "*pasta_opts(host)" in Path(S.__file__).read_text().split("def pasta_command")[1].split("\ndef ")[0]
 
 
 # ------------------------------------------------------------------ B7: DNS over TCP only where pasta forwards it

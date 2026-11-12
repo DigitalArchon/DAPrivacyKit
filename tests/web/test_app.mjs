@@ -1452,9 +1452,11 @@ $$(".modal").at(-1).querySelectorAll(".buttons button")[1].click(); await tick()
 check(toolBodies.save?.name === "report.pdf" && toolBodies.save.folder === "/home/a/Documents", "then it is saved where the user chose: " + JSON.stringify(toolBodies.save));
 $$(".modal .browser-tool button").find(b => b.textContent === "Start Tor Browser").click(); await tick(); await tick(); await tick();
 check(browserStarted === "tor" && $$(".modal .browser-tool .badge").some(b => b.textContent === "running"), "Start runs it, then it shows as running");
-check(toolBodies.start?.sandbox === true && toolBodies.start.sound === false && toolBodies.start.nested === false
-      && toolBodies.start.gpu === false,
-      "in the sandbox, without sound, a display of its own or the graphics card unless asked: " + JSON.stringify(toolBodies.start));
+// on X11, a display of its own wherever Xephyr is installed (the owner's decision of 2026-11-12), this display never
+// unless the user unticks it
+check(toolBodies.start?.sandbox === true && toolBodies.start.sound === false && toolBodies.start.nested === true
+      && toolBodies.start.real_display === false && toolBodies.start.gpu === false,
+      "in the sandbox and in a display of its own, without sound or the graphics card unless asked: " + JSON.stringify(toolBodies.start));
 check(text(".modal .browser-tool").includes("Tor connecting 45%"), "while it runs, the panel shows how far Tor has got");
 torProgress = 100; await new Promise(r => setTimeout(r, 2300));
 check(text(".modal .browser-tool").includes("Tor connected"), "and follows it: Tor connected, without reopening the panel");
@@ -1803,12 +1805,14 @@ check(text(".modal .trial .notebox.risk").includes("This is an X11 session") && 
   check(net.length === 2 && net[0].checked && net[1].disabled && text(".modal .trial").includes("sudo apt install passt"),
         "no network by default; the observed one says what it needs when pasta is missing");
   const ticks = $$(".modal .trial input[type=checkbox]");
-  check(ticks.length === 4 && ticks[0].checked && !ticks[1].checked && !ticks[2].checked && !ticks[3].checked,
-        "decoys are on; the graphics card, sound and a display of its own off (the owner's decision of 2026-11-12)");
+  check(ticks.length === 5 && ticks[0].checked && !ticks[1].checked && !ticks[2].checked && !ticks[3].checked && ticks[4].checked,
+        "decoys are on; the graphics card (the owner's decision of 2026-11-12), sound and sandboxes of its own off; a display of its own on (X11, Xephyr there)");
   check(text(".modal .trial").includes("where a program trying to break out would look first"),
         "the graphics card's tick says what it gives and what it costs");
   check(text(".modal .trial").includes("8.0 GB of memory and 1024 processes"),
         "it says what the trial may take of the computer (the review of 2026-11-12)");
+  check(text(".modal .trial").includes("Let it start sandboxes of its own") && text(".modal .trial").includes("The cost"),
+        "the tick for a program that starts sandboxes of its own says what it costs");
   const soundNote = () => $$(".modal .trial .warnbox").find(n => n.textContent.includes("With sound"));
   check(soundNote()?.hidden === true, "what sound gives isn't listed while it is off");
   ticks[2].click();
@@ -1820,7 +1824,8 @@ check(text(".modal .trial .notebox.risk").includes("This is an X11 session") && 
   $(".modal .trial input.path").value = "--demo";
   $$(".modal .trial button").find(b => b.textContent === "Start the trial").click(); await tick(); await tick(); }
 { const sent = JSON.parse(trialCalls.at(-1).slice(6));
-  check(sent.program === "tool/main.py" && sent.args === "--demo" && sent.network === "off" && sent.decoys === true && sent.gpu === false,
+  check(sent.program === "tool/main.py" && sent.args === "--demo" && sent.network === "off" && sent.decoys === true && sent.gpu === false
+        && sent.nested === true && sent.real_display === false && sent.nesting === false,
         "the start sends what was chosen: " + trialCalls.at(-1));
   check(text(".modal .trial").includes("tool.tar.gz is running in its sandbox") && text(".modal .trial .warnbox").includes("looking at decoy files")
         && text(".modal .trial").includes("an SSH private key"), "while it runs, a decoy it looks at is shown at once"); }

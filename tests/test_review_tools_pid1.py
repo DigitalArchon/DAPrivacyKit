@@ -90,9 +90,18 @@ def _bwrap_runs() -> bool:
 
 PROBE = r"""
 import os
+def get(f):
+    try:
+        return f()
+    except OSError as e:
+        return "unreadable: " + type(e).__name__
+def forge():
+    with open("/proc/1/fd/2", "w") as f:
+        f.write("Landlock could not be applied: forged by the sandbox\n")
+    return "written"
 out = {"pids": sorted(int(p) for p in os.listdir("/proc") if p.isdigit()),
-       "cmdline": open("/proc/1/cmdline").read(), "environ": open("/proc/1/environ").read(),
-       "fds": [os.readlink("/proc/1/fd/" + f) for f in os.listdir("/proc/1/fd")]}
+       "cmdline": get(lambda: open("/proc/1/cmdline").read()), "environ": get(lambda: open("/proc/1/environ").read()),
+       "fds": get(lambda: [os.readlink("/proc/1/fd/" + f) for f in os.listdir("/proc/1/fd")]), "forge": get(forge)}
 print(repr(out))
 """
 
@@ -110,13 +119,19 @@ def test_from_inside_pid_1_names_nothing_of_the_user(tmp_path):
     try:
         r = subprocess.run(cmd, env={**S.SPAWN_ENV}, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=log,
                            pass_fds=(fd,), timeout=30)
+        text = S.read_log(log)
     finally:
         os.close(fd)
         os.close(log)
+    assert "forged" not in text
     got = eval(r.stdout.decode())                       # noqa: S307 - our own probe's repr
     assert got["pids"][0] == 1 and "bwrap" not in got["cmdline"] and str(tmp_path) not in got["cmdline"]
     assert "SESSION_MANAGER" not in got["environ"] and secret not in got["environ"] and "HOME=" not in got["environ"]
     assert not any(str(tmp_path) in f for f in got["fds"])
+    # STAY is undumpable (the review of 2026-11-12): nothing inside reads its environment or its descriptors, nor writes
+    # into the start log through /proc/1/fd/2, which the app would have shown as its own words
+    assert got["environ"].startswith("unreadable") and got["fds"].startswith("unreadable")
+    assert got["forge"].startswith("unreadable")
 
 
 @pytest.mark.skipif(not _bwrap_runs(), reason="bubblewrap can't run here")

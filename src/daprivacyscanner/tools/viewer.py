@@ -39,7 +39,7 @@ from typing import Callable
 
 from ..host import Host
 from ..hostenv import host_env
-from . import ramdisk, sandbox, sniff, transfer, wayland
+from . import ramdisk, sandbox, seccomp, sniff, transfer, wayland
 
 SYSTEM_DIRS = ("/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin", "/usr/games")
 FIELD_FILE = ("%f", "%F", "%u", "%U")
@@ -67,10 +67,11 @@ class Viewer:
     flatpak: str | None = None               # its app id
     opt: bool = False                        # it lives in /opt, which the sandbox then gets read-only
     notes: list[str] = field(default_factory=list)
+    nesting: str | None = None               # why it looks like a viewer that starts sandboxes of its own (seccomp.py)
 
     def to_dict(self) -> dict:
         return {"app": self.app, "desktop_id": self.desktop_id, "flatpak": self.flatpak,
-                "command": shlex.join(self.argv), "notes": self.notes}
+                "command": shlex.join(self.argv), "notes": self.notes, "nesting": self.nesting}
 
 
 def mime_of(name: str, ins: sniff.Inspection) -> str | None:
@@ -172,7 +173,13 @@ def viewer_for(host: Host, name: str, ins: sniff.Inspection, copy_name: str, vie
             out.append(a.replace("%%", "%"))
     if not placed:
         out.append(file_in)
-    return Viewer(app, desktop_id, out, opt=prog.startswith("/opt/"))
+    # a viewer that starts sandboxes of its own for what it opens (glycin's image loaders, WebKitGTK's web processes)
+    # gets the filter that lets it make them: the strict one stopped it showing anything
+    nesting = seccomp.installed_reason(str(host.sys_path(prog)))
+    notes = [f"{app} starts sandboxes of its own for what it opens ({nesting}), so its sandbox lets it make them: the "
+             "kernel's namespaces and mounts are then within reach of what it opens, should that get past the "
+             "viewer."] if nesting else []
+    return Viewer(app, desktop_id, out, opt=prog.startswith("/opt/"), notes=notes, nesting=nesting)
 
 
 # A Flatpak viewer runs with what the app declares for itself dropped (`--sandbox`) and only this put back: the
@@ -439,13 +446,17 @@ def marked_socket(host: Host, disp: sandbox.Display, own: Path) -> int | None:
 
 
 def argv(host: Host, v: Viewer, copy: Path, name_in: str, own: Path, disp: sandbox.Display | None = None,
-         sync: int | None = None) -> list[str]:
-    """The whole command for a native viewer: bubblewrap with no network around it."""
+         sync: int | None = None, filt: sandbox.Filter | None = None) -> list[str]:
+    """The whole command for a native viewer: bubblewrap with no network around it. `filt`: its system-call filter
+    (strict, or nesting for a viewer that starts sandboxes of its own: Viewer.nesting), whose descriptor the caller
+    passes."""
     disp = disp or sandbox.display(host, own, landlock=False)
     if disp.kind == "none" or disp.network:
         raise ViewError(disp.note or "There is no display to show it on.")
     etc = sandbox.identity_files(own / "etc", None)
-    a = [sandbox._need(host, sandbox.BWRAP), *sandbox.namespaces(False), *sandbox.system(host, etc=False),
+    strict = filt is None or filt.profile == seccomp.STRICT
+    a = [sandbox._need(host, sandbox.BWRAP), *sandbox.namespaces(False), *(sandbox.no_new_userns(host) if strict else []),
+         *(filt.argv() if filt else []), *sandbox.system(host, etc=False),
          # an /etc of its own, with only what viewers read: a viewer opens a file a website gave the browser, and
          # the list of what to cover over the computer's own /etc missed what no list foresees (sandbox.app_etc)
          *sandbox.app_etc(host, etc, resolv=False)]
@@ -473,6 +484,7 @@ def argv(host: Host, v: Viewer, copy: Path, name_in: str, own: Path, disp: sandb
 
 
 _LAUNCHED: dict[int, str] = {}           # viewers View offline… started: pid -> the viewer's name (for "Close X first")
+_DISPLAYS: dict[int, int] = {}           # a viewer's display of its own (Xephyr's sandbox): its process -> the viewer's
 
 # The viewer's sandbox, bubblewrap's or Flatpak's, runs under this, the computer's python3, which waits for it:
 # with --die-with-parent the whole sandbox ends when its parent does, and its parent is this keeper, not the app,
@@ -499,6 +511,27 @@ def _keeper(host: Host, cmd: list[str]) -> list[str]:
     return [sandbox.PYTHON, "-I", "-c", KEEPER, *cmd] if kept(host) else cmd
 
 
+def displays() -> dict[int, str]:
+    """The displays of their own (Xephyr) started here for viewers that still run: pid -> the viewer's name. The
+    browser's panel names them with their viewer, and never ends them as the browser's (browser.end_display); once
+    the viewer has ended, its display is one like the browser's, ended when ~/TempBrowser closes."""
+    out, running = {}, launched()
+    for pid, viewer in list(_DISPLAYS.items()):
+        if viewer not in running:
+            _DISPLAYS.pop(pid, None)
+            continue
+        try:
+            os.kill(pid, 0)
+            with open(f"/proc/{pid}/stat") as f:
+                if f.read().rsplit(")", 1)[-1].split()[0] == "Z":
+                    raise ProcessLookupError
+        except (ProcessLookupError, PermissionError, OSError):
+            _DISPLAYS.pop(pid, None)
+            continue
+        out[pid] = running[viewer]
+    return out
+
+
 def launched() -> dict[int, str]:
     """The viewers started here that still run (their process, the top of their sandbox), by pid."""
     for pid in list(_LAUNCHED):
@@ -512,11 +545,47 @@ def launched() -> dict[int, str]:
     return dict(_LAUNCHED)
 
 
+NESTED_WAIT = 5.0                        # seconds Xephyr has to open its display for a viewer
+
+
+def _start_display(host: Host, v: Viewer, own: Path, spawn: Callable):
+    """A display of its own for the viewer (Xephyr in its sandbox, strict, its focus keeper sizing the viewer's window to
+    it): started and waited for, (the display the viewer then gets, Xephyr's process). It ends by itself once the
+    viewer's windows are gone (-terminate, the keeper's grace), and isn't tied to the app: quitting leaves an open
+    viewer open, with its display."""
+    from . import browser
+    filt = sandbox.make_filter(seccomp.STRICT)
+    try:
+        nest = sandbox.nested(host, own, f"{v.app}, in a display of its own (no network)", sandbox.screen_size(host),
+                              die_with_parent=False, filt=filt, fill=True)
+        if nest is None:
+            raise ViewError("A display of its own works on this computer's own X11 display only.")
+        proc = spawn(sandbox.fresh_keyring(host, nest.argv), cwd="/", env=host_env(host.environ), stdin=subprocess.DEVNULL,
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
+                     **({"pass_fds": filt.fds()} if filt.fds() else {}))
+    finally:
+        filt.close()
+    if not hasattr(proc, "poll"):
+        return nest.display, proc                       # a test's stand-in
+    deadline = time.monotonic() + NESTED_WAIT
+    while time.monotonic() < deadline and proc.poll() is None:
+        try:
+            if stat.S_ISSOCK(os.stat(nest.socket, follow_symlinks=False).st_mode):
+                return nest.display, proc
+        except OSError:
+            pass
+        time.sleep(0.1)
+    browser._end_nested(host, proc)
+    raise ViewError("Xephyr didn't open a display for it.")
+
+
 def view(host: Host, folder: str, name: str, private: Path, spawn: Callable = subprocess.Popen,
-         check: str | None = None) -> dict:
+         check: str | None = None, real_display: bool = False) -> dict:
     """Copies the download where no sandbox reaches, judges the copy again (only what the page showed,
-    `check`, is opened) and opens it in the desktop's viewer with no network. Returns the viewer's
-    description, with the command that ran."""
+    `check`, is opened) and opens it in the desktop's viewer with no network. On X11 it gets a display of its own
+    (Xephyr) wherever Xephyr is installed, this display only when the user has said it may (`real_display`: a viewer a
+    hostile file took over could read and type into every other window there). Returns the viewer's description, with
+    the command that ran."""
     if not sandbox.program(host, sandbox.BWRAP):
         raise ViewError("Opening it without the network needs bubblewrap (the bubblewrap package).")
     stage, sfd = _staging(host)
@@ -529,10 +598,16 @@ def view(host: Host, folder: str, name: str, private: Path, spawn: Callable = su
     finally:
         os.close(sfd)
     ins, name_in, copy = snap.inspection, snap.name, snap.path
-    flat, sync = None, None
+    flat, sync, filt, xephyr = None, None, None, None
     own = own_folder(private)
     try:
         v = viewer_for(host, name, ins, name_in, str(stage))
+        disp = sandbox.display(host, own, landlock=False)
+        x11 = disp.kind == "x11" and not disp.network
+        if v.flatpak and x11 and not real_display:      # Flatpak gives it the X server's own socket: no Xephyr for it
+            raise ViewError(f"On X11, {v.app} (a Flatpak app) would be given this display, where a file that took it "
+                            "over could read what every other window shows and what you type into them, and type into "
+                            "them itself. Tick that it may use this display, knowing that, to open it.")
         if v.flatpak:
             # already open, it is handed the file over the session bus and opens it itself, with its network and
             # what it remembers (Text Editor 51 did, tested on Mint 22.3; Flatpak Firefox fetched a page's pictures)
@@ -548,12 +623,24 @@ def view(host: Host, folder: str, name: str, private: Path, spawn: Callable = su
                                 f"network and outside this sandbox. Close {v.app} first, then try again.")
             cmd, flat = v.argv, True
         else:
-            disp = sandbox.display(host, own, landlock=False)
+            from .browser import _install_command
+            try:
+                nested = sandbox.own_display(host, disp, None, real_display, v.app, _install_command(host, "Xephyr"))
+            except sandbox.SandboxError as e:
+                raise ViewError(str(e)) from None
+            if nested:
+                disp, xephyr = _start_display(host, v, own, spawn)
             sync = marked_socket(host, disp, own)
-            cmd = argv(host, v, copy, name_in, own, disp, sync)
-    except ViewError:
+            filt = sandbox.make_filter(seccomp.NESTING if v.nesting else seccomp.STRICT)
+            cmd = argv(host, v, copy, name_in, own, disp, sync, filt)
+    except (ViewError, sandbox.SandboxError):
         if sync is not None:
             os.close(sync)
+        if filt is not None:
+            filt.close()
+        if xephyr is not None:
+            from .browser import _end_nested
+            _end_nested(host, xephyr)
         snap.remove()                                   # no viewer: the copy goes at once
         raise
     # what runs: bubblewrap's options from a descriptor (sandbox.sealed: the viewer can read its init's command line,
@@ -566,31 +653,43 @@ def view(host: Host, folder: str, name: str, private: Path, spawn: Callable = su
         env = dict(sandbox.SPAWN_ENV)
     cmd = sandbox.fresh_keyring(host, _keeper(host, cmd))
     log = sandbox.log_file("view-log")                  # a memory file: no path for the viewer to see
-    fds = tuple(fd for fd in (sync, args_fd) if fd is not None)
+    fds = tuple(fd for fd in (sync, args_fd) if fd is not None) + (filt.fds() if filt is not None else ())
     try:
         proc = spawn(cmd, cwd="/", env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                      stderr=log, start_new_session=True, **({"pass_fds": fds} if fds else {}))
     except BaseException:
         os.close(log)
         snap.remove()
+        if xephyr is not None:
+            from .browser import _end_nested
+            _end_nested(host, xephyr)
         raise
     finally:
         if args_fd is not None:
             os.close(args_fd)
         if sync is not None:
             os.close(sync)                              # bubblewrap holds it now, for as long as the viewer runs
+        if filt is not None:
+            filt.close()                                # read by bubblewrap
     if isinstance(getattr(proc, "pid", None), int):
         _LAUNCHED[proc.pid] = v.app
         _VIEWS[stage.name] = proc.pid
+        if isinstance(getattr(xephyr, "pid", None), int):
+            _DISPLAYS[xephyr.pid] = proc.pid            # its display: named with it, and not ended as the browser's
     if hasattr(proc, "poll"):
         deadline = time.monotonic() + WATCH
         while proc.poll() is None and time.monotonic() < deadline:
             time.sleep(0.1)
         rc = proc.poll()
+        if rc is not None and xephyr is not None:
+            from .browser import _end_nested
+            _end_nested(host, xephyr)                   # nothing will be shown on it
         if rc not in (None, 0):
-            lines = [ln for ln in sandbox.read_log(log).splitlines() if ln.strip()]
+            # the log is the viewer's own output (its stderr), which a file it opened can steer: the reason is the
+            # app's, what it printed only quoted as its own (sandbox.start_reason)
+            text = sandbox.read_log(log)
             os.close(log)
-            raise ViewError(f"{v.app} couldn't open it: " + ("; ".join(lines[-3:])[:400] or f"exit status {rc}"))
+            raise ViewError(f"{v.app} couldn't open it: {sandbox.start_reason(text, rc)}.")
         if rc == 0:                                     # ended at once, showing nothing (in its sandbox it can't
             os.close(log)                               # go on in the background: its sandbox ends with it)
             if flat:

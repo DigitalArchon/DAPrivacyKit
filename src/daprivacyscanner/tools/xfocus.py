@@ -9,9 +9,13 @@ This runs in Xephyr's sandbox, by the computer's python3 (its source passed with
 starts Xephyr (argv), and once its socket is there connects with Xephyr's own cookie and gives the focus to
 each normal window the browser maps (not menus, tooltips or other override-redirect windows), and to the one
 the pointer enters, so with several (a second browser window, a dialog) the one under the pointer has it.
-It creates nothing and asks the server for nothing else. When every window is gone (the browser closed) and
-none comes back within GRACE seconds, it disconnects, so Xephyr's -terminate ends it as before; it then waits
-for Xephyr and exits with its status. Anything going wrong here only stops the keeper, never Xephyr.
+It creates nothing. With --fill (a program on trial, a Box's app, a viewer: never the browser, which sizes its own
+window), it also does a window manager's other job those need: each main window it maps is given the whole display
+(no window manager inside would let the user move or resize it, and a program opens at a size of its own, which
+left most of the display black or cut the window off), or the largest size the window says it can take, and again
+when the display is resized; a dialog (WM_TRANSIENT_FOR) keeps its own size. When every window is gone (the browser
+closed) and none comes back within GRACE seconds, it disconnects, so Xephyr's -terminate ends it as before; it then
+waits for Xephyr and exits with its status. Anything going wrong here only stops the keeper, never Xephyr.
 Stdlib only, the X11 wire protocol by hand (as wayland.py does Wayland's)."""
 
 from __future__ import annotations
@@ -30,12 +34,16 @@ FIRST = 120.0                           # seconds to wait for the browser's firs
 SOCKET_WAIT = 5.0
 
 # requests and the events they select (X11 protocol, little-endian)
-CHANGE_WINDOW_ATTRIBUTES, GET_GEOMETRY, QUERY_TREE, SET_INPUT_FOCUS = 2, 14, 15, 42
+CHANGE_WINDOW_ATTRIBUTES, CONFIGURE_WINDOW, GET_GEOMETRY, QUERY_TREE, GET_PROPERTY, SET_INPUT_FOCUS = 2, 12, 14, 15, 20, 42
 CW_EVENT_MASK = 0x800
 ENTER_WINDOW_MASK, STRUCTURE_NOTIFY_MASK, SUBSTRUCTURE_NOTIFY_MASK = 0x10, 0x20000, 0x80000
 REVERT_TO_POINTER_ROOT = 1
 ERROR, REPLY = 0, 1
-ENTER_NOTIFY, CREATE_NOTIFY, DESTROY_NOTIFY, UNMAP_NOTIFY, MAP_NOTIFY = 7, 16, 17, 18, 19
+ENTER_NOTIFY, CREATE_NOTIFY, DESTROY_NOTIFY, UNMAP_NOTIFY, MAP_NOTIFY, CONFIGURE_NOTIFY = 7, 16, 17, 18, 19, 22
+# predefined atoms
+WM_NORMAL_HINTS, WM_SIZE_HINTS, WM_TRANSIENT_FOR, ANY_PROPERTY_TYPE = 40, 41, 68, 0
+P_MAX_SIZE = 32                         # WM_SIZE_HINTS' flag: max_width and max_height (its 8th and 9th words) are set
+CONFIG_X, CONFIG_Y, CONFIG_WIDTH, CONFIG_HEIGHT = 1, 2, 4, 8
 
 
 class XError(Exception):
@@ -54,6 +62,11 @@ def setup_request(cookie: bytes) -> bytes:
 
 def parse_setup(data: bytes) -> int:
     """The first screen's root window, from the server's reply to setup_request."""
+    return parse_screen(data)[0]
+
+
+def parse_screen(data: bytes) -> tuple[int, int, int]:
+    """The first screen's root window and its size in pixels (width, height), from the reply to setup_request."""
     if data[0] != 1:
         reason = data[8:8 + data[1]].decode(errors="replace")
         raise XError(f"refused: {reason}")
@@ -61,7 +74,8 @@ def parse_setup(data: bytes) -> int:
     formats = data[29]
     off = 40 + vendor_len + _pad(vendor_len) + 8 * formats
     root, = struct.unpack_from("<I", data, off)
-    return root
+    width, height = struct.unpack_from("<HH", data, off + 20)
+    return root, width, height
 
 
 def cookie_from(xauth: bytes) -> bytes:
@@ -95,6 +109,32 @@ def get_geometry(drawable: int) -> bytes:
     return struct.pack("<BxHI", GET_GEOMETRY, 2, drawable)
 
 
+def get_property(window: int, prop: int, kind: int = ANY_PROPERTY_TYPE, longs: int = 32) -> bytes:
+    return struct.pack("<BBHIIIII", GET_PROPERTY, 0, 6, window, prop, kind, 0, longs)
+
+
+def configure(window: int, x: int, y: int, w: int, h: int) -> bytes:
+    """ConfigureWindow: the window at (x, y), w by h."""
+    return struct.pack("<BxHIHxxiiII", CONFIGURE_WINDOW, 7, window, CONFIG_X | CONFIG_Y | CONFIG_WIDTH | CONFIG_HEIGHT,
+                       x, y, w, h)
+
+
+def property_words(reply: bytes | None) -> list[int]:
+    """A GetProperty reply's value as 32-bit words ([] for none, or another format)."""
+    if not reply or reply[1] != 32:
+        return []
+    n, = struct.unpack_from("<I", reply, 16)
+    return list(struct.unpack_from(f"<{n}I", reply, 32)) if len(reply) >= 32 + 4 * n else []
+
+
+def fill_size(hints: list[int], width: int, height: int) -> tuple[int, int]:
+    """The size a main window gets on a width x height display: all of it, or the largest the window takes
+    (WM_NORMAL_HINTS' maximum)."""
+    if len(hints) >= 9 and hints[0] & P_MAX_SIZE and hints[7] > 0 and hints[8] > 0:
+        return min(width, hints[7]), min(height, hints[8])
+    return width, height
+
+
 def worth_focus(x: int, y: int, w: int, h: int) -> bool:
     """A window the user can see and use: not GTK's 1x1 or 10x10 helpers, not one placed off the screen."""
     return w > 10 and h > 10 and x + w > 0 and y + h > 0
@@ -109,7 +149,7 @@ class Conn:
         self.sock.sendall(setup_request(cookie))
         head = self._read(8)
         rest = self._read(struct.unpack_from("<H", head, 6)[0] * 4)
-        self.root = parse_setup(head + rest)
+        self.root, self.width, self.height = parse_screen(head + rest)
         self.seq = 0
         self.events: list[bytes] = []
 
@@ -155,12 +195,14 @@ class Conn:
 class Keeper:
     """The focus on the browser's normal windows (see the module's docstring)."""
 
-    def __init__(self, conn: Conn):
+    def __init__(self, conn: Conn, fill: bool = False):
         self.c = conn
+        self.fill = fill
         self.alive: set[int] = set()            # the root's children, mapped or not: the browser's windows
         self.normal: list[int] = []             # mapped, not override-redirect, worth the focus: newest last
+        self.filled: dict[int, list[int]] = {}  # main windows given the display (fill), with their size hints
         self.focused = 0
-        conn.send(change_event_mask(conn.root, SUBSTRUCTURE_NOTIFY_MASK))
+        conn.send(change_event_mask(conn.root, SUBSTRUCTURE_NOTIFY_MASK | (STRUCTURE_NOTIFY_MASK if fill else 0)))
         tree = conn.ask(query_tree(conn.root))
         if tree:
             n, = struct.unpack_from("<H", tree, 16)
@@ -182,9 +224,17 @@ class Keeper:
             self.normal.remove(window)
         self.normal.append(window)
         self.c.send(change_event_mask(window, ENTER_WINDOW_MASK | STRUCTURE_NOTIFY_MASK))
+        if self.fill and window not in self.filled and not property_words(self.c.ask(get_property(window, WM_TRANSIENT_FOR))):
+            self.filled[window] = property_words(self.c.ask(get_property(window, WM_NORMAL_HINTS, WM_SIZE_HINTS, 18)))
+            self._size(window)
         self._focus(window)
 
+    def _size(self, window: int) -> None:
+        w, h = fill_size(self.filled[window], self.c.width, self.c.height)
+        self.c.send(configure(window, (self.c.width - w) // 2, (self.c.height - h) // 2, w, h))
+
     def _gone(self, window: int) -> None:
+        self.filled.pop(window, None)
         if window in self.normal:
             self.normal.remove(window)
             if window == self.focused:
@@ -215,6 +265,14 @@ class Keeper:
             window, = struct.unpack_from("<I", ev, 12)
             if window in self.normal:
                 self._focus(window)
+        elif code == CONFIGURE_NOTIFY and self.fill:
+            event, window = struct.unpack_from("<II", ev, 4)
+            if event == window == self.c.root:       # the display resized (Xephyr's window, by the user)
+                w, h = struct.unpack_from("<HH", ev, 20)
+                if (w, h) != (self.c.width, self.c.height):
+                    self.c.width, self.c.height = w, h
+                    for win in list(self.filled):
+                        self._size(win)
 
     def run(self, running) -> None:
         """Until the browser's windows have been gone for GRACE seconds (or none came within FIRST), or `running()`
@@ -233,7 +291,7 @@ class Keeper:
                 return
 
 
-def keep_focus(path: str, cookie: bytes, running) -> None:
+def keep_focus(path: str, cookie: bytes, running, fill: bool = False) -> None:
     deadline = time.monotonic() + SOCKET_WAIT
     while not os.path.exists(path):
         if time.monotonic() > deadline or not running():
@@ -241,13 +299,15 @@ def keep_focus(path: str, cookie: bytes, running) -> None:
         time.sleep(0.05)
     conn = Conn(path, cookie)
     try:
-        Keeper(conn).run(running)
+        Keeper(conn, fill).run(running)
     finally:
         conn.sock.close()
 
 
 def main(argv: list[str]) -> int:
-    """argv: Xephyr's command (":N" second, "-auth FILE" in it)."""
+    """argv: [--fill] then Xephyr's command (":N" second, "-auth FILE" in it)."""
+    fill = bool(argv) and argv[0] == "--fill"
+    argv = argv[1:] if fill else argv
     xephyr = subprocess.Popen(argv)
     for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
         signal.signal(sig, lambda s, _f: xephyr.send_signal(s))
@@ -255,7 +315,7 @@ def main(argv: list[str]) -> int:
         path = f"/tmp/.X11-unix/X{argv[1].lstrip(':')}"
         with open(argv[argv.index("-auth") + 1], "rb") as f:
             cookie = cookie_from(f.read())
-        keep_focus(path, cookie, lambda: xephyr.poll() is None)
+        keep_focus(path, cookie, lambda: xephyr.poll() is None, fill)
     except Exception as e:  # noqa: BLE001 - the keeper stops; Xephyr goes on
         print(f"focus keeper stopped: {e}", file=sys.stderr)
     return xephyr.wait()
