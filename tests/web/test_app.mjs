@@ -1,6 +1,8 @@
-// The page's script against a canned API (fixture-state.json, made from the Python fixtures):
-// init, the report's summary, the kinds, accepted findings, details, and the export
-// dialogs. Run with `node tests/web/test_app.mjs` (needs jsdom on NODE_PATH); pytest runs it too.
+// The page's script against a canned API (the state the server gives after a scan of a fixture machine:
+// tests/test_web.py makes it afresh and passes its path as DAPRIVACYSCANNER_FIXTURE): init, the report's summary,
+// the kinds, accepted findings, details, and the export dialogs. pytest runs it (tests/test_web.py); by hand,
+// `python tests/test_web.py` writes tests/web/fixture-state.json, then `node tests/web/test_app.mjs` (jsdom from
+// `npm ci --prefix tests/web`).
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
@@ -10,7 +12,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 // jsdom from tests/web/node_modules (npm install jsdom there), or DAPRIVACYSCANNER_NODE_PATH
 const { JSDOM } = createRequire(import.meta.url)(join(process.env.DAPRIVACYSCANNER_NODE_PATH || join(here, "node_modules"), "jsdom"));
 const web = join(here, "..", "..", "src", "daprivacyscanner", "web");
-const fixture = JSON.parse(readFileSync(join(here, "fixture-state.json"), "utf8"));
+const fixture = JSON.parse(readFileSync(process.env.DAPRIVACYSCANNER_FIXTURE || join(here, "fixture-state.json"), "utf8"));
 const checkTitleOf = (id) => fixture.state.catalogue.find(sp => sp.id === id)?.title || id;
 const html = readFileSync(join(web, "index.html"), "utf8").replace(/<script[^>]*><\/script>/, "");
 const js = readFileSync(join(web, "app.js"), "utf8");

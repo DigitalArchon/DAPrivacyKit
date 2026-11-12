@@ -1,0 +1,9 @@
+{
+  "name": "daprivacyscanner-web-tests",
+  "private": true,
+  "description": "The front-end test's one dependency (tests/test_web.py runs tests/web/test_app.mjs): npm ci --prefix tests/web installs exactly what package-lock.json holds, integrity-checked.",
+  "license": "GPL-3.0-or-later",
+  "devDependencies": {
+    "jsdom": "30.1.1"
+  }
+}

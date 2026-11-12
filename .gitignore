@@ -5,5 +5,12 @@ __pycache__/
 build/
 dist/
 tests/web/node_modules/
+tests/web/fixture-state.json
 src/daprivacyscanner/_built.py
 CLAUDE.md
+# packaging/check.sh: the venvs per Python version, the tools' caches and the coverage data
+.ci/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*

@@ -791,7 +791,7 @@ def _dnf5_host(tmp_path, runtime=True):
 
     def dnf5(argv):
         calls.append(argv)
-        cache = next(a.split("=", 1)[1] for a in argv if a.startswith("--setopt=cachedir="))
+        cache = next(a.removeprefix("--setopt=cachedir=") for a in argv if a.startswith("--setopt=cachedir="))
         os.makedirs(cache, exist_ok=True)                 # dnf5 copies the system's metadata into it
         if "check-update" in argv:
             return CommandResult(argv, 100, "\ngdk-pixbuf2.x86_64 2.44.6-3.fc44 updates\nipp-usb.x86_64 0.9.34-2.fc44 updates\n"
