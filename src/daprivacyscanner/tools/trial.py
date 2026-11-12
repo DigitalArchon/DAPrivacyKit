@@ -1112,7 +1112,9 @@ class Flatpak(Engine):
             a.append("--device=dri")
         if o.get("sound"):
             a.append("--socket=pulseaudio")
-        own_part(t.folder, "home", "The home folder")                   # Flatpak follows a link in --filesystem too
+        # for the refusal only (Flatpak resolves a path in --filesystem on the computer, as bubblewrap does a bind
+        # source): a home or an Exchange folder that has become a link isn't given to it (own_part raises)
+        own_part(t.folder, "home", "The home folder")
         for outside, _inside in t.binds:
             own_part(Path(outside).parent, Path(outside).name, Path(outside).name)
         a += [f"--filesystem={outside}" for outside, _inside in t.binds]
