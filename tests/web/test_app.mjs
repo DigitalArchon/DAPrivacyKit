@@ -2388,6 +2388,9 @@ while ($$(".modal").length) { $$(".modal .buttons button").at(-1).click(); await
   btn("Download and verify").click(); await tick(); await tick();
   check(top().textContent.includes("Downloading the AppImage from github.com") && !!btn("Stop") && top().querySelector(".obar"),
         "the download's progress, with Stop");
+  { const stop = btn("Stop");                        // drawn in place as it polls: the same Stop, so a press on it lands
+    await new Promise(r => setTimeout(r, 800));
+    check(!btn("Stop") || btn("Stop") === stop, "the update's Stop is the same button as its progress is drawn again"); }
   await wait(); await wait();
   check(top().textContent.includes("Verified: made by Digital Archon") && top().textContent.includes("3AA5 C061 33BB C05A 4151")
         && top().textContent.includes("The file itself says it is version 0.1.0b10"), "the verdict, with the key and the version inside");

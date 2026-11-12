@@ -1926,7 +1926,7 @@ async function openUpdate() {
   let data;
   try { data = await api("GET", "/api/update"); } catch (e) { toast(e.message, "error"); return; }
   const body = h("div", { class: "update" });
-  let timer = null, shown = true;
+  let timer = null, shown = true, stopping = false;
   const dlg = modal({ title: "Check for updates", wide: true, body, buttons: [{ label: "Close" }], onClose: () => {
     shown = false;
     clearTimeout(timer);
@@ -1974,16 +1974,26 @@ async function openUpdate() {
       return fill(body, parts);
     }
     if (job?.state === "running") {
+      // drawn in place every 700 ms (patch), in a part of its own: Stop keeps its press and the focus, and that it was
+      // pressed is `stopping`, not the button's label
       const frac = job.total ? Math.min(1, job.done / job.total) : null;
-      parts.push(h("div", { class: "trim-progress" },
-        h("div", { class: "orow" }, h("b", {}, `DA Privacy Kit ${job.version}`), h("span", { class: "small" }, job.phase || "…"),
-          job.total ? h("span", { class: "small muted" }, `${fmtSize(job.done)} of ${fmtSize(job.total)}`) : null),
-        frac != null ? h("div", { class: "obar" }, h("div", { style: `width: ${Math.round(frac * 100)}%` })) : null,
-        h("div", { class: "orow" }, button(job.stopping ? "Stopping…" : "Stop", "", (btn) => act("POST", "/api/update/stop", undefined, btn)))));
-      fill(body, parts);
-      timer = setTimeout(() => { if (shown) act("GET", "/api/update"); }, 700);
+      const halting = stopping || job.stopping;
+      parts.push(h("div", { class: "trim-progress", key: "progress" },
+        h("div", { class: "orow", key: "phase" }, h("b", {}, `DA Privacy Kit ${job.version}`), h("span", { class: "small" }, job.phase || "…"),
+          job.total ? h("span", { class: "small muted", key: "count" }, `${fmtSize(job.done)} of ${fmtSize(job.total)}`) : null),
+        frac != null ? progressBar(frac, "Downloading the update") : null,
+        h("div", { class: "orow", key: "stop" }, h("button", { class: "small", disabled: halting, onclick: async () => {
+          if (stopping) return;
+          stopping = true;
+          draw();
+          try { data = await api("POST", "/api/update/stop"); draw(); }
+          catch (e) { stopping = false; draw(e.message); }
+        } }, halting ? "Stopping…" : "Stop"))));
+      patch(body, h("div", { class: "update-state", key: "running" }, parts));
+      timer = setTimeout(() => { if (shown) void act("GET", "/api/update"); }, 700);
       return body;
     }
+    stopping = false;
     if (plan) {
       const v = plan.verdict;
       parts.push(h("div", { class: "notebox info" }, h("b", {}, `${v.title}. `),
