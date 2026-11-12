@@ -9,10 +9,78 @@ import shlex
 
 from ...guide import Guide, Step
 from .._util import isfile, read_text
-from . import FLATHUB_ADD, evidence, family, guide, install, os_release
+from . import FLATHUB_ADD, append_line, evidence, family, guide, install, os_release
 
 
 # ------------------------------------------------------------------ kernel boot options
+
+GRUB_DEFAULT_LINE = re.compile(r"""^GRUB_CMDLINE_LINUX_DEFAULT=(["']?)""", re.M)
+
+
+def _grub_steps(scan, param: str, args: str) -> tuple[str, list[str]]:
+    """How /etc/default/grub gets `args` (param=value) at the end of GRUB_CMDLINE_LINUX_DEFAULT, any other param= on it
+    and on GRUB_CMDLINE_LINUX taken out first: the text and the commands (before GRUB's menu is rebuilt). The file is a
+    shell script: its value can be in double quotes, single quotes (some installers write those) or none, and the
+    command is the one for the form this file has. Before, only double quotes matched: with single ones the sed changed
+    nothing and said nothing. A file without the line gets one (GRUB reads it even when the installer left it out)."""
+    host = scan.host
+    text = read_text(host, host.sys_path("/etc/default/grub")) or ""
+    found = GRUB_DEFAULT_LINE.findall(text)
+    p = re.escape(param)
+    # any param= on either line goes, whichever quotes the line has ('=' for an unquoted value that starts with it)
+    remove = f"/^GRUB_CMDLINE_LINUX(_DEFAULT)?=/s/([\"' =]){p}=[^\"' ]*/\\1/g"
+    say = ("GRUB reads the kernel options from GRUB_CMDLINE_LINUX and GRUB_CMDLINE_LINUX_DEFAULT in /etc/default/grub. "
+           f"The first command takes out any {param}= on those lines and adds the option at the end of the second (the "
+           "kernel uses the last one given); the next rebuilds GRUB's menu.")
+    if not found:
+        say = ("GRUB reads the kernel options from GRUB_CMDLINE_LINUX and GRUB_CMDLINE_LINUX_DEFAULT in /etc/default/grub, "
+               f"which has no GRUB_CMDLINE_LINUX_DEFAULT line here. The first command takes out any {param}= on "
+               "GRUB_CMDLINE_LINUX, the second adds a GRUB_CMDLINE_LINUX_DEFAULT line with the option; the last rebuilds "
+               "GRUB's menu.")
+        cmds = ["sudo sed -i -E -e " + shlex.quote(remove) + " /etc/default/grub",
+                append_line(f'GRUB_CMDLINE_LINUX_DEFAULT="{args}"', "/etc/default/grub")]
+    else:
+        q = found[-1]                       # the shell takes the last assignment
+        if q:
+            add = f"s/^(GRUB_CMDLINE_LINUX_DEFAULT={q}[^{q}]*){q}/\\1 {args}{q}/"
+        else:                               # unquoted: one word or nothing, quoted now that it has a space
+            add = f"s/^GRUB_CMDLINE_LINUX_DEFAULT=([^\"' ]*)[[:space:]]*$/GRUB_CMDLINE_LINUX_DEFAULT=\"\\1 {args}\"/"
+        cmds = ["sudo sed -i -E -e " + shlex.quote(remove) + " -e " + shlex.quote(add) + " /etc/default/grub"]
+    # /etc/default/grub.d/*.cfg is read after it (Ubuntu's cloud images set the line there): a value set there wins
+    later = [f.name for f in sorted(host.sys_path("/etc/default/grub.d").glob("*.cfg"))
+             if GRUB_DEFAULT_LINE.search(read_text(host, f) or "")] if host.sys_path("/etc/default/grub.d").is_dir() else []
+    if later:
+        say += (" GRUB_CMDLINE_LINUX_DEFAULT is set again in a file read after it, whose value wins: add the option "
+                f"there too ({', '.join('sudoedit /etc/default/grub.d/' + n for n in later)}).")
+    return say, cmds
+
+
+UKI_PRESET = re.compile(r"^\s*[A-Za-z0-9_]+_uki=", re.M)
+KERNEL_INSTALL_EACH = ('for d in /usr/lib/modules/*/; do [ -e "$d/vmlinuz" ] && sudo kernel-install add '
+                       '"$(basename "$d")" "$d/vmlinuz"; done')
+
+
+def _cmdline_rebuild(scan) -> tuple[str, str]:
+    """(what it does, the command) that has the boot entries take a changed /etc/kernel/cmdline, by what makes them
+    here. openSUSE's sdbootutil keeps its own entries (`update-all-entries` rewrites their options from the file); Arch's
+    mkinitcpio builds unified kernel images from its presets at every kernel update, not through kernel-install
+    (`kernel-install add-all` added entries of its own beside them, the images that boot keeping the old options: seen
+    in CachyOS's mkinitcpio 42 hooks); kernel-install has add-all from systemd 255 (Debian 12's 252 hasn't), else each
+    kernel is added in turn."""
+    host = scan.host
+    if host.runner.which("sdbootutil"):
+        return ("rewrites every boot entry's options from it (sdbootutil makes the systemd-boot entries here)",
+                "sudo sdbootutil update-all-entries")
+    presets = host.sys_path("/etc/mkinitcpio.d")
+    if presets.is_dir() and any(UKI_PRESET.search(read_text(host, p) or "") for p in sorted(presets.glob("*.preset"))):
+        return ("builds the unified kernel images again with it (mkinitcpio's presets make them here)",
+                "sudo mkinitcpio -P")
+    r = host.run("systemctl", "--version")
+    m = re.match(r"systemd (\d+)", r.stdout) if r.ok else None
+    if m and int(m.group(1)) >= 255:
+        return "installs the kernels again so their entries pick it up", "sudo kernel-install add-all"
+    return "installs each kernel again so its entry picks it up", KERNEL_INSTALL_EACH
+
 
 def kernel_option_steps(scan, args: str) -> list[Step]:
     """How to set `args` (param=value) on the kernel command line with this machine's bootloader, then restart. The
@@ -50,20 +118,16 @@ def kernel_option_steps(scan, args: str) -> list[Step]:
                 f"any {param}= there is, then adds this one.")
         cmds = [f'sudo grubby --update-kernel=ALL --remove-args="{param}" --args="{args}"']
     elif has("/etc/kernel/cmdline"):
+        how, again = _cmdline_rebuild(scan)
         text = ("The kernel options are in /etc/kernel/cmdline (systemd-boot or unified kernel images): the first "
-                f"command takes out any {param}= on its line and adds the option at the end, the second installs the "
-                "kernels again so their entries pick it up.")
-        cmds = [f"sudo sed -i -E '1s/(^| ){re.escape(param)}=[^ ]*//g; 1s/$/ {args}/' /etc/kernel/cmdline",
-                "sudo kernel-install add-all"]
+                f"command takes out any {param}= on its line and adds the option at the end, the second {how}.")
+        cmds = [f"sudo sed -i -E '1s/(^| ){re.escape(param)}=[^ ]*//g; 1s/$/ {args}/' /etc/kernel/cmdline", again]
     elif has("/etc/default/grub"):
         regen = {"debian": "sudo update-grub", "arch": "sudo grub-mkconfig -o /boot/grub/grub.cfg",
                  "suse": "sudo grub2-mkconfig -o /boot/grub2/grub.cfg",
                  "fedora": "sudo grub2-mkconfig -o /boot/grub2/grub.cfg"}.get(fam or "", "sudo update-grub")
-        text = ("GRUB reads the kernel options from GRUB_CMDLINE_LINUX and GRUB_CMDLINE_LINUX_DEFAULT in "
-                f"/etc/default/grub. The first command takes out any {param}= on those lines and adds the option at "
-                "the end of the second (the kernel uses the last one given); the next rebuilds GRUB's menu.")
-        cmds = ["sudo sed -i -E -e '/^GRUB_CMDLINE_LINUX(_DEFAULT)?=/s/(\"| )" + re.escape(param) + "=[^\" ]*/\\1/g' "
-                f"-e 's/^(GRUB_CMDLINE_LINUX_DEFAULT=\"[^\"]*)\"/\\1 {args}\"/' /etc/default/grub", regen]
+        text, cmds = _grub_steps(scan, param, args)
+        cmds.append(regen)
     else:
         text = (f"Add {args} to the kernel command line in your bootloader's configuration; the app couldn't tell "
                 "which bootloader this computer uses.")
@@ -111,13 +175,26 @@ def usb_trusted(check, scan, outcome):
              Step("Allow what is plugged in now, then start it",
                   "Plug in everything you use first: keyboard, mouse, dock, security key, phone cable. The policy "
                   "lists the devices connected at this moment; anything else is blocked once it runs, including a "
-                  "USB keyboard plugged in later.",
-                  commands=["sudo sh -c 'usbguard generate-policy > /etc/usbguard/rules.conf'",
+                  "USB keyboard plugged in later. -P lets a device that has no serial number (most keyboards and "
+                  "mice) in on any port: without it, such a device is allowed only on the port it is in now, and a "
+                  "keyboard moved to another one is blocked, at the login screen too. The cost: another device of "
+                  "the same model and description is let in as well.",
+                  commands=["sudo sh -c 'usbguard generate-policy -P > /etc/usbguard/rules.conf'",
                             "sudo chmod 600 /etc/usbguard/rules.conf",
                             "sudo systemctl enable --now usbguard.service"]),
              Step("Allow a new device", "A device plugged in later stays blocked until you allow it; -p keeps it "
                   "allowed after a restart.",
-                  commands=["sudo usbguard list-devices --blocked", "sudo usbguard allow-device -p ID     # ID from the list"])]
+                  commands=["sudo usbguard list-devices --blocked", "sudo usbguard allow-device -p ID     # ID from the list"]),
+             Step("If the keyboard is blocked at startup",
+                  "Start without USBGuard once: at the boot menu, select the entry and press e (GRUB and systemd-boot), "
+                  "add systemd.mask=usbguard.service at the end of the line that starts with linux (or the options "
+                  "line), and boot it (Ctrl+X or F10 in GRUB, Enter in systemd-boot). USBGuard doesn't start for that "
+                  "boot only, so every device works. In that boot, make the policy again with the device plugged in "
+                  "(generate-policy reads the devices itself, without USBGuard running) and restart; or turn "
+                  "USBGuard off for good.",
+                  commands=["sudo sh -c 'usbguard generate-policy -P > /etc/usbguard/rules.conf'",
+                            "sudo systemctl reboot",
+                            "sudo systemctl disable usbguard.service     # or: stop using it"])]
     if scan.context.desktop.is_gnome:
         steps.append(Step("Or, on GNOME: block new devices only while the screen is locked",
                           f"GNOME Shell asks USBGuard to let devices in while you are logged in and the screen is "
@@ -206,8 +283,8 @@ def proc_hidepid(check, scan, outcome):
                           "administrator prompt, before making it last.",
                           commands=["sudo mount -o remount,hidepid=invisible,gid=proc /proc"]),
                      Step("Make it last", "Add this line to /etc/fstab.",
-                          commands=["echo 'proc /proc proc defaults,hidepid=invisible,gid=proc 0 0' | sudo tee -a "
-                                    "/etc/fstab"]),
+                          commands=[append_line("proc /proc proc defaults,hidepid=invisible,gid=proc 0 0",
+                                                "/etc/fstab")]),
                      Step("If something breaks", "Monitoring tools, polkit prompts or a desktop component that can't "
                           "see processes are the usual suspects. Undo it now, then remove the line from /etc/fstab.",
                           commands=["sudo mount -o remount,hidepid=off /proc"]),
@@ -478,7 +555,7 @@ def boot_no_secureboot(check, scan, outcome):
                           commands=[c for c in [
                               "systemctl reboot --firmware-setup", install(scan, arch="sbctl"), "sudo sbctl status",
                               "sudo sbctl create-keys", "sudo sbctl enroll-keys --microsoft",
-                              "echo 'ENABLE_ENROLL_LIMINE_CONFIG=yes' | sudo tee -a /etc/default/limine",
+                              append_line("ENABLE_ENROLL_LIMINE_CONFIG=yes", "/etc/default/limine"),
                               "sudo limine-enroll-config", "sudo limine-update", "sudo sbctl verify",
                               "sudo sbctl-batch-sign" if batch else "sudo sbctl sign -s FILE     # each file sbctl verify lists",
                               "sudo sbctl verify"] if c],

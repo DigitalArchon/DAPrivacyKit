@@ -9,7 +9,7 @@ from ...context import read_swaps
 from ...fix import RootChange, RootClear
 from ...guide import Guide, Step
 from .._util import isfile
-from . import guide, option, unit_exists, service_off, dropin, _swap_steps, _hibernate_off
+from . import guide, option, unit_exists, service_off, dropin, _swap_steps, _hibernate_off, append_line
 
 
 @guide("enc.swap_unencrypted")
@@ -98,9 +98,16 @@ def tpm_no_pin(check, scan, outcome):
                      Step("Enrol the TPM again, with a PIN",
                           "You will be asked for the PIN twice. If the TPM was set up with Clevis, remove its "
                           "binding first (sudo clevis luks list -d DEVICE, then sudo clevis luks unbind -d DEVICE "
-                          "-s SLOT).",
-                          commands=[f"sudo systemd-cryptenroll --wipe-slot=tpm2 --tpm2-device=auto --tpm2-with-pin=yes {d}"
-                                    for d in devices],
+                          "-s SLOT). The new TPM key is bound to what systemd-cryptenroll binds by default: PCR 7 "
+                          "(the Secure Boot state), and a signed or pcrlock policy when its usual file is there "
+                          "(/etc/systemd/tpm2-pcr-public-key.pem, /var/lib/systemd/pcrlock.json). If the first "
+                          "command shows the old key bound to other PCRs (tpm2-hash-pcrs other than 7, or "
+                          "tpm2-pubkey-pcrs with a key kept elsewhere), add the same to the second: "
+                          "--tpm2-pcrs=0+7, say, or --tpm2-public-key=FILE --tpm2-public-key-pcrs=11. Otherwise "
+                          "the new key is bound to less than the old one was.",
+                          commands=[c for d in devices for c in (
+                              f"sudo cryptsetup luksDump {d} | grep -E 'tpm2-(hash-pcrs|pubkey-pcrs|pcrlock)'",
+                              f"sudo systemd-cryptenroll --wipe-slot=tpm2 --tpm2-device=auto --tpm2-with-pin=yes {d}")],
                           side_effects=["You type the PIN at every boot. Too many wrong PINs and the TPM locks you "
                                         "out for a while (use the passphrase then)."]),
                  ])
@@ -282,8 +289,7 @@ def tmp_on_disk(check, scan, outcome):
                "normally clears it at boot, so it is one session's worth)."]
     from .._util import systemctl_state
     state = systemctl_state(scan.host, "is-enabled", "tmp.mount")
-    fstab_line = ("echo 'tmpfs /tmp tmpfs defaults,noatime,nosuid,nodev,mode=1777,size=50% 0 0' | sudo tee -a "
-                  "/etc/fstab")
+    fstab_line = append_line("tmpfs /tmp tmpfs defaults,noatime,nosuid,nodev,mode=1777,size=50% 0 0", "/etc/fstab")
     if unit_exists(scan, "tmp.mount") and state == "enabled":
         step = Step("Mount /tmp in memory", "tmp.mount is enabled: /tmp is in memory from the next boot.", done=True)
     elif state == "masked":
@@ -525,6 +531,78 @@ def snapshots(check, scan, outcome):
                  "with a backup program that encrypts instead.", steps)
 
 
+BTRFS_TOP = "/mnt/btrfs-top"
+
+
+def _fstab_options(host, target: str) -> str:
+    """The options /etc/fstab gives the btrfs filesystem mounted at `target` (compress=, noatime), without its subvol=
+    and subvolid=: what a new subvolume's line takes too. "defaults" when there is no such line."""
+    from ...host import unescape_mount
+    from .._util import read_text
+    for line in (read_text(host, host.sys_path("/etc/fstab")) or "").splitlines():
+        f = line.split()
+        if len(f) >= 4 and not f[0].startswith("#") and unescape_mount(f[1]) == target and f[2] == "btrfs":
+            kept = [o for o in f[3].split(",") if o and not o.startswith(("subvol=", "subvolid="))]
+            return ",".join(kept) or "defaults"
+    return "defaults"
+
+
+def _own_subvolume_step(scan, ms, sv) -> Step:
+    """A subvolume for the home folder at the filesystem's top level (subvolid=5), beside the system's, mounted from
+    /etc/fstab. Not one made in place: that is nested inside the system's subvolume, and a rollback (Timeshift's
+    restore, snapper rollback) replaces the system's subvolume with a snapshot, which has an empty folder where a nested
+    subvolume was: the restored system came up with an empty home, the files left in the old subvolume. The usual
+    layout's @home for /home (every account's home moves with it), else a subvolume for this home alone; SELinux's
+    labels put back where it enforces them (the new subvolume's top has none)."""
+    from ..encryption import _mount_of
+    from .._util import read_text
+    host = scan.host
+    home = host.home
+    target = home.parent if home.parent.name == "home" else home
+    name = "@home" if target != home else f"@home-{home.name}"
+    t, top = shlex.quote(str(target)), shlex.quote(f"{BTRFS_TOP}/{name}")
+    device, system = sv
+    mount = _mount_of(ms, str(target))
+    rel = str(target)[len(mount.target.rstrip("/")):].lstrip("/") if mount is not None else target.name
+    old = shlex.quote(f"{BTRFS_TOP}/{system.strip('/')}/{rel}".replace("//", "/"))
+    r = host.run("lsblk", "-no", "UUID", device)
+    uuid = r.stdout.strip().splitlines()[0] if r.ok and r.stdout.strip() else ""
+    source = f"UUID={uuid}" if uuid else device if device.startswith("/dev/mapper/") else ""
+    line = f"{source} {target} btrfs subvol=/{name},{_fstab_options(host, mount.target if mount else '/')} 0 0"
+    fstab = append_line(line, "/etc/fstab") if source else \
+        f"sudoedit /etc/fstab     # add: UUID=<lsblk -no UUID {device}> {line.split(' ', 1)[1]}"
+    selinux = (read_text(host, host.sys_path("/sys/fs/selinux/enforce")) or "").strip() == "1"
+    everyone = target != home
+    return Step("Give your home folder a subvolume of its own",
+                f"Your home folder ({home}) is in the same btrfs subvolume as the system, so every snapshot of the "
+                f"system has your files in it too. A subvolume of its own, {name}, isn't in the system's snapshots. It "
+                "is made at the filesystem's top level, beside the system's own subvolume, not inside it: a subvolume "
+                "inside the system's would be left behind when the system is rolled back to a snapshot (a Timeshift "
+                "restore, snapper rollback), and the restored system would have an empty home folder. "
+                + (f"It holds all of {target}, every account's home folder: log every account out first. " if everyone
+                   else "Log out first. ")
+                + "Then do this from a text console (Ctrl+Alt+F3) logged in as root or another administrator: the "
+                "filesystem's top level is mounted, the files copied into the new subvolume (at once: btrfs shares the "
+                f"data, nothing is written twice), /etc/fstab mounts it on {target} at every boot, "
+                + ("its SELinux labels are put back, " if selinux else "")
+                + "and once you have logged in and checked your files, the old copy, hidden under the new mount, is "
+                  "deleted (after a restart, mount the top level again with the first two commands before that). "
+                  "Snapshots taken before keep their copy until they expire.",
+                commands=[f"sudo mkdir -p {BTRFS_TOP}",
+                          f"sudo mount -o subvolid=5 {shlex.quote(device)} {BTRFS_TOP}     # the filesystem's top level",
+                          f"sudo btrfs subvolume create {top}",
+                          f"sudo cp -a --reflink=always {t}/. {top}/",
+                          fstab,
+                          "sudo systemctl daemon-reload",
+                          f"sudo mount {t}",
+                          *([f"sudo restorecon -R {t}"] if selinux else []),
+                          f"sudo find {old} -mindepth 1 -maxdepth 1 -exec rm -rf {{}} +     # once you have logged in "
+                          "and checked your files: the old copy, in the system's subvolume",
+                          f"sudo umount {BTRFS_TOP}"],
+                side_effects=["Your home folder is then not in any snapshot: back it up with a backup program that "
+                              "encrypts (Pika Backup, Vorta, Déjà Dup)."])
+
+
 def _home_out_steps(check, scan, configs) -> list[Step]:
     """Taking the home folder out of the snapshots that include it (enc.snapshots_retain_deleted's home_snapshotted)."""
     from .._util import mounts
@@ -555,21 +633,7 @@ def _home_out_steps(check, scan, configs) -> list[Step]:
                                                          "Dup)."])],
                           commands=["sudo timeshift --delete-all"]))
     if in_system:
-        home = str(host.home)
-        q, old = shlex.quote(home), shlex.quote(home + ".old")
-        steps.append(Step("Give your home folder a subvolume of its own",
-                          f"Your home folder ({home}) is in the same btrfs subvolume as the system, so every snapshot "
-                          "of the system has your files in it too. A subvolume of its own isn't in the system's "
-                          "snapshots. Log out first, then do this from a text console (Ctrl+Alt+F3) logged in as root "
-                          "or another administrator: your files are copied into the new subvolume (instantly: btrfs "
-                          "shares the data, nothing is written twice), and the old folder deleted once you have checked "
-                          "everything is there. Snapshots taken before keep their copy until they expire.",
-                          commands=[f"sudo mv {q} {old}", f"sudo btrfs subvolume create {q}",
-                                    f"sudo chown --reference={old} {q}", f"sudo chmod --reference={old} {q}",
-                                    f"sudo cp -a --reflink=always {old}/. {q}/",
-                                    f"sudo rm -rf {old}     # once you have logged in and checked your files"],
-                          side_effects=["Your home folder is then not in any snapshot: back it up with a backup program "
-                                        "that encrypts (Pika Backup, Vorta, Déjà Dup)."]))
+        steps.append(_own_subvolume_step(scan, ms, sv))
     own = [n[len("Snapper ("):-1] for n in hits if n.startswith("Snapper (")]
     own = [n for n in own if not (in_system and _btrfs_place(ms, dict(configs)[n].get("SUBVOLUME", "")) == sv)]
     if own:

@@ -1228,14 +1228,31 @@ def test_home_out_of_snapper(cat, tmp_path):
                                                       "/etc/snapper/configs/root": SHORT_SNAPPER.format(sv="/")})
     step = build(cat, host, "enc.snapshots_retain_deleted").steps[0]
     assert step.commands == ["sudo snapper -c home delete-config"]
-    # in the system's subvolume: a subvolume of its own, made from a copy, the old folder deleted last
-    host = _snapshot_host(tmp_path / "in", "@", {"/etc/snapper/configs/root": SHORT_SNAPPER.format(sv="TOP")})
+    # in the system's subvolume: @home at the top level beside @ (one made in place is nested in @, and a rollback left
+    # an empty home), mounted from /etc/fstab, the old copy in @ deleted last
+    host = _snapshot_host(tmp_path / "in", "@", {"/etc/snapper/configs/root": SHORT_SNAPPER.format(sv="TOP")},
+                          commands={"lsblk -no UUID /dev/sda2": "1234-abcd\n"})
     steps = build(cat, host, "enc.snapshots_retain_deleted").steps
     assert steps[0].title == "Give your home folder a subvolume of its own"
-    home = str(host.home)
-    assert steps[0].commands[:2] == [f"sudo mv {home} {home}.old", f"sudo btrfs subvolume create {home}"]
-    assert steps[0].commands[-1].startswith(f"sudo rm -rf {home}.old")
+    homes = str(host.home.parent)
+    cmds = steps[0].commands
+    assert cmds[:4] == ["sudo mkdir -p /mnt/btrfs-top",
+                        "sudo mount -o subvolid=5 /dev/sda2 /mnt/btrfs-top     # the filesystem's top level",
+                        "sudo btrfs subvolume create /mnt/btrfs-top/@home",
+                        f"sudo cp -a --reflink=always {homes}/. /mnt/btrfs-top/@home/"]
+    assert f"echo 'UUID=1234-abcd {homes} btrfs subvol=/@home,defaults 0 0' | sudo tee -a /etc/fstab" in cmds[4]
+    assert cmds[5:7] == ["sudo systemctl daemon-reload", f"sudo mount {homes}"]
+    assert not any("restorecon" in c for c in cmds)                                      # no SELinux here
+    assert cmds[-2].startswith("sudo find /mnt/btrfs-top/@/home -mindepth 1 -maxdepth 1 -exec rm -rf {} +")
+    assert cmds[-1] == "sudo umount /mnt/btrfs-top"
+    assert not any("subvolume create " + str(host.home) in c for c in cmds)
     assert not any("delete-config" in c for st in steps for c in st.commands)
+    # SELinux enforcing (Fedora): the labels put back on the new mount
+    host = _snapshot_host(tmp_path / "se", "@", {"/etc/snapper/configs/root": SHORT_SNAPPER.format(sv="TOP"),
+                                                 "/sys/fs/selinux/enforce": "1"})
+    cmds = build(cat, host, "enc.snapshots_retain_deleted").steps[0].commands
+    assert f"sudo restorecon -R {host.home.parent}" in cmds
+    assert any(c.startswith("sudoedit /etc/fstab     # add: UUID=<lsblk -no UUID /dev/sda2>") for c in cmds)
 
 
 # ------------------------------------------------------------------ extensions
@@ -1440,15 +1457,20 @@ def test_landlock_guide_for_an_old_kernel(cat, tmp_path, os_release, release, ls
 
 
 def test_landlock_guide_turns_it_on_keeping_the_other_modules(cat, tmp_path):
-    host = make_host(tmp_path, files={"/etc/os-release": 'ID=debian\nVERSION_ID="13"\n', "/etc/default/grub": "",
+    import subprocess
+    host = make_host(tmp_path, files={"/etc/os-release": 'ID=debian\nVERSION_ID="13"\n',
+                                      "/etc/default/grub": 'GRUB_CMDLINE_LINUX_DEFAULT="quiet lsm=yama"\n',
                                       "/proc/sys/kernel/osrelease": "6.12.9-amd64\n",
                                       "/sys/kernel/security/lsm": "capability,lockdown,yama,apparmor\n",
                                       "/boot/config-6.12.9-amd64": "CONFIG_SECURITY_LANDLOCK=y\n"})
     g = _advice(cat, host, "kern.landlock")
     assert g.title == "Turn on Landlock"
     # at the end of the line, an older lsm= taken out (the kernel uses the last: one put in front changed nothing)
-    assert any('\\1 lsm=landlock,lockdown,yama,apparmor"' in c and '(\\"| )lsm=' not in c and '("| )lsm=' in c
-               for c in g.steps[0].commands)
+    sed = next(c for c in g.steps[0].commands if c.startswith("sudo sed "))
+    grub = tmp_path / "grub"
+    grub.write_text(host.sys_path("/etc/default/grub").read_text())
+    subprocess.run(sed.removeprefix("sudo ").replace("/etc/default/grub", str(grub)), shell=True, check=True)
+    assert grub.read_text() == 'GRUB_CMDLINE_LINUX_DEFAULT="quiet  lsm=landlock,lockdown,yama,apparmor"\n'
 
 
 # ------------------------------------------------------------------ online findings: a guide for every one

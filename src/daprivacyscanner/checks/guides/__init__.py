@@ -186,6 +186,18 @@ def flathub_install(app: str) -> str:
     return f"{FLATHUB_ADD} && flatpak install flathub {app}"
 
 
+def append_line(line: str, path: str) -> str:
+    """The command that adds `line` at the end of a system file (/etc/fstab, /etc/crypttab, /etc/default/limine), as
+    root. A file whose last line has no newline (an editor or an installer can leave one so) would get the new line
+    glued onto it, breaking that entry and adding none: a newline goes in first then. `$(tail -c1 FILE)` is empty when
+    the file ends with a newline (the shell drops it), is empty or missing; sudo reads it, since /etc/crypttab can be
+    root's alone."""
+    import shlex
+    q = shlex.quote(path)
+    return (f'[ -z "$(sudo tail -c1 {q} 2>/dev/null)" ] || echo | sudo tee -a {q} >/dev/null; '
+            f"echo {shlex.quote(line)} | sudo tee -a {q}")
+
+
 def chromium_step(scan: Scan, how: str, options: list, done: bool, policy: str = "Or, for every user:") -> Step:
     """A guide's step for Chromium-based browsers: `how` (the settings page), then `policy` when policy options follow.
     "None is installed." where there is none: a done step shows no instructions, and a text ending "Or, for every
@@ -425,7 +437,7 @@ def _swap_steps(check: Check, scan: Scan) -> list[Step]:
             line = f"{name} {source} /dev/urandom swap,cipher=aes-xts-plain64,size=512,sector-size=4096"
             cmds += [f"sudo swapoff {shlex.quote(s.shown)}",
                      f"sudoedit /etc/crypttab     # replace {d.name}'s line with: {line}" if d.type == "crypt" else
-                     f"echo '{line}' | sudo tee -a /etc/crypttab",
+                     append_line(line, "/etc/crypttab"),
                      f"sudoedit /etc/fstab     # replace the swap line with: /dev/mapper/{name} none swap defaults 0 0"]
         if cmds:
             effects = [SWAP_SIZE_NOTE]
