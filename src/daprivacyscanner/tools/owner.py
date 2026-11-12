@@ -1,6 +1,6 @@
 """Which copy of the app owns what it opened (the owner's decision, 2026-10-17). Every right-click entry
 ("Verify download…", "Remove metadata…") starts a copy of the app of its own, and quitting one closed
-~/TempBrowser under another, a download not saved yet with it (tested on p330). So a RAM disk the app
+~/TempBrowser under another, a download not saved yet with it (tested on the lab). So a RAM disk the app
 closes when it quits belongs to the copy that opened it: only that copy closes it then, empties its
 TempOutboxes, and an explicit Close… from any copy ends its ownership.
 

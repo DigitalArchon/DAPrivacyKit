@@ -324,7 +324,7 @@ os.execv(sys.argv[1], sys.argv[1:])
 # process outside the sandbox's own PID namespace is out of its sight, but bubblewrap's init is the sandbox's PID 1,
 # whose environment (the user, the home folder, SESSION_MANAGER with the computer's name, any token exported in the
 # session), command line (every folder it binds, in the user's home) and open files (the start log's path) every
-# program in it could read (found in the 2026-10-17 review, tested on p330 and CachyOS). So: this environment, the
+# program in it could read (found in the 2026-10-17 review, tested on Mint 22.3 and CachyOS). So: this environment, the
 # sandbox's own command as PID 1 where it is a reaper (--as-pid-1: STAY), bubblewrap's options read from a descriptor
 # where it can't be (--args, sealed()), and logs that are memory files, not paths (log_file()).
 SPAWN_ENV = {"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"}

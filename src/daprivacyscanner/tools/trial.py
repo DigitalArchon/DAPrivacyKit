@@ -783,7 +783,7 @@ sys.exit(status if status >= 0 else 128 - status)
 """ % (HELPERS,)
 # A trial (and a Box's run) ends with the copy of the app that started it. bubblewrap's --die-with-parent answers to
 # bubblewrap's parent, which under the observed network is pasta, not the app: with the app killed, pasta was adopted by
-# init and the sandbox ran on, online and unobserved (the tools review of 2026-10-17, on p330-2). The kernel's
+# init and the sandbox ran on, online and unobserved (the tools review of 2026-10-17, on the lab). The kernel's
 # parent-death signal (PR_SET_PDEATHSIG) answers to the parent thread, and the app starts trials from a pool of worker
 # threads. So the command runs under TETHER, the computer's python3, one thread: it starts the command with the
 # parent-death signal (SIGKILL) set, which only its own end can set off, and ends as soon as the app's process has (a
