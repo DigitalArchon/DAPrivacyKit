@@ -432,3 +432,62 @@ def test_a_builder_image_this_script_didnt_make_is_made_again(tmp_path):
     assert (tmp_path / "podman.calls").read_text().count("build --no-cache") == 2
     # the build context holds a copy of the CA bundle, never a mount of the host's own file
     assert ":Z" not in next(ln for ln in (tmp_path / "podman.calls").read_text().splitlines() if ln.startswith("build"))
+
+
+# ------------------------------------------------------------------ the local CI's own pieces
+
+def test_the_ratchet_fails_only_on_more_than_the_baseline(tmp_path):
+    import json
+    import sys
+    baseline = tmp_path / "b.txt"
+
+    def ruff(*found: tuple[str, str], write: bool = False) -> subprocess.CompletedProcess:
+        out = [{"filename": str(tmp_path / f), "code": c, "message": "m", "location": {"row": i + 1}}
+               for i, (f, c) in enumerate(found)]
+        return subprocess.run([sys.executable, str(ROOT / "packaging/ci/ratchet.py"), "ruff", str(baseline),
+                               *(["--write"] if write else [])], input=json.dumps(out), capture_output=True,
+                              text=True, cwd=tmp_path)
+    assert ruff(("a.py", "B023"), ("a.py", "B023"), ("b.py", "F401"), write=True).returncode == 0
+    assert "a.py B023 2" in baseline.read_text()
+    assert ruff(("a.py", "B023"), ("a.py", "B023"), ("b.py", "F401")).returncode == 0
+    r = ruff(("a.py", "B023"), ("b.py", "F401"))                      # one fewer: fine, and said
+    assert r.returncode == 0 and "fewer findings now" in r.stdout
+    r = ruff(("a.py", "B023"), ("a.py", "B023"), ("a.py", "B023"))     # one more of a known kind: fails
+    assert r.returncode == 1 and "FAILED, 3 new" in r.stdout
+    assert ruff(("c.py", "E722")).returncode == 1                      # a file the baseline doesn't know
+    mypy = "a.py:3: error: Item None has no attribute x  [union-attr]\na.py:9: error: invalid syntax\n"
+    r = subprocess.run([sys.executable, str(ROOT / "packaging/ci/ratchet.py"), "mypy", str(baseline)], input=mypy,
+                       capture_output=True, text=True, cwd=tmp_path)
+    assert r.returncode == 1 and "invalid syntax" in r.stdout          # an error without a code is never baselined
+
+
+def test_programs_started_without_a_timeout_are_found(tmp_path):
+    import sys
+    (tmp_path / "m.py").write_text(
+        "import subprocess\nfrom subprocess import check_output as co\n"
+        "def a():\n    subprocess.run(['x'])\n"
+        "def b():\n    subprocess.run(['x'], timeout=5)\n"
+        "def c(**kw):\n    subprocess.call(['x'], **kw)\n"
+        "def d(p):\n    co(['x'])\n    p.communicate()\n"
+        "def e():\n    subprocess.run(['viewer'])  # timeout: none (it runs for as long as the user looks)\n")
+    r = subprocess.run([sys.executable, str(ROOT / "packaging/ci/check_timeouts.py"), str(tmp_path)],
+                       capture_output=True, text=True)
+    assert r.returncode == 1
+    assert [ln.split(" (in ")[1].split(")")[0] for ln in r.stdout.splitlines() if "without a timeout" in ln] == \
+        ["a", "d", "d"]
+
+
+def test_the_pre_push_hook_is_installed_only_when_asked_and_never_over_anothers(tmp_path):
+    env = _git_env(tmp_path)
+    repo = _repo(tmp_path, env, b"")
+    hook = repo / ".git/hooks/pre-push"
+    hook.unlink(missing_ok=True)
+    r = _sh("install-hooks.sh", cwd=repo, env=env)
+    assert r.returncode == 0 and "packaging/check.sh" in hook.read_text() and os.access(hook, os.X_OK)
+    assert _sh("install-hooks.sh", "--quick", cwd=repo, env=env).returncode == 0
+    assert "check.sh --quick" in hook.read_text()
+    assert _sh("install-hooks.sh", "--remove", cwd=repo, env=env).returncode == 0 and not hook.exists()
+    hook.write_text("#!/bin/sh\necho mine\n")
+    r = _sh("install-hooks.sh", cwd=repo, env=env)
+    assert r.returncode == 1 and "isn't this script's" in r.stderr and hook.read_text() == "#!/bin/sh\necho mine\n"
+    assert _sh("install-hooks.sh", "--remove", cwd=repo, env=env).returncode == 1 and hook.exists()
