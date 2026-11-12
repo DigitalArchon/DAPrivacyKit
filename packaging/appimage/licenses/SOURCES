@@ -8,6 +8,7 @@ AppImage (packaging/appimage/build.sh), beside:
                  and typelibs (usr/lib/girepository-fallback) came from, with SOURCES: the
                  snapshot of the Ubuntu archive their source is in, and how to fetch it
   pycairo/       pycairo's licences, from its own sdist (the wheel built from it carries none)
+  proxy-tools/   from packaging/appimage/licenses (below): its sdist carries none
   sbom.cdx.json  what is in the AppImage, as a CycloneDX SBOM made from the locks
 
 Every other Python package carries its licence in its .dist-info, which the build checks.
@@ -107,3 +108,14 @@ The versions are the ones the runtime itself names (squashfuse 0.5.2, zstd 1.5.6
 "inflate 1.3.1"), its debug file names (musl 1.2.5, fuse-3.15.0), and Alpine 3.21 had
 (mimalloc). The sha512 checksums are Alpine's, from its aports; the sha256 ones of libfuse
 and squashfuse are the runtime's own script's.
+
+
+proxy-tools/  pywebview's proxy-tools
+-------------------------------------
+
+proxy-tools 0.1.0 (packaging/appimage/requirements.lock), built from its sdist, which carries no licence file:
+LICENSE.txt of https://github.com/jtushman/proxy_tools (branch master, unchanged since 2014),
+sha256 a428fb8a2e762af3eb0a6edbbb88e9b42ccfee80fd9b423958bcacf9b9abbfe4, taken unchanged (its last line
+included). Its package metadata says MIT, but the module says it was extracted from Werkzeug, "license: BSD, see
+LICENSE", and the LICENSE it means is this one, a BSD licence with the copyright of Armin Ronacher (2013) and
+Jonathan Tushman (2014): the terms carried here are the BSD ones.

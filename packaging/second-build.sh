@@ -11,7 +11,8 @@
 # written when the hashes differ (exit status 1). Over ssh, only the commit's own objects are copied (a git bundle of
 # that one ref, history included), cloned into ~/daprivacyscanner-second-build on HOST, built there with FRESH=1 (the
 # builder image made again from nothing, every download fetched again and checked against the pins), and the clone
-# removed after; HOST's builder image and download cache stay for the next time.
+# removed after; HOST's builder image and download cache stay for the next time. FRESH=0 reuses the builder image
+# HOST made itself last time (a retry after a failed build: it is still that machine's own, never this one's).
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 [ $# -ge 2 ] || { echo "usage: $0 REF HOST | $0 REF --record SHA256 ZSYNC_SHA256 DESCRIPTION" >&2; exit 2; }
@@ -43,7 +44,7 @@ else
     # shellcheck disable=SC2029
     ssh "$host" "set -e; cd $remote && git init -q src && cd src
                  git fetch -q ../src.bundle refs/daprivacyscanner/second-build && git checkout -q --detach $commit
-                 FRESH=1 DIST=\$HOME/daprivacyscanner-second-build/out packaging/build-appimage.sh build" \
+                 FRESH=${FRESH:-1} DIST=\$HOME/daprivacyscanner-second-build/out packaging/build-appimage.sh build" \
         > "$WORK/remote.log" 2>&1 || { tail -30 "$WORK/remote.log" >&2; echo "The build on $host failed." >&2; exit 2; }
     # shellcheck disable=SC2029
     got="$(ssh "$host" "sha256sum $remote/out/$name | cut -d' ' -f1")"
