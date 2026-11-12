@@ -206,10 +206,6 @@ def test_ufw_status_on_the_machines_with_ufw():
     assert c.default_allows is False and c.allows(22, "tcp") and c.allows(80, "tcp") is False
 
 
-@pytest.mark.xfail(strict=True, reason="network.parse_ufw_status (network.py:146) needs two spaces before ALLOW, but ufw "
-                   "prints a rule whose To column overflows ('1714:1764/udp (KDE Connect) ALLOW IN') with one: CachyOS's "
-                   "KDE Connect rules are dropped unseen (not even counted unparsed), so allows(1716) says False while "
-                   "ufw lets it in")
 def test_ufw_rules_whose_to_column_overflows_are_read():
     c = network.parse_ufw_status(text(CACHY, "misc/ufw-status-verbose.txt"))
     assert c.allows(1716, "udp") is not False and c.allows(1716, "tcp") is not False
