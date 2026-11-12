@@ -40,7 +40,7 @@ CONTEXT_KEYS: dict[str, frozenset[str] | None] = {
 CONTEXT_LABEL = {
     "fde": "disk encryption", "virtualization": "virtual machine or container", "device": "device type",
     "multi_user": "several user accounts", "session": "display session", "hibernation": "hibernation possible",
-    "tpm_unlock_no_pin": "TPM unlock without a PIN", "autologin": "automatic login",
+    "tpm_unlock_no_pin": "the disk unlocks with nothing typed", "autologin": "automatic login",
     "exposed_services": "services exposed to the network", "vpn_active": "VPN connected",
     "ipv6_global": "public IPv6 address",
     "firewall_blocks_exposed": "the firewall blocks the exposed services",

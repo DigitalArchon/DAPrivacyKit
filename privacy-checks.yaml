@@ -318,7 +318,7 @@ checks:
       fine as they are. If GRUB unlocks the disk at boot, the guide explains what to do instead.
 
   - id: enc.tpm_no_pin
-    title: TPM-only disk unlock without a PIN
+    title: The disk unlocks at boot with nothing typed
     category: encryption
     severity: 6
     modifiers:
@@ -327,16 +327,35 @@ checks:
     scope: system
     tier: guided
     why: >
-      The disk unlocks automatically at boot, so protection depends entirely on the login
-      screen. Combined with autologin, nothing protects the data.
+      The disk unlocks automatically at boot (from the TPM chip without a PIN, or with a key file
+      anyone holding the disk can read), so protection depends entirely on the login screen.
+      Combined with autologin, nothing protects the data.
     detect:
-      - 'cryptsetup luksDump <device>: systemd-tpm2 token with "tpm2-pin: false"'
-      - 'clevis luks list -d <device> (tpm2 pin)'
-      - 'grep tpm2-device /etc/crypttab'
-    fix: 'systemd-cryptenroll --wipe-slot=tpm2 --tpm2-device=auto --tpm2-with-pin=yes <device>'
+      - 'cryptsetup luksDump <device>, and --dump-json-metadata (cryptsetup 2.4+, no token plugin needed): a
+        systemd-tpm2 token with tpm2-pin false (missing where systemd''s plugin printed the token: enrolled before
+        systemd 251, which had no PINs; missing with nothing printed: no plugin, couldn''t tell); a systemd-fido2
+        token with no fido2-clientPin-required, -up-required or -uv-required; Ubuntu''s TPM-backed encryption (snapd''s
+        secboot, token ubuntu-fde) whose KeyData has neither passphrase_params nor pin_params'
+      - 'clevis luks list -d <device> (tpm2 pin, or sss with a tpm2 threshold of 1): through its LUKS2 token, or luksmeta
+        on LUKS1, which has no tokens'
+      - '/etc/crypttab: a key file on storage that isn''t encrypted; the root volume''s key file with Debian''s
+        KEYFILE_PATTERN (/etc/cryptsetup-initramfs/conf-hook) copying it into the initramfs on an unencrypted /boot;
+        try-empty-password or /dev/null as the key (couldn''t tell: an empty key is tried, then a passphrase)'
+      - 'Kernel command line: rd.luks.key=FILE or cryptkey=rootfs:FILE (a key in the initramfs) with /boot
+        unencrypted; FILE:DEVICE and DEVICE:FS:FILE keep the key on another device and don''t count'
+      - 'Without administrator access the headers can''t be read: what crypttab and the command line say, else
+        unknown (needs administrator access)'
+    fix: >
+      'systemd-cryptenroll --wipe-slot=tpm2 --tpm2-device=auto --tpm2-with-pin=yes <device>'; a key file moved onto
+      the encrypted root or its keyslot removed (luksKillSlot) and the initramfs rebuilt; a FIDO2 key enrolled again
+      with --fido2-with-client-pin=yes.
     remedy: >
-      The disk unlocks with the TPM chip alone, so anyone holding the computer can start it with the
-      disk unlocked. Guide… enrols the TPM again with a PIN asked at every boot.
+      The disk opens at boot without anything being typed (the TPM chip alone, or a key file anyone holding the disk
+      can read), so anyone holding the computer can start it with the disk unlocked. Guide… shows how to make it ask
+      for a PIN at every boot, or move the key file where only the passphrase reaches it.
+    verify: 'A keyslot whose passphrase is empty isn''t tested (it takes trying it: cryptsetup open --test-passphrase
+      with an empty key, a helper action of its own). Ubuntu 26.04 with TPM-backed encryption: the ubuntu-fde token''s
+      JSON as cryptsetup prints it.'
     related: [auth.autologin]
 
   - id: enc.backups_unencrypted

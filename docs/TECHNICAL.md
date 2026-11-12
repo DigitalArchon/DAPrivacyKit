@@ -239,6 +239,16 @@ changes nothing). The page's row and summary, the text and JSON reports and the 
 ("6–10") with what would settle it: a context key unknown only for want of administrator access says so
 (`ContextValue.needs_admin`). A risk lowers both ends. Not applicable means 0 whatever the unknowns turn out to be.
 
+`tpm_unlock_no_pin` keeps its first name but means "the disk unlocks with nothing typed": from the TPM alone (a
+systemd-tpm2 token without a PIN; a Clevis tpm2 binding, through its LUKS2 token or luksmeta on LUKS1; Ubuntu's
+TPM-backed encryption, snapd's `ubuntu-fde` token, whose KeyData has no passphrase or PIN parameters), a FIDO2 key
+that asks for no PIN or touch, or a key file anyone holding the disk can read (on storage that isn't encrypted, or in
+an initramfs on a plain /boot: `rd.luks.key=FILE`, `cryptkey=rootfs:FILE`, Debian's `KEYFILE_PATTERN` for the root
+volume). The headers are read by the helper (`cryptsetup luksDump`, and `--dump-json-metadata`, which needs no token
+plugin: without systemd's plugin the text dump prints no `tpm2-pin`, which is no answer, never "no PIN"); crypttab and
+the kernel command line are read without it, so a key file is found by an unprivileged scan too. What can't be told
+(no plugin and no JSON, `try-empty-password`) is unknown. An empty passphrase in a keyslot isn't tried.
+
 A check's modifiers may also use names the check itself sets. One is shared: `data_on_encrypted_disk`, which
 the runner sets for the findings about data kept on the disk (`Check.stored_at` says where: the user's folders
 unless the check says otherwise; `_util.on_encrypted_disk` answers from `fde`, and from each path's filesystem

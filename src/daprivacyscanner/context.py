@@ -596,16 +596,124 @@ def _gib(n: int) -> str:
 
 # ------------------------------------------------------------------ tpm_unlock_no_pin
 
+# the evidence labels of what opens a volume with nothing typed (enc.tpm_no_pin's guide reads TPM_NO_PIN's)
+TPM_NO_PIN = "Unlocks from the TPM without a PIN"
+KEY_FILE_READABLE = "Unlocks with a key file anyone holding the disk can read"
+EMPTY_PASSPHRASE = "Unlocks with an empty passphrase"
+SECURITY_KEY_ALONE = "Unlocks with a security key that asks for no PIN or touch"
+UNATTENDED = (TPM_NO_PIN, KEY_FILE_READABLE, EMPTY_PASSPHRASE, SECURITY_KEY_ALONE)
+NOT_TOLD = "Couldn't tell how it unlocks"
+
+
+@dataclass
+class CryptEntry:
+    """A line of /etc/crypttab: the mapping's name, its device, its key file ("" for none) and options."""
+    name: str
+    device: str
+    keyfile: str
+    options: list[str]
+
+
+def crypttab_entries(text: str) -> list[CryptEntry]:
+    out = []
+    for line in text.splitlines():
+        f = line.split()
+        if not f or f[0].startswith("#"):
+            continue
+        key = f[2] if len(f) > 2 and f[2] not in ("none", "-") else ""
+        out.append(CryptEntry(f[0], f[1] if len(f) > 1 else "", key, f[3].split(",") if len(f) > 3 else []))
+    return out
+
+
+def _crypt_names(d: blockdev.Device | None) -> set[str]:
+    """The dm-crypt mappings `d` sits on (a filesystem on LVM on LUKS: the LUKS mapping's name)."""
+    out = set()
+    while d is not None:
+        if d.type == "crypt":
+            out.add(d.name)
+        d = d.parent
+    return out
+
+
+def _on_plain_storage(devices: list[blockdev.Device], path: str) -> bool | None:
+    """Whether `path` is on a mounted filesystem that isn't encrypted (None: on none lsblk knows)."""
+    d = blockdev.holding(devices, path)
+    return None if d is None else not d.encrypted
+
+
+def unattended_key_files(host: Host, devices: list[blockdev.Device], crypttab: str | None,
+                         cmdline: str) -> tuple[list[Evidence], list[Evidence]]:
+    """What opens a volume with nothing typed that the system's own files say, without the LUKS headers: a key file
+    on storage that isn't encrypted (anyone holding the disk reads it), one the initramfs carries on a /boot that isn't
+    encrypted (rd.luks.key= or cryptkey= naming a file in it, or Debian's KEYFILE_PATTERN copying the root volume's),
+    an empty passphrase (try-empty-password, or /dev/null as the key file). A key file on another device
+    (rd.luks.key=FILE:DEVICE, cryptkey=DEVICE:FS:FILE, crypttab's FILE:UUID=...) is that device's to keep, a random key
+    (swap, /tmp) keeps nothing. Returns (unattended, couldn't tell)."""
+    found, unsure = [], []
+    root_crypt = _crypt_names(blockdev.holding(devices, "/"))
+    boot_plain = _on_plain_storage(devices, "/boot")
+    try:
+        conf_hook = host.read_sys("/etc/cryptsetup-initramfs/conf-hook") or ""
+    except Unreadable:
+        conf_hook = ""
+    in_initramfs = bool(re.search(r'^\s*KEYFILE_PATTERN\s*=\s*"?[^"\s]', conf_hook, re.M))
+    for e in crypttab_entries(crypttab or ""):
+        if e.keyfile in ("/dev/urandom", "/dev/random") or "swap" in e.options or "tmp" in e.options:
+            continue
+        if e.keyfile == "/dev/null" or any(o in ("try-empty-password", "try-empty-password=yes",
+                                                  "try-empty-password=true", "try-empty-password=1") for o in e.options):
+            # an empty key is tried first, then a passphrase is asked for: whether the empty one opens it takes trying
+            unsure.append(Evidence.val(NOT_TOLD, f"{e.name}: /etc/crypttab tries an empty passphrase first"))
+            continue
+        if not e.keyfile.startswith("/") or ":" in e.keyfile:
+            continue                                    # no key file, or one on a device of its own (a USB stick)
+        if e.name in root_crypt:
+            # the root volume's key can only come from the initramfs, which is kept on /boot
+            if boot_plain and in_initramfs:
+                found.append(Evidence.val(KEY_FILE_READABLE, f"{e.name}: Debian's KEYFILE_PATTERN copies its key file "
+                                          "into the initramfs, on an unencrypted /boot"))
+            elif boot_plain:
+                unsure.append(Evidence.val(NOT_TOLD, f"{e.name}: /etc/crypttab names a key file, which the "
+                                           "initramfs on the unencrypted /boot may carry"))
+            continue
+        plain = _on_plain_storage(devices, e.keyfile)
+        if plain:
+            found.append(Evidence.val(KEY_FILE_READABLE, f"{e.name}: its key file is on unencrypted storage"))
+        elif plain is None:
+            unsure.append(Evidence.val(NOT_TOLD, f"{e.name}: where its key file is couldn't be told"))
+    for m in re.finditer(r"(?:^|\s)(rd\.luks\.key|luks\.key|cryptkey)=(\S+)", cmdline):
+        param, value = m.group(1), m.group(2)
+        if param == "cryptkey":
+            # Arch's encrypt hook: rootfs:PATH is a file in the initramfs; DEVICE:FSTYPE:PATH and DEVICE:OFFSET:SIZE
+            # read it from a device
+            in_image = value.startswith("rootfs:")
+        else:
+            # systemd-cryptsetup-generator: [UUID=]FILE[:DEVICE]; FILE alone is in the initramfs
+            path = value.split("=", 1)[1] if re.match(r"^[0-9a-fA-F-]{36}=", value) else value
+            in_image = ":" not in path
+        if in_image and boot_plain:
+            found.append(Evidence.val(KEY_FILE_READABLE, f"{param}= on the kernel command line: a key in the "
+                                      "initramfs, on an unencrypted /boot"))
+        elif in_image and boot_plain is None:
+            unsure.append(Evidence.val(NOT_TOLD, f"{param}= on the kernel command line names a key in the initramfs"))
+    return found, unsure
+
+
 def detect_tpm_unlock_no_pin(host: Host, devices: list[blockdev.Device] | None, lsblk_error: str = "") -> ContextValue:
-    """Whether an encrypted volume unlocks from the TPM alone. TPM tokens (systemd-cryptenroll)
-    and Clevis bindings live in the LUKS header, which only root can read: without the
-    privileged helper this is unknown on any machine with encrypted volumes."""
+    """Whether an encrypted volume opens at boot with nothing typed: from the TPM alone (a systemd-tpm2 token with no
+    PIN, a Clevis tpm2 binding, on LUKS2 or LUKS1, Ubuntu's TPM-backed encryption without a passphrase or PIN), a
+    security key that asks for no PIN or touch, an empty passphrase, or a key file anyone holding the disk can read
+    (unattended_key_files). Tokens and bindings live in the LUKS header, which only root can read: without the helper,
+    what the system's files say is all there is, and the rest is unknown. Kept under its first name, which the
+    catalogue's modifiers use; it is shown as "the disk unlocks with nothing typed".
+    Not tested: a keyslot whose passphrase is empty, with nothing in the files saying so (it takes trying it)."""
     key = "tpm_unlock_no_pin"
     if devices is None:
         return ContextValue(key, None, note=lsblk_error or "lsblk gave no devices")
     luks = blockdev.luks_devices(devices)
-    if not luks:
-        return ContextValue(key, False, [Evidence.note("No open encrypted volumes")], "No encrypted volumes, so no TPM unlock")
+    if not luks and not any(d.type == "crypt" for d in devices):
+        return ContextValue(key, False, [Evidence.note("No open encrypted volumes")],
+                            "No encrypted volumes, so nothing unlocks by itself")
 
     ev, partial = [], False
     try:
@@ -614,59 +722,95 @@ def detect_tpm_unlock_no_pin(host: Host, devices: list[blockdev.Device] | None, 
         crypttab, partial = None, True
         ev.append(Evidence.path("Needs administrator access", "/etc/crypttab"))
     if crypttab is not None:
-        tpm = [ln.split()[0] for ln in crypttab.splitlines()
-               if ln.strip() and not ln.lstrip().startswith("#") and "tpm2-device=" in ln]
+        tpm = [e.name for e in crypttab_entries(crypttab) if any(o.startswith("tpm2-device=") for o in e.options)]
         ev.append(Evidence.count("Volumes with tpm2-device= in /etc/crypttab", len(tpm)))
+    try:
+        cmdline = host.read_sys("/proc/cmdline") or ""
+    except Unreadable:
+        cmdline = ""
+    found, unsure = unattended_key_files(host, devices, crypttab, cmdline)
+    ev += found + unsure
 
     if host.privileged is None:
+        if found:
+            return ContextValue(key, True, ev, "From /etc/crypttab and the kernel command line", partial)
         return ContextValue(key, None, ev, "Needs administrator access to read the LUKS headers, where TPM unlock "
                             "and PINs are recorded", partial, needs_admin=True, notes=[Note(
-                                "limitation", "Scan with administrator access to check TPM unlock",
-                                "Whether this disk unlocks from the TPM alone, with no PIN, is recorded in the LUKS "
-                                "header, which only an administrator can read. Until then, findings that depend on it "
-                                "(such as automatic login) show their lower severity.",
-                                ("enc.tpm_no_pin", "auth.autologin"))])
+                                "limitation", "Scan with administrator access to check how the disk unlocks",
+                                "Whether this disk unlocks from the TPM alone, with no PIN, or with a security key that "
+                                "asks for nothing, is recorded in the LUKS header, which only an administrator can "
+                                "read. Until then, findings that depend on it (such as automatic login) are rated at "
+                                "the highest they could be, and say so.", ("enc.tpm_no_pin", "auth.autologin"))])
 
     from .privileged import HelperError
 
-    no_pin, unknown = [], []
+    unread = []
     for dev in luks:
         try:
-            verdict = _tpm_without_pin(host, dev.path)
+            verdicts = _unlocks_unattended(host, dev.path)
         except HelperError as e:
-            unknown.append(dev.name)
+            unread.append(dev.name)
             ev.append(Evidence.val(f"Couldn't read the LUKS header of {dev.name}", str(e)[:120]))
             continue
-        if verdict:
-            no_pin.append(dev.name)
-            ev.append(Evidence.val("Unlocks from the TPM without a PIN", f"{dev.name} ({verdict})"))
-    ev.append(Evidence.count("Encrypted volumes checked", len(luks) - len(unknown)))
-    if no_pin:
-        return ContextValue(key, True, ev, "From the LUKS headers (read with administrator access)")
-    if unknown:
-        return ContextValue(key, None, ev, "Some LUKS headers couldn't be read", True)
-    return ContextValue(key, False, ev, "No volume unlocks from the TPM alone (from the LUKS headers)")
+        for label, how in verdicts:
+            item = Evidence.val(label, f"{dev.name} ({how})")
+            (found if label in UNATTENDED else unsure).append(item)
+            ev.append(item)
+    ev.append(Evidence.count("Encrypted volumes checked", len(luks) - len(unread)))
+    if found:
+        return ContextValue(key, True, ev, "From the LUKS headers (read with administrator access), /etc/crypttab and "
+                            "the kernel command line")
+    if unread or unsure:
+        return ContextValue(key, None, ev, "Some LUKS headers couldn't be read" if unread
+                            else "How some volumes unlock couldn't be told", True)
+    return ContextValue(key, False, ev, "No volume unlocks with nothing typed (from the LUKS headers, /etc/crypttab "
+                        "and the kernel command line)")
 
 
-def _tpm_without_pin(host: Host, device: str) -> str | None:
-    """How `device` unlocks from the TPM with no PIN, or None if it doesn't."""
+def _unlocks_unattended(host: Host, device: str) -> list[tuple[str, str]]:
+    """How `device` opens with nothing typed, from its header: (TPM_NO_PIN or SECURITY_KEY_ALONE, how), or (NOT_TOLD,
+    what) where the header doesn't say. Empty when nothing does."""
+    from .privileged import HelperError
     dump = host.privileged.luks_dump(device)
+    out = []
     for token in dump["tokens"]:
-        # tpm2-pin is printed since systemd 251; older tokens could not have a PIN
-        if token["type"] == "systemd-tpm2" and not token.get("tpm2_pin"):
-            return f"systemd-tpm2 token {token['id']}"
-    if any(t["type"] == "clevis" for t in dump["tokens"]):
-        from .privileged import HelperError
-
+        t, auth = token["type"], token.get("auth") or {}
+        if t == "systemd-tpm2":
+            pin = token.get("tpm2_pin")
+            if pin is None and token.get("described"):
+                pin = False                     # systemd's plugin before 251 printed no tpm2-pin: it had no PINs
+            if pin is False:
+                out.append((TPM_NO_PIN, f"systemd-tpm2 token {token['id']}"))
+            elif pin is None:
+                # cryptsetup without systemd's token plugin prints only the keyslot: no tpm2-pin line is no answer
+                out.append((NOT_TOLD, f"systemd-tpm2 token {token['id']}: whether it asks for a PIN isn't printed "
+                                      "without systemd's cryptsetup plugin"))
+        elif t == "systemd-fido2":
+            if not auth:
+                out.append((NOT_TOLD, f"systemd-fido2 token {token['id']}: whether it asks for a PIN or a touch"))
+            elif not any(auth.get(k) for k in ("fido2-clientPin-required", "fido2-up-required", "fido2-uv-required")):
+                out.append((SECURITY_KEY_ALONE, f"systemd-fido2 token {token['id']}"))
+        elif t == "ubuntu-fde":
+            # Ubuntu's TPM-backed encryption (snapd's secboot): no passphrase or PIN unless one was set up
+            mode = token.get("ubuntu_auth")
+            if mode == "none":
+                out.append((TPM_NO_PIN, f"Ubuntu's TPM-backed encryption, token {token['id']}"))
+            elif mode is None:
+                out.append((NOT_TOLD, f"Ubuntu's TPM-backed encryption, token {token['id']}: whether it asks for a "
+                                      "passphrase or PIN"))
+    # Clevis binds through a LUKS2 token, or through luksmeta on LUKS1, which has no tokens
+    if dump.get("version") == 1 or any(t["type"] == "clevis" for t in dump["tokens"]):
         try:
             bindings = host.privileged.clevis_list(device)
         except HelperError:
-            return None
-        for b in bindings:
+            bindings = None
+            if dump.get("version") != 1:          # LUKS1 without Clevis installed has no bindings to list
+                out.append((NOT_TOLD, "its Clevis binding couldn't be listed"))
+        for b in bindings or []:
             # Clevis has no TPM PIN; an sss policy with a TPM pin may still need the other pins
             if b["pin"] == "tpm2" or (b["pin"] == "sss" and '"tpm2"' in b["config"] and '"t":1' in b["config"].replace(" ", "")):
-                return f"Clevis {b['pin']} binding in keyslot {b['slot']}"
-    return None
+                out.append((TPM_NO_PIN, f"Clevis {b['pin']} binding in keyslot {b['slot']}"))
+    return out
 
 
 # ------------------------------------------------------------------ autologin

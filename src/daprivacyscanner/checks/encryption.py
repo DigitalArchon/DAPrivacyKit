@@ -425,7 +425,14 @@ class TpmNoPin(Check):
         if devices is not None and not blockdev.luks_devices(devices):
             return absent("No encrypted volumes are open.")
         if tpm.value is True:
-            return failed("A volume unlocks from the TPM without a PIN.", *tpm.evidence)
+            from ..context import EMPTY_PASSPHRASE, KEY_FILE_READABLE, SECURITY_KEY_ALONE, TPM_NO_PIN
+            how = {e.label for e in tpm.evidence}
+            said = [w for label, w in ((TPM_NO_PIN, "from the TPM without a PIN"),
+                                       (KEY_FILE_READABLE, "with a key file anyone holding the disk can read"),
+                                       (SECURITY_KEY_ALONE, "with a security key that asks for no PIN or touch"),
+                                       (EMPTY_PASSPHRASE, "with an empty passphrase")) if label in how]
+            return failed(f"A volume unlocks at boot with nothing typed: {' and '.join(said) or 'unattended'}.",
+                          *tpm.evidence, notes=tpm.notes)
         if tpm.value is False:
             return passed(tpm.note, *tpm.evidence)
         o = unknown(f"Couldn't check: {tpm.note}", *tpm.evidence, notes=tpm.notes)

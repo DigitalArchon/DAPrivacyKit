@@ -420,6 +420,7 @@ def uncertain_text(result: dict, context: dict) -> str:
     for n in names:
         label = CONTEXT_LABEL.get(n, n.replace("_", " "))
         if n in context:
+            label = "whether " + label if label.startswith("the ") else label      # a clause: the disk unlocks…
             needs = bool((context.get(n) or {}).get("needs_admin"))
             admin |= needs
             parts.append(f"{label}, which " + ("needs administrator access" if needs else "couldn't be determined"))

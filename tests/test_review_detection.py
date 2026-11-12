@@ -121,8 +121,8 @@ def test_an_unprivileged_scan_ranks_autologin_by_what_tpm_unlock_could_make_it(c
     assert d["context"]["values"]["tpm_unlock_no_pin"]["needs_admin"] is True
     text = report_mod.export(d, cat, "text", None, False, {})
     assert "[6–10] Problem: Automatic login enabled" in text
-    assert ("Severity 6–10: it depends on TPM unlock without a PIN, which needs administrator access (a scan with "
-            "administrator access, --admin, settles it). Ranked at 10, the highest it could be.") in text
+    assert ("Severity 6–10: it depends on whether the disk unlocks with nothing typed, which needs administrator access "
+            "(a scan with administrator access, --admin, settles it). Ranked at 10, the highest it could be.") in text
     exported = json.loads(report_mod.export(d, cat, "json", None, False, {}))
     assert exported["report"]["results"]["auth.autologin"]["severity_low"] == 6
     # known: no range, and nothing said
@@ -137,3 +137,114 @@ def test_a_risk_with_a_range_is_lowered_at_both_ends(cat, tmp_path):
     r = run(cat, laptop_host(tmp_path, lsblk="fedora-40-btrfs-luks.json"), autologin).results["auth.autologin"]
     lower = cat["auth.autologin"].warn_lower
     assert (r.severity_low, r.effective_severity) == (6 - lower, 10 - lower) and r.as_warning
+
+
+# ------------------------------------------------------------------ what unlocks the disk with nothing typed
+
+ROOT_LUKS = "luks-0f2c4e5a-1b2c-4d3e-8f90-123456789abc"      # the Fedora sample's root; its /boot is plain ext4
+
+
+class FakeHelper:
+    def __init__(self, dump=None, clevis=None):
+        self.dump, self.clevis = dump or {"version": 2, "tokens": []}, clevis
+        self.can_read = lambda path: False
+
+    def luks_dump(self, device):
+        return self.dump
+
+    def clevis_list(self, device):
+        from daprivacyscanner.privileged import HelperError
+        if self.clevis is None:
+            raise HelperError("clevis is not installed")
+        return self.clevis
+
+
+def _tpm(tmp_path, files=None, helper=None):
+    from conftest import lsblk
+    host = make_host(tmp_path, files=files or {})
+    host.privileged = helper
+    return ctxmod.detect_tpm_unlock_no_pin(host, lsblk("fedora-40-btrfs-luks.json"))
+
+
+@pytest.mark.parametrize("files, value, label", [
+    # the root volume's key file, which Debian's KEYFILE_PATTERN copies into the initramfs on the plain /boot
+    ({"/etc/crypttab": ROOT_LUKS + " UUID=x /etc/keys/root.key luks\n",
+      "/etc/cryptsetup-initramfs/conf-hook": 'KEYFILE_PATTERN="/etc/keys/*.key"\n'}, True, ctxmod.KEY_FILE_READABLE),
+    # without it the initramfs may or may not carry it: couldn't tell
+    ({"/etc/crypttab": ROOT_LUKS + " UUID=x /etc/keys/root.key luks\n"}, None, ctxmod.NOT_TOLD),
+    # a data volume's key file on the unencrypted /boot
+    ({"/etc/crypttab": "data UUID=y /boot/data.key luks\n"}, True, ctxmod.KEY_FILE_READABLE),
+    # on the encrypted root: only the root's passphrase reaches it
+    ({"/etc/crypttab": "data UUID=y /etc/keys/data.key luks\n"}, None, None),
+    # a key on a USB stick, and swap with a random key
+    ({"/etc/crypttab": "data UUID=y /data.key:UUID=stick luks\nswap /dev/sda3 /dev/urandom swap\n"}, None, None),
+    ({"/proc/cmdline": "root=x rd.luks.key=/root.key quiet\n"}, True, ctxmod.KEY_FILE_READABLE),
+    ({"/proc/cmdline": "root=x rd.luks.key=/root.key:UUID=1234 quiet\n"}, None, None),
+    ({"/proc/cmdline": "cryptdevice=UUID=x:root cryptkey=rootfs:/crypto_keyfile.bin\n"}, True, ctxmod.KEY_FILE_READABLE),
+    ({"/proc/cmdline": "cryptdevice=UUID=x:root cryptkey=/dev/sdb1:ext4:/key\n"}, None, None),
+    ({"/etc/crypttab": ROOT_LUKS + " UUID=x none try-empty-password\n"}, None, ctxmod.NOT_TOLD),
+])
+def test_key_files_anyone_with_the_disk_can_read_are_found_without_administrator_access(tmp_path, files, value, label):
+    v = _tpm(tmp_path, files)
+    assert v.value is value
+    if label:
+        assert label in {e.label for e in v.evidence}
+    assert v.needs_admin is (value is None)          # the headers could still say more
+
+
+@pytest.mark.parametrize("token, value", [
+    ({"id": 0, "type": "systemd-tpm2", "keyslots": [1], "tpm2_pin": False, "described": True}, True),
+    ({"id": 0, "type": "systemd-tpm2", "keyslots": [1], "tpm2_pin": True, "described": True}, False),
+    # systemd's plugin before 251 printed the token but no tpm2-pin: no PINs then
+    ({"id": 0, "type": "systemd-tpm2", "keyslots": [1], "tpm2_pin": None, "described": True}, True),
+    # no plugin: only the keyslot is printed, which says nothing about a PIN (it was read as "no PIN")
+    ({"id": 0, "type": "systemd-tpm2", "keyslots": [1], "tpm2_pin": None}, None),
+    ({"id": 0, "type": "ubuntu-fde", "keyslots": [0], "ubuntu_auth": "none"}, True),
+    ({"id": 0, "type": "ubuntu-fde", "keyslots": [0], "ubuntu_auth": "pin"}, False),
+    ({"id": 0, "type": "ubuntu-fde", "keyslots": [0]}, None),
+    ({"id": 1, "type": "ubuntu-fde-recovery", "keyslots": [1]}, False),
+    ({"id": 0, "type": "systemd-fido2", "keyslots": [2], "auth": {"fido2-clientPin-required": False,
+                                                                  "fido2-up-required": False}}, True),
+    ({"id": 0, "type": "systemd-fido2", "keyslots": [2], "auth": {"fido2-clientPin-required": True}}, False),
+    ({"id": 0, "type": "systemd-fido2", "keyslots": [2]}, None),
+])
+def test_tokens_that_unlock_with_nothing_typed(tmp_path, token, value):
+    v = _tpm(tmp_path, helper=FakeHelper({"version": 2, "tokens": [token]}))
+    assert v.value is value and not v.needs_admin
+
+
+def test_clevis_on_luks1_is_listed_through_luksmeta(tmp_path):
+    binding = [{"slot": 1, "pin": "tpm2", "config": '{"hash":"sha256"}'}]
+    assert _tpm(tmp_path, helper=FakeHelper({"version": 1, "tokens": []}, binding)).value is True
+    assert _tpm(tmp_path / "b", helper=FakeHelper({"version": 1, "tokens": []})).value is False   # no Clevis
+
+
+def test_the_helper_reads_token_details_from_the_json_metadata():
+    import json
+    from daprivacyscanner import helper
+    dump = {"version": 2, "tokens": [{"id": 0, "type": "ubuntu-fde", "keyslots": [0], "tpm2_pin": None},
+                                     {"id": 1, "type": "systemd-tpm2", "keyslots": [1], "tpm2_pin": None},
+                                     {"id": 2, "type": "systemd-fido2", "keyslots": [2], "tpm2_pin": None}]}
+    meta = {"tokens": {"0": {"type": "ubuntu-fde", "keyslots": ["0"], "ubuntu_fde_name": "default",
+                             "ubuntu_fde_data": {"platform_name": "tpm2", "pin_params": {"iterations": 4}}},
+                       "1": {"type": "systemd-tpm2", "keyslots": ["1"], "tpm2-pcrs": [7]},
+                       "2": {"type": "systemd-fido2", "keyslots": ["2"], "fido2-clientPin-required": False,
+                             "fido2-up-required": True, "fido2-credential": "c2VjcmV0"}}}
+    out = helper.parse_luks_json(json.dumps(meta), dump)
+    t = {x["id"]: x for x in out["tokens"]}
+    assert t[0]["ubuntu_auth"] == "pin"
+    assert t[1]["tpm2_pin"] is False                      # enrolled before systemd 251: no PIN
+    assert t[2]["auth"] == {"fido2-clientPin-required": False, "fido2-up-required": True}
+    assert "c2VjcmV0" not in json.dumps(out)              # key material never leaves the helper
+
+
+def test_the_check_names_what_unlocks_it_and_the_guide_covers_key_files(cat, tmp_path):
+    from conftest import detect, lsblk
+    from test_guides import build
+    files = {"/etc/crypttab": "data UUID=y /boot/data.key luks\n"}
+    v = _tpm(tmp_path, files)
+    host = make_host(tmp_path / "h", files=files)
+    o = detect(cat, "enc.tpm_no_pin", make_scan(host, devices=lsblk("fedora-40-btrfs-luks.json"), tpm_unlock_no_pin=v))
+    assert o.summary == "A volume unlocks at boot with nothing typed: with a key file anyone holding the disk can read."
+    g = build(cat, host, "enc.tpm_no_pin", devices=lsblk("fedora-40-btrfs-luks.json"), tpm_unlock_no_pin=v)
+    assert g.title == "Make the disk ask for something at boot" and "luksKillSlot" in " ".join(g.steps[0].commands)

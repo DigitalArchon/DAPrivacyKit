@@ -84,12 +84,35 @@ def swap_persistent(check, scan, outcome):
 def tpm_no_pin(check, scan, outcome):
     # the volumes found unlocking from the TPM alone, as the evidence names them ("nvme0n1p3 (systemd-tpm2 token 0)"):
     # every LUKS container got a TPM key with a PIN and a recovery key, a data disk with only a passphrase too
+    from ...context import KEY_FILE_READABLE, SECURITY_KEY_ALONE, TPM_NO_PIN
     luks = blockdev.luks_devices(scan.context.devices or [])
-    named = {str(e.value).split(" (", 1)[0] for e in outcome.evidence if e.label == "Unlocks from the TPM without a PIN"}
+    named = {str(e.value).split(" (", 1)[0] for e in outcome.evidence if e.label == TPM_NO_PIN}
     devices = [d.path for d in luks if d.name in named] or [d.path for d in luks] or ["<your LUKS partition>"]
+    labels = {e.label for e in outcome.evidence}
+    other = []
+    if KEY_FILE_READABLE in labels:
+        other.append(Step("Keep its key file where only the passphrase reaches it",
+                          "A key file on a disk or /boot that isn't encrypted opens the volume for anyone who copies "
+                          "it: " + "; ".join(str(e.value) for e in outcome.evidence if e.label == KEY_FILE_READABLE)
+                          + ". Move it onto the encrypted root (and take it out of the initramfs: remove "
+                          "KEYFILE_PATTERN from /etc/cryptsetup-initramfs/conf-hook, or the key from rd.luks.key= or "
+                          "cryptkey= on the kernel command line), or remove its keyslot so a passphrase is asked for. "
+                          "Find the keyslot the file opens, then remove it:",
+                          commands=["sudo cryptsetup open --test-passphrase --verbose --key-file KEYFILE DEVICE",
+                                    "sudo cryptsetup luksKillSlot DEVICE SLOT"]
+                          + ([_initramfs_command(scan)] if _initramfs_command(scan) else [])))
+    if SECURITY_KEY_ALONE in labels:
+        other.append(Step("Make the security key ask for its PIN",
+                          "The volume opens as soon as the key is plugged in. Enrol it again asking for its PIN "
+                          "and a touch:",
+                          commands=[f"sudo systemd-cryptenroll --wipe-slot=fido2 --fido2-device=auto "
+                                    f"--fido2-with-client-pin=yes --fido2-with-user-presence=yes {d}" for d in devices]))
+    if other and TPM_NO_PIN not in labels:
+        return Guide(check.id, "Make the disk ask for something at boot",
+                     "Anyone who has the computer boots straight to the login screen with the disk unlocked.", other)
     return Guide(check.id, "Add a PIN to TPM unlocking",
                  "With TPM-only unlocking, anyone who has the machine boots straight to the login screen with the "
-                 "disk unlocked. A PIN makes the TPM release the key only after it is typed.", [
+                 "disk unlocked. A PIN makes the TPM release the key only after it is typed.", other + [
                      Step("Make sure you can still unlock without the TPM",
                           "Re-enrolling replaces the TPM key slot. Check a passphrase slot exists (look for a "
                           "keyslot not used by a token), or add a recovery key and write it down.",

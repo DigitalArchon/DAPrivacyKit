@@ -325,6 +325,45 @@ def parse_luks_dump(text: str) -> dict:
             entry["tpm2_pin"] = value == "true"
         elif section == "Tokens" and key == "Keyslot":
             entry["keyslots"] += [int(x) for x in value.split() if x.isdigit()]
+        elif section == "Tokens":
+            # a token plugin (systemd's) printed what it knows: without one only Keyslot is, and no tpm2-pin line
+            # then says nothing about a PIN
+            entry["described"] = True
+            if key in TOKEN_FLAGS:
+                entry.setdefault("auth", {})[key] = value == "true"
+    return out
+
+
+# what a token's JSON says about how it unlocks, kept as booleans (never its key material): systemd's tpm2 and fido2
+# tokens (systemd-cryptenroll), and whether Ubuntu's TPM-backed encryption (snapd's secboot, token ubuntu-fde) asks
+# for a passphrase or PIN (its KeyData has passphrase_params or pin_params; secboot keydata.go, AuthMode)
+TOKEN_FLAGS = ("tpm2-pin", "fido2-clientPin-required", "fido2-up-required", "fido2-uv-required")
+
+
+def parse_luks_json(text: str, out: dict) -> dict:
+    """Adds to parse_luks_dump's tokens what `cryptsetup luksDump --dump-json-metadata` says about each (LUKS2 only;
+    cryptsetup 2.4+), which needs no token plugin: `auth` with TOKEN_FLAGS as booleans (tpm2-pin missing from a
+    systemd-tpm2 token: enrolled before systemd 251, which had no PINs), and for ubuntu-fde tokens `ubuntu_auth`:
+    "passphrase", "pin" or "none"."""
+    try:
+        tokens = json.loads(text).get("tokens") or {}
+    except (ValueError, AttributeError):
+        return out
+    by_id = {t["id"]: t for t in out["tokens"]}
+    for tid, tok in tokens.items() if isinstance(tokens, dict) else ():
+        if not (isinstance(tok, dict) and str(tid).isdigit() and int(tid) in by_id):
+            continue
+        entry = by_id[int(tid)]
+        flags = {k: tok[k] for k in TOKEN_FLAGS if isinstance(tok.get(k), bool)}
+        if tok.get("type") == "systemd-tpm2":
+            flags.setdefault("tpm2-pin", False)
+            entry["tpm2_pin"] = flags["tpm2-pin"]
+        entry["auth"] = {**entry.get("auth", {}), **flags}
+        entry["described"] = True
+        data = tok.get("ubuntu_fde_data")
+        if tok.get("type") == "ubuntu-fde" and isinstance(data, dict):
+            entry["ubuntu_auth"] = ("passphrase" if data.get("passphrase_params") else
+                                    "pin" if data.get("pin_params") else "none")
     return out
 
 
@@ -353,7 +392,14 @@ def keepalive(args: dict) -> dict:
 
 
 def luks_dump(args: dict) -> dict:
-    return parse_luks_dump(_run(["cryptsetup", "luksDump", _block_device(args.get("device"))]))
+    device = _block_device(args.get("device"))
+    out = parse_luks_dump(_run(["cryptsetup", "luksDump", device]))
+    if out["version"] == 2 and out["tokens"]:
+        try:
+            parse_luks_json(_run(["cryptsetup", "luksDump", "--dump-json-metadata", device]), out)
+        except Refused:                     # cryptsetup before 2.4: the text dump is all there is
+            pass
+    return out
 
 
 def clevis_list(args: dict) -> list[dict]:

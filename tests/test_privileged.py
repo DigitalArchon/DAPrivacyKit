@@ -23,7 +23,8 @@ def test_parse_luks2_dump():
     d = helper.parse_luks_dump(sample("luksdump/luks2-tpm2-no-pin.txt"))
     assert d["version"] == 2
     assert d["keyslots"] == [{"id": 0, "type": "luks2", "pbkdf": "argon2id"}, {"id": 1, "type": "luks2", "pbkdf": "pbkdf2"}]
-    assert d["tokens"] == [{"id": 0, "type": "systemd-tpm2", "keyslots": [1], "tpm2_pin": False}]
+    # "described": systemd's token plugin printed the token (without it only Keyslot is, and no tpm2-pin line)
+    assert d["tokens"] == [{"id": 0, "type": "systemd-tpm2", "keyslots": [1], "tpm2_pin": False, "described": True}]
     assert "Salt" not in json.dumps(d)                    # nothing beyond what detection needs
 
 

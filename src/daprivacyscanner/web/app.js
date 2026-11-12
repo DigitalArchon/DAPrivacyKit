@@ -137,7 +137,7 @@ const CONTEXT_LABEL = {
   multi_user: "Several user accounts",
   session: "Display session",
   hibernation: "Hibernation possible",
-  tpm_unlock_no_pin: "TPM unlock without a PIN",
+  tpm_unlock_no_pin: "The disk unlocks with nothing typed (TPM without a PIN, or a key file)",
   autologin: "Automatic login",
   exposed_services: "Services exposed to the network",
   vpn_active: "VPN connected",
@@ -354,10 +354,11 @@ const ctxNeedsAdmin = (n) => !!S.report?.context?.values?.[n]?.needs_admin;
 function uncertainText(spec, v) {
   const names = v.uncertain || [];
   if (!names.length || v.lo === undefined || v.lo === v.sev) return null;
-  // "Disk encryption" reads "disk encryption" mid-sentence; "TPM unlock without a PIN" stays as it is
+  // "Disk encryption" reads "disk encryption" mid-sentence, a clause ("The disk unlocks…") "whether the disk unlocks…"
   const lowerFirst = (s) => /^[A-Z][a-z]/.test(s) ? s[0].toLowerCase() + s.slice(1) : s;
+  const clause = (s) => s.startsWith("the ") ? "whether " + s : s;
   const parts = names.map(n => S.state.context_keys.includes(n)
-    ? `${lowerFirst(CONTEXT_LABEL[n] || n)}, which ${ctxNeedsAdmin(n) ? "needs administrator access" : "couldn't be determined"}`
+    ? `${clause(lowerFirst(CONTEXT_LABEL[n] || n))}, which ${ctxNeedsAdmin(n) ? "needs administrator access" : "couldn't be determined"}`
     : `whether ${findingLabel(n)}, which couldn't be checked`);
   const admin = names.some(ctxNeedsAdmin);
   return `Severity ${sevText(v)}${v.lo === 0 ? " (0: not applicable)" : ""}: it depends on ${parts.join("; and on ")}`

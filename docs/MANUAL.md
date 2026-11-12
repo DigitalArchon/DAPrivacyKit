@@ -174,8 +174,8 @@ The second set of buttons chooses the source: **Scan**, **Online** (the online t
   histories, caches) is one lower when the disk is encrypted: safe while the computer is off, though not from
   malware or someone using it while it is on.
 - A severity shown as a **range** ("6–10") depends on something this scan couldn't tell, such as whether the disk
-  unlocks from the TPM without a PIN, which only a scan with administrator access can read. It is ranked, counted
-  and notified about at the highest it could be, and the row says what would settle it.
+  unlocks with nothing typed (from the TPM without a PIN), which only a scan with administrator access can read.
+  It is ranked, counted and notified about at the highest it could be, and the row says what would settle it.
 
 Click a row for its details:
 
