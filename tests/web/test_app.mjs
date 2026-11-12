@@ -327,7 +327,8 @@ routes["POST /api/tools/presentation/off"] = () => { presCalls.push("off"); pres
 // Try an app: a trial prepared, started, ended and discarded
 let trialNow = null;
 const trialCalls = [];
-const trialStatus = { available: true, why: "", apparmor: false, python: true, display: "x11", wayland_context: null, wayland_risky: null,
+const trialStatus = { capped: { memory: 8e9, tasks: 1024 }, capped_why: "",
+  available: true, why: "", apparmor: false, python: true, display: "x11", wayland_context: null, wayland_risky: null,
   pasta: { available: false, why: "pasta isn't installed", install: "sudo apt install passt", lan_blocked: false },
   xephyr: { available: true, install: "" }, sound: true, gpu: true, flatpak: true,
   places: [{ id: "memory", words: "In memory", folder: "/run/user/1000/daprivacyscanner-trial", free: 3e9, noexec: false,
@@ -335,6 +336,7 @@ const trialStatus = { available: true, why: "", apparmor: false, python: true, d
            { id: "disk", words: "On the disk", folder: "/home/a/.cache/daprivacyscanner-trial", free: 4e11, noexec: false }],
   room_kept: 128 * 1048576 };
 const trialResultData = { seconds: 95, failed: false, output: [], missed: 0, network: "observed", decoys_planted: 34,
+  portal: { autostart: ["org.x.App.desktop"], permissions: ["background"] },
   decoys: [{ path: "~/.ssh/id_ed25519", what: "an SSH private key", listed: 0, opened: 2, changed: 0, first: 1 },
            { path: "~/.gnupg", what: "the folder ~/.gnupg", listed: 1, opened: 0, changed: 0, first: 2 }],
   left: { files: 3, bytes: 5000, folders: 2 },
@@ -359,7 +361,8 @@ routes["POST /api/tools/trial/prepare"] = (body) => { trialCalls.push(`prepare:$
 routes["POST /api/tools/trial/start"] = (body) => { trialCalls.push("start:" + JSON.stringify(body));
   trialNow = { ...trialBase(), state: "running", started: 1790000000, command: "/app/tool/main.py",
     how: { engine: "bubblewrap", engine_name: "bubblewrap", network: body.network, display: "x11", nested: body.nested, gpu: body.gpu,
-           sound: body.sound, decoys: 34, whole: "bwrap --die-with-parent … /app/tool/main.py" },
+           sound: body.sound, decoys: 34, capped: { memory: 8e9, tasks: 1024 }, capped_why: "",
+           whole: "bwrap --die-with-parent … /app/tool/main.py" },
     live: { files: 3, written: 3, decoys: 1, overflow: 0, hosts: null,
             decoys_seen: [{ path: "~/.ssh/id_ed25519", what: "an SSH private key", listed: 0, opened: 1, changed: 0, first: 1 }] } };
   return { trial: trialNow }; };
@@ -1742,6 +1745,8 @@ check(text(".modal .trial .notebox.risk").includes("This is an X11 session") && 
         "decoys are on; the graphics card, sound and a display of its own off (the owner's decision of 2026-11-12)");
   check(text(".modal .trial").includes("where a program trying to break out would look first"),
         "the graphics card's tick says what it gives and what it costs");
+  check(text(".modal .trial").includes("8.0 GB of memory and 1024 processes"),
+        "it says what the trial may take of the computer (the review of 2026-11-12)");
   const soundNote = () => $$(".modal .trial .warnbox").find(n => n.textContent.includes("With sound"));
   check(soundNote()?.hidden === true, "what sound gives isn't listed while it is off");
   ticks[2].click();
@@ -1767,6 +1772,10 @@ $$(".modal .trial button").find(b => b.textContent === "End the trial").click();
   check(out.includes("203.0.113.80") && out.includes("github.com (named by the program)") && out.includes("203.0.113.7"),
         "the servers' addresses are listed, and a name the program gave without looking it up is marked (the review of 2026-11-04)");
   check(out.includes("~/.config/Tool/id.json") && out.includes("3 files (5 kB) are there now"), "what it wrote is named: the home is made up");
+  check(out.includes("at most 8.0 GB of memory and 1024 processes"), "the result says the limits it ran under");
+  check($$(".modal .trial .warnbox").some(n => n.textContent.includes("asked the desktop for something that outlasts the trial"))
+        && out.includes("org.x.App.desktop") && out.includes("starts at every login") && out.includes("background"),
+        "an autostart entry or permission its portals left is named (the review of 2026-11-12)");
   check(out.includes("bwrap --die-with-parent") && out.includes("discarding overwrites and removes it")
         && out.includes("What swap took of it meanwhile can stay on the disk"),
         "the command that ran it can be seen, and what discarding does is said"); }

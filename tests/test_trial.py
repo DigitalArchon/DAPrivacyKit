@@ -726,6 +726,101 @@ def test_a_package_linked_out_of_itself_is_refused_once_unpacked(host, tmp_path)
     assert not list((host.root / "run/user/1000").glob("daprivacyscanner-trial/*")), "nothing of it is left"
 
 
+# ------------------------------------------------------------------ what it may take of the computer
+
+def _systemd(host, ok=True):
+    (host.root / "run/user/1000/systemd").mkdir(parents=True, exist_ok=True)
+    (host.root / "proc").mkdir(parents=True, exist_ok=True)
+    (host.root / "proc/meminfo").write_text("MemTotal:       16384000 kB\nMemFree: 100 kB\n")
+    host.runner.handlers["systemd-run"] = lambda argv: CommandResult(argv, 0 if ok else 1, "",
+                                                                     "" if ok else "Failed to set MemoryMax")
+    trial._CAPPED.clear()
+
+
+def test_a_trial_runs_in_a_group_with_a_limit_on_memory_and_processes(host, tmp_path):
+    """Nothing held what a trial took of the computer: a program asking for memory until there is none had the
+    kernel kill something else, and one starting processes without end filled the user's own limit (the review of
+    2026-11-12). The cap is the outermost part of the command, so TETHER still ends with the app and Stop still
+    reaches the group."""
+    _systemd(host)
+    (host.root / "usr/bin/python3").write_text("")
+    spawned = []
+    spawn = lambda argv, **kw: spawned.append(argv) or SimpleNamespace(pid=1 << 22, stdout=None)     # noqa: E731
+    t = a_trial(tmp_path, argv=["/app/tool"])
+    how = trial.start(host, t, {}, spawn)
+    trial.stop(host, t)
+    cmd = spawned[-1]
+    assert cmd[:5] == ["systemd-run", "--user", "--scope", "--collect", "--quiet"]
+    assert f"--description={trial.DESCRIPTION}" in cmd and "tool" not in " ".join(cmd[:8]), "the journal gets no name"
+    assert f"-pMemoryMax={int(16384000 * 1024 * trial.MEMORY_SHARE)}" in cmd and f"-pTasksMax={trial.TASKS_MAX}" in cmd
+    after = cmd[cmd.index("--", 5) + 1:]
+    assert after[:3] == [sandbox.PYTHON, "-I", "-c"] and after[3] == trial.TETHER, "the tether is inside the group"
+    assert how["capped"] == {"memory": trial.memory_cap(host), "tasks": trial.TASKS_MAX} and not how["capped_why"]
+    assert trial.status(host)["capped"]["tasks"] == trial.TASKS_MAX
+    assert trial.cap_env(host) == {"XDG_RUNTIME_DIR": "/run/user/1000"}, "all systemd-run needs to reach the user's bus"
+    # killed for the limit, as the live test on Mint 22.3 saw (exit 137 with the cap at 200 MB): said as the limit,
+    # not only as a signal
+    assert "limit on the memory" in trial.ended_words(137, False, "SIGKILL", how["capped"])
+    assert "limit on the memory" not in trial.ended_words(137, False, "SIGKILL", None)
+
+
+def test_without_a_working_scope_the_trial_runs_uncapped_and_says_so(host, tmp_path):
+    """A user manager without the memory or pids controller refuses the properties: the trial still runs (a start
+    that failed would leave the user with no trial at all), and the panel says nothing limits it."""
+    _systemd(host, ok=False)
+    spawned = []
+    spawn = lambda argv, **kw: spawned.append(argv) or SimpleNamespace(pid=1 << 22, stdout=None)     # noqa: E731
+    t = a_trial(tmp_path, argv=["/app/tool"])
+    how = trial.start(host, t, {}, spawn)
+    trial.stop(host, t)
+    assert spawned[-1][0] != "systemd-run" and how["capped"] is None
+    assert "MemoryMax" in how["capped_why"] and "MemoryMax" in trial.status(host)["capped_why"]
+    trial._CAPPED.clear()
+
+
+def test_a_flatpak_trial_is_not_capped_by_the_app(host, tmp_path):
+    """flatpak run moves the app into a group of Flatpak's own, which a group of the app's doesn't hold."""
+    _systemd(host)
+    spawn = lambda argv, **kw: SimpleNamespace(pid=1 << 22, stdout=None)     # noqa: E731
+    f = a_trial(tmp_path / "f", kind="flatpak", argv=["org.x.App"], flatpak="org.x.App")
+    how = trial.start(host, f, {"network": "on"}, spawn)
+    trial.stop(host, f)
+    assert how["capped"] is None and "Flatpak" in how["capped_why"]
+
+
+# ------------------------------------------------------------------ what a Flatpak trial's portals leave
+
+def test_an_autostart_entry_or_permission_a_flatpak_trial_left_is_in_the_result(host, tmp_path):
+    """A Flatpak app keeps the portals (it needs the filtered bus to start at all): through them it can ask the
+    desktop to start it at every login, which the desktop writes outside the sandbox (the review of 2026-11-12,
+    suspected and confirmed from the portal's own behaviour). The result names what appeared while it ran."""
+    auto = host.home / ".config/autostart"
+    auto.mkdir(parents=True)
+    (auto / "already.desktop").write_text("[Desktop Entry]\n")
+    dbs = host.home / ".local/share/flatpak/db"
+    dbs.mkdir(parents=True)
+    (dbs / "background").write_bytes(b"old")
+    spawn = lambda argv, **kw: SimpleNamespace(pid=1 << 22, stdout=None)     # noqa: E731
+    f = a_trial(tmp_path / "f", kind="flatpak", argv=["org.x.App"], flatpak="org.x.App")
+    trial.start(host, f, {"network": "on"}, spawn)
+    (auto / "org.x.App.desktop").write_text("[Desktop Entry]\nExec=flatpak run org.x.App\n")
+    (dbs / "background").write_bytes(b"new and longer")
+    trial.stop(host, f)
+    assert f.result["portal"] == {"autostart": ["org.x.App.desktop"], "permissions": ["background"]}
+    notes = " ".join(trial.prepare_app(host, menu.App(id="org.x.App.desktop", name="App", kind="flatpak",
+                                                      argv=["flatpak", "run", "org.x.App"], flatpak="org.x.App"),
+                                       "memory").notes)
+    assert "autostart entry" in notes and "opening a web address in your usual browser" in notes
+
+
+def test_a_trial_without_flatpak_has_nothing_of_the_portals_in_its_result(host, tmp_path):
+    spawn = lambda argv, **kw: SimpleNamespace(pid=1 << 22, stdout=None)     # noqa: E731
+    t = a_trial(tmp_path, argv=["/app/tool"])
+    trial.start(host, t, {}, spawn)
+    trial.stop(host, t)
+    assert t.result["portal"] is None, "a trial in bubblewrap has no session bus, so no portals"
+
+
 # ------------------------------------------------------------------ the sandbox's own /etc
 
 def _etc_tree(host):

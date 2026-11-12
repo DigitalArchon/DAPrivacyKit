@@ -1808,6 +1808,32 @@ drive they came from (its model, serial, size and WWN, `retire.identity`): anoth
     overlay of the package's `usr` over `/usr`, then starts the sandbox proper inside that view; the package's
     `opt` is bound at `/opt`. Bubblewrap 0.9 (Mint 22.3) has no overlay option of its own; this needs none
     (`probe_overlay` tries it first). Tested with Ubuntu's `hello` and `galculator` packages.
+  - **What it may take of the computer** (`capped`, `limits`, `probe_capped`): the sandbox holds a program to the
+    trial's folder, and `RoomWatch` holds a trial in memory to the room in the runtime folder, but nothing held what
+    it took of the computer itself — a program asking for memory until there is none has the kernel kill something
+    else (the app, the session, the desktop), and one starting processes without end fills the user's own limit, so
+    nothing of theirs can start either (the review of 2026-11-12). So the whole command runs in a transient scope of
+    the app's own: `systemd-run --user --scope --collect --quiet --description=…` (a description of its own, so the
+    journal doesn't name the program, as What does this app keep? learned) with `MemoryMax` at `MEMORY_SHARE` (70%)
+    of the computer's memory, at least 1 GB, and `TasksMax=1024`. `systemd-run --scope` becomes the command's own
+    process, so `TETHER` still answers to the app, Stop still reaches the group and a Box started from the menu is
+    unchanged; its environment gains only `XDG_RUNTIME_DIR` (`cap_env`: all it needs to reach the user's bus, tested,
+    and it says only the user's number, which the sandbox has as its own; with python3 on the computer `STAY` is the
+    sandbox's PID 1, so nothing the program can see carries even that). `probe_capped` tries it once around `true`
+    (a user manager without the memory or pids controller refuses the properties) and caches the answer: where it
+    can't be done the trial runs as before and the panel says plainly that nothing limits it. A Flatpak app moves
+    itself into a scope of Flatpak's own, which this one doesn't hold: not capped, and the panel says so. A program
+    killed for the limit is said as the limit, not only as a signal (`ended_words`). Live-tested on Mint 22.3 with
+    the cap at 200 MB and 20 tasks: a program allocating 50 MB at a time was killed by the kernel at the cap (exit
+    137) with the computer untouched, and one forking 200 children was stopped at the task limit.
+  - **What a Flatpak trial's portals leave** (`portal_marks`, `portal_changes`): `--sandbox` drops what the app
+    declares, but the filtered session bus, which GTK 4 apps need to start at all, reaches the desktop's portals as
+    it does for every Flatpak app — among them OpenURI, which asks the desktop to open a web address in the user's
+    own browser (with the browser's network, though the trial may have none), and Background, which asks to start
+    the app at every login and is recorded as an autostart entry outside the sandbox. Current portals ask the user
+    first, and the trial's notes say so and say to refuse what wasn't expected; after the trial the app compares the
+    autostart folder's entries and the portals' permission store (`$XDG_DATA_HOME/flatpak/db/*`) with what they were
+    at the start, and the result names what is new or changed (`portal`, a warning on the page with what to do).
   - **Its own /etc** (`sandbox.app_etc`, for a trial, a Box and View offline…): a tmpfs with `ETC_KEPT` (the
     browser's list) and `ETC_APPS` as the computer has them, the sandbox's own `passwd`, `group`, `hostname`,
     `hosts` and `machine-id`, the computer's time zone (so an app shows the times the user expects; the browser's

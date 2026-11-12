@@ -4056,6 +4056,9 @@ function trialReady(data, t, call) {
     st.sound ? soundNote : null,
     tick("nested", "A display of its own", "it can't see or type into your other windows (needs Xephyr); no copy and paste with them",
       st.display === "x11" && !flat && !!st.xephyr?.available),
+    flat ? h("p", { class: "small muted" }, "A Flatpak app puts itself in a group of Flatpak's own, which this app "
+      + "doesn't set limits on: nothing here limits the memory or the number of processes it takes.")
+      : trialCapNote(st.capped, st.capped_why),
     st.display === "x11" ? h("div", { class: "notebox risk small" }, h("b", {}, "This is an X11 session. "),
         "Any program with a window can read what other windows show and what you type into them, and type into them. "
         + "Close anything sensitive first" + (flat || !st.xephyr?.available ? "." : ", or give it a display of its own."))
@@ -4082,7 +4085,30 @@ function trialHow(how) {
   const net = { off: "no network", observed: "its own network, observed, your local network fenced off", on: "its usual network, not observed" };
   return [how.engine_name, net[how.network], how.nested ? "a display of its own" : how.display === "wayland" ? "Wayland" : "X11",
     how.gpu ? "the graphics card" : "no graphics card", how.sound ? "sound" : null,
+    how.capped ? `at most ${fmtSize(how.capped.memory)} of memory and ${how.capped.tasks} processes` : null,
     how.decoys ? `${how.decoys} decoy files` : "no decoys"].filter(Boolean).join(" · ");
+}
+
+// the limit on what a trial may take of the computer (trial.capped), and why there is none here
+function trialCapNote(cap, why) {
+  if (cap) {
+    return h("p", { class: "small muted" }, `It runs in a group of its own with at most ${fmtSize(cap.memory)} of memory `
+      + `and ${cap.tasks} processes and threads: a program that asks for memory or starts processes without end is `
+      + "killed by the system instead of taking the computer with it.");
+  }
+  return h("div", { class: "notebox info small" }, h("b", {}, "Nothing limits what it takes of the computer here. "),
+    (why || "") + " A program that asks for memory until there is none, or starts processes without end, can make the "
+    + "rest of the session stall or be killed. Save your work before you start it.");
+}
+
+// what a Flatpak trial's portals left outside its sandbox: an autostart entry, a permission the desktop recorded
+function trialPortal(p) {
+  if (!p || !(p.autostart?.length || p.permissions?.length)) return null;
+  return h("div", { class: "warnbox" }, h("b", {}, "It asked the desktop for something that outlasts the trial. "),
+    p.autostart?.length ? h("div", {}, `New or changed in your autostart folder: ${p.autostart.join(", ")}. `
+      + "An app put there starts at every login, outside this trial. Delete the entry if you didn't mean to allow it.") : null,
+    p.permissions?.length ? h("div", {}, `The desktop recorded what it may do (${p.permissions.join(", ")}). `
+      + "You can change that in your desktop's app permissions.") : null);
 }
 
 function decoyList(decoys) {
@@ -4169,6 +4195,7 @@ function trialResult(t, call, st = {}) {
     r.copies_ended ? h("div", { class: "warnbox small" }, `It had Flatpak start ${plural(r.copies_ended, "more copy", "more copies")} `
       + "of itself, which ran outside this watch, with the app's real data in ~/.var/app. They were ended with the "
       + "trial.") : null,
+    trialPortal(r.portal),
     h("details", { class: "small" }, h("summary", {}, "The command that ran it"), commandBlock([t.how.whole])),
     h("div", { class: "orow" }, discard, keepAsBox(t), h("span", { class: "small muted" }, t.where === "memory"
       ? "Its folder is in memory: discarding overwrites and removes it."

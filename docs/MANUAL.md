@@ -505,10 +505,19 @@ with it the program could also record from the microphone, read your user and co
 sound server connect anywhere, even with no network of its own. The window lists this when you tick it. Then
 **Start the trial**, use the program, and close it or **End the trial**.
 
+A trial also runs in a group of its own with a limit on the memory and the number of processes it may take
+(about two thirds of this computer's memory, and 1024 processes), so a program that asks for memory or starts
+processes without end is killed instead of taking the computer with it. The window says what the limit is, or
+says plainly when there is none here. A Flatpak app puts itself in a group of Flatpak's own, which the app
+doesn't limit.
+
 You see:
 
 - **Decoy files**: the trial puts made-up SSH keys, browser profiles, wallets and documents in its home. A
   program that opens them has gone looking for things it has no business with.
+- **What it asked the desktop for** (a Flatpak app): every Flatpak app can ask the desktop to open a web
+  address in your usual browser or to start itself at every login, and the desktop asks you first. If an
+  autostart entry or a new permission appeared while it ran, the result names it, so you can undo it.
 - **Network**: the hosts it contacted, with how much it sent to each. What it sent is encrypted and can't be
   read.
 - **What it wrote in its home**: on your computer these files would be in your home folder.

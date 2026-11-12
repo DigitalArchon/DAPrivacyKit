@@ -188,6 +188,7 @@ class Trial:
     notes: list[str] = field(default_factory=list)
     private_at: Path | None = None       # a Box's: the sandbox's own files in the runtime folder, not in the Box
     binds: list[tuple[str, str]] = field(default_factory=list)      # a Box's: (a folder, where it is inside), writable
+    portal_before: dict | None = None    # a Flatpak trial's: the autostart folder and the portals' records at the start
     short_of_room: int | None = None     # ended for it (RoomWatch): the room that was left in the runtime folder
     # while it runs
     proc: object = None
@@ -638,9 +639,13 @@ def prepare_app(host: Host, app: menu.App, where: str) -> Trial:
         return Trial(tid, folder, where, "flatpak", app.name, "a Flatpak app", argv=[*keep, app.flatpak], flatpak=app.flatpak,
                      notes=["It runs in Flatpak's own sandbox with the permissions it declares for itself dropped, and "
                             "only what this trial grants given back. Its real data (in ~/.var/app) isn't given to it.",
-                            "It can still ask the desktop through its portals, as every Flatpak app can: a file chooser "
-                            "that you answer (a file you pick there is a real one), notifications, opening a link. And "
-                            "it can ask Flatpak to start another copy of itself, as apps do to draw pictures: that copy "
+                            "It can still ask the desktop through its portals, as every Flatpak app can, and the "
+                            "desktop asks you before it does any of it: a file chooser you answer (a file you pick "
+                            "there is a real one), notifications, opening a web address in your usual browser (which "
+                            "has a network even when this trial has none), and starting itself at every login, which "
+                            "the desktop writes as an autostart entry. Say no to what you didn't expect: the result "
+                            "lists any autostart entry or permission that appeared while it ran.",
+                            "It can also ask Flatpak to start another copy of itself, as apps do to draw pictures: that copy "
                             "isn't watched, and it gets the app's real data in ~/.var/app, though not your files, the "
                             "desktop services the app declares or a network this trial doesn't give (the versions of "
                             "Flatpak tested refuse to start one at all). It is ended with the trial."])
@@ -850,6 +855,79 @@ while True:
         code = os.waitstatus_to_exitcode(st)
         os._exit(code if code >= 0 else 128 - code)
 """
+
+
+# A trial's and a Box's run in a group of its own, with a limit on the memory and the processes it may take
+# (`capped`): the sandbox holds a program to the trial's folder, and RoomWatch holds a trial in memory to the room
+# there, but nothing held what it took of the computer itself. A program that asks for memory until there is none
+# has the kernel kill something to get it (the app, the session, the desktop), and one that starts processes without
+# end fills the user's own limit, so nothing of the user's can start either (the review of 2026-11-12). systemd's
+# user manager has the memory and pids controllers, so a scope of the app's own can cap both: at MEMORY_SHARE of
+# the computer's memory (at least MEMORY_LEAST) and TASKS_MAX processes and threads. What is left when the program
+# is killed for the limit is the trial's own folder, as after End; the result says it was the limit.
+SYSTEMD_RUN = "systemd-run"
+DESCRIPTION = "A program tried by DA Privacy Kit"       # what the journal says of the scope: never the program's name
+MEMORY_SHARE = 0.7
+MEMORY_LEAST = 1 << 30
+TASKS_MAX = 1024
+_CAPPED: dict[str, str | None] = {}     # the computer's systemd-run -> why a scope can't cap it, or None
+
+
+def total_memory(host: Host) -> int | None:
+    try:
+        for line in (host.read_sys("/proc/meminfo") or "").splitlines():
+            if line.startswith("MemTotal:"):
+                return int(line.split()[1]) * 1024
+    except (OSError, ValueError, IndexError):
+        return None
+    return None
+
+
+def memory_cap(host: Host) -> int:
+    """The memory a trial may take: MEMORY_SHARE of the computer's, at least MEMORY_LEAST."""
+    total = total_memory(host)
+    return max(MEMORY_LEAST, int(total * MEMORY_SHARE)) if total else MEMORY_LEAST
+
+
+def limits(host: Host) -> list[str]:
+    """The scope's properties: how much memory and how many processes a trial may take."""
+    return [f"-pMemoryMax={memory_cap(host)}", f"-pTasksMax={TASKS_MAX}"]
+
+
+def probe_capped(host: Host) -> str | None:
+    """Why a trial can't be capped here, or None: systemd-run tried once with the same properties around `true`
+    (a user manager without the memory or pids controller refuses them, and a start that failed would have left
+    the user with no trial at all)."""
+    if not host.runner.which(SYSTEMD_RUN):
+        return "systemd-run isn't installed."
+    runtime = host.environ.get("XDG_RUNTIME_DIR", f"/run/user/{host.uid}")
+    if not host.sys_path(f"{runtime}/systemd").exists():
+        return "systemd's user session isn't running here."
+    found = sandbox.program(host, SYSTEMD_RUN) or SYSTEMD_RUN
+    if found not in _CAPPED:
+        r = host.run(found, "--user", "--scope", "--collect", "--quiet", f"--description={DESCRIPTION}",
+                     *limits(host), "--", "/usr/bin/true", timeout=20)
+        err = [ln for ln in (r.stderr or r.stdout).strip().splitlines() if ln.strip()]
+        _CAPPED[found] = None if r.ok else (err[-1][:200] if err else f"exit status {r.returncode}")
+    return _CAPPED[found]
+
+
+def capped(host: Host, argv: list[str]) -> list[str]:
+    """`argv` in a scope of its own with the limits (above), where that works here (probe_capped); as it is
+    otherwise, and the panel says so."""
+    if probe_capped(host):
+        return argv
+    return [sandbox.program(host, SYSTEMD_RUN) or SYSTEMD_RUN, "--user", "--scope", "--collect", "--quiet",
+            f"--description={DESCRIPTION}", *limits(host), "--", *argv]
+
+
+def cap_env(host: Host) -> dict[str, str]:
+    """What systemd-run needs in its environment to reach the user's own systemd, added to what a sandbox is
+    started with (sandbox.SPAWN_ENV): the runtime folder, where it finds the user's bus (tested: nothing else is
+    needed). It says only the user's number, which the sandbox has as its own anyway; and with python3 on the
+    computer, STAY is the sandbox's PID 1, so no process the program can see carries it at all."""
+    runtime = host.environ.get("XDG_RUNTIME_DIR")
+    return {"XDG_RUNTIME_DIR": runtime} if runtime else {}
 
 
 def tethered(host: Host, argv: list[str], hold: bool = False) -> list[str]:
@@ -1087,6 +1165,48 @@ def taken_back(host: Host, t: Trial, display: str) -> list[str]:
     return out
 
 
+# What a Flatpak trial can ask the desktop for through its portals, and what that leaves behind. `flatpak run
+# --sandbox` drops what the app declares, but the filtered session bus (--session-bus, which GTK 4 apps need to start
+# at all) always reaches the portals, as it does for every Flatpak app: among them OpenURI, which asks the desktop to
+# open a web address in the user's own browser, with the browser's network, though the trial may have none; and
+# Background, which asks to start the app at every login, which the desktop records as an autostart entry of the
+# app's own. Both ask the user in current versions of xdg-desktop-portal, and the user answers them: the trial's
+# notes say so, and after the trial the app looks for what they leave (portal_marks, `portal`): a new or changed
+# entry in the autostart folder, and the portals' own record of what the app may do
+# (the permission store, $XDG_DATA_HOME/flatpak/db/*: "background" holds the autostart and background permissions).
+PERMISSION_DBS = ("background", "notifications", "devices", "location", "screenshot", "documents")
+
+
+def _mark(path: Path) -> str | None:
+    """A file as it is now, for comparing afterwards: its size and when it last changed. None when it isn't there."""
+    try:
+        st = os.stat(path, follow_symlinks=False)
+    except OSError:
+        return None
+    return f"{st.st_size}:{st.st_mtime_ns}"
+
+
+def portal_marks(host: Host) -> dict:
+    """The autostart folder's entries and the portals' permission store as they are now."""
+    from ..paths import PathResolver
+    paths = PathResolver(host.home, host.environ)
+    auto = paths.config_home / "autostart"
+    try:
+        entries = {n: _mark(auto / n) for n in sorted(os.listdir(auto))}
+    except OSError:
+        entries = {}
+    dbs = paths.data_home / "flatpak/db"
+    return {"autostart": entries, "permissions": {n: _mark(dbs / n) for n in PERMISSION_DBS}}
+
+
+def portal_changes(before: dict, after: dict) -> dict:
+    """What the portals left: {"autostart": the entries new or changed since, "permissions": the records changed}."""
+    old, new = before.get("autostart", {}), after.get("autostart", {})
+    return {"autostart": sorted(n for n, m in new.items() if old.get(n) != m),
+            "permissions": sorted(n for n, m in after.get("permissions", {}).items()
+                                  if before.get("permissions", {}).get(n) != m)}
+
+
 def flatpak_copies(host: Host, t: Trial) -> list[int]:
     """Copies of a Flatpak trial's app started through Flatpak's portal: they outlive the trial's own command, as
     the portal's children (found in the 2026-10-17 review: one ran on after Stop). Flatpak records each instance
@@ -1309,7 +1429,9 @@ def status(host: Host) -> dict:
             # all of memory there (the page said nothing of the trial touched the disk: the 2026-10-17 review)
             p["swap"] = [s["name"] for s in browser._swaps(host)]
             p["hibernation"] = ramdisk.hibernation_possible(host)
-    return {"available": sb["available"], "why": sb["why"], "apparmor": sb["apparmor"], "python": sb["python"],
+    why_cap = probe_capped(host)
+    return {"capped": None if why_cap else {"memory": memory_cap(host), "tasks": TASKS_MAX}, "capped_why": why_cap,
+            "available": sb["available"], "why": sb["why"], "apparmor": sb["apparmor"], "python": sb["python"],
             "pasta": sb["pasta"], "display": sb["display"], "wayland_context": sb["wayland_context"],
             "wayland_risky": sb["wayland_risky"], "wlroots": sb["wlroots"], "xephyr": sb["xephyr"],
             "sound": sb["sound"], "gpu": sb["gpu"],
@@ -1388,6 +1510,8 @@ def start(host: Host, t: Trial, options: dict, spawn: Callable = subprocess.Pope
     if t.options["decoys"] and not t.decoys:
         t.decoys = bait.plant(t.home)
     ignore = FLATPAK_OWN if eng.id == "flatpak" else ()
+    if eng.id == "flatpak":                             # what its portals may leave outside the sandbox (portal_marks)
+        t.portal_before = portal_marks(host)
     t.watch = homewatch.HomeWatch(t.home, t.decoys, ignore)
     # a Box's Exchange folder is bound into the home: what the app saves there goes to that folder, which the home's
     # watch never sees (only the empty mount point under the bind), so it has a watch of its own (put_in_shared)
@@ -1427,7 +1551,16 @@ def start(host: Host, t: Trial, options: dict, spawn: Callable = subprocess.Pope
         parts = Parts(disp, etc, pasta_path, t.private / "packets" if pasta_path else None, sync, devices, t.options["sound"])
         # bubblewrap's sandbox has STAY as its first process (python3 is there: tethered needs it too), Flatpak's doesn't
         cmd = tethered(host, sandbox.fresh_keyring(host, eng.command(host, t, parts)), hold=eng.id == "bubblewrap")
+        # in a group of its own, with a limit on the memory and the processes it may take (`capped`). Outermost, and
+        # systemd-run --scope becomes the command's own process, so TETHER still answers to the app and Stop still
+        # reaches the group. A Flatpak app moves itself into a group of Flatpak's, which this one doesn't hold: not
+        # capped there, and the page says so
+        cap_why = probe_capped(host) if eng.id == "bubblewrap" else "a Flatpak app runs in a group of Flatpak's own."
         env = dict(sandbox.SPAWN_ENV)                   # none of the app's: the program could read it (bubblewrap's)
+        if eng.id == "bubblewrap":
+            cmd = capped(host, cmd)
+            if not cap_why:
+                env.update(cap_env(host))
         if eng.id == "flatpak":
             env = host_env(host.environ)
             real = host.home / ".local/share/flatpak"
@@ -1437,7 +1570,8 @@ def start(host: Host, t: Trial, options: dict, spawn: Callable = subprocess.Pope
                  "nested": t.xephyr is not None,
                  "gpu": bool(devices) or (eng.id == "flatpak" and t.options["gpu"]), "sound": t.options["sound"],
                  "decoys": sum(1 for k in t.decoys if not t.decoys[k].startswith("the folder ")),
-                 "whole": shown(cmd)}
+                 "capped": None if cap_why else {"memory": memory_cap(host), "tasks": TASKS_MAX},
+                 "capped_why": cap_why, "whole": shown(cmd)}
         t.watch.start()
         for w in t.shared:
             w.start()
@@ -1602,7 +1736,8 @@ def _finish(host: Host, t: Trial) -> None:
     # exit status of its own, or a crash, is an error
     failed = t.exit not in (0, None) and not t.stopped and (sig is None or sig in CRASHES)
     t.result = {
-        "signal": sig, "ended": ROOM_WORDS if t.short_of_room is not None else ended_words(t.exit, t.stopped, sig),
+        "signal": sig, "ended": ROOM_WORDS if t.short_of_room is not None
+        else ended_words(t.exit, t.stopped, sig, t.how.get("capped")),
         "short_of_room": t.short_of_room,
         "summary": activity.summarise(records, w, seconds, names=True),
         "decoys": t.watch.decoys() if t.watch is not None else [],
@@ -1615,6 +1750,8 @@ def _finish(host: Host, t: Trial) -> None:
         "output": t.output.lines() if t.output is not None and (failed or seconds < 5) else [],
         "missed": (t.watch.overflow if t.watch is not None else 0) + (t.watch.left_out if t.watch is not None else 0),
         "copies_ended": copies,
+        # what its portals left outside the sandbox: an autostart entry, a permission the desktop recorded
+        "portal": portal_changes(t.portal_before, portal_marks(host)) if t.portal_before is not None else None,
         "exchange": put_in_shared(t.shared) if t.binds else None,
     }
     t.watch = None
@@ -1653,12 +1790,16 @@ def ended_by_signal(code: int | None) -> str | None:
         return f"signal {n}"
 
 
-def ended_words(code: int | None, stopped: bool, sig: str | None) -> str:
-    """How the program ended, in words, after "It ran for N minutes and …"."""
+def ended_words(code: int | None, stopped: bool, sig: str | None, capped: dict | None = None) -> str:
+    """How the program ended, in words, after "It ran for N minutes and …". `capped`: the limits it ran under
+    (how["capped"]), which is what kills a program with SIGKILL while there is memory left on the computer."""
     if stopped:
         return "was ended here"
     if sig in CRASHES:
         return f"crashed ({sig})"
+    if sig == "SIGKILL" and capped:
+        return ("was killed (SIGKILL), which is what happens when a trial reaches the limit on the memory or the "
+                "number of processes it may take, or when the computer itself runs short of memory")
     if sig:
         return SIGNAL_WORDS.get(sig, f"was ended by a signal ({sig})")
     if code not in (0, None):
