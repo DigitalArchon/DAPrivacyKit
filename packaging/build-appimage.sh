@@ -104,7 +104,11 @@ if [ -z "$have" ]; then
     done
     [ -n "$ca" ] || { echo "No CA bundle on this machine: install the distribution's ca-certificates." >&2; exit 1; }
     install -m 0644 "$ca" "$WORK/context/hostca.crt"        # readable by apt's own user, whatever the umask
-    podman build --no-cache --pull=missing -t "$TAG" \
+    # The packages apt fetched are kept in the cache between attempts: snapshot.ubuntu.com answers 503 when busy,
+    # and a retry goes on from where the last one stopped. apt checks each against the snapshot's signed lists, so
+    # a kept one is as good as a fresh one; FRESH=1 empties the cache first.
+    mkdir -p "$CACHE/apt"
+    podman build --no-cache --pull=missing -t "$TAG" -v "$CACHE/apt:/var/cache/apt/archives:Z" \
         --build-arg BASE_IMAGE="$BASE_IMAGE" --build-arg APT_SNAPSHOT="$APT_SNAPSHOT" \
         -f "$WORK/context/Containerfile" "$WORK/context"
     podman image inspect --format '{{.Id}}' "$TAG" > "$RECORD"

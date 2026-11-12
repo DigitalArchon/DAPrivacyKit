@@ -431,7 +431,8 @@ def test_a_builder_image_this_script_didnt_make_is_made_again(tmp_path):
     assert r.returncode == 0 and "isn't the one this script made" in r.stderr
     assert (tmp_path / "podman.calls").read_text().count("build --no-cache") == 2
     # the build context holds a copy of the CA bundle, never a mount of the host's own file
-    assert ":Z" not in next(ln for ln in (tmp_path / "podman.calls").read_text().splitlines() if ln.startswith("build"))
+    build = next(ln for ln in (tmp_path / "podman.calls").read_text().splitlines() if ln.startswith("build"))
+    assert "hostca" not in build and "/etc/ssl" not in build and "/etc/pki" not in build
 
 
 # ------------------------------------------------------------------ the local CI's own pieces

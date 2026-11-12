@@ -8,6 +8,10 @@
 #
 # zsync makes the .zsync file an AppImage updater reads to fetch only what changed; readelf
 # (binutils, which gcc brings) finds the runtime's section for the update information.
+# The snapshot answers 503 when it is busy: apt retries each file, and build-appimage.sh keeps
+# what was fetched (/var/cache/apt/archives is a folder of its cache during the build), so a
+# failed attempt goes on from where it stopped. APT::Sandbox::User=root: the files it keeps
+# there are then the user's own on the host, not a subordinate ID's.
 ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
 ARG APT_SNAPSHOT
@@ -20,8 +24,8 @@ RUN rm -f /etc/apt/sources.list && printf '%s\n' \
       'Components: main universe' \
       'Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg' > /etc/apt/sources.list.d/ubuntu.sources \
  && echo 'Acquire::https::CaInfo "/hostca.crt";' > /etc/apt/apt.conf.d/99hostca \
- && apt-get update -o Acquire::Retries=3 \
- && apt-get install -y --no-install-recommends -o Acquire::Retries=3 \
+ && apt-get update -o Acquire::Retries=10 -o APT::Sandbox::User=root \
+ && apt-get install -y --no-install-recommends -o Acquire::Retries=10 -o APT::Sandbox::User=root \
       ca-certificates curl gcc libc6-dev pkg-config \
       libgirepository-2.0-dev libcairo2-dev libffi-dev gir1.2-freedesktop \
       squashfs-tools desktop-file-utils zsync \
