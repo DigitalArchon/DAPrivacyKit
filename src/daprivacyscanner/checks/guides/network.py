@@ -306,7 +306,7 @@ def _firewall_step(scan, listeners) -> Step:
 
 @guide("net.exposed_services")
 def exposed_services(check, scan, outcome):
-    listeners = net.exposed(scan.context.listeners or [], net.ephemeral_range(scan.host))
+    listeners = net.exposed(scan.context.listeners or [], net.ephemeral_range(scan.host), net.address_interfaces(scan.host))
     steps = []
     ports = lambda *ps: [s for s in listeners if s.port in ps]  # noqa: E731
     procs = lambda *ns: [s for s in listeners if s.process in ns]  # noqa: E731

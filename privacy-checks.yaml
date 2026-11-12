@@ -1324,7 +1324,8 @@ checks:
     detect:
       - 'ss -tulpnH; flag local addresses 0.0.0.0, [::], *, and any address of this computer''s but loopback and the
         host-only bridges of containers and virtual machines (docker0, br-*, virbr*, lxcbr*, podman*: `ip -o addr
-        show`): Samba, CUPS or sshd bound to the LAN address, or a public IPv6 one, are reachable too'
+        show`): Samba, CUPS or sshd bound to the LAN address, or a public IPv6 one, are reachable too; an address no
+        interface has (systemd-resolved''s extra stub on Docker''s 172.17.0.1 before docker0 exists, Omarchy) isn''t'
       - 'Allowlist expected listeners (DHCP client on 68, mDNS on 5353 handled by net.hostname_broadcast); UDP sockets
         in the ephemeral range are clients'' and left out (said in a note), except WireGuard''s 51820 and Tailscale''s
         41641 (or tailscaled, wireguard-go), which answer only their peers: listed, never counted'

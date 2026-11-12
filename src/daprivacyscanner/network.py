@@ -128,15 +128,19 @@ def silent(s: Listener) -> str | None:
 
 
 def _bound_to_others(s: Listener, addresses: dict[str, str] | None) -> bool:
-    """Whether other machines can reach a listener's address: every interface, or an address of a network interface
-    other than loopback and the host-only bridges of containers and virtual machines (a LAN address, a public IPv6
-    one, a link-local one). Without the list of addresses, any address but loopback counts."""
+    """Whether other machines can reach a listener's address: every interface, or an address of one of this
+    computer's network interfaces other than loopback and the host-only bridges of containers and virtual machines (a
+    LAN address, a public IPv6 one, a link-local one on its interface). An address no interface has is bound ahead of
+    one (systemd-resolved's extra stub on Docker's 172.17.0.1, IP_FREEBIND, seen on Omarchy): nothing reaches it.
+    Without the list of addresses, only sockets bound to every interface count."""
     if s.loopback:
         return False
     if s.wildcard:
         return True
-    iface = s.interface or (addresses or {}).get(s.ip.split("%")[0].lower())
-    return not (iface and (iface == "lo" or HOST_ONLY_IFACES.match(iface)))
+    if addresses is None:
+        return False
+    iface = s.interface or addresses.get(s.ip.lower())
+    return bool(iface) and iface != "lo" and not HOST_ONLY_IFACES.match(iface)
 
 
 def exposed(listeners: list[Listener], ephemeral: tuple[int, int] = DEFAULT_EPHEMERAL,

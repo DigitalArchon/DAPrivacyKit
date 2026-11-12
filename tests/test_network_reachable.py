@@ -52,7 +52,8 @@ ADDRESSES = ("1: lo    inet 127.0.0.1/8 scope host lo\n"
     (Listener("tcp", "0.0.0.0", 445), True),
     (Listener("tcp", "192.168.1.20", 445), True),                 # Samba bound to the LAN address
     (Listener("tcp", "[2001:db8::20]", 22), True),                # sshd on the public IPv6 address
-    (Listener("tcp", "[fe80::1%eth0]", 631), True),               # CUPS on a link-local address
+    (Listener("tcp", "[fe80::1]%eth0", 631), True),               # CUPS on a link-local address, as ss prints it
+    (Listener("udp", "172.17.0.1", 53), False),                   # resolved's extra stub, no docker0 yet (freebind)
     (Listener("tcp", "127.0.0.1", 631), False),
     (Listener("tcp", "[::1]", 631), False),
     (Listener("udp", "127.0.0.53%lo", 53), False),
@@ -64,6 +65,8 @@ ADDRESSES = ("1: lo    inet 127.0.0.1/8 scope host lo\n"
 def test_what_other_machines_can_reach(tmp_path, listener, counted):
     host = make_host(tmp_path, commands={ADDR: ADDRESSES})
     assert bool(network.exposed([listener], addresses=network.address_interfaces(host))) is counted
+    # without the computer's addresses, only a socket bound to every interface counts
+    assert bool(network.exposed([listener])) is (counted and listener.wildcard)
 
 
 def test_silent_vpn_ports_are_listed_not_counted(cat, tmp_path):
