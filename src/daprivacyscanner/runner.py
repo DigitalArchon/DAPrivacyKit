@@ -3,8 +3,9 @@ with its effective severity and fixability. A scan never modifies anything."""
 
 from __future__ import annotations
 
+import queue
+import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
@@ -25,6 +26,14 @@ from .paths import PathResolver
 Progress = Callable[[str, int, int], None]      # (check id, done, total)
 # Checks are independent and spend their time waiting on subprocesses, so several run at once.
 WORKERS = 6
+# How long one check may take before the scan reports it as couldn't check and goes on (seconds, from the check's own
+# start): a network folder under the home that no longer answers (a hard NFS mount, a FUSE filesystem whose program
+# died) holds every read of it, and the scan (with the lock that keeps fixes out while it runs) with it. A thread
+# can't be stopped: the check's thread is left to finish, or not, on its own, and what it returns then is dropped.
+DEADLINE = 180.0
+# checks that may run longer and still be fine: kern.updates asks dnf for the pending updates and then for the
+# security ones (up to 300 seconds each, from its cache), then fwupd for firmware updates
+DEADLINES = {"kern.updates": 900.0}
 # what a plan that deletes says about how it deletes (the owner's wish of 2026-11-05): what it follows and what it
 # never touches, so a folder of the user's reached through a link isn't a surprise when it is left as it is
 HOW_IT_DELETES = ("How it deletes: only what is listed, inside the folders named. A link among them is removed "
@@ -242,23 +251,10 @@ class Runner:
                 states[spec.id] = modifier_states(spec, context.vars())
             else:
                 todo.append((spec, impl))
-        done = 0
-
-        def one(item):
-            spec, impl = item
-            return spec, self.run_check(impl(spec), scan)
-
-        if self.workers > 1 and len(todo) > 1:
-            with ThreadPoolExecutor(max_workers=self.workers) as pool:
-                finished = list(pool.map(one, todo))
-        else:
-            finished = [one(t) for t in todo]
-        for spec, result in finished:                 # catalogue order, whatever order they finished in
-            results[spec.id] = result
-            states[spec.id] = modifier_states(spec, {**context.vars(), **result.findings})
-            done += 1
-            if progress:
-                progress(spec.id, done, len(todo))
+        finished = self._run_all(todo, scan, progress)
+        for spec, _ in todo:                          # catalogue order, whatever order they finished in
+            results[spec.id] = finished[spec.id]
+            states[spec.id] = modifier_states(spec, {**context.vars(), **finished[spec.id].findings})
         report = ScanReport(started, int((time.monotonic() - t0) * 1000), context, results, pending_sev, states,
                             self.host.privileged is not None, pending if only is None else [], catalogue=self.catalogue)
         return report
@@ -293,10 +289,11 @@ class Runner:
                             or changed & set(getattr(self.registry.get(s.id), "reads_context", ())))}
         scan = self._scan(context)
         results, states = {}, {}
-        for spec in self.catalogue:
-            if spec.id in wanted and spec.id in self.registry:
-                results[spec.id] = self.run_check(self.registry[spec.id](spec), scan)
-                states[spec.id] = modifier_states(spec, {**context.vars(), **results[spec.id].findings})
+        todo = [(spec, self.registry[spec.id]) for spec in self.catalogue if spec.id in wanted and spec.id in self.registry]
+        finished = self._run_all(todo, scan)
+        for spec, _ in todo:
+            results[spec.id] = finished[spec.id]
+            states[spec.id] = modifier_states(spec, {**context.vars(), **results[spec.id].findings})
         return ScanReport(time.time(), 0, context, results, {}, states, self.host.privileged is not None, [],
                           catalogue=self.catalogue, kept_context=kept)
 
@@ -333,6 +330,59 @@ class Runner:
                 on_result(spec.id, results[spec.id], states[spec.id], mine)
         return ScanReport(started, int((time.monotonic() - t0) * 1000), context, results, {}, states,
                           self.host.privileged is not None, [], extra)
+
+    def _run_all(self, todo: list[tuple[CheckSpec, type[Check]]], scan: Scan,
+                 progress: Progress | None = None) -> dict[str, CheckResult]:
+        """Every check of `todo`, `self.workers` at a time: {id: result}. `progress(id, done, total)` is called as each
+        one finishes, in the order they finish. A check still running after its deadline (DEADLINES, else DEADLINE)
+        is reported as couldn't check (too_long) and the others go on: its thread is left to end on its own, a new one
+        takes its place, and what it returns then is dropped. With one worker they run one after another in this
+        thread (tests), with no deadline."""
+        out: dict[str, CheckResult] = {}
+        if not todo:
+            return out
+        if self.workers <= 1:
+            for n, (spec, impl) in enumerate(todo, 1):
+                out[spec.id] = self.run_check(impl(spec), scan)
+                if progress:
+                    progress(spec.id, n, len(todo))
+            return out
+        specs = {spec.id: spec for spec, _ in todo}
+        pool = _Workers(min(self.workers, len(todo)))
+        for spec, impl in todo:
+            pool.put(spec.id, lambda spec=spec, impl=impl: self.run_check(impl(spec), scan))
+        try:
+            while len(out) < len(todo):
+                got = pool.next(0.2)
+                if got is not None:
+                    cid, result = got
+                    if isinstance(result, BaseException):
+                        raise result
+                    out[cid] = result
+                    if progress:
+                        progress(cid, len(out), len(todo))
+                for cid, seconds in pool.overdue(lambda c: DEADLINES.get(c, DEADLINE)):
+                    out[cid] = self.too_long(specs[cid], scan, seconds)
+                    if progress:
+                        progress(cid, len(out), len(todo))
+        finally:
+            pool.close()
+        return out
+
+    def too_long(self, spec: CheckSpec, scan: Scan, seconds: float) -> CheckResult:
+        """The result of a check that didn't finish in time: couldn't check, at the severity a problem would have
+        here. Built from the catalogue and the context alone: what the check was reading may be what doesn't answer,
+        so nothing of the machine is read again for it."""
+        sev = effective_severity(spec, scan.context.vars())
+        return CheckResult(
+            spec.id, Status.UNKNOWN, sev.value, [], False,
+            summary=f"Couldn't check: it took too long (over {_duration(seconds)}), so the scan went on without it",
+            base_severity=spec.severity, uncertain_on=sev.uncertain_on, kind=spec.kind, duration_ms=int(seconds * 1000),
+            severity_reason=_severity_reason(spec, sev),
+            notes=[Note("limitation", "The check didn't finish",
+                        "Something it reads didn't answer: often a network folder or a disk that has gone away (a "
+                        "network share, an external drive, a folder another program provides), or a program that hangs. "
+                        "Scan again once it is back, or after a restart.")])
 
     def run_check(self, check: Check, scan: Scan, given: Outcome | None = None) -> CheckResult:
         """`given`: an outcome in place of detecting (an online test's kept result, for its guide)."""
@@ -418,6 +468,84 @@ class Runner:
             return Outcome(Status.UNKNOWN, "Couldn't check: this needs administrator access",
                            [Evidence.path("Needs administrator access", where)], partial=True, needs_admin=True)
         return Outcome(Status.ERROR, f"Couldn't read {where}")
+
+
+def _duration(seconds: float) -> str:
+    return f"{seconds / 60:.0f} minutes" if seconds >= 120 else f"{seconds:g} seconds"
+
+
+class _Workers:
+    """Daemon threads that run the scan's checks: a thread that never returns (a read of a network folder that no
+    longer answers) doesn't keep the app from quitting, as ThreadPoolExecutor's would (it joins its threads at exit).
+    `overdue` gives up on a job that has run too long: a new thread takes its place, and the old one, when it ever
+    returns, drops what it got and ends."""
+
+    def __init__(self, n: int):
+        self._jobs: queue.Queue = queue.Queue()
+        self._done: queue.Queue = queue.Queue()
+        self._lock = threading.Lock()
+        self._running: dict[str, float] = {}           # job key -> when it started (monotonic)
+        self._threads = 0
+        for _ in range(n):
+            self._spawn()
+
+    def _spawn(self) -> None:
+        with self._lock:
+            self._threads += 1
+        threading.Thread(target=self._work, daemon=True, name="daprivacyscanner-check").start()
+
+    def _work(self) -> None:
+        while True:
+            job = self._jobs.get()
+            if job is None:
+                return
+            key, fn = job
+            with self._lock:
+                self._running[key] = time.monotonic()
+            try:
+                result = fn()
+            except BaseException as e:  # noqa: BLE001 - handed to the scan, which raises it
+                result = e
+            with self._lock:
+                given_up = self._running.pop(key, None) is None
+            if given_up:                                # replaced: this thread is no longer counted
+                return
+            self._done.put((key, result))
+
+    def put(self, key: str, fn: Callable[[], Any]) -> None:
+        self._jobs.put((key, fn))
+
+    def next(self, timeout: float) -> tuple[str, Any] | None:
+        try:
+            return self._done.get(timeout=timeout)
+        except queue.Empty:
+            return None
+
+    def overdue(self, limit: Callable[[str], float]) -> list[tuple[str, float]]:
+        """The jobs running longer than their limit, given up on (each with its limit): their threads are replaced."""
+        now, late = time.monotonic(), []
+        with self._lock:
+            for key, t0 in list(self._running.items()):
+                if now - t0 > limit(key):
+                    del self._running[key]
+                    self._threads -= 1
+                    late.append((key, limit(key)))
+        for _ in late:
+            self._spawn()
+        return late
+
+    def close(self) -> None:
+        """Ends the threads: jobs not started yet are dropped (the scan has stopped on an error), and each thread ends
+        after the job it is on."""
+        while True:
+            try:
+                self._jobs.get_nowait()
+            except queue.Empty:
+                break
+        with self._lock:
+            n = self._threads
+        for _ in range(n):
+            self._jobs.put(None)
 
 
 def _format_changed(scan: Scan, e: FormatChanged) -> Outcome:

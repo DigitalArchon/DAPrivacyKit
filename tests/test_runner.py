@@ -435,3 +435,111 @@ def test_text_report_says_problem_or_risk_and_puts_problems_first(cat, tmp_path)
     assert f"[7] Problem: {cat['auth.screen_lock'].title} (auth.screen_lock)" in text
     assert f"[1] Risk: {cat['tel.location'].title} (tel.location)" in text
     assert text.index("Problem: ") < text.index("Risk: ")
+
+
+# ------------------------------------------------------------------ progress and the per-check deadline
+
+def test_progress_is_reported_as_each_check_finishes(cat, tmp_path):
+    """A parallel scan says each check as it finishes, not all of them at the end; the report keeps catalogue order."""
+    import threading
+    gate = threading.Event()
+    seen = []
+
+    def slow(self, scan):
+        assert gate.wait(10), "the fast check's progress never came while this one ran"
+        return Outcome(Status.PASS)
+
+    def fast(self, scan):
+        return Outcome(Status.PASS)
+
+    a = check("enc.fde_missing", slow)
+    b = check("enc.trash", fast)
+
+    def progress(cid, done, total):
+        seen.append((cid, done, total))
+        if cid == "enc.trash":
+            gate.set()                              # reported while enc.fde_missing still runs
+
+    report = Runner(cat, laptop_host(tmp_path), {a.id: a, b.id: b}).scan(only=[a.id, b.id], progress=progress)
+    assert seen == [("enc.trash", 1, 2), ("enc.fde_missing", 2, 2)]
+    order = [s.id for s in cat if s.id in (a.id, b.id)]
+    assert list(report.results) == order
+
+
+def test_a_check_that_hangs_is_reported_as_couldnt_check_and_the_scan_finishes(cat, tmp_path, monkeypatch):
+    import threading
+    import time
+    from daprivacyscanner import runner as R
+    monkeypatch.setattr(R, "DEADLINE", 0.5)
+    stuck = threading.Event()
+    late = []
+
+    def hangs(self, scan):                          # a read of a network folder that doesn't answer
+        stuck.wait(30)
+        late.append(1)
+        return Outcome(Status.FAIL, "found late")
+
+    a = check("enc.fde_missing", hangs)
+    b = check("enc.trash", lambda self, scan: Outcome(Status.PASS))
+    t0 = time.monotonic()
+    try:
+        report = Runner(cat, laptop_host(tmp_path), {a.id: a, b.id: b}, workers=2).scan(only=[a.id, b.id])
+    finally:
+        stuck.set()
+    assert time.monotonic() - t0 < 10
+    r = report.results[a.id]
+    assert r.status is Status.UNKNOWN and "took too long" in r.summary and not r.fixable
+    assert r.effective_severity == 10               # the severity a problem would have here: listed with them
+    assert any(n.title == "The check didn't finish" for n in r.notes)
+    assert report.results[b.id].status is Status.PASS
+    # the stuck thread is a daemon (it can't hold up quitting), and what it returns later is dropped
+    assert all(t.daemon for t in threading.enumerate() if t.name == "daprivacyscanner-check")
+    time.sleep(0.3)
+    assert report.results[a.id].status is Status.UNKNOWN
+
+
+def test_a_stuck_check_is_replaced_so_the_others_still_run(cat, tmp_path, monkeypatch):
+    """With one thread stuck, a new one takes its place: the checks queued behind it still run."""
+    import threading
+    from daprivacyscanner import runner as R
+    monkeypatch.setattr(R, "DEADLINE", 0.4)
+    stuck = threading.Event()
+    hang = check("enc.fde_missing", lambda self, scan: stuck.wait(30) and Outcome(Status.PASS))
+    others = [check(cid, lambda self, scan: Outcome(Status.PASS)) for cid in ("enc.trash", "auth.screen_lock",
+                                                                             "net.mac_permanent")]
+    reg = {c.id: c for c in [hang, *others]}
+    try:
+        report = Runner(cat, laptop_host(tmp_path), reg, workers=2).scan(only=list(reg))
+    finally:
+        stuck.set()
+    assert report.results[hang.id].status is Status.UNKNOWN
+    assert all(report.results[c.id].status is Status.PASS for c in others)
+
+
+def test_kern_updates_has_a_longer_deadline_than_the_rest():
+    from daprivacyscanner import runner as R
+    assert R.DEADLINES["kern.updates"] > 600 > R.DEADLINE >= 120
+
+
+def test_a_rescan_has_the_deadline_too(cat, tmp_path, monkeypatch):
+    import threading
+    from daprivacyscanner import runner as R
+    monkeypatch.setattr(R, "DEADLINE", 0.4)
+    stuck = threading.Event()
+    hang = check("auth.screen_lock", lambda self, scan: stuck.wait(30) and Outcome(Status.PASS))
+    try:
+        rep = Runner(cat, laptop_host(tmp_path), {hang.id: hang}).rescan([hang.id])
+    finally:
+        stuck.set()
+    assert rep.results[hang.id].status is Status.UNKNOWN
+
+
+def test_an_error_outside_a_check_still_stops_the_scan(cat, tmp_path, monkeypatch):
+    from daprivacyscanner import runner as R
+    def boom(self, check, scan, given=None):
+        raise RuntimeError("runner bug")
+    monkeypatch.setattr(R.Runner, "run_check", boom)
+    a = check("enc.fde_missing", lambda self, scan: Outcome(Status.PASS))
+    b = check("enc.trash", lambda self, scan: Outcome(Status.PASS))
+    with pytest.raises(RuntimeError):
+        Runner(cat, laptop_host(tmp_path), {a.id: a, b.id: b}).scan(only=[a.id, b.id])

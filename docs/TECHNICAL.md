@@ -238,7 +238,12 @@ have (never below 1, a test checks every combination), and the runner adds a not
 
 ### Running checks
 
-`runner.py` runs the checks in a small thread pool (so checks share no mutable state). Checks reach the
+`runner.py` runs the checks in a small thread pool (so checks share no mutable state), reporting each as it
+finishes. A check gets a deadline of its own (`DEADLINE`, three minutes; longer for the few in `DEADLINES`, such as
+`kern.updates`, which waits on dnf): one still running then, usually reading a network folder or disk that no longer
+answers, is reported as couldn't check ("it took too long") and the scan finishes without it. A thread can't be
+stopped, so the pool's threads are daemon threads (a stuck one never keeps the app from quitting), a new one takes
+the stuck one's place, and what it returns later is dropped. The rescan after a fix runs the same way. Checks reach the
 system only through `host.py` (system root, home, environment, command runner), which lets the test suite
 point them at fixture trees. Per-app data is found through one resolver (`paths.py`) that honours the XDG
 variables and enumerates Flatpak (`~/.var/app/<id>/…`) and Snap (`~/snap/<name>/…`) locations. Desktop
