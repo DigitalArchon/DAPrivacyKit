@@ -51,11 +51,22 @@ def _tokenize(src: str) -> list[tuple[str, str]]:
     return out
 
 
+# how deep brackets and `not`s may nest: each level is a call of the parser and of the evaluator, and 2000 of them
+# raised RecursionError rather than the language's own error (property tests, 2026-11-12)
+MAX_DEPTH = 100
+
+
 class _Parser:
     def __init__(self, src: str):
         self.src = src
         self.toks = _tokenize(src)
         self.i = 0
+        self.depth = 0
+
+    def deeper(self) -> None:
+        self.depth += 1
+        if self.depth > MAX_DEPTH:
+            raise ExprError(f"brackets or `not`s nested more than {MAX_DEPTH} deep in {self.src[:60]!r}…")
 
     def peek(self) -> tuple[str, str] | None:
         return self.toks[self.i] if self.i < len(self.toks) else None
@@ -87,7 +98,10 @@ class _Parser:
 
     def not_(self) -> Node:
         if self.take("kw", "not"):
-            return Node("not", args=(self.not_(),))
+            self.deeper()
+            node = Node("not", args=(self.not_(),))
+            self.depth -= 1
+            return node
         return self.cmp()
 
     def cmp(self) -> Node:
@@ -110,9 +124,11 @@ class _Parser:
         if kind == "kw" and val in ("true", "false"):
             return Node("lit", val == "true")
         if kind == "op" and val == "(":
+            self.deeper()
             node = self.or_()
             if not self.take("op", ")"):
                 raise ExprError(f"missing ')' in {self.src!r}")
+            self.depth -= 1
             return node
         raise ExprError(f"unexpected {val!r} in {self.src!r}")
 
@@ -122,40 +138,42 @@ class Expr:
     source: str
     root: Node
 
+    def _nodes(self):
+        """Every node, without recursing (a chain of 2000 `and`s is as deep as it is long)."""
+        stack = [self.root]
+        while stack:
+            n = stack.pop()
+            yield n
+            stack.extend(n.args)
+
     @property
     def names(self) -> frozenset[str]:
-        found: set[str] = set()
-
-        def walk(n: Node):
-            if n.kind == "name":
-                found.add(n.value)
-            for a in n.args:
-                walk(a)
-        walk(self.root)
-        return frozenset(found)
+        return frozenset(n.value for n in self._nodes() if n.kind == "name")
 
     def comparisons(self) -> list[tuple[str, Any]]:
         """(name, literal) pairs compared with == or !=, for validating literals."""
         pairs: list[tuple[str, Any]] = []
-
-        def walk(n: Node):
+        for n in self._nodes():
             if n.kind in ("eq", "ne"):
                 a, b = n.args
                 if a.kind == "name" and b.kind == "lit":
                     pairs.append((a.value, b.value))
                 elif b.kind == "name" and a.kind == "lit":
                     pairs.append((b.value, a.value))
-            for x in n.args:
-                walk(x)
-        walk(self.root)
         return pairs
 
     def evaluate(self, values: Mapping[str, Value]) -> bool | None:
-        return _truth(_eval(self.root, values))
+        try:
+            return _truth(_eval(self.root, values))
+        except RecursionError:                      # a tree built by hand, deeper than the parser allows
+            raise ExprError(f"{self.source[:60]!r}… is nested too deep to evaluate") from None
 
 
 def parse(src: str) -> Expr:
-    return Expr(src, _Parser(src).parse())
+    try:
+        return Expr(src, _Parser(src).parse())
+    except RecursionError:
+        raise ExprError(f"{src[:60]!r}… is nested too deep") from None
 
 
 def _truth(v: Value) -> bool | None:
@@ -175,14 +193,17 @@ def _eval(n: Node, values: Mapping[str, Value]) -> Value:
         if a is None or b is None:
             return None
         return (a == b) if n.kind == "eq" else (a != b)
-    if n.kind == "and":
-        a, b = (_truth(_eval(x, values)) for x in n.args)
-        if a is False or b is False:
-            return False
-        return None if a is None or b is None else True
-    if n.kind == "or":
-        a, b = (_truth(_eval(x, values)) for x in n.args)
-        if a is True or b is True:
-            return True
-        return None if a is None or b is None else False
+    if n.kind in ("and", "or"):
+        # `a and b and c` parses as ((a and b) and c): the chain's terms are gathered down its left side in a loop,
+        # so a long one doesn't recurse once per term. Kleene's and/or are associative: the same answer either way.
+        kind, terms = n.kind, []
+        while n.kind == kind:
+            terms.append(n.args[1])
+            n = n.args[0]
+        terms.append(n)
+        got = [_truth(_eval(t, values)) for t in reversed(terms)]
+        decides = kind == "or"                      # True decides an `or`, False an `and`
+        if decides in got:
+            return decides
+        return None if None in got else not decides
     raise ExprError(f"bad node {n.kind}")
