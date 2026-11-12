@@ -1,4 +1,4 @@
-# Tools that build PyGObject, pycairo and DAToolkit's own wheel (locked in build-requirements.lock)
+# Tools that build PyGObject, pycairo and DA Privacy Kit's own wheel (locked in build-requirements.lock)
 meson-python
 meson
 ninja

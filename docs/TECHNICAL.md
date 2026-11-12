@@ -216,8 +216,8 @@ another program in between.
 
 ### The catalogue
 
-`privacy-checks.yaml` is the source of truth: 133 entries in nine categories (encryption, auth, network,
-telemetry, browser, desktop, apps, sandbox, kernel), of which 11 are online tests and 3 are features. Each entry has a stable `id`, a base `severity`
+`privacy-checks.yaml` is the source of truth: 143 entries in nine categories (encryption, auth, network,
+telemetry, browser, desktop, apps, sandbox, kernel), of which 11 are online tests and 5 are features (set-ups). Each entry has a stable `id`, a base `severity`
 (0–10), `modifiers`, a `scope` (`user`, `system` or `online`), a fix `tier` (`auto`, `guided`, `advice`,
 `feature`), a `kind` (`finding`, `hygiene`, `info`), plain-language `why` and `remedy`, and developer notes
 (`detect`, `fix`, `verify`). `catalogue.py` loads and validates it; a test enforces that every entry has an

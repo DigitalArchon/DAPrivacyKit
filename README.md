@@ -18,7 +18,7 @@ work fully offline.
 
 ## What it does
 
-- **Scans the machine, changing nothing.** 125 checks of disk encryption and swap, logins and the screen
+- **Scans the machine, changing nothing.** 127 checks of disk encryption and swap, logins and the screen
   lock, the network, browsers, telemetry, what the desktop and your apps record, sandboxing and updates.
   Nothing leaves the computer.
 - **Rates each finding for this machine.** No disk encryption matters more on a laptop than on a virtual
@@ -65,7 +65,7 @@ The Tools… button holds what you start yourself, on files, folders or drives y
   that keeps an app in a sandbox with a home folder of its own, an outgoing firewall (OpenSnitch) set up and
   explained, and "Verify download…" and "Remove metadata…" in the file manager's right-click menu.
 
-**Online tests** are separate and opt-in: DNS leaks around a VPN, encrypted DNS really in use, IPv6 going
+**11 online tests** are separate and opt-in: DNS leaks around a VPN, encrypted DNS really in use, IPv6 going
 round the VPN, ports the router forwards, HTTPS interception and more. Each names who it contacts before
 anything runs.
 
@@ -136,8 +136,15 @@ sha256sum -c DAPrivacyKit-*.AppImage.sha256     # the download isn't damaged
 packaging/verify-release.sh v<version>          # from a clone: build that tag and compare with the release
 ```
 
+From 0.1.0b9 the release's git tag is signed with the release key too, and `verify-release.sh` checks it before
+building, so the tag can't be moved to other code. Each release is built on two machines, which must agree to the
+byte, before it is signed.
+
 The app never looks for updates by itself. Once a copy is more than three months old it says so, with where
-the latest is. Building and verifying are described in [packaging/README.md](packaging/README.md).
+the latest is. An AppImage updater (AppImageUpdate, Gear Lever, AppImageLauncher) can update it when you ask it
+to: the AppImage names the latest release's `.zsync`, which is signed like the rest, and the updater fetches
+only what changed and checks the result against it. Check the new copy's signature as above, or with the copy
+you have. Building and verifying are described in [packaging/README.md](packaging/README.md).
 
 ### Removing it
 
@@ -159,7 +166,9 @@ Administrator access always goes through the installed, root-owned helper: from 
 whose prompt names python3, since it runs the copy in `src/`, checked by its SHA-256, only to install itself.
 
 The catalogue of checks is [privacy-checks.yaml](privacy-checks.yaml); the rules the design is held to open
-[docs/TECHNICAL.md](docs/TECHNICAL.md#design-rules).
+[docs/TECHNICAL.md](docs/TECHNICAL.md#design-rules). `make check` runs the project's CI on your computer (lint,
+types, the suite on Python 3.11 to 3.14 with the AppImage's own packages); [CONTRIBUTING.md](CONTRIBUTING.md)
+says how to set up, what matters most, and how releases are made and checked.
 
 ## Problems and security
 
