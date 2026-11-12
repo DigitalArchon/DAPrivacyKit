@@ -17,7 +17,7 @@ from .. import ini
 from ..host import Unreadable
 from ..model import Evidence, Note, Outcome, Status
 from . import Check, Scan, register
-from ._util import absent, children, failed, installed, mounts, passed, read_text, unknown, warned
+from ._util import absent, children, failed, installed, mounts, passed, read_text, sys_children, unknown, warned
 
 
 # The packages the running system's core is made of: the kernel (on Debian and Ubuntu a meta package
@@ -57,7 +57,7 @@ def kernel_restart(scan: Scan) -> tuple[bool | None, list[Evidence]]:
     if scan.context["virtualization"] == "container":
         return False, []
     running = (host.read_sys("/proc/sys/kernel/osrelease") or "").strip()
-    dirs = {d.name: d for base in ("/usr/lib/modules", "/lib/modules") for d in children(host.sys_path(base))
+    dirs = {d.name: d for base in ("/usr/lib/modules", "/lib/modules") for d in sys_children(host, base)
             if d.is_dir()}
     kernels = [n for n, d in dirs.items() if (d / "vmlinuz").is_file() or host.sys_path(f"/boot/vmlinuz-{n}").exists()]
     if not running or not kernels:
@@ -155,7 +155,7 @@ def _pending(scan: Scan) -> Pending | None:
         r = host.run("apt", "list", "--upgradable")
         lines = [ln for ln in r.stdout.splitlines() if "/" in ln and "[upgradable" in ln]
         security = sum(1 for ln in lines if "-security" in ln)
-        age = _age([p.stat().st_mtime for p in children(host.sys_path("/var/lib/apt/lists")) if p.is_file()])
+        age = _age([p.stat().st_mtime for p in sys_children(host, "/var/lib/apt/lists") if p.is_file()])
         ev = [age] if age else []
         # Mint's Update Manager installs them itself when its automation is on (Edit → Preferences → Automation)
         mint = systemctl_state(host, "is-enabled", "mintupdate-automation-upgrade.timer") == "enabled"
@@ -297,7 +297,7 @@ def apt_unattended(scan: Scan) -> bool:
     """APT::Periodic::Unattended-Upgrade as apt sees it: apt.conf, then apt.conf.d in name order, the
     last value winning (so the app's own 52daprivacyscanner-auto-upgrades counts as well as 20auto-upgrades)."""
     host, value = scan.host, None
-    files = ["/etc/apt/apt.conf"] + [f"/etc/apt/apt.conf.d/{p.name}" for p in children(host.sys_path("/etc/apt/apt.conf.d"))
+    files = ["/etc/apt/apt.conf"] + [f"/etc/apt/apt.conf.d/{p.name}" for p in sys_children(host, "/etc/apt/apt.conf.d")
                                      if not p.name.endswith((".dpkg-old", ".dpkg-dist", ".bak", "~"))]
     for f in files:
         try:
@@ -550,7 +550,7 @@ def sysctl_files(host) -> list[str]:
     last (Debian and Ubuntu link it in as 99-sysctl.conf)."""
     names: dict[str, str] = {}
     for d in reversed(SYSCTL_DIRS):
-        for p in children(host.sys_path(d)):
+        for p in sys_children(host, d):
             if p.name.endswith(".conf"):
                 names[p.name] = f"{d}/{p.name}"
     out = [names[n] for n in sorted(names)]
@@ -999,10 +999,10 @@ class Dma(Check):
 
     def detect(self, scan: Scan) -> Outcome:
         host = scan.host
-        domains = [d for d in children(host.sys_path("/sys/bus/thunderbolt/devices")) if d.name.startswith("domain")]
+        domains = [d for d in sys_children(host, "/sys/bus/thunderbolt/devices") if d.name.startswith("domain")]
         if not domains:
             return absent("No Thunderbolt or USB4 controller.")
-        iommu = bool(children(host.sys_path("/sys/class/iommu")))
+        iommu = bool(sys_children(host, "/sys/class/iommu"))
         ev, weak = [Evidence.val("IOMMU", "active" if iommu else "not active")], []
         for d in domains:
             sec = (read_text(host, d / "security") or "unknown").strip()
@@ -1033,7 +1033,7 @@ class UsbTrusted(Check):
     def detect(self, scan: Scan) -> Outcome:
         from ._util import systemctl_state
         host = scan.host
-        hubs = [d for d in children(host.sys_path("/sys/bus/usb/devices")) if re.match(r"^usb\d+$", d.name)]
+        hubs = [d for d in sys_children(host, "/sys/bus/usb/devices") if re.match(r"^usb\d+$", d.name)]
         if not hubs:
             return absent("No USB controllers.")
         ev = []
@@ -1092,7 +1092,7 @@ def _sys_text(scan: Scan, path: str) -> tuple[str | None, bool]:
 
 
 def _sys_files(scan: Scan, folder: str, suffixes: tuple[str, ...]) -> list[str]:
-    return sorted(f"{folder}/{f.name}" for f in children(scan.host.sys_path(folder)) if f.name.endswith(suffixes))
+    return sorted(f"{folder}/{f.name}" for f in sys_children(scan.host, folder) if f.name.endswith(suffixes))
 
 
 def apt_unsigned(scan: Scan) -> tuple[list[Unsigned], bool, bool]:
@@ -1148,7 +1148,7 @@ def apt_shared_keys(scan: Scan) -> list[str]:
     ident, like = os_release(scan)
     prefixes = tuple(x for x in {ident, *like} if x)
     out = []
-    for f in children(scan.host.sys_path("/etc/apt/trusted.gpg.d")):
+    for f in sys_children(scan.host, "/etc/apt/trusted.gpg.d"):
         if f.suffix not in (".gpg", ".asc") or (prefixes and f.name.lower().startswith(prefixes)):
             continue
         r = scan.host.run("dpkg-query", "-S", f"/etc/apt/trusted.gpg.d/{f.name}")

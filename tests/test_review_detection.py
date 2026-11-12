@@ -11,7 +11,7 @@ from daprivacyscanner import procnames
 from daprivacyscanner.checks import _util
 from daprivacyscanner import context as ctxmod
 
-from conftest import make_host
+from conftest import make_host, make_scan, skip_if_root
 
 # ------------------------------------------------------------------ process names
 
@@ -55,3 +55,47 @@ def test_no_module_reads_a_name_as_strict_text():
     strict = re.compile(r'/ "comm"\)\.read_text\(\)|/comm"\)\)? as f')      # open(...comm) with no errors=
     bad = [str(p.relative_to(src)) for p in src.rglob("*.py") if strict.search(p.read_text())]
     assert not bad, bad
+
+
+# ------------------------------------------------------------------ a folder or command that couldn't be read
+
+@skip_if_root
+def test_a_root_only_system_folder_is_unreadable_never_empty(tmp_path):
+    from daprivacyscanner.checks.encryption import snapper_configs
+    from daprivacyscanner.host import Unreadable
+    host = make_host(tmp_path, files={"/etc/snapper/configs/root": 'SUBVOLUME="/"\n'})
+    assert [p.name for p in _util.sys_children(host, "/etc/snapper/configs")] == ["root"]
+    assert _util.sys_children(host, "/etc/nothing-here") == []
+    folder = host.sys_path("/etc/snapper/configs")
+    folder.chmod(0o000)
+    try:
+        with pytest.raises(Unreadable):
+            _util.sys_children(host, "/etc/snapper/configs")
+        assert _util.children(folder) == []                     # the user's-files helper reads it as nothing
+        assert snapper_configs(make_scan(host)) == ([], ["*"])     # a config that couldn't be read, never none
+    finally:
+        folder.chmod(0o755)
+
+
+def test_a_command_that_failed_says_so():
+    from daprivacyscanner.host import CommandResult
+    assert _util.output(CommandResult(("x",), 0, "a\n")) == "a\n"
+    assert _util.output(CommandResult(("x",), 0, "")) == ""
+    assert _util.output(CommandResult(("x",), 1, "partial")) is None
+    assert _util.output(CommandResult(("x",), 127, "")) is None
+
+
+# the other detection agent's modules still list some system folders as the user would (follow-up: convert them)
+LISTS_AS_THE_USER = {"network.py", "telemetry.py", "apps.py", "browser.py"}
+
+
+def test_checks_list_system_folders_with_sys_children():
+    """children() turns "permission denied" into "empty": a system check without administrator access would pass on a
+    folder only root can list. Allowed: /proc, and lines marked as listing what the user's own programs see."""
+    import re
+    checks = Path(__file__).resolve().parents[1] / "src" / "daprivacyscanner" / "checks"
+    bad = re.compile(r"children\((?:scan\.)?host\.sys_path\((?!\"/proc\"\))")
+    found = [f"{p.name}:{n}" for p in sorted(checks.rglob("*.py")) if p.name not in LISTS_AS_THE_USER
+             for n, line in enumerate(p.read_text().splitlines(), 1)
+             if bad.search(line) and "as the user sees it" not in line]
+    assert not found, found

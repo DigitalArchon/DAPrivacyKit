@@ -18,7 +18,7 @@ from ..privileged import HelperError
 from . import Check, Scan, register
 from ._util import (absent, children, chromium_dirs, chromium_profiles, failed, isdir, isfile, mode_of,
                     mozilla_profiles, needs_root, passed, processes, read_json, read_text, sqlite_count, unknown,
-                    warned)
+                    sys_children, warned)
 
 
 @register
@@ -2014,7 +2014,7 @@ ROTATED_RECORD = re.compile(r"(?:wtmp|btmp)(?:\.\d+|-\d{8})(?:\.(?:gz|xz|zst|bz2
 
 def login_records(host) -> list[str]:
     """The login record files to look at: LOGIN_RECORDS, and the rotated copies of wtmp and btmp in /var/log."""
-    rotated = [f"/var/log/{p.name}" for p in children(host.sys_path("/var/log")) if ROTATED_RECORD.fullmatch(p.name)]
+    rotated = [f"/var/log/{p.name}" for p in sys_children(host, "/var/log") if ROTATED_RECORD.fullmatch(p.name)]
     return [*LOGIN_RECORDS, *rotated]
 
 
@@ -2022,7 +2022,7 @@ def wtmp_rotation(host) -> tuple[str, str | None] | None:
     """Where logrotate's rule for /var/log/wtmp is, and its create line ("create 0664 root utmp"; None when the rule has
     none): Debian, Ubuntu and Fedora keep it in /etc/logrotate.d/wtmp, others in /etc/logrotate.conf or another file
     there. None without a rule (no logrotate: Omarchy)."""
-    names = ["/etc/logrotate.conf"] + [f"/etc/logrotate.d/{p.name}" for p in children(host.sys_path("/etc/logrotate.d"))]
+    names = ["/etc/logrotate.conf"] + [f"/etc/logrotate.d/{p.name}" for p in sys_children(host, "/etc/logrotate.d")]
     for name in names:
         text = re.sub(r"#[^\n]*", "", read_text(host, host.sys_path(name)) or "")
         for m in re.finditer(r"^[^{}\n]*?/var/log/wtmp(?=[\s{])[^{}\n]*\{([^}]*)\}", text, re.M):

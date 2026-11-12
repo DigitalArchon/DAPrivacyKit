@@ -21,7 +21,7 @@ from ..privileged import HelperError
 from . import Check, Scan, register
 from ._util import (ON_ENCRYPTED_DISK, Tally, absent, children, failed, human_size, isdir, link_note, mounts, needs_root,
                     on_encrypted_disk, own_dir, passed, read_json, read_text, sqlite_count, storage_mounts,
-                    systemctl_state, tally, through_link, unknown, uri_path, warned)
+                    sys_children, systemctl_state, tally, through_link, unknown, uri_path, warned)
 
 
 def _devices(scan: Scan) -> list[blockdev.Device] | None:
@@ -174,7 +174,7 @@ def zram_writeback_configured(host) -> list[str]:
     files = [next((f for f in ZRAM_CONFIGS if host.sys_path(f).is_file()), None)]
     for d in ("/etc/systemd/zram-generator.conf.d", "/run/systemd/zram-generator.conf.d",
               "/usr/lib/systemd/zram-generator.conf.d"):
-        files += [str(Path(d) / c.name) for c in children(host.sys_path(d)) if c.name.endswith(".conf")]
+        files += [str(Path(d) / c.name) for c in sys_children(host, d) if c.name.endswith(".conf")]
     out = []
     for f in filter(None, files):
         for m in re.finditer(r"^\s*writeback-device\s*=\s*(\S+)", read_text(host, host.sys_path(f)) or "", re.M):
@@ -777,8 +777,9 @@ class SnapshotsRetainDeleted(Check):
                 kept_on.append(cfg.get("SUBVOLUME"))
             ev.append(Evidence.val(f"Snapper config {name}", f"{cfg.get('SUBVOLUME', '?')}: {snapper_keeps(cfg)}"))
         for name in unread:
-            found.append(f"Snapper ({name})")
-            ev.append(Evidence.val(f"Snapper config {name}", "couldn't be read"))
+            found.append("Snapper" if name == "*" else f"Snapper ({name})")
+            ev.append(Evidence.val("Snapper's configurations (/etc/snapper/configs)" if name == "*"
+                                   else f"Snapper config {name}", "couldn't be read"))
         ts = timeshift_settings(scan)
         if not timeshift_btrfs(ts):
             ts = None
@@ -998,9 +999,14 @@ SNAPPER_DEFAULTS = {"NUMBER_LIMIT": "50", "NUMBER_LIMIT_IMPORTANT": "10", "TIMEL
 
 def snapper_configs(scan: Scan) -> tuple[list[tuple[str, dict[str, str]]], list[str]]:
     """Snapper's configs that could be read, as {KEY: value}, and the names of those that couldn't (openSUSE keeps them
-    root-only): one of those is never judged on snapper's defaults, which keep a long timeline."""
+    root-only): one of those is never judged on snapper's defaults, which keep a long timeline. A folder of configs
+    that can't be listed is one config that couldn't be read ("*"): never "no snapshots"."""
     out, unread = [], []
-    for f in children(scan.host.sys_path("/etc/snapper/configs")):
+    try:
+        names = sys_children(scan.host, "/etc/snapper/configs")
+    except Unreadable:
+        return [], ["*"]
+    for f in names:
         try:
             text = scan.host.read_sys(f"/etc/snapper/configs/{f.name}") or ""
         except Unreadable:
@@ -1103,7 +1109,7 @@ def syslog_names(host: Host) -> list[str]:
     """The text logs a syslog daemon writes on this machine, by name, rotated copies left out: syslog and auth.log on
     Debian and Ubuntu, messages, secure, maillog and cron on Fedora."""
     from ..helper import SYSLOG_FILES, SYSLOG_NAMES
-    names = {m.group(1) for p in children(host.sys_path("/var/log")) if (m := SYSLOG_FILES.match(p.name)) and p.is_file()}
+    names = {m.group(1) for p in sys_children(host, "/var/log") if (m := SYSLOG_FILES.match(p.name)) and p.is_file()}
     return sorted(names, key=SYSLOG_NAMES.index)
 
 
@@ -1307,7 +1313,7 @@ def secure_boot(scan: Scan) -> tuple[bool | None, str]:
             unreadable, data = True, None
         if data and len(data) > offset:
             return data[offset] == 1, "the firmware's SecureBoot setting"
-    if not unreadable and children(host.sys_path("/sys/firmware/efi/efivars")):
+    if not unreadable and sys_children(host, "/sys/firmware/efi/efivars"):
         # the firmware's settings are visible, and it has no SecureBoot one: VMs and older PCs
         return False, "the firmware doesn't support Secure Boot"
     r = host.run("mokutil", "--sb-state")
@@ -1440,7 +1446,7 @@ SYSTEMD_VENDOR_GUID = "4a67b082-0a4c-41cf-b6c7-440b29bb8c4f"
 def booted_uki(scan: Scan) -> bool:
     """This boot came from a unified kernel image: systemd-stub, the part of a UKI that starts the kernel,
     leaves the StubInfo EFI variable. Signed as a whole, a UKI brings the initramfs under Secure Boot."""
-    return any(p.name == f"StubInfo-{SYSTEMD_VENDOR_GUID}" for p in children(scan.host.sys_path("/sys/firmware/efi/efivars")))
+    return any(p.name == f"StubInfo-{SYSTEMD_VENDOR_GUID}" for p in sys_children(scan.host, "/sys/firmware/efi/efivars"))
 
 
 def _lockdown_notes(scan: Scan) -> list[Note]:
@@ -1485,7 +1491,7 @@ class TrimThroughLuks(Check):
         if not crypt:
             return absent("No encrypted volumes are open.")
         ev, on = [], []
-        for dm in children(host.sys_path("/sys/block")):
+        for dm in sys_children(host, "/sys/block"):
             if not dm.name.startswith("dm-"):
                 continue
             name = (read_text(host, dm / "dm" / "name") or "").strip()
@@ -1606,7 +1612,7 @@ class Storage:
 def _sysblock(host, d: blockdev.Device) -> Path | None:
     """/sys/block/<name> of a device-mapper device (found by its mapper name) or a disk."""
     if d.type in _DM_TYPES or d.type.startswith("dm"):
-        for dm in children(host.sys_path("/sys/block")):
+        for dm in sys_children(host, "/sys/block"):
             if dm.name.startswith("dm-") and (read_text(host, dm / "dm" / "name") or "").strip() == d.name:
                 return dm
         return None

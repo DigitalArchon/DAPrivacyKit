@@ -150,7 +150,8 @@ def human_size(n: int) -> str:
 
 
 def isdir(path: Path) -> bool:
-    """Path.is_dir() that treats "permission denied" as "no" instead of raising."""
+    """Path.is_dir() that treats "permission denied" as "no" instead of raising. For the user's own files: a system
+    folder that may need root is looked at with listing() or sys_children(), which say so."""
     try:
         return path.is_dir()
     except OSError:
@@ -158,6 +159,7 @@ def isdir(path: Path) -> bool:
 
 
 def isfile(path: Path) -> bool:
+    """Path.is_file(), "permission denied" read as "no" (see isdir)."""
     try:
         return path.is_file()
     except OSError:
@@ -165,10 +167,52 @@ def isfile(path: Path) -> bool:
 
 
 def children(path: Path) -> list[Path]:
+    """A folder's entries, sorted; [] when it is missing, not a folder, or can't be opened. For the user's own folders,
+    where "can't be opened" is as good as nothing there. Never for a system folder (a test forbids
+    children() of a sys_path in the checks): a folder only root can list isn't empty (a root-only folder of snapper
+    configs isn't "no snapshots"), so those go through sys_children(), which raises Unreadable."""
     try:
         return sorted(path.iterdir())
     except (FileNotFoundError, NotADirectoryError, PermissionError):
         return []
+
+
+def listing(path: Path) -> list[Path]:
+    """A folder's entries, sorted; [] when it is missing or not a folder. One this process may not open raises
+    Unreadable: the runner reports a system check without administrator access as couldn't check (rule 3), never as
+    a folder with nothing in it."""
+    try:
+        return sorted(path.iterdir())
+    except (FileNotFoundError, NotADirectoryError):
+        return []
+    except PermissionError as e:
+        raise Unreadable(str(path)) from e
+
+
+def sys_children(host: Host, path: str) -> list[Path]:
+    """listing() of a system folder (`path` as on the scanned machine: "/etc/snapper/configs")."""
+    return listing(host.sys_path(path))
+
+
+def sys_glob(host: Host, folder: str, pattern: str) -> list[Path]:
+    """The entries of a system folder whose names match `pattern` (fnmatch), sorted: sys_children's rule (missing: none;
+    can't be opened: Unreadable), then Path.match. For globs of one level below that folder: "*/repodata/repomd.xml"
+    lists the folder, then each subfolder's, any of them unreadable raising."""
+    parts = Path(pattern).parts
+    found = [host.sys_path(folder)]
+    for i, part in enumerate(parts):
+        nxt = []
+        for d in found:
+            entries = listing(d) if i == 0 or d.is_dir() else []
+            nxt += [e for e in entries if Path(e.name).match(part)]
+        found = nxt
+    return sorted(found)
+
+
+def output(r) -> str | None:
+    """A command's standard output when it ran and succeeded; None when it is missing or failed, never "" (which
+    reads as "it said nothing": no snapshots, no updates, no keys). `r` is a host.CommandResult."""
+    return r.stdout if r.ok else None
 
 
 def own_dir(host: Host, path: Path) -> bool:
@@ -226,7 +270,8 @@ def collecting_skipped():
 
 
 def read_text(host: Host, path: Path) -> str | None:
-    """A user file's text, or None if missing or unreadable."""
+    """A user file's text, or None if missing or unreadable (as good as missing in the user's own files; a system file
+    that may need root is read with host.read_sys, which raises Unreadable)."""
     try:
         return host.read_file(path)
     except Unreadable:
@@ -354,6 +399,7 @@ def sqlite_count(path: Path, sql: str, optional: bool = False) -> int | None:
 
 
 def mode_of(path: Path) -> int | None:
+    """A file's permission bits; None when it is missing or its folder can't be searched (not "no permissions")."""
     try:
         return path.stat().st_mode & 0o777
     except OSError:
@@ -766,7 +812,7 @@ def chromium_policies(host: Host, browser: str) -> dict:
     d = next((v for k, v in CHROMIUM_POLICY_DIRS.items() if browser.startswith(k)), None)
     if not d:
         return out
-    for f in children(host.sys_path(d)):
+    for f in children(host.sys_path(d)):     # as the user sees it: what the browser, run as the user, can't read
         if f.suffix == ".json":
             data = read_json(host, f)
             if isinstance(data, dict):
