@@ -866,7 +866,9 @@ while True:
 # the computer's memory (at least MEMORY_LEAST) and TASKS_MAX processes and threads. What is left when the program
 # is killed for the limit is the trial's own folder, as after End; the result says it was the limit.
 SYSTEMD_RUN = "systemd-run"
-DESCRIPTION = "A program tried by DA Privacy Kit"       # what the journal says of the scope: never the program's name
+# what the journal says of the scope: never the program's name, and the same for a trial and a Box (the journal
+# would otherwise say which app is kept in a Box, and when it ran)
+DESCRIPTION = "A program in a sandbox of DA Privacy Kit's"
 MEMORY_SHARE = 0.7
 MEMORY_LEAST = 1 << 30
 TASKS_MAX = 1024

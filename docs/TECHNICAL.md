@@ -1845,7 +1845,8 @@ drive they came from (its model, serial, size and WWN, `retire.identity`): anoth
     itself into a scope of Flatpak's own, which this one doesn't hold: not capped, and the panel says so. A program
     killed for the limit is said as the limit, not only as a signal (`ended_words`). Live-tested on Mint 22.3 with
     the cap at 200 MB and 20 tasks: a program allocating 50 MB at a time was killed by the kernel at the cap (exit
-    137) with the computer untouched, and one forking 200 children was stopped at the task limit.
+    137) with the computer untouched, and one forking 200 children was stopped at the task limit; and on Arch (the
+    Omarchy VM), where the probe passed and Nautilus ran capped at 4.3 GB and 1024 tasks.
   - **What a Flatpak trial's portals leave** (`portal_marks`, `portal_changes`): `--sandbox` drops what the app
     declares, but the filtered session bus, which GTK 4 apps need to start at all, reaches the desktop's portals as
     it does for every Flatpak app — among them OpenURI, which asks the desktop to open a web address in the user's
@@ -1867,9 +1868,12 @@ drive they came from (its model, serial, size and WWN, `retire.identity`): anoth
     the app's own mount units in `/etc/systemd/system`, whose names hold the path of the user's home. `ETC_APPS`
     adds what an app on trial needs beyond a browser: `dbus-1` (GTK and Qt apps start a session bus of their own),
     `at-spi2`, XML catalogues, the magic files, `inputrc`, `terminfo`, `shells`, what names the distribution, and
-    LibreOffice's `/etc/libreoffice`. Tested on Mint 22.3 on a private Xvfb display with xed and xreader (GTK 3),
-    gnome-calculator, baobab and gnome-font-viewer (GTK 4) and LibreOffice Writer: each started and drew its window
-    as before (Writer opens no window on a bare Xvfb either way, checked against the computer's whole `/etc`).
+    LibreOffice's `/etc/libreoffice`. Tested on Mint 22.3 on a private Xvfb display with xed, xreader and
+    gnome-calculator (GTK 3), baobab and gnome-font-viewer (GTK 4) and LibreOffice Writer: each started and drew its
+    window as before (Writer opens no window on a bare Xvfb either way, checked against the computer's whole `/etc`);
+    and on Arch (the Omarchy VM, Hyprland) with Nautilus (GTK 4) through the marked Wayland socket, where the
+    sandbox's `/etc` had 31 entries, 798 fonts were found in it, and `passwd-`, `group-`, `pacman.conf`,
+    `environment`, `locale.conf`, `profile.d`, `sddm.conf.d` and `resolv.conf` were all absent.
     The real paths of its folders are still in `/proc/self/mountinfo`'s root field (a Box's `home` under the user's
     home, a disk trial's under the cache folder), which bubblewrap's bind mounts can't hide: the panel, the manual
     and the Box's guide say so.
