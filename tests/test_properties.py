@@ -154,9 +154,6 @@ def test_when_rejects_what_isnt_an_expression_with_its_own_error(src):
     assert e.evaluate({}) in (True, False, None) and all(n.isidentifier() for n in e.names)
 
 
-@pytest.mark.xfail(strict=True, reason="expr.py recurses per bracket and per `not` (_Parser.not_/atom, _eval): a deeply "
-                   "nested `when` raises RecursionError instead of ExprError (the catalogue is the app's own, so only a "
-                   "hand-edited one could)")
 @pytest.mark.parametrize("src", ["(" * 2000 + "fde" + ")" * 2000, "not " * 2000 + "fde"])
 def test_when_nested_too_deep_is_refused_by_its_own_error(src):
     try:
@@ -165,8 +162,6 @@ def test_when_nested_too_deep_is_refused_by_its_own_error(src):
         pass
 
 
-@pytest.mark.xfail(strict=True, reason="expr._eval recurses down `and`'s left-deep tree: a `when` of 2000 terms parses "
-                   "(the loop in _Parser.and_) but evaluating it raises RecursionError")
 def test_a_long_flat_when_evaluates():
     e = expr.parse(" and ".join(["hibernation"] * 2000))
     assert e.evaluate({"hibernation": True}) is True
@@ -187,16 +182,26 @@ def test_every_when_in_the_catalogue_round_trips_and_reads_in_words(cat):
 
 
 @given(st.data())
-def test_effective_severity_is_the_last_modifier_that_holds(cat, data):
+def test_effective_severity_is_the_range_over_what_the_unknowns_could_be(cat, data):
+    """The last modifier that holds decides; where the names it depends on are unknown, the severity is the highest
+    over every value they could take (ranked and counted by it) and `lowest` the lowest (the owner's decision of
+    2026-11-12)."""
+    import itertools
     specs = [s for s in cat if s.modifiers]
     spec = data.draw(st.sampled_from(specs))
     values = data.draw(assignments())
     sev = catalogue.effective_severity(spec, values)
-    held = [m for m in spec.modifiers if m.when.evaluate(values) is True]
-    assert sev.value == (held[-1].severity if held else spec.severity)
-    # what it was unsure of: only names of modifiers after the last one that held, whose value is unknown
-    later = spec.modifiers[spec.modifiers.index(held[-1]) + 1:] if held else spec.modifiers
-    assert set(sev.uncertain_on) <= {n for m in later for n in m.when.names if values.get(n) is None}
+
+    def last(vals):
+        held = [m for m in spec.modifiers if m.when.evaluate(vals) is True]
+        return held[-1].severity if held else spec.severity
+    unknown = sorted({n for m in spec.modifiers for n in m.when.names if values.get(n) is None})
+    if len(unknown) <= catalogue.MAX_UNKNOWN:
+        every = [last({**values, **dict(zip(unknown, c))})
+                 for c in itertools.product(*(catalogue.name_values(n) for n in unknown))]
+        assert sev.value == max(every) and sev.lowest == min(every)
+    assert set(sev.uncertain_on) <= set(unknown)
+    assert sev.uncertain or not sev.uncertain_on
     warn = catalogue.as_warning(spec, sev)
     if sev.value <= 0:
         assert warn.value == sev.value
