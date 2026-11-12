@@ -1473,6 +1473,7 @@ def dns_outside_tunnel(host: Host) -> list[str] | None:
     """Where this computer's lookups leave outside a VPN that carries its traffic, as net.vpn_leaks judges it (other
     links answering, nameservers or the VPN's own servers reached outside it), "server (through link)" or a link;
     [] when every lookup goes into the tunnel; None without a full tunnel, or when it can't be told."""
+    from ..vpn import DataError, load, protecting
     vpns = vpn_links(host)
     full = carrying_vpn_links(host, vpns) if vpns else []
     if not full:
@@ -1480,7 +1481,14 @@ def dns_outside_tunnel(host: Host) -> list[str] | None:
     leaking = VpnLeaks._leaking(host, vpns, full, [])
     if leaking is None:
         return None
-    return leaking + (tunnel_dns_outside(host, full, vpns) if resolved_answers(host) is not False else [])
+    resolved = resolved_answers(host) is not False
+    try:
+        match = protecting(host, load(), processes(host))
+    except DataError:
+        match = None
+    if resolved and match is not None and any(match.provider.matches_interface(t) for t in full):
+        leaking = []                # its app rejects lookups to other links' servers
+    return leaking + (tunnel_dns_outside(host, full, vpns) if resolved else [])
 
 
 def firefox_doh(scan: Scan) -> tuple[int, list[str]]:

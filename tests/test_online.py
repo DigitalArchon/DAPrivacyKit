@@ -146,14 +146,34 @@ def test_dns_leak_with_a_vpn(cat, tmp_path):
     assert run(cat, "net.dns_leak", make_host(tmp_path), leak_net("AS9009 M247"), vpn_active=True).status is Status.PASS
 
 
+def tunnel_host(tmp_path, resolvectl=None):
+    """A WireGuard tunnel carrying the traffic, and systemd-resolved sending every lookup into it (~.)."""
+    from test_checks_network import RESOLVECTL_ROUTED, vpn_host
+    return vpn_host(tmp_path, resolvectl or RESOLVECTL_ROUTED)
+
+
 @pytest.mark.parametrize("resolver, note", [
     ("AS60068 Datacamp Limited", "Resolvers in another hosting network"),       # a VPN renting DNS elsewhere
     ("AS13335 CLOUDFLARENET", "A public DNS service answers inside the tunnel"),
     ("AS62371 PROTON Proton AG", None),                                        # the provider's own network
 ])
 def test_dns_leak_doesnt_blame_a_vpns_own_choices(cat, tmp_path, resolver, note):
-    o = run(cat, "net.dns_leak", make_host(tmp_path), leak_net(resolver), vpn_active=True)
+    o = run(cat, "net.dns_leak", tunnel_host(tmp_path), leak_net(resolver), vpn_active=True)
     assert o.status is Status.PASS and [n.title for n in o.notes] == ([note] if note else [])
+
+
+@pytest.mark.parametrize("resolver", ["AS13335 CLOUDFLARENET", "AS60068 Datacamp Limited"])
+def test_a_public_resolver_is_a_pass_only_where_lookups_go_into_the_tunnel(cat, tmp_path, resolver):
+    """Google, Cloudflare or Quad9 answer lookups a home router passes on, outside the tunnel, as readily as ones
+    that come through it: "inside the tunnel, not your own address" rested on the service's name alone."""
+    from test_checks_network import RESOLVECTL_LEAK
+    o = run(cat, "net.dns_leak", tunnel_host(tmp_path, RESOLVECTL_LEAK), leak_net(resolver), vpn_active=True)
+    assert o.status is Status.UNKNOWN and "wlp0s20f3" in o.summary
+    o = run(cat, "net.dns_leak", make_host(tmp_path / "none"), leak_net(resolver), vpn_active=True)
+    assert o.status is Status.UNKNOWN and "settings don't say" in o.summary
+    # the provider's own resolvers are no question, wherever the settings send the rest
+    o = run(cat, "net.dns_leak", tunnel_host(tmp_path / "own", RESOLVECTL_LEAK), leak_net("AS9009 M247"), vpn_active=True)
+    assert o.status is Status.PASS and any(n.title == "Some lookups leave outside the tunnel" for n in o.notes)
 
 
 def test_dns_leak_names_the_leaking_network(cat, tmp_path):
@@ -239,13 +259,22 @@ def test_vpn_exit_refuses_disagreeing_services(cat, tmp_path):
 
 
 def test_router_vpn_with_ipv6_going_around_it(cat, tmp_path):
+    """IPv4 in a hosting network (M247), IPv6 at the internet provider, no tunnel here: a VPN upstream is likely but
+    not proven (hosting companies sell home internet and cloud desktops too), so a risk, not a problem."""
     fake = exit_net("203.0.113.9", "2001:db8:1::7")
     o = run(cat, "net.vpn_exit", lan_host(tmp_path), fake, virtualization="none")
-    assert o.status is Status.FAIL and not o.findings
-    assert "upstream of this computer (likely the router), but IPv6 leaves through Telstra Limited (AS1221)" in o.summary
+    assert o.status is Status.WARN and not o.findings
+    assert "a VPN upstream of this computer (likely the router) carries your IPv4, IPv6 goes around it" in o.summary
     assert any(n.title == "A hint, not proof" for n in o.notes)
     o = run(cat, "net.vpn_exit", lan_host(tmp_path), exit_net("203.0.113.9", "2001:db8:1::7"), virtualization="vm")
     assert "the computer this virtual machine runs on" in o.summary
+
+
+def test_a_hosting_network_without_a_tunnel_here_isnt_called_a_vpn(cat, tmp_path):
+    """OVH and Hetzner rent servers to VPNs, and sell home internet and cloud desktops too: "Traffic goes through a VPN
+    upstream" rested on the owner's name alone."""
+    o = run(cat, "net.vpn_exit", lan_host(tmp_path), exit_net("203.0.113.9"))
+    assert o.status is Status.UNKNOWN and "can't tell it from a hosting company's own internet service" in o.summary
 
 
 def test_router_vpn_by_a_provider_with_its_own_network(cat, tmp_path):
@@ -260,9 +289,9 @@ def test_proton_exiting_through_a_rented_network(cat, tmp_path):
                      commands={"ip -4 route get 1.1.1.1": sample("ip/mint-22-proton-route-get-4.txt")})
     OWNERS["2001:db8:26::12"] = "M247 M247 Europe SRL"
     o = run(cat, "net.vpn_exit", host, exit_net("203.0.113.9", "2001:db8:26::12"))
-    assert o.status is Status.PASS and o.summary == ("Traffic leaves through Proton VPN: websites see an address in "
-                                                     "M247 Europe SRL (AS9009), a hosting network Proton VPN rents "
-                                                     "servers from.")
+    assert o.status is Status.PASS and o.summary == ("Traffic leaves through Proton VPN's tunnel: websites see an "
+                                                     "address in M247 Europe SRL (AS9009), a hosting network VPN "
+                                                     "providers often rent servers in.")
     assert {e.label: e.value for e in o.evidence}["IPv6 exit network"] == "M247 Europe SRL (AS9009)"
 
 

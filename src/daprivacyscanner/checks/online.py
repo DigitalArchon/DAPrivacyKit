@@ -325,15 +325,39 @@ class DnsLeak(OnlineCheck):
                                       "their exits), or a public DNS service. Anything else is an ordinary internet "
                                       "provider's network.")])
         notes = []
+        # a public DNS service or a hosting network's resolver can be asked through the tunnel, or outside it by the
+        # router, which passes the lookups on: only this computer's own settings tell which
+        from .network import dns_outside_tunnel
+        outside = dns_outside_tunnel(scan.host)
+        ev.append(Evidence.val("Lookups that leave this computer outside the tunnel (its settings)",
+                               "couldn't be told" if outside is None else ", ".join(outside) or "none"))
+        unsure = [k for k in ("public", "hosting") if k in kinds]
+        if unsure and outside != []:
+            nets = sorted({e.get("asn") or e.get("isp") or "?" for k in unsure for e in kinds[k]})
+            where = (f"this computer sends lookups outside the tunnel ({', '.join(outside)[:120]})" if outside else
+                     "this computer's settings don't say whether its lookups go into the tunnel")
+            return unknown(f"Resolvers in {', '.join(nets)[:150]} answered, a public DNS service or a hosting network: "
+                           f"they could be asked through the VPN or by your router outside it, and {where}.", *ev,
+                           notes=[Note("info", "How resolvers are judged",
+                                       "A public DNS service (Google, Cloudflare, Quad9...) answers lookups that come "
+                                       "through a VPN and lookups a home router passes on alike, so the service alone "
+                                       "can't tell a leak; this computer's own DNS settings can, where they are read.",
+                                       ("net.vpn_leaks",))])
         if "public" in kinds:
             notes.append(Note("info", "A public DNS service answers inside the tunnel",
                               "Your VPN sends lookups to a public DNS service "
-                              f"({', '.join(sorted({e.get('asn') or '?' for e in kinds['public']}))[:120]}). It sees the "
-                              "names you look up, but not your own address: the VPN's comes with them."))
+                              f"({', '.join(sorted({e.get('asn') or '?' for e in kinds['public']}))[:120]}), and this "
+                              "computer sends every lookup into the tunnel. It sees the names you look up, but not your "
+                              "own address: the VPN's comes with them."))
         if "hosting" in kinds:
             notes.append(Note("info", "Resolvers in another hosting network",
                               "Some resolvers are in a different hosting network than your exit. VPNs often rent "
                               "their DNS servers separately, so this is usual."))
+        if outside:
+            notes.append(Note("risk", "Some lookups leave outside the tunnel",
+                              f"This computer's settings send lookups to {', '.join(outside)[:150]}, outside the tunnel. "
+                              "None reached an internet provider's resolver in this test, but on the way they cross "
+                              "your network unencrypted.", ("net.vpn_leaks",)))
         return passed("DNS goes through the VPN: no resolver in an ordinary internet provider's network answered.",
                       *ev, notes=notes)
 
@@ -614,24 +638,24 @@ class VpnExit(OnlineCheck):
                                   "A VPN you run yourself, at home or at work, leaves through that network's provider, "
                                   "which is expected.")])
             e = present[0]
-            if mine and e.kind == "datacentre":
-                return passed(f"Traffic leaves through {name}: websites see an address in {e.name}, a hosting network "
-                              f"{name} rents servers from.", *ev, notes=notes)
+            if e.kind == "datacentre":
+                # this computer's own tunnel carries the traffic (its routes say so), and it leaves in a hosting network
+                return passed(f"Traffic leaves through {name}'s tunnel: websites see an address in {e.name}, a hosting "
+                              "network VPN providers often rent servers in.", *ev, notes=notes)
             if e.kind == "vpn" and e.provider:
                 return passed(f"Traffic leaves through {e.provider.name}" + (", as its own check confirms."
                               if e.provider_says else "'s own network."), *ev, notes=notes)
             return passed(f"Traffic leaves through {name}: websites see {e.network()}.", *ev, notes=notes)
-        upstream = [e for e in present if e.via_vpn]
-        if upstream:
-            where = ("the router, or the computer this virtual machine runs on"
-                     if scan.context["virtualization"] == "vm" else "likely the router")
+        where = ("the router, or the computer this virtual machine runs on"
+                 if scan.context["virtualization"] == "vm" else "likely the router")
+        upstream = [e for e in present if e.kind == "vpn" or e.provider_says]
+        hosted = [e for e in present if e.kind == "datacentre"]
+        if upstream or hosted:
             notes.append(Note("info", "This describes only this computer",
                               "A router can send some devices through its VPN and not others, or switch it off when "
                               "the VPN drops: check from each device that matters."))
-            if upstream[0].kind == "datacentre":
-                notes.append(Note("limitation", "A hint, not proof",
-                                  f"{upstream[0].name} rents servers to VPN providers, but also to proxies and "
-                                  "companies: an address there is typical of a VPN, not proof of one."))
+        if upstream:
+            # a VPN provider's own network: a VPN upstream, as no tunnel of this computer's carries the traffic
             if bypass:
                 a, b = bypass[0]
                 return failed(f"IPv{a.family} goes through a VPN upstream of this computer ({where}), but "
@@ -639,6 +663,22 @@ class VpnExit(OnlineCheck):
                               "real address.", *ev, notes=notes)
             return passed(f"Traffic goes through a VPN upstream of this computer ({where}): websites see "
                           f"{upstream[0].network()}.", *ev, notes=notes)
+        if hosted:
+            # a hosting company's network, with no tunnel here: a VPN or proxy upstream, or a hosting company's own
+            # internet service (OVH, Hetzner and others sell home internet and cloud desktops too)
+            notes.append(Note("limitation", "A hint, not proof",
+                              f"{hosted[0].name} rents servers to VPN providers, but also to proxies and companies, and "
+                              "some hosting companies sell home internet and cloud desktops: an address there is typical "
+                              "of a VPN, not proof of one."))
+            if bypass:
+                a, b = bypass[0]
+                return warned(f"IPv{a.family} leaves through {a.name}, a hosting network, and IPv{b.family} through "
+                              f"{b.name}: if a VPN upstream of this computer ({where}) carries your IPv{a.family}, "
+                              f"IPv{b.family} goes around it and websites reachable over it see your real address.",
+                              *ev, notes=notes)
+            return unknown(f"Websites see an address in {hosted[0].name}, a hosting network, and no tunnel of this "
+                           f"computer's carries the traffic: a VPN upstream ({where}) is likely, but the app can't tell "
+                           "it from a hosting company's own internet service.", *ev, notes=notes)
         return passed(f"No VPN: websites see your internet provider, {present[0].name or present[0].address}.", *ev,
                       notes=notes)
 

@@ -3969,7 +3969,11 @@ checks:
       - 'Get a test id from the leak-test service, look up unique names under it, ask the service which resolvers asked'
       - 'With a VPN: each resolver''s network (as the service names it) is the exit''s own, the VPN provider''s, a hosting
         network or a public DNS service (vpn-providers.yaml: exit_networks, datacentres, public_dns), or an ordinary
-        provider''s; only the last is a leak (VPNs often rent their DNS servers from a different hosting company)'
+        provider''s; the last is a leak (VPNs often rent their DNS servers from a different hosting company)'
+      - 'A public DNS service or a hosting network answers lookups a home router passes on, outside the tunnel, as
+        readily as ones from inside it: a pass only where this computer''s own settings send every lookup into the
+        tunnel (as net.vpn_leaks reads them, Mullvad VPN''s rejected lookups aside); otherwise couldn''t tell, naming
+        where they leave. Lookups the settings send outside the tunnel are said beside a pass'
       - 'Without a VPN: informational, shows who resolves your names'
     fix: Use the VPN's DNS (its app's DNS leak protection), or route all DNS through the tunnel (resolved ~. on the VPN link).
     remedy: >
@@ -4060,8 +4064,11 @@ checks:
       - 'Public IPv4 and IPv6 addresses from two echo services each (they must agree), or from the VPN provider''s own check service when it is the one in use (Mullvad, IVPN)'
       - 'Who owns each address: the provider''s check service, else RIPEstat (prefix-overview); matched against vpn-providers.yaml (provider networks, datacentres)'
       - 'Local tunnel carrying traffic: the provider''s service must call the exit its own, and name the server its app reports; an exit in a residential network is suspect'
-      - 'No local tunnel, default route to a LAN gateway, exit in a known VPN or datacentre network: a VPN upstream (likely the router; the host, in a VM)'
-      - 'One family through a VPN or datacentre network and the other through an ordinary provider: a bypass'
+      - 'No local tunnel, default route to a LAN gateway, exit in a VPN provider''s own network: a VPN upstream (likely
+        the router; the host, in a VM). In a datacentre network (vpn-providers.yaml datacentres: M247, OVH, Hetzner...)
+        couldn''t tell: hosting companies rent to VPNs and proxies, and some sell home internet and cloud desktops'
+      - 'One family through a VPN network and the other through an ordinary provider: a bypass; through a datacentre
+        network with no tunnel here, a risk (if a VPN upstream carries it, the other goes around it)'
     fix: >
       Point to the VPN app's IPv6 setting or leak protection, the router's VPN settings (tunnel IPv6 too, or turn IPv6 off
       on the LAN), or reconnecting the app. Path MTU and traceroute were considered as corroboration and left out (PPPoE
