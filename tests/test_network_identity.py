@@ -63,7 +63,7 @@ def test_iwd_backend_keeps_the_permanent_address_unless_it_randomises_per_networ
     ("t14-7q2", Status.WARN),          # sent over DHCP on every network: a label networks know it by
     ("fedora", Status.PASS),
     ("ubuntu-pc", Status.PASS),
-    ("GPUTestPC1", Status.WARN),
+    ("BuildTestPC1", Status.WARN),
 ])
 def test_a_unique_hostname_sent_everywhere_is_a_risk(cat, tmp_path, hostname, status):
     host = make_host(tmp_path, env={"USER": "alice"}, files={"/proc/sys/kernel/hostname": hostname + "\n"},
@@ -84,7 +84,7 @@ def test_a_unique_hostname_sent_nowhere_passes(cat, tmp_path):
 
 @pytest.mark.parametrize("hostname, common", [
     ("fedora", True), ("localhost-live", True), ("ubuntu-pc", True), ("cachyos", True),
-    ("MintDev", False), ("t14-7q2", False), ("fedora-2", False), ("GPUTestPC1", False),
+    ("ArchDev", False), ("t14-7q2", False), ("fedora-2", False), ("BuildTestPC1", False),
 ])
 def test_common_hostnames(hostname, common):
     from daprivacyscanner.checks.network import common_hostname

@@ -910,7 +910,7 @@ DEVICE_WORDS = frozenset({"pc", "laptop", "desktop", "notebook", "computer", "bo
 def common_hostname(hostname: str) -> bool:
     """Whether a hostname is one many computers share: one common name, with at most words for the kind of computer
     ("fedora", "localhost", "ubuntu-pc", "localhost-live"). Anything else sets it apart: digits ("t14-7q2",
-    "fedora-2"), another word, or two common words run together ("MintDev")."""
+    "fedora-2"), another word, or two common words run together ("ArchDev")."""
     from ._util import GENERIC_NAMES, _WORDS
     words = [w.lower() for part in re.split(r"[^A-Za-z0-9]+", hostname) for w in _WORDS.findall(part)]
     named = [w for w in words if w not in DEVICE_WORDS]
