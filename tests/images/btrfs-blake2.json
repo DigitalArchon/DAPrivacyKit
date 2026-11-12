@@ -1,0 +1,234 @@
+{
+ "caller": [
+  1000,
+  1000
+ ],
+ "csum": "blake2",
+ "deleted": {
+  "Documents": [
+   "secret-plan.odt",
+   "tax 2025.pdf"
+  ],
+  "Private": [
+   "bobs-letter.odt"
+  ],
+  "home/Notes": [
+   "diary 2026.md",
+   "passwords-old.txt"
+  ]
+ },
+ "dump_super": [
+  "superblock: bytenr=65536, device=/tmp/dapk-images-j8qjq76m/btrfs-blake2.img",
+  "---------------------------------------------------------",
+  "csum_type\t\t3 (blake2b)",
+  "csum_size\t\t32",
+  "csum\t\t\t0x991fa5554bb1626755057fa3d865f26949ed2cbc5d69dbf5cac3637164b8dd56 [match]",
+  "bytenr\t\t\t65536",
+  "flags\t\t\t0x1",
+  "\t\t\t( WRITTEN )",
+  "magic\t\t\t_BHRfS_M [match]",
+  "fsid\t\t\t5eed0000-0000-4000-8000-0000000b7f50",
+  "metadata_uuid\t\t00000000-0000-0000-0000-000000000000",
+  "label\t\t\tdapk",
+  "generation\t\t13",
+  "root\t\t\t31358976",
+  "sys_array_size\t\t129",
+  "chunk_root_generation\t6",
+  "root_level\t\t0",
+  "chunk_root\t\t22036480",
+  "chunk_root_level\t0",
+  "log_root\t\t0",
+  "log_root_transid (deprecated)\t0",
+  "log_root_level\t\t0",
+  "total_bytes\t\t134217728",
+  "bytes_used\t\t196608",
+  "sectorsize\t\t4096",
+  "nodesize\t\t16384",
+  "leafsize (deprecated)\t16384",
+  "stripesize\t\t4096",
+  "root_dir\t\t6",
+  "num_devices\t\t1",
+  "compat_flags\t\t0x0",
+  "compat_ro_flags\t\t0x3",
+  "\t\t\t( FREE_SPACE_TREE |",
+  "\t\t\t  FREE_SPACE_TREE_VALID )",
+  "incompat_flags\t\t0x361",
+  "\t\t\t( MIXED_BACKREF |",
+  "\t\t\t  BIG_METADATA |",
+  "\t\t\t  EXTENDED_IREF |",
+  "\t\t\t  SKINNY_METADATA |",
+  "\t\t\t  NO_HOLES )",
+  "cache_generation\t0",
+  "uuid_tree_generation\t13",
+  "dev_item.uuid\t\t94aed49a-9873-46ec-a70c-7ae13453a1ae",
+  "dev_item.fsid\t\t5eed0000-0000-4000-8000-0000000b7f50 [match]",
+  "dev_item.type\t\t0",
+  "dev_item.total_bytes\t134217728",
+  "dev_item.bytes_used\t92274688",
+  "dev_item.io_align\t4096",
+  "dev_item.io_width\t4096",
+  "dev_item.sector_size\t4096",
+  "dev_item.devid\t\t1",
+  "dev_item.dev_group\t0",
+  "dev_item.seek_speed\t0",
+  "dev_item.bandwidth\t0",
+  "dev_item.generation\t0",
+  ""
+ ],
+ "entries": {
+  "": {
+   "flags": 0,
+   "gen": 3,
+   "gid": 1000,
+   "ino": 256,
+   "mode": 16877,
+   "size": 58,
+   "tree": 5,
+   "type": "dir",
+   "uid": 1000
+  },
+  "Documents": {
+   "flags": 0,
+   "gen": 7,
+   "gid": 1000,
+   "ino": 257,
+   "mode": 16877,
+   "size": 16,
+   "tree": 5,
+   "type": "dir",
+   "uid": 1000
+  },
+  "Documents/keep.txt": {
+   "flags": 0,
+   "gen": 7,
+   "gid": 1000,
+   "ino": 260,
+   "mode": 33188,
+   "size": 100,
+   "tree": 5,
+   "type": "file",
+   "uid": 1000
+  },
+  "Downloads": {
+   "flags": 0,
+   "gen": 7,
+   "gid": 1000,
+   "ino": 258,
+   "mode": 16877,
+   "size": 52,
+   "tree": 5,
+   "type": "dir",
+   "uid": 1000
+  },
+  "Downloads/innocent-2.bin": {
+   "extents": [
+    [
+     13647872,
+     16384,
+     1,
+     0
+    ]
+   ],
+   "flags": 8388608,
+   "gen": 11,
+   "gid": 1000,
+   "ino": 265,
+   "mode": 33188,
+   "size": 16384,
+   "tree": 5,
+   "type": "file",
+   "uid": 1000
+  },
+  "Downloads/innocent.bin": {
+   "extents": [
+    [
+     13631488,
+     16384,
+     1,
+     0
+    ]
+   ],
+   "flags": 8388608,
+   "gen": 9,
+   "gid": 1000,
+   "ino": 264,
+   "mode": 33188,
+   "size": 16384,
+   "tree": 5,
+   "type": "file",
+   "uid": 1000
+  },
+  "Private": {
+   "flags": 0,
+   "gen": 7,
+   "gid": 4242,
+   "ino": 259,
+   "mode": 16832,
+   "size": 0,
+   "tree": 5,
+   "type": "dir",
+   "uid": 4242
+  },
+  "home": {
+   "flags": 0,
+   "gen": 7,
+   "gid": 1000,
+   "ino": 256,
+   "mode": 16877,
+   "size": 10,
+   "tree": 256,
+   "type": "dir",
+   "uid": 1000
+  },
+  "home/Notes": {
+   "flags": 0,
+   "gen": 7,
+   "gid": 1000,
+   "ino": 257,
+   "mode": 16877,
+   "size": 26,
+   "tree": 256,
+   "type": "dir",
+   "uid": 1000
+  },
+  "home/Notes/keep-notes.md": {
+   "flags": 0,
+   "gen": 7,
+   "gid": 1000,
+   "ino": 258,
+   "mode": 33188,
+   "size": 100,
+   "tree": 256,
+   "type": "file",
+   "uid": 1000
+  }
+ },
+ "fstype": "btrfs",
+ "kernel": "7.0.0-42-generic",
+ "made": "2026-11-12",
+ "made_by": "tests/images/make_images.py",
+ "planted": [
+  {
+   "bytenr_true": true,
+   "device_offsets": [
+    13631488
+   ],
+   "folder_ino": 257,
+   "logical": 13631488,
+   "name": "planted-by-a-file.txt",
+   "path": "Downloads/innocent.bin"
+  },
+  {
+   "bytenr_true": false,
+   "device_offsets": [
+    13647872
+   ],
+   "folder_ino": 257,
+   "logical": 13647872,
+   "name": "planted-bytenr-zero.txt",
+   "path": "Downloads/innocent-2.bin"
+  }
+ ],
+ "size": 134217728,
+ "tool": "mkfs.btrfs, part of btrfs-progs v6.6.3"
+}

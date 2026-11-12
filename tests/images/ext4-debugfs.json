@@ -1,0 +1,655 @@
+{
+ "block_size": 4096,
+ "caller": [
+  1000,
+  1000
+ ],
+ "deleted": {
+  "Documents": [
+   "secret-plan.odt",
+   "tax 2025.pdf"
+  ],
+  "Letters": [
+   "scanned-letter-000-from-the-tax-office-about-2025.pdf",
+   "scanned-letter-040-from-the-tax-office-about-2025.pdf",
+   "scanned-letter-041-from-the-tax-office-about-2025.pdf",
+   "scanned-letter-077-from-the-tax-office-about-2025.pdf",
+   "scanned-letter-119-from-the-tax-office-about-2025.pdf",
+   "scanned-letter-063-from-the-tax-office-about-2025.pdf"
+  ]
+ },
+ "entries": {
+  "": {
+   "extents": [
+    [
+     12288,
+     4096,
+     0,
+     0
+    ]
+   ],
+   "flags": 524288,
+   "gen": 0,
+   "gid": 1000,
+   "ino": 2,
+   "mode": 16877,
+   "type": "dir",
+   "uid": 1000
+  },
+  "Documents": {
+   "extents": [
+    [
+     4759552,
+     4096,
+     0,
+     0
+    ]
+   ],
+   "flags": 524288,
+   "gen": 0,
+   "gid": 1000,
+   "ino": 12,
+   "mode": 16893,
+   "type": "dir",
+   "uid": 1000
+  },
+  "Documents/keep.txt": {
+   "gen": 0,
+   "ino": 13,
+   "type": "file"
+  },
+  "Letters": {
+   "extents": [
+    [
+     4775936,
+     8192,
+     0,
+     0
+    ]
+   ],
+   "flags": 524288,
+   "gen": 0,
+   "gid": 1000,
+   "ino": 16,
+   "mode": 16893,
+   "type": "dir",
+   "uid": 1000
+  },
+  "Letters/scanned-letter-001-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 18,
+   "type": "file"
+  },
+  "Letters/scanned-letter-002-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 19,
+   "type": "file"
+  },
+  "Letters/scanned-letter-003-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 20,
+   "type": "file"
+  },
+  "Letters/scanned-letter-004-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 21,
+   "type": "file"
+  },
+  "Letters/scanned-letter-005-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 22,
+   "type": "file"
+  },
+  "Letters/scanned-letter-006-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 23,
+   "type": "file"
+  },
+  "Letters/scanned-letter-007-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 24,
+   "type": "file"
+  },
+  "Letters/scanned-letter-008-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 25,
+   "type": "file"
+  },
+  "Letters/scanned-letter-009-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 26,
+   "type": "file"
+  },
+  "Letters/scanned-letter-010-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 27,
+   "type": "file"
+  },
+  "Letters/scanned-letter-011-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 28,
+   "type": "file"
+  },
+  "Letters/scanned-letter-012-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 29,
+   "type": "file"
+  },
+  "Letters/scanned-letter-013-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 30,
+   "type": "file"
+  },
+  "Letters/scanned-letter-014-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 31,
+   "type": "file"
+  },
+  "Letters/scanned-letter-015-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 32,
+   "type": "file"
+  },
+  "Letters/scanned-letter-016-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 33,
+   "type": "file"
+  },
+  "Letters/scanned-letter-017-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 34,
+   "type": "file"
+  },
+  "Letters/scanned-letter-018-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 35,
+   "type": "file"
+  },
+  "Letters/scanned-letter-019-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 36,
+   "type": "file"
+  },
+  "Letters/scanned-letter-020-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 37,
+   "type": "file"
+  },
+  "Letters/scanned-letter-021-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 38,
+   "type": "file"
+  },
+  "Letters/scanned-letter-022-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 39,
+   "type": "file"
+  },
+  "Letters/scanned-letter-023-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 40,
+   "type": "file"
+  },
+  "Letters/scanned-letter-024-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 41,
+   "type": "file"
+  },
+  "Letters/scanned-letter-025-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 42,
+   "type": "file"
+  },
+  "Letters/scanned-letter-026-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 43,
+   "type": "file"
+  },
+  "Letters/scanned-letter-027-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 44,
+   "type": "file"
+  },
+  "Letters/scanned-letter-028-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 45,
+   "type": "file"
+  },
+  "Letters/scanned-letter-029-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 46,
+   "type": "file"
+  },
+  "Letters/scanned-letter-030-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 47,
+   "type": "file"
+  },
+  "Letters/scanned-letter-031-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 48,
+   "type": "file"
+  },
+  "Letters/scanned-letter-032-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 49,
+   "type": "file"
+  },
+  "Letters/scanned-letter-033-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 50,
+   "type": "file"
+  },
+  "Letters/scanned-letter-034-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 51,
+   "type": "file"
+  },
+  "Letters/scanned-letter-035-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 52,
+   "type": "file"
+  },
+  "Letters/scanned-letter-036-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 53,
+   "type": "file"
+  },
+  "Letters/scanned-letter-037-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 54,
+   "type": "file"
+  },
+  "Letters/scanned-letter-038-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 55,
+   "type": "file"
+  },
+  "Letters/scanned-letter-039-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 56,
+   "type": "file"
+  },
+  "Letters/scanned-letter-042-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 59,
+   "type": "file"
+  },
+  "Letters/scanned-letter-043-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 60,
+   "type": "file"
+  },
+  "Letters/scanned-letter-044-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 61,
+   "type": "file"
+  },
+  "Letters/scanned-letter-045-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 62,
+   "type": "file"
+  },
+  "Letters/scanned-letter-046-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 63,
+   "type": "file"
+  },
+  "Letters/scanned-letter-047-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 64,
+   "type": "file"
+  },
+  "Letters/scanned-letter-048-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 65,
+   "type": "file"
+  },
+  "Letters/scanned-letter-049-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 66,
+   "type": "file"
+  },
+  "Letters/scanned-letter-050-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 67,
+   "type": "file"
+  },
+  "Letters/scanned-letter-051-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 68,
+   "type": "file"
+  },
+  "Letters/scanned-letter-052-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 69,
+   "type": "file"
+  },
+  "Letters/scanned-letter-053-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 70,
+   "type": "file"
+  },
+  "Letters/scanned-letter-054-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 71,
+   "type": "file"
+  },
+  "Letters/scanned-letter-055-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 72,
+   "type": "file"
+  },
+  "Letters/scanned-letter-056-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 73,
+   "type": "file"
+  },
+  "Letters/scanned-letter-057-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 74,
+   "type": "file"
+  },
+  "Letters/scanned-letter-058-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 75,
+   "type": "file"
+  },
+  "Letters/scanned-letter-059-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 76,
+   "type": "file"
+  },
+  "Letters/scanned-letter-060-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 77,
+   "type": "file"
+  },
+  "Letters/scanned-letter-061-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 78,
+   "type": "file"
+  },
+  "Letters/scanned-letter-062-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 79,
+   "type": "file"
+  },
+  "Letters/scanned-letter-064-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 81,
+   "type": "file"
+  },
+  "Letters/scanned-letter-065-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 82,
+   "type": "file"
+  },
+  "Letters/scanned-letter-066-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 83,
+   "type": "file"
+  },
+  "Letters/scanned-letter-067-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 84,
+   "type": "file"
+  },
+  "Letters/scanned-letter-068-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 85,
+   "type": "file"
+  },
+  "Letters/scanned-letter-069-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 86,
+   "type": "file"
+  },
+  "Letters/scanned-letter-070-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 87,
+   "type": "file"
+  },
+  "Letters/scanned-letter-071-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 88,
+   "type": "file"
+  },
+  "Letters/scanned-letter-072-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 89,
+   "type": "file"
+  },
+  "Letters/scanned-letter-073-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 90,
+   "type": "file"
+  },
+  "Letters/scanned-letter-074-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 91,
+   "type": "file"
+  },
+  "Letters/scanned-letter-075-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 92,
+   "type": "file"
+  },
+  "Letters/scanned-letter-076-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 93,
+   "type": "file"
+  },
+  "Letters/scanned-letter-078-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 95,
+   "type": "file"
+  },
+  "Letters/scanned-letter-079-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 96,
+   "type": "file"
+  },
+  "Letters/scanned-letter-080-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 97,
+   "type": "file"
+  },
+  "Letters/scanned-letter-081-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 98,
+   "type": "file"
+  },
+  "Letters/scanned-letter-082-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 99,
+   "type": "file"
+  },
+  "Letters/scanned-letter-083-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 100,
+   "type": "file"
+  },
+  "Letters/scanned-letter-084-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 101,
+   "type": "file"
+  },
+  "Letters/scanned-letter-085-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 102,
+   "type": "file"
+  },
+  "Letters/scanned-letter-086-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 103,
+   "type": "file"
+  },
+  "Letters/scanned-letter-087-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 104,
+   "type": "file"
+  },
+  "Letters/scanned-letter-088-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 105,
+   "type": "file"
+  },
+  "Letters/scanned-letter-089-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 106,
+   "type": "file"
+  },
+  "Letters/scanned-letter-090-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 107,
+   "type": "file"
+  },
+  "Letters/scanned-letter-091-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 108,
+   "type": "file"
+  },
+  "Letters/scanned-letter-092-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 109,
+   "type": "file"
+  },
+  "Letters/scanned-letter-093-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 110,
+   "type": "file"
+  },
+  "Letters/scanned-letter-094-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 111,
+   "type": "file"
+  },
+  "Letters/scanned-letter-095-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 112,
+   "type": "file"
+  },
+  "Letters/scanned-letter-096-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 113,
+   "type": "file"
+  },
+  "Letters/scanned-letter-097-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 114,
+   "type": "file"
+  },
+  "Letters/scanned-letter-098-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 115,
+   "type": "file"
+  },
+  "Letters/scanned-letter-099-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 116,
+   "type": "file"
+  },
+  "Letters/scanned-letter-100-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 117,
+   "type": "file"
+  },
+  "Letters/scanned-letter-101-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 118,
+   "type": "file"
+  },
+  "Letters/scanned-letter-102-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 119,
+   "type": "file"
+  },
+  "Letters/scanned-letter-103-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 120,
+   "type": "file"
+  },
+  "Letters/scanned-letter-104-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 121,
+   "type": "file"
+  },
+  "Letters/scanned-letter-105-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 122,
+   "type": "file"
+  },
+  "Letters/scanned-letter-106-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 123,
+   "type": "file"
+  },
+  "Letters/scanned-letter-107-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 124,
+   "type": "file"
+  },
+  "Letters/scanned-letter-108-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 125,
+   "type": "file"
+  },
+  "Letters/scanned-letter-109-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 126,
+   "type": "file"
+  },
+  "Letters/scanned-letter-110-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 127,
+   "type": "file"
+  },
+  "Letters/scanned-letter-111-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 128,
+   "type": "file"
+  },
+  "Letters/scanned-letter-112-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 129,
+   "type": "file"
+  },
+  "Letters/scanned-letter-113-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 130,
+   "type": "file"
+  },
+  "Letters/scanned-letter-114-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 131,
+   "type": "file"
+  },
+  "Letters/scanned-letter-115-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 132,
+   "type": "file"
+  },
+  "Letters/scanned-letter-116-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 133,
+   "type": "file"
+  },
+  "Letters/scanned-letter-117-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 134,
+   "type": "file"
+  },
+  "Letters/scanned-letter-118-from-the-tax-office-about-2025.pdf": {
+   "gen": 0,
+   "ino": 135,
+   "type": "file"
+  }
+ },
+ "fstype": "ext4",
+ "gone": {},
+ "made": "2026-11-12",
+ "made_by": "tests/images/make_noroot_images.py",
+ "size": 8388608,
+ "tool": "mke2fs 1.47.0 (5-Feb-2023)"
+}

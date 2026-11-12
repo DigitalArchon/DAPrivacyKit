@@ -1,0 +1,2987 @@
+{
+ "block_size": 4096,
+ "caller": [
+  1000,
+  1000
+ ],
+ "deleted": {
+  "": [
+   "Project X"
+  ],
+  "Big": [
+   "holiday-photo-0010-taken-on-the-beach.jpg",
+   "holiday-photo-0011-taken-on-the-beach.jpg",
+   "holiday-photo-0012-taken-on-the-beach.jpg",
+   "holiday-photo-0013-taken-on-the-beach.jpg",
+   "holiday-photo-0014-taken-on-the-beach.jpg",
+   "holiday-photo-0015-taken-on-the-beach.jpg",
+   "holiday-photo-0016-taken-on-the-beach.jpg",
+   "holiday-photo-0017-taken-on-the-beach.jpg",
+   "holiday-photo-0018-taken-on-the-beach.jpg",
+   "holiday-photo-0019-taken-on-the-beach.jpg",
+   "holiday-photo-0020-taken-on-the-beach.jpg",
+   "holiday-photo-0021-taken-on-the-beach.jpg",
+   "holiday-photo-0022-taken-on-the-beach.jpg",
+   "holiday-photo-0023-taken-on-the-beach.jpg",
+   "holiday-photo-0024-taken-on-the-beach.jpg",
+   "holiday-photo-0025-taken-on-the-beach.jpg",
+   "holiday-photo-0026-taken-on-the-beach.jpg",
+   "holiday-photo-0027-taken-on-the-beach.jpg",
+   "holiday-photo-0028-taken-on-the-beach.jpg",
+   "holiday-photo-0029-taken-on-the-beach.jpg",
+   "holiday-photo-0030-taken-on-the-beach.jpg",
+   "holiday-photo-0031-taken-on-the-beach.jpg",
+   "holiday-photo-0032-taken-on-the-beach.jpg",
+   "holiday-photo-0033-taken-on-the-beach.jpg",
+   "holiday-photo-0034-taken-on-the-beach.jpg",
+   "holiday-photo-0035-taken-on-the-beach.jpg",
+   "holiday-photo-0036-taken-on-the-beach.jpg",
+   "holiday-photo-0037-taken-on-the-beach.jpg",
+   "holiday-photo-0038-taken-on-the-beach.jpg",
+   "holiday-photo-0039-taken-on-the-beach.jpg",
+   "holiday-photo-0040-taken-on-the-beach.jpg",
+   "holiday-photo-0041-taken-on-the-beach.jpg",
+   "holiday-photo-0042-taken-on-the-beach.jpg",
+   "holiday-photo-0043-taken-on-the-beach.jpg",
+   "holiday-photo-0044-taken-on-the-beach.jpg",
+   "holiday-photo-0045-taken-on-the-beach.jpg",
+   "holiday-photo-0046-taken-on-the-beach.jpg",
+   "holiday-photo-0047-taken-on-the-beach.jpg",
+   "holiday-photo-0048-taken-on-the-beach.jpg",
+   "holiday-photo-0049-taken-on-the-beach.jpg"
+  ],
+  "Documents": [
+   "secret-plan.odt",
+   "tax 2025.pdf",
+   "na\u00efve caf\u00e9 \u00fcn\u00efcode.txt"
+  ],
+  "Private": [
+   "bobs-letter.odt"
+  ],
+  "Shared": [
+   "shared-notes.txt"
+  ],
+  "trim-test": [
+   "5eed5eed5eed5eed0001"
+  ]
+ },
+ "dumpe2fs": [
+  "Filesystem volume name:   dapk",
+  "Last mounted on:          /tmp/dapk-images-j8qjq76m/mnt",
+  "Filesystem UUID:          5eed0000-0000-4000-8000-00000000e4e4",
+  "Filesystem magic number:  0xEF53",
+  "Filesystem revision #:    1 (dynamic)",
+  "Filesystem features:      has_journal ext_attr resize_inode dir_index filetype extent 64bit flex_bg sparse_super large_file huge_file dir_nlink extra_isize metadata_csum",
+  "Filesystem flags:         signed_directory_hash ",
+  "Default mount options:    user_xattr acl",
+  "Filesystem state:         clean",
+  "Errors behavior:          Continue",
+  "Filesystem OS type:       Linux",
+  "Inode count:              4096",
+  "Block count:              4096",
+  "Reserved block count:     204",
+  "Overhead clusters:        1285",
+  "Free blocks:              2789",
+  "Free inodes:              3814",
+  "First block:              0",
+  "Block size:               4096",
+  "Fragment size:            4096",
+  "Group descriptor size:    64",
+  "Reserved GDT blocks:      1",
+  "Blocks per group:         32768",
+  "Fragments per group:      32768",
+  "Inodes per group:         4096",
+  "Inode blocks per group:   256",
+  "Flex block group size:    16",
+  "Filesystem created:       Thu Nov 12 15:54:17 2026",
+  "Last mount time:          Thu Nov 12 15:54:17 2026",
+  "Last write time:          Thu Nov 12 15:54:19 2026",
+  "Mount count:              1",
+  "Maximum mount count:      -1",
+  "Last checked:             Thu Nov 12 15:54:17 2026",
+  "Check interval:           0 (<none>)",
+  "Lifetime writes:          661 kB",
+  "Reserved blocks uid:      0 (user root)",
+  "Reserved blocks gid:      0 (group root)",
+  "First inode:              11",
+  "Inode size:\t          256",
+  "Required extra isize:     32",
+  "Desired extra isize:      32",
+  "Journal inode:            8",
+  "Default directory hash:   half_md4",
+  "Directory Hash Seed:      5eed0000-0000-4000-8000-0000000000aa",
+  "Journal backup:           inode blocks",
+  "Checksum type:            crc32c",
+  "Checksum:                 0x5e77be4d",
+  "Journal features:         journal_incompat_revoke journal_64bit journal_checksum_v3",
+  "Total journal size:       4096k",
+  "Total journal blocks:     1024",
+  "Max transaction length:   1024",
+  "Fast commit length:       0",
+  "Journal sequence:         0x00000007",
+  "Journal start:            0",
+  "Journal checksum type:    crc32c",
+  "Journal checksum:         0xfa77e44e",
+  ""
+ ],
+ "entries": {
+  "": {
+   "extents": [
+    [
+     16384,
+     4096,
+     1,
+     0
+    ]
+   ],
+   "flags": 524288,
+   "gen": 0,
+   "gid": 1000,
+   "ino": 2,
+   "mode": 16877,
+   "size": 4096,
+   "type": "dir",
+   "uid": 1000
+  },
+  "Big": {
+   "extents": [
+    [
+     5292032,
+     4096,
+     0,
+     0
+    ],
+    [
+     5320704,
+     20480,
+     1,
+     4096
+    ]
+   ],
+   "flags": 528384,
+   "gen": 3081540388,
+   "gid": 1000,
+   "ino": 13,
+   "mode": 16877,
+   "size": 24576,
+   "type": "dir",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0000-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 2627499833,
+   "gid": 1000,
+   "ino": 24,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0001-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 75437783,
+   "gid": 1000,
+   "ino": 25,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0002-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 3367755250,
+   "gid": 1000,
+   "ino": 26,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0003-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 2630008838,
+   "gid": 1000,
+   "ino": 27,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0004-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 2269772419,
+   "gid": 1000,
+   "ino": 28,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0005-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 2923616606,
+   "gid": 1000,
+   "ino": 29,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0006-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 359469705,
+   "gid": 1000,
+   "ino": 30,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0007-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 3141972261,
+   "gid": 1000,
+   "ino": 31,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0008-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 4021487256,
+   "gid": 1000,
+   "ino": 32,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0009-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 3580702627,
+   "gid": 1000,
+   "ino": 33,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0050-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 712974867,
+   "gid": 1000,
+   "ino": 74,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0051-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 3496372138,
+   "gid": 1000,
+   "ino": 75,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0052-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 2859939963,
+   "gid": 1000,
+   "ino": 76,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0053-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 37269951,
+   "gid": 1000,
+   "ino": 77,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0054-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 3121099433,
+   "gid": 1000,
+   "ino": 78,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0055-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 686456265,
+   "gid": 1000,
+   "ino": 79,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0056-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 2293675839,
+   "gid": 1000,
+   "ino": 80,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0057-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 3280764568,
+   "gid": 1000,
+   "ino": 81,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0058-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 3461246912,
+   "gid": 1000,
+   "ino": 82,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0059-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 2476656615,
+   "gid": 1000,
+   "ino": 83,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0060-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 190314690,
+   "gid": 1000,
+   "ino": 84,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0061-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 233782139,
+   "gid": 1000,
+   "ino": 85,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0062-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 4058684850,
+   "gid": 1000,
+   "ino": 86,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0063-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 1622967517,
+   "gid": 1000,
+   "ino": 87,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0064-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 2568710212,
+   "gid": 1000,
+   "ino": 88,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0065-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 3691993873,
+   "gid": 1000,
+   "ino": 89,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0066-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 1895761745,
+   "gid": 1000,
+   "ino": 90,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0067-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 1518855873,
+   "gid": 1000,
+   "ino": 91,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0068-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 1622079841,
+   "gid": 1000,
+   "ino": 92,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0069-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 1395812967,
+   "gid": 1000,
+   "ino": 93,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0070-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 1007368057,
+   "gid": 1000,
+   "ino": 94,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0071-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 1889608318,
+   "gid": 1000,
+   "ino": 95,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0072-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 817153090,
+   "gid": 1000,
+   "ino": 96,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0073-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 2040014435,
+   "gid": 1000,
+   "ino": 97,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0074-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 2283299632,
+   "gid": 1000,
+   "ino": 98,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0075-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 3590257854,
+   "gid": 1000,
+   "ino": 99,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0076-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 2510648613,
+   "gid": 1000,
+   "ino": 100,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0077-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 1083949525,
+   "gid": 1000,
+   "ino": 101,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0078-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 2153455631,
+   "gid": 1000,
+   "ino": 102,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0079-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 4177802673,
+   "gid": 1000,
+   "ino": 103,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0080-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 22175711,
+   "gid": 1000,
+   "ino": 104,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0081-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 4264745971,
+   "gid": 1000,
+   "ino": 105,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0082-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 435004214,
+   "gid": 1000,
+   "ino": 106,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0083-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 581862693,
+   "gid": 1000,
+   "ino": 107,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0084-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 473146867,
+   "gid": 1000,
+   "ino": 108,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0085-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 190981899,
+   "gid": 1000,
+   "ino": 109,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0086-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 3611869604,
+   "gid": 1000,
+   "ino": 110,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0087-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 1270631837,
+   "gid": 1000,
+   "ino": 111,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0088-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 616721336,
+   "gid": 1000,
+   "ino": 112,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0089-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 279049110,
+   "gid": 1000,
+   "ino": 113,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0090-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 1410202714,
+   "gid": 1000,
+   "ino": 114,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0091-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 2565173003,
+   "gid": 1000,
+   "ino": 115,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0092-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 3616027026,
+   "gid": 1000,
+   "ino": 116,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0093-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 2771189153,
+   "gid": 1000,
+   "ino": 117,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0094-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 3252426697,
+   "gid": 1000,
+   "ino": 118,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0095-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 3109935256,
+   "gid": 1000,
+   "ino": 119,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0096-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 1355801643,
+   "gid": 1000,
+   "ino": 120,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0097-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 1692857394,
+   "gid": 1000,
+   "ino": 121,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0098-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 732549630,
+   "gid": 1000,
+   "ino": 122,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0099-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 1310933402,
+   "gid": 1000,
+   "ino": 123,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0100-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 435521281,
+   "gid": 1000,
+   "ino": 124,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0101-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 2252753786,
+   "gid": 1000,
+   "ino": 125,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0102-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 1341937795,
+   "gid": 1000,
+   "ino": 126,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0103-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 4240650209,
+   "gid": 1000,
+   "ino": 127,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0104-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 782882174,
+   "gid": 1000,
+   "ino": 128,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0105-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 620432109,
+   "gid": 1000,
+   "ino": 129,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0106-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 1581767145,
+   "gid": 1000,
+   "ino": 130,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0107-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 4142953737,
+   "gid": 1000,
+   "ino": 131,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0108-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 2326003208,
+   "gid": 1000,
+   "ino": 132,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0109-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 656015536,
+   "gid": 1000,
+   "ino": 133,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0110-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 2150369172,
+   "gid": 1000,
+   "ino": 134,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0111-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 1217788573,
+   "gid": 1000,
+   "ino": 135,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0112-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 3260800308,
+   "gid": 1000,
+   "ino": 136,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0113-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 1615619099,
+   "gid": 1000,
+   "ino": 137,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0114-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 662636377,
+   "gid": 1000,
+   "ino": 138,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0115-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 3842341248,
+   "gid": 1000,
+   "ino": 139,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0116-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 150411012,
+   "gid": 1000,
+   "ino": 140,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0117-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 1895971029,
+   "gid": 1000,
+   "ino": 141,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0118-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 409743238,
+   "gid": 1000,
+   "ino": 142,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0119-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 119586968,
+   "gid": 1000,
+   "ino": 143,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0120-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 869119259,
+   "gid": 1000,
+   "ino": 144,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0121-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 839379020,
+   "gid": 1000,
+   "ino": 145,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0122-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 1108604819,
+   "gid": 1000,
+   "ino": 146,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0123-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 2221110996,
+   "gid": 1000,
+   "ino": 147,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0124-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 2129394979,
+   "gid": 1000,
+   "ino": 148,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0125-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 1910332864,
+   "gid": 1000,
+   "ino": 149,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0126-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 4078838120,
+   "gid": 1000,
+   "ino": 150,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0127-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 917043568,
+   "gid": 1000,
+   "ino": 151,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0128-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 2604559942,
+   "gid": 1000,
+   "ino": 152,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0129-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 3908245557,
+   "gid": 1000,
+   "ino": 153,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0130-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 3664802062,
+   "gid": 1000,
+   "ino": 154,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0131-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 1287314698,
+   "gid": 1000,
+   "ino": 155,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0132-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 822033693,
+   "gid": 1000,
+   "ino": 156,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0133-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 4202465362,
+   "gid": 1000,
+   "ino": 157,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0134-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 2268935486,
+   "gid": 1000,
+   "ino": 158,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0135-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 1880327637,
+   "gid": 1000,
+   "ino": 159,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0136-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 1708652143,
+   "gid": 1000,
+   "ino": 160,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0137-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 1922209349,
+   "gid": 1000,
+   "ino": 161,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0138-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 3035342371,
+   "gid": 1000,
+   "ino": 162,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0139-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 1162309008,
+   "gid": 1000,
+   "ino": 163,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0140-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 3768558625,
+   "gid": 1000,
+   "ino": 164,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0141-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 2821466680,
+   "gid": 1000,
+   "ino": 165,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0142-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 3169559187,
+   "gid": 1000,
+   "ino": 166,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0143-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 2297985379,
+   "gid": 1000,
+   "ino": 167,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0144-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 986074174,
+   "gid": 1000,
+   "ino": 168,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0145-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 2535534733,
+   "gid": 1000,
+   "ino": 169,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0146-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 1557342693,
+   "gid": 1000,
+   "ino": 170,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0147-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 3378923651,
+   "gid": 1000,
+   "ino": 171,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0148-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 2499508880,
+   "gid": 1000,
+   "ino": 172,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0149-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 9058773,
+   "gid": 1000,
+   "ino": 173,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0150-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 372702755,
+   "gid": 1000,
+   "ino": 174,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0151-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 2631228010,
+   "gid": 1000,
+   "ino": 175,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0152-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 1638917415,
+   "gid": 1000,
+   "ino": 176,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0153-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 85543935,
+   "gid": 1000,
+   "ino": 177,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0154-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 3973291925,
+   "gid": 1000,
+   "ino": 178,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0155-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 1776179378,
+   "gid": 1000,
+   "ino": 179,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0156-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 2639768865,
+   "gid": 1000,
+   "ino": 180,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0157-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 2854485374,
+   "gid": 1000,
+   "ino": 181,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0158-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 422203143,
+   "gid": 1000,
+   "ino": 182,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0159-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 3685595541,
+   "gid": 1000,
+   "ino": 183,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0160-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 622956162,
+   "gid": 1000,
+   "ino": 184,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0161-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 1837924735,
+   "gid": 1000,
+   "ino": 185,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0162-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 720997995,
+   "gid": 1000,
+   "ino": 186,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0163-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 3869825153,
+   "gid": 1000,
+   "ino": 187,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0164-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 1954698053,
+   "gid": 1000,
+   "ino": 188,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0165-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 383159585,
+   "gid": 1000,
+   "ino": 189,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0166-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 994301814,
+   "gid": 1000,
+   "ino": 190,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0167-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 950324567,
+   "gid": 1000,
+   "ino": 191,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0168-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 441710956,
+   "gid": 1000,
+   "ino": 192,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0169-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 2550118886,
+   "gid": 1000,
+   "ino": 193,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0170-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 3444751437,
+   "gid": 1000,
+   "ino": 194,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0171-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 2701622521,
+   "gid": 1000,
+   "ino": 195,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0172-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 776170156,
+   "gid": 1000,
+   "ino": 196,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0173-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 2517053255,
+   "gid": 1000,
+   "ino": 197,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0174-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 1607888110,
+   "gid": 1000,
+   "ino": 198,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0175-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 1988362734,
+   "gid": 1000,
+   "ino": 199,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0176-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 3423952049,
+   "gid": 1000,
+   "ino": 200,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0177-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 506597609,
+   "gid": 1000,
+   "ino": 201,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0178-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 2859566800,
+   "gid": 1000,
+   "ino": 202,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0179-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 2516415628,
+   "gid": 1000,
+   "ino": 203,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0180-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 4199559896,
+   "gid": 1000,
+   "ino": 204,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0181-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 2839860003,
+   "gid": 1000,
+   "ino": 205,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0182-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 352001124,
+   "gid": 1000,
+   "ino": 206,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0183-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 2297857631,
+   "gid": 1000,
+   "ino": 207,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0184-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 337990591,
+   "gid": 1000,
+   "ino": 208,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0185-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 846779695,
+   "gid": 1000,
+   "ino": 209,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0186-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 2176009224,
+   "gid": 1000,
+   "ino": 210,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0187-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 664231009,
+   "gid": 1000,
+   "ino": 211,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0188-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 2314688471,
+   "gid": 1000,
+   "ino": 212,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0189-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 4065213546,
+   "gid": 1000,
+   "ino": 213,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0190-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 2681238504,
+   "gid": 1000,
+   "ino": 214,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0191-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 738572382,
+   "gid": 1000,
+   "ino": 215,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0192-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 1247379483,
+   "gid": 1000,
+   "ino": 216,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0193-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 3576833461,
+   "gid": 1000,
+   "ino": 217,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0194-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 3622795002,
+   "gid": 1000,
+   "ino": 218,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0195-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 3098657206,
+   "gid": 1000,
+   "ino": 219,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0196-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 983037733,
+   "gid": 1000,
+   "ino": 220,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0197-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 3182280775,
+   "gid": 1000,
+   "ino": 221,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0198-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 2799083480,
+   "gid": 1000,
+   "ino": 222,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0199-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 2823205882,
+   "gid": 1000,
+   "ino": 223,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0200-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 1537150658,
+   "gid": 1000,
+   "ino": 224,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0201-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 477055628,
+   "gid": 1000,
+   "ino": 225,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0202-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 3392217516,
+   "gid": 1000,
+   "ino": 226,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0203-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 2788139164,
+   "gid": 1000,
+   "ino": 227,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0204-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 713032855,
+   "gid": 1000,
+   "ino": 228,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0205-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 1218638388,
+   "gid": 1000,
+   "ino": 229,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0206-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 4138032156,
+   "gid": 1000,
+   "ino": 230,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0207-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 3452752595,
+   "gid": 1000,
+   "ino": 231,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0208-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 2872897800,
+   "gid": 1000,
+   "ino": 232,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0209-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 1275174017,
+   "gid": 1000,
+   "ino": 233,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0210-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 3745465052,
+   "gid": 1000,
+   "ino": 234,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0211-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 477544741,
+   "gid": 1000,
+   "ino": 235,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0212-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 369279726,
+   "gid": 1000,
+   "ino": 236,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0213-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 4223223148,
+   "gid": 1000,
+   "ino": 237,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0214-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 3182979537,
+   "gid": 1000,
+   "ino": 238,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0215-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 4280700900,
+   "gid": 1000,
+   "ino": 239,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0216-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 555759998,
+   "gid": 1000,
+   "ino": 240,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0217-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 946557920,
+   "gid": 1000,
+   "ino": 241,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0218-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 1134995937,
+   "gid": 1000,
+   "ino": 242,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0219-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 2559145496,
+   "gid": 1000,
+   "ino": 243,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0220-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 1841838407,
+   "gid": 1000,
+   "ino": 244,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0221-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 5999154,
+   "gid": 1000,
+   "ino": 245,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0222-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 2566884606,
+   "gid": 1000,
+   "ino": 246,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0223-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 847239232,
+   "gid": 1000,
+   "ino": 247,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0224-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 3905754917,
+   "gid": 1000,
+   "ino": 248,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0225-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 2029894967,
+   "gid": 1000,
+   "ino": 249,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0226-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 3688508789,
+   "gid": 1000,
+   "ino": 250,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0227-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 1974619444,
+   "gid": 1000,
+   "ino": 251,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0228-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 2961694472,
+   "gid": 1000,
+   "ino": 252,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0229-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 3533453003,
+   "gid": 1000,
+   "ino": 253,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0230-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 172360314,
+   "gid": 1000,
+   "ino": 254,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0231-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 3978721846,
+   "gid": 1000,
+   "ino": 255,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0232-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 515368904,
+   "gid": 1000,
+   "ino": 256,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0233-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 418743654,
+   "gid": 1000,
+   "ino": 257,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0234-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 120100964,
+   "gid": 1000,
+   "ino": 258,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0235-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 621083121,
+   "gid": 1000,
+   "ino": 259,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0236-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 56986685,
+   "gid": 1000,
+   "ino": 260,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0237-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 1660862390,
+   "gid": 1000,
+   "ino": 261,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0238-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 3160380735,
+   "gid": 1000,
+   "ino": 262,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0239-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 51880442,
+   "gid": 1000,
+   "ino": 263,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0240-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 2108937675,
+   "gid": 1000,
+   "ino": 264,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0241-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 4016571529,
+   "gid": 1000,
+   "ino": 265,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0242-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 1753499474,
+   "gid": 1000,
+   "ino": 266,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0243-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 392885537,
+   "gid": 1000,
+   "ino": 267,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0244-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 490490541,
+   "gid": 1000,
+   "ino": 268,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0245-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 3333228748,
+   "gid": 1000,
+   "ino": 269,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0246-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 1426513511,
+   "gid": 1000,
+   "ino": 270,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0247-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 2924476426,
+   "gid": 1000,
+   "ino": 271,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0248-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 626205116,
+   "gid": 1000,
+   "ino": 272,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0249-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 2709940170,
+   "gid": 1000,
+   "ino": 273,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0250-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 4189702588,
+   "gid": 1000,
+   "ino": 274,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0251-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 312457217,
+   "gid": 1000,
+   "ino": 275,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0252-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 3633740465,
+   "gid": 1000,
+   "ino": 276,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0253-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 2468833210,
+   "gid": 1000,
+   "ino": 277,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0254-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 537628621,
+   "gid": 1000,
+   "ino": 278,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0255-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 1231652291,
+   "gid": 1000,
+   "ino": 279,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0256-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 1042368554,
+   "gid": 1000,
+   "ino": 280,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0257-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 1583226809,
+   "gid": 1000,
+   "ino": 281,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0258-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 2098767460,
+   "gid": 1000,
+   "ino": 282,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0259-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 4011232034,
+   "gid": 1000,
+   "ino": 283,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0260-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 3606955984,
+   "gid": 1000,
+   "ino": 284,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0261-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 1251233656,
+   "gid": 1000,
+   "ino": 285,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0262-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 3618752077,
+   "gid": 1000,
+   "ino": 286,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0263-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 1313132777,
+   "gid": 1000,
+   "ino": 287,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0264-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 231513644,
+   "gid": 1000,
+   "ino": 288,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0265-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 3136486816,
+   "gid": 1000,
+   "ino": 289,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0266-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 2420971163,
+   "gid": 1000,
+   "ino": 290,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0267-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 545346866,
+   "gid": 1000,
+   "ino": 291,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0268-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 1074851114,
+   "gid": 1000,
+   "ino": 292,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0269-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 2494713471,
+   "gid": 1000,
+   "ino": 293,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0270-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 2164784149,
+   "gid": 1000,
+   "ino": 294,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0271-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 4293166798,
+   "gid": 1000,
+   "ino": 295,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0272-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 3576133430,
+   "gid": 1000,
+   "ino": 296,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0273-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 2276696825,
+   "gid": 1000,
+   "ino": 297,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0274-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 3684850366,
+   "gid": 1000,
+   "ino": 298,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0275-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 2866755519,
+   "gid": 1000,
+   "ino": 299,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0276-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 1801194550,
+   "gid": 1000,
+   "ino": 300,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0277-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 2201282231,
+   "gid": 1000,
+   "ino": 301,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0278-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 1627137323,
+   "gid": 1000,
+   "ino": 302,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0279-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 3190369039,
+   "gid": 1000,
+   "ino": 303,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0280-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 379954923,
+   "gid": 1000,
+   "ino": 304,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0281-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 3242104726,
+   "gid": 1000,
+   "ino": 305,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0282-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 2760288184,
+   "gid": 1000,
+   "ino": 306,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0283-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 909872266,
+   "gid": 1000,
+   "ino": 307,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0284-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 2338330517,
+   "gid": 1000,
+   "ino": 308,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0285-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 3733867866,
+   "gid": 1000,
+   "ino": 309,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0286-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 3588567470,
+   "gid": 1000,
+   "ino": 310,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0287-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 572580481,
+   "gid": 1000,
+   "ino": 311,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0288-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 4207245963,
+   "gid": 1000,
+   "ino": 312,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0289-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 3860237274,
+   "gid": 1000,
+   "ino": 313,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0290-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 649349355,
+   "gid": 1000,
+   "ino": 314,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0291-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 3945438239,
+   "gid": 1000,
+   "ino": 315,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0292-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 3150652287,
+   "gid": 1000,
+   "ino": 316,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0293-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 1726868468,
+   "gid": 1000,
+   "ino": 317,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0294-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 1337581160,
+   "gid": 1000,
+   "ino": 318,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0295-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 739177185,
+   "gid": 1000,
+   "ino": 319,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0296-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 2876714181,
+   "gid": 1000,
+   "ino": 320,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0297-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 3791674874,
+   "gid": 1000,
+   "ino": 321,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0298-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 2961290689,
+   "gid": 1000,
+   "ino": 322,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Big/holiday-photo-0299-taken-on-the-beach.jpg": {
+   "flags": 524288,
+   "gen": 554600972,
+   "gid": 1000,
+   "ino": 323,
+   "mode": 33188,
+   "size": 0,
+   "type": "file",
+   "uid": 1000
+  },
+  "Documents": {
+   "extents": [
+    [
+     5287936,
+     4096,
+     1,
+     0
+    ]
+   ],
+   "flags": 524288,
+   "gen": 1547778454,
+   "gid": 1000,
+   "ino": 12,
+   "mode": 16877,
+   "size": 4096,
+   "type": "dir",
+   "uid": 1000
+  },
+  "Documents/keep.txt": {
+   "flags": 524288,
+   "gen": 4132197236,
+   "gid": 1000,
+   "ino": 20,
+   "mode": 33188,
+   "size": 100,
+   "type": "file",
+   "uid": 1000
+  },
+  "Documents/made-after-rm-r.txt": {
+   "flags": 524288,
+   "gen": 3944819017,
+   "gid": 1000,
+   "ino": 14,
+   "mode": 33188,
+   "size": 3,
+   "type": "file",
+   "uid": 1000
+  },
+  "Downloads": {
+   "extents": [
+    [
+     5300224,
+     4096,
+     1,
+     0
+    ]
+   ],
+   "flags": 524288,
+   "gen": 1937460216,
+   "gid": 1000,
+   "ino": 15,
+   "mode": 16877,
+   "size": 4096,
+   "type": "dir",
+   "uid": 1000
+  },
+  "Private": {
+   "extents": [
+    [
+     5316608,
+     4096,
+     1,
+     0
+    ]
+   ],
+   "flags": 524288,
+   "gen": 931409586,
+   "gid": 4242,
+   "ino": 19,
+   "mode": 16832,
+   "size": 4096,
+   "type": "dir",
+   "uid": 4242
+  },
+  "Private/bobs-keep.txt": {
+   "flags": 524288,
+   "gen": 3704237107,
+   "gid": 4242,
+   "ino": 329,
+   "mode": 33188,
+   "size": 1,
+   "type": "file",
+   "uid": 4242
+  },
+  "Shared": {
+   "extents": [
+    [
+     5312512,
+     4096,
+     1,
+     0
+    ]
+   ],
+   "flags": 524288,
+   "gen": 3131664133,
+   "gid": 4242,
+   "ino": 18,
+   "mode": 16877,
+   "size": 4096,
+   "type": "dir",
+   "uid": 4242
+  },
+  "Shared/still-shared.txt": {
+   "flags": 524288,
+   "gen": 3547365529,
+   "gid": 4242,
+   "ino": 327,
+   "mode": 33188,
+   "size": 1,
+   "type": "file",
+   "uid": 4242
+  },
+  "lost+found": {
+   "extents": [
+    [
+     20480,
+     16384,
+     1,
+     0
+    ]
+   ],
+   "flags": 524288,
+   "gen": 0,
+   "gid": 0,
+   "ino": 11,
+   "mode": 16832,
+   "size": 16384,
+   "type": "dir",
+   "uid": 0
+  },
+  "trim-test": {
+   "extents": [
+    [
+     5304320,
+     4096,
+     1,
+     0
+    ]
+   ],
+   "flags": 524288,
+   "gen": 2103853840,
+   "gid": 1000,
+   "ino": 16,
+   "mode": 16877,
+   "size": 4096,
+   "type": "dir",
+   "uid": 1000
+  },
+  "trim-test/5eed5eed5eed5eed0000": {
+   "extents": [
+    [
+     7462912,
+     4096,
+     1,
+     0
+    ]
+   ],
+   "flags": 524288,
+   "gen": 2755622500,
+   "gid": 1000,
+   "ino": 330,
+   "mode": 33188,
+   "size": 4096,
+   "type": "file",
+   "uid": 1000
+  }
+ },
+ "features": "metadata_csum,64bit,dir_index",
+ "fstrim": "/tmp/dapk-images-j8qjq76m/mnt: 10,9 MiB (11423744 bytes) trimmed",
+ "fstype": "ext4",
+ "gone": {
+  "Project X": [
+   "drafts",
+   "offer.pdf"
+  ],
+  "Project X/drafts": [
+   "draft 1.odt"
+  ]
+ },
+ "kernel": "7.0.0-42-generic",
+ "made": "2026-11-12",
+ "made_by": "tests/images/make_images.py",
+ "run": "0123456789abcdeffedcba9876543210",
+ "size": 16777216,
+ "tag": "5eed5eed5eed5eed",
+ "tool": "mke2fs 1.47.0 (5-Feb-2023)",
+ "trim": {
+  "5eed5eed5eed5eed0000": {
+   "deleted": false,
+   "file": 0,
+   "records": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ]
+  },
+  "5eed5eed5eed5eed0001": {
+   "deleted": true,
+   "file": 1,
+   "records": [
+    100,
+    101,
+    102,
+    103,
+    104,
+    105,
+    106,
+    107
+   ]
+  }
+ },
+ "trimmed": true
+}
