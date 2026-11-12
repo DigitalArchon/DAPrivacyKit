@@ -421,7 +421,8 @@ window.fetch = async (path, opts = {}) => {
   if (opts.credentials !== "omit") throw new Error("cookies would be sent on " + key);
   const handler = routes[key];
   if (!handler) return { ok: false, status: 404, statusText: "no route " + key, json: async () => ({}) };
-  let data = handler(opts.body ? JSON.parse(opts.body) : undefined), status = 200;
+  // a route may answer later (a promise): the request waits for it, as one the server takes its time over
+  let data = await handler(opts.body ? JSON.parse(opts.body) : undefined), status = 200;
   if (data?.__status) ({ __status: status, data } = data);          // a refusal: { __status: 403, data: { error, ... } }
   return { ok: status < 400, status, statusText: status < 400 ? "OK" : "Refused", json: async () => data,
            text: async () => (typeof data === "string" ? data : JSON.stringify(data)) };
@@ -731,6 +732,20 @@ check(calls.includes("GET /api/report"), "export fetched the report");
   delete routes["POST /api/export/save"];
   kind.value = "report"; kind.dispatchEvent(new window.Event("change"));
   fmt.value = "text"; fmt.dispatchEvent(new window.Event("change")); await tick(); }
+{ // only the answer to the last request is shown, and Copy waits for it: an unredacted report answered late, after the
+  // redacted one asked for since, was shown under a ticked Redact, and Copy took it
+  const report0 = routes["GET /api/report"];
+  const later = [];
+  routes["GET /api/report"] = () => new Promise(r => later.push(r));
+  const redact = $(".modal .export label.check input"), copy = $$(".modal .buttons button").find(b => b.textContent === "Copy");
+  redact.checked = false; redact.dispatchEvent(new window.Event("change")); await tick();
+  check(copy.disabled && text(".modal .export pre") === "Loading…", "while the report is fetched, Copy waits and the box says so");
+  redact.checked = true; redact.dispatchEvent(new window.Event("change")); await tick();
+  later[1]("the report, redacted"); await tick();
+  later[0]("the report, NOT redacted"); await tick();
+  check(text(".modal .export pre") === "the report, redacted" && !copy.disabled,
+        "an older answer that comes last is dropped: the box shows what the ticks say, and Copy is back");
+  routes["GET /api/report"] = report0; }
 $$(".modal .buttons button").at(-1).click();
 
 // export everything (from History, or picked in the dialog)
@@ -2275,7 +2290,9 @@ while ($$(".modal").length) { $$(".modal .buttons button").at(-1).click(); await
     const button = () => $$(`#c-${id.replace(".", "\\.")} .badges button`).find(b => b.textContent === label);
     const clicked = button();
     clicked.focus(); clicked.click(); await tick(); await tick();
-    check($$(".modal").length === 1 && !clicked.isConnected, `(${label}: the row was drawn anew as its dialog opened)`);
+    // the list was drawn again as the plan re-checked the row: in place now, so the button is the same one
+    check($$(".modal").length === 1 && clicked.isConnected && button() === clicked,
+          `${label}: the list drawn again as its dialog opened keeps the row's button`);
     esc(); await tick();
     check(!$$(".modal").length && doc.activeElement === button(), `closing ${label} puts the focus back on the row's ${label}`);
     button().focus(); button().click(); await tick(); await tick();
@@ -2770,6 +2787,56 @@ while ($$(".modal").length) { $$(".modal .buttons button").at(-1).click(); await
   await new Promise(r => setTimeout(r, 500));
   routes["GET /api/tools/metadata/job"] = job0; routes["POST /api/tools/metadata/stop"] = stop0;
   while ($$(".modal").length) { $$(".modal").at(-1).querySelector(".buttons button").click(); await tick(); } }
+
+// what is typed and chosen lives in the page's state, not in nodes drawn again: a reason for accepting a risk being typed
+// as an online result arrives, a guide's input changed twice before its first plan came back
+{ const S = window.eval("S"), doc = window.document;
+  const id = Object.keys(S.report.results).find(k => S.report.results[k].is_finding && !S.state.accepted[k]
+                                                    && S.report.results[k].status === "fail");
+  const row = `#c-${id.replace(".", "\\.")}`;
+  window.setShow("all"); S.open.add(id); window.renderChecks(); await tick();
+  [...$$(`${row} .accept-row button`)].find(b => b.textContent === "Accept the risk…").click(); await tick();
+  const note = $(`${row} .accept-row input`);
+  check(doc.activeElement === note, "Accept the risk… puts the focus in the reason box");
+  note.value = "lab machine"; note.dispatchEvent(new window.Event("input"));
+  S.report.results["net.dns_leak"] = { ...(S.report.results["net.dns_leak"] || {}), id: "net.dns_leak", status: "pass",
+    effective_severity: 3, summary: "No leak.", evidence: [], notes: [], uncertain_on: [], fixable: false };
+  window.renderChecks(); await tick();                             // an online test's result arriving
+  check($(`${row} .accept-row input`) === note && note.value === "lab machine" && doc.activeElement === note,
+        "the reason being typed, and the focus, stay as the list is drawn again");
+  [...$$(`${row} .accept-row button`)].find(b => b.textContent === "Cancel").click(); await tick();
+  check(!$(`${row} .accept-row input`) && !(id in S.accepting), "Cancel closes the box and forgets the draft");
+  S.open.delete(id); window.renderChecks(); await tick(); }
+
+{ const plain = routes["POST /api/fix/desk.ephemeral_folder/plan"], waiting = [];
+  await window.openGuide({ id: "desk.ephemeral_folder", tier: "feature" }); await tick();
+  routes["POST /api/fix/desk.ephemeral_folder/plan"] = (body) => new Promise(r => waiting.push(() => r(plain(body))));
+  const size = $(".modal .ginput input[type=number]");
+  size.focus();
+  size.value = "600"; size.dispatchEvent(new window.Event("change")); await tick();
+  size.value = "700"; size.dispatchEvent(new window.Event("change")); await tick();
+  waiting[1](); await tick(); await tick();
+  waiting[0](); await tick(); await tick();
+  check(text(".modal .steps code") === "mount 700 MB" && $(".modal .ginput input[type=number]") === size && size.value === "700",
+        "a guide's plan answered late, for an older value, is dropped: the dry run is for the value chosen last");
+  check(window.document.activeElement === size, "and the input keeps the focus as the guide is drawn again");
+  routes["POST /api/fix/desk.ephemeral_folder/plan"] = plain;
+  while ($$(".modal").length) { $$(".modal .buttons button").at(-1).click(); await tick(); } }
+
+{ // the bridge lines being pasted stay as the browser panel is drawn again (it followed the running browser, and drew
+  // over them unless the box had the focus)
+  browserJob = { state: "done", name: "Tor Browser", version: "15.0.24", verdict: { title: "Verified" } };
+  await window.openBrowserTool(); await tick(); await tick();
+  const sel = $(".modal .browser-tool .toolcard select");
+  sel.value = "custom"; sel.dispatchEvent(new window.Event("change")); await tick();
+  const area = $(".modal .browser-tool .toolcard textarea");
+  area.value = "obfs4 192.0.2.9:443 CD cert=y iat-mode=0"; area.dispatchEvent(new window.Event("input"));
+  window.document.body.focus();
+  $$(".modal .browser-tool button").find(b => b.textContent === "Refresh").click(); await tick(); await tick();
+  check($(".modal .browser-tool .toolcard textarea") === area && area.value.startsWith("obfs4 192.0.2.9")
+        && !$(".modal .browser-tool .toolcard textarea").closest("[hidden]"), "bridge lines typed stay as the panel is drawn again");
+  while ($$(".modal").length) { $$(".modal .buttons button").at(-1).click(); await tick(); }
+  browserJob = null; }
 
 if (failures) { console.error(`${failures} front-end checks failed`); process.exit(1); }
 console.log("front-end: all checks passed");

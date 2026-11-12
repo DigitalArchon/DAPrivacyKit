@@ -25,7 +25,11 @@ const S = {
   jobClock: 0,        // local time minus the server's, for the job's timers
   jobLost: 0,         // status requests that failed in a row
   jobHidden: false,   // the user closed the finished job's strip
+  jobStop: null,      // "after" or "now" while a Stop of the online tests waits for its answer
   presentation: null, // {on, since}: Presentation mode, shown in the top bar while it is on
+  accepting: {},      // check id -> the reason being typed for accepting its risk (the box is open while it is here)
+  messages: [],       // what the toasts said, newest last, for the Messages log (they go by themselves)
+  offline: false,     // the app's server isn't answering: said once, at the top, until it answers again
 };
 
 const isOnline = (spec) => spec.scope === "online";
@@ -56,9 +60,10 @@ function h(tag, attrs = {}, ...children) {
     if (k === "key") { el._key = v; continue; }
     if (v !== undefined && v !== null) {
       if (k === "checked" && el.tagName === "INPUT") { (el._ctl ||= {}).checked = !!v; el.checked = !!v; }
-      if (k === "value" && (el.tagName === "INPUT" || el.tagName === "TEXTAREA")) {
+      if (k === "value" && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT")) {
         (el._ctl ||= {}).value = String(v);
         if (el.tagName === "TEXTAREA") { el.value = String(v); continue; }
+        if (el.tagName === "SELECT") continue;          // set once its options are in (below)
       }
     }
     if (v === undefined || v === null || v === false) continue;
@@ -74,6 +79,7 @@ function h(tag, attrs = {}, ...children) {
     if (c === null || c === undefined || c === false) continue;
     el.append(c instanceof Node ? c : document.createTextNode(String(c)));
   }
+  if (el.tagName === "SELECT" && el._ctl && "value" in el._ctl) el.value = el._ctl.value;
   return el;
 }
 
@@ -151,12 +157,11 @@ function morph(o, n) {
   o._on = n._on;
   for (const t of Object.keys(n._on || {})) o.addEventListener(t, dispatch);
   o._key = n._key;
-  if (n._ctl) {
+  if (o.tagName !== "TEXTAREA") patchChildren(o, [...n.childNodes]);    // a textarea's text is its value (below)
+  if (n._ctl) {                                  // after the children: a select's value is one of its options
     for (const [k, v] of Object.entries(n._ctl)) if (o[k] !== v) o[k] = v;
-    o._ctl = n._ctl;
   }
-  if (o.tagName === "TEXTAREA") return;          // its text is its value: the user's, or its _ctl's
-  patchChildren(o, [...n.childNodes]);
+  o._ctl = n._ctl;
 }
 
 // a bar for how far something has got (0 to 1), told to a screen reader as a number
@@ -293,6 +298,10 @@ const SCOPE_TITLE = {
   system: "Needs administrator access for full detection or to fix",
   online: "Contacts other machines: runs only from Online tests, never in a scan",
 };
+// the row's badges, in words (developer mode shows the catalogue's tier and scope instead); a check that runs as the user,
+// as most do, has no scope badge
+const TIER_WORD = { auto: "one-step fix", guided: "step by step", advice: "instructions", feature: "set-up" };
+const SCOPE_WORD = { system: "needs admin", online: "online" };
 const KIND_TITLE = {
   hygiene: "Hygiene: residue of normal use (caches, histories). Listed and cleaned, not counted as a finding",
   info: "Information: an inventory worth knowing about, neither a pass nor a fail",
@@ -659,11 +668,15 @@ function findSpot(spot) {
     || (at.classList.contains("citem") ? at.querySelector(".row [role=button]") : null);
 }
 
+// The list is built apart, then drawn in place (patch): a row, its open details and what is typed in it (the reason for
+// accepting a risk, S.accepting) stay as they are when something else in the list changes (an online test's result
+// arriving), and a failure while building leaves the list as it was rather than half drawn.
 function renderChecks() {
   const list = $("#checks-list");
   const keepScroll = list.scrollTop;
   const spot = focusSpot(document.activeElement);
-  list.replaceChildren();
+  const out = [];
+  const append = (...els) => out.push(...els);
   const q = $("#filter").value.trim();
   const showNA = $("#show-na").checked;
   const byCat = new Map(), online = [], unchecked = [];
@@ -695,39 +708,42 @@ function renderChecks() {
   const weight = (v) => isFinding(v) ? 3 : isHygiene(v) || isInfo(v) ? 2 : isAccepted(v) ? 1 : 0;
   const risk = (v) => v.status === "warn" ? 1 : 0;
   const order = (a, b) => (weight(b[1]) - weight(a[1])) || (b[1].sev - a[1].sev) || (risk(a[1]) - risk(b[1]));
-  if (S.state?.in_browser && !S.browserNoted) list.append(browserBanner());
-  if (S.state?.app?.old && !S.oldCopyNoted) list.append(oldCopyBanner(S.state.app));
-  if (S.report?.undone?.length) list.append(undoneBanner(S.report.undone));
-  if (S.report) list.append(summaryBar(views));
-  if (unchecked.length) uncheckedSection(list, unchecked);
+  if (S.state?.in_browser && !S.browserNoted) append(browserBanner());
+  if (S.state?.app?.old && !S.oldCopyNoted) append(oldCopyBanner(S.state.app));
+  if (S.report?.undone?.length) append(undoneBanner(S.report.undone));
+  if (S.report) append(summaryBar(views));
+  else append(firstRun());
+  if (unchecked.length) uncheckedSection(append, unchecked);
+  // each category a heading (for a screen reader's list of headings) over a list of its rows
+  const rowList = (key, rows) => h("div", { role: "list", class: "rows", key, "aria-labelledby": `${key}-head` },
+    rows.map(([spec, v]) => checkRow(spec, v)));
   // the online tests' results first, in a section of their own
   const ran = S.report?.online?.ran;
   const running = S.job && ["starting", "asking", "running"].includes(S.job.state);
   if (online.length || (S.source === "online" && S.report)) {
     online.sort(order);
-    list.append(h("div", { class: "cat-head online" },
+    append(h("h3", { class: "cat-head online", id: "cat-online-head" },
       h("span", { class: "title" }, "Online tests"),
       h("span", { class: "muted small" }, running ? "running now" : ran
         ? `ran at ${new Date(ran * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : "not run yet"),
-      h("span", { class: "muted small" }, `${online.length}`)));
-    const block = h("div", { class: "online-block" });
-    for (const [spec, v] of online) block.append(checkRow(spec, v));
-    if (!online.length) block.append(h("div", { class: "empty" }, running ? "Results appear here as each test finishes."
-      : "No online test results to show. Start them with Online tests…"));
-    list.append(block);
-    if (byCat.size) list.append(h("div", { class: "section-gap" }, h("span", {}, "Scan results")));
+      h("span", { class: "muted small count", "aria-label": plural(online.length, "check") }, `${online.length}`)));
+    append(h("div", { class: "online-block", key: "online-block" }, rowList("cat-online", online),
+      online.length ? null : h("div", { class: "empty" }, running ? "Results appear here as each test finishes."
+        : "No online test results to show. Start them with Online tests…")));
+    if (byCat.size) append(h("div", { class: "section-gap", key: "gap" }, h("span", {}, "Scan results")));
   }
   for (const [cat, rows] of byCat) {
     rows.sort(order);
-    list.append(h("div", { class: "cat-head" },
+    append(h("h3", { class: "cat-head", id: `cat-${cat}-head` },
       h("span", { class: "title" }, S.state.categories[cat] || cat),
-      h("span", { class: "muted small" }, `${rows.length}`)));
-    for (const [spec, v] of rows) list.append(checkRow(spec, v));
+      h("span", { class: "muted small count", "aria-label": plural(rows.length, "check") }, `${rows.length}`)));
+    append(rowList(`cat-${cat}`, rows));
   }
-  if (!shownCount && S.source !== "online") list.append(h("div", { class: "empty" }, q ? "No checks match the filter."
+  if (!shownCount && S.source !== "online") append(h("div", { class: "empty", key: "empty" }, q ? "No checks match the filter."
     : S.band ? `No ${BAND_LABEL[S.band]} findings left.` : S.show === "findings" ? "No findings to act on."
     : S.show === "accepted" ? "Nothing accepted. A finding's details have an “Accept this risk” control."
     : "Nothing to show."));
+  patch(list, out);
 
   const total = S.state.catalogue.filter(sp => !isFeature(sp)).length;
   const parts = [`${total} in the catalogue`];
@@ -744,20 +760,36 @@ function renderChecks() {
 
 // at the top: what couldn't be checked, by the severity a problem would have, so nothing
 // serious hides behind "unknown"; those that only need administrator access get one button
-function uncheckedSection(list, rows) {
+function uncheckedSection(append, rows) {
   rows.sort((a, b) => b[1].sev - a[1].sev);
   const admin = rows.filter(([, v]) => v.needsAdmin).length;
-  list.append(h("div", { class: "cat-head unchecked", id: "unchecked" },
+  append(h("h3", { class: "cat-head unchecked", id: "unchecked" },
     h("span", { class: "title" }, "Couldn't check"),
-    h("span", { class: "muted small" }, `${rows.length}`)));
-  list.append(h("div", { class: "unchecked-why small" },
+    h("span", { class: "muted small count", "aria-label": plural(rows.length, "check") }, `${rows.length}`)));
+  append(h("div", { class: "unchecked-why small", key: "unchecked-why" },
     h("span", {}, "A problem in any of these wouldn't show as a finding. The number is the severity it would have."),
     admin && !S.report?.privileged ? [h("span", {}, " " + (admin === rows.length
         ? (admin > 1 ? "They all need" : "It needs") : `${admin} of them ${admin > 1 ? "need" : "needs"}`)
         + " administrator access to check."),
       h("button", { class: "small", onclick: () => { $("#admin").checked = true; $("#scan-btn").click(); } },
         "Scan with administrator access")] : null));
-  for (const [spec, v] of rows) list.append(checkRow(spec, v));
+  append(h("div", { role: "list", class: "rows", key: "unchecked-rows", "aria-labelledby": "unchecked" },
+    rows.map(([spec, v]) => checkRow(spec, v))));
+}
+
+// Before the first scan: what to do, one clear button, and what a scan is (the list below shows what it checks)
+function firstRun() {
+  return h("section", { class: "first-run", key: "first-run", "aria-labelledby": "first-run-head" },
+    h("h2", { id: "first-run-head" }, "Scan this computer"),
+    h("p", {}, "A scan reads how this computer is set up, and lists what puts your privacy at risk here, each with why it "
+      + "matters and what to do. It only reads: nothing is changed, and nothing leaves this computer."),
+    h("div", { class: "orow" },
+      h("button", { class: "primary big", onclick: () => scan() }, "Scan now"),
+      h("label", { class: "check small" }, h("input", { type: "checkbox", checked: $("#admin")?.checked,
+        onchange: (e) => { const a = $("#admin"); a.checked = e.currentTarget.checked; a.dispatchEvent(new Event("change")); } }),
+        "with administrator access (asks for your password; some checks need it)"),
+      h("button", { class: "small ghost", onclick: () => openReads() }, "What a scan reads…")),
+    h("p", { class: "small muted" }, "It takes a few seconds. Below is everything it checks."));
 }
 
 function setSource(src) {
@@ -770,7 +802,7 @@ function checkRow(spec, v) {
   const changed = S.report && v.sev !== spec.severity;
   const el = h("div", { class: `citem band-${v.found ? band(v.sev) : v.status === "not_applicable" ? "na" : "none"}`
     + `${v.status === "not_applicable" ? " dim" : ""}${isAccepted(v) ? " accepted" : ""}${v.status === "pass" ? " passed" : ""}`,
-    id: `c-${spec.id}` });
+    id: `c-${spec.id}`, role: "listitem" });
   const unc = v.uncertain?.length ? uncertainText(spec, v) : null;
   // the row's own button, for the keyboard and a screen reader: its titles open and close the details (Enter or Space,
   // known by code and number too), read out with the status and severity. Not the whole row, whose buttons (Fix…,
@@ -801,8 +833,11 @@ function checkRow(spec, v) {
         spec.tier === "feature" ? "Set up…" : spec.tier === "guided" ? "Guide…" : (spec.kind === "hygiene" ? "Clean…" : "Fix…")) : null,
       v.result?.how_to ? h("button", { class: "small", title: "What to do, step by step, for this machine: the app doesn't make this change itself",
         onclick: (e) => { e.stopPropagation(); openGuide(spec); } }, "How to…") : null,
+      // what it costs, read out with it (and in its details, under An Easy fix): a tooltip alone reached neither the
+      // keyboard nor a screen reader
       isEasy(v) ? h("button", { class: "badge easy", title: "An Easy fix: " + (spec.easy.cost || "it costs you nothing worth mentioning")
-        + " Easy fixes… applies it with the others.", onclick: (e) => { e.stopPropagation(); openEasy(); } }, "easy") : null,
+        + " Easy fixes… applies it with the others.", "aria-label": "Easy fix: " + (spec.easy.cost || "it costs you nothing "
+        + "worth mentioning") + " Opens Easy fixes.", onclick: (e) => { e.stopPropagation(); openEasy(); } }, "easy") : null,
       isAccepted(v) ? [h("span", { class: "badge accepted", title: acceptedRecord(spec.id)?.note || "You accepted this risk" }, "accepted"),
         h("button", { class: "small ghost unaccept", title: "Show it and count it as a finding again",
           onclick: (e) => { e.stopPropagation(); setAccepted(spec, false); } }, "Un-accept")] : null,
@@ -813,10 +848,12 @@ function checkRow(spec, v) {
           "fix undone") : null,
       v.partial && v.status !== "unknown" ? h("span", { class: "badge partial", title: "Detection was incomplete" }, "partial") : null,
       spec.kind !== "finding" ? h("span", { class: `badge kind-${spec.kind}`, title: KIND_TITLE[spec.kind] }, spec.kind) : null,
-      h("span", { class: `badge scope-${spec.scope}`, title: SCOPE_TITLE[spec.scope] },
-        spec.scope === "system" ? "root" : spec.scope),
+      // in words a user knows; the developer's terms (user, root, auto, guided…) in developer mode. What each means, in
+      // full, is in the row's details (How it is dealt with): a tooltip alone reached neither keyboard nor screen reader
+      isDev() || SCOPE_WORD[spec.scope] ? h("span", { class: `badge scope-${spec.scope}`, title: SCOPE_TITLE[spec.scope] },
+        isDev() ? (spec.scope === "system" ? "root" : spec.scope) : SCOPE_WORD[spec.scope]) : null,
       v.result?.no_fix ? h("span", { class: "badge tier-none", title: `Not on this machine: ${v.result.no_fix}` }, "no fix here")
-        : h("span", { class: `badge tier-${spec.tier}`, title: TIER_TITLE[spec.tier] }, spec.tier)),
+        : h("span", { class: `badge tier-${spec.tier}`, title: TIER_TITLE[spec.tier] }, isDev() ? spec.tier : TIER_WORD[spec.tier])),
   ));
   if (open) el.append(details(spec, v));
   return el;
@@ -855,25 +892,40 @@ function acceptRow(spec, v) {
         + (at ? ` It stays hidden unless its severity rises above ${info.severity}.` : "")),
       h("button", { class: "small", title: "Show it and count it as a finding again", onclick: () => setAccepted(spec, false) }, "Un-accept"));
   }
-  const row = h("div", { class: "accept-row" });
-  const closed = () => fill(row,
-    h("span", { class: "muted small" }, v.fixable ? "Not going to fix this?" : "Decided to live with this?"),
-    h("button", { class: "small ghost", onclick: open }, "Accept the risk…"));
-  const open = () => {
-    const note = h("input", { type: "text", maxlength: 300, placeholder: "e.g. test machine, needed for work", autocomplete: "off",
-      spellcheck: "false" });
-    fill(row,
-      h("p", { class: "small" }, "An accepted finding is hidden: it is listed only under Accepted, and no longer counted "
-        + `in the report or in the notifications of a scheduled scan. If its severity rises above ${v.sev} (the machine `
-        + "changes, or the app rates it higher), it is shown again with the reason. You can un-accept it at any time."),
-      h("label", { class: "small note" }, "Reason, for your own records (optional; kept with the report, and in its exports, redacted like the rest)", note),
-      h("div", { class: "buttons" },
-        h("button", { class: "small primary", onclick: () => setAccepted(spec, true, note.value) }, "Accept this risk"),
-        h("button", { class: "small ghost", onclick: closed }, "Cancel")));
-    note.focus();
-  };
-  closed();
-  return row;
+  // Whether the reason box is open, and what is typed in it, is S.accepting[id]: the list is drawn again whenever
+  // something in it changes (an online test's result arriving), and a reason typed in a box that only the old row had
+  // was wiped
+  const id = spec.id;
+  const where = () => document.getElementById(`c-${id}`)?.querySelector(".accept-row");
+  if (S.accepting[id] === undefined) {
+    return h("div", { class: "accept-row", key: "accept" },
+      h("span", { class: "muted small" }, v.fixable ? "Not going to fix this?" : "Decided to live with this?"),
+      h("button", { class: "small ghost", onclick: () => {
+        S.accepting[id] = "";
+        renderChecks();
+        where()?.querySelector("input")?.focus();
+      } }, "Accept the risk…"));
+  }
+  const hint = `accept-hint-${id}`;
+  const note = h("input", { type: "text", maxlength: 300, value: S.accepting[id], autocomplete: "off", spellcheck: "false",
+    "aria-describedby": hint, oninput: (e) => { S.accepting[id] = e.currentTarget.value; } });
+  return h("div", { class: "accept-row", key: "accept-open" },
+    h("p", { class: "small" }, "An accepted finding is hidden: it is listed only under Accepted, and no longer counted "
+      + `in the report or in the notifications of a scheduled scan. If its severity rises above ${v.sev} (the machine `
+      + "changes, or the app rates it higher), it is shown again with the reason. You can un-accept it at any time."),
+    h("label", { class: "small note" }, "Reason, for your own records (optional; kept with the report, and in its exports, "
+      + "redacted like the rest)", note, h("span", { id: hint, class: "muted" }, "For example: a test machine, or needed for work.")),
+    h("div", { class: "buttons" },
+      h("button", { class: "small primary", onclick: (e) => {
+        const typed = e.currentTarget.closest(".accept-row")?.querySelector("input")?.value ?? S.accepting[id] ?? "";
+        delete S.accepting[id];
+        setAccepted(spec, true, typed);
+      } }, "Accept this risk"),
+      h("button", { class: "small ghost", onclick: () => {
+        delete S.accepting[id];
+        renderChecks();
+        where()?.querySelector("button")?.focus();
+      } }, "Cancel")));
 }
 
 function details(spec, v) {
@@ -914,6 +966,11 @@ function details(spec, v) {
   if (spec.related.length) {
     d.append(h("div", {}, h("h4", {}, "Related"), h("div", { class: "related" }, relatedChips(spec.related))));
   }
+  // what the row's badges mean, in full (they were only tooltips)
+  d.append(h("div", { class: "small muted about-check" }, h("h4", {}, "How it is dealt with"),
+    h("p", {}, [v.result?.no_fix ? null : TIER_TITLE[spec.tier], SCOPE_TITLE[spec.scope],
+      v.partial && v.status !== "unknown" ? "This scan's detection was incomplete (partial)" : null,
+      KIND_TITLE[spec.kind]].filter(Boolean).join(". ") + ".")));
   if (v.found && spec.kind === "finding") d.append(acceptRow(spec, v));
   if (dev) {
     // developer notes: the catalogue's detection hints (not what the code does) and open verifications
@@ -1100,7 +1157,8 @@ const STEP_TAG = { true: ["undo", "can be undone"], false: ["fx", "side effect"]
 function stepLine(st) {
   const [cls, label] = st.irreversible ? ["gone", "can't be undone"] : STEP_TAG[st.reversible];
   return h("li", { class: `step ${cls}` }, h("span", { class: "tag" }, label),
-    st.needs_root ? h("span", { class: "tag root", title: "Done by the administrator helper" }, "root") : null,
+    st.needs_root ? h("span", { class: "tag root", title: "Done by the administrator helper" }, isDev() ? "root" : "as admin") : null,
+    st.asks_again ? h("span", { class: "tag root" }, "asks for your password again") : null,
     h("div", { class: "stepbody" }, h("code", {}, st.text),
       st.commands?.length ? h("div", { class: "stepmore" }, h("span", { class: "muted small" },
         st.needs_root ? "Also runs, as root:" : "Also runs:"), st.commands.map(c => h("code", { class: "cmdline" }, c))) : null,
@@ -1204,6 +1262,7 @@ function planBody(plan, confirm) {
     plan.steps.some(st => st.reversible && st.kind !== "command")
       ? h("p", { class: "muted small" }, "Settings changes can be reverted later from History.") : null,
     plan.needs_root && !S.adminActive ? h("p", { class: "muted small" }, ROOT_NOTE) : null,
+    asksAgain(plan) ? h("p", { class: "muted small asks-again" }, ASKS_AGAIN) : null,
   ];
 }
 
@@ -1376,9 +1435,10 @@ async function openEasy() {
       it.cost ? h("div", { class: "small cost" }, h("span", { class: "muted" }, "What it costs you: "), it.cost) : null,
       it.blockers.length ? h("div", { class: "warnbox bad small" }, it.blockers.join(" ")) : null,
       h("div", { class: "tags" },
-        it.needs_root ? h("span", { class: "tag root", title: "Done by the administrator helper" }, "root") : null,
+        it.needs_root ? h("span", { class: "tag root", title: "Done by the administrator helper" }, isDev() ? "root" : "needs admin") : null,
         it.irreversible ? h("span", { class: "tag gone", title: "Deletes files: can't be undone" }, "deletes files") : null,
         it.kind === "hygiene" ? h("span", { class: `badge kind-hygiene`, title: KIND_TITLE.hygiene }, "hygiene") : null),
+      it.plans.some(asksAgain) ? h("div", { class: "small muted asks-again" }, ASKS_AGAIN) : null,
       h("details", { class: "small" }, h("summary", {}, "Exactly what it does"),
         it.plans.flatMap(p => [h("ul", { class: "steps" }, p.steps.map(stepLine)),
           p.side_effects.length ? h("ul", { class: "small" }, p.side_effects.map(x => h("li", {}, x))) : null])));
@@ -1401,7 +1461,8 @@ async function openEasy() {
           + "they delete or clear is gone for good:",
           gone)),
       data.items.some(it => it.needs_root) && !S.adminActive ? h("p", { class: "muted small" },
-        "Those marked root ask for administrator access (your password) once, when applied.") : null);
+        `Those marked “${isDev() ? "root" : "needs admin"}” ask for administrator access (your password) once, when applied`
+        + (data.items.some(it => it.plans.some(asksAgain)) ? "; those that say so ask once more each." : ".")) : null);
     update();
   };
   const load = async () => {
@@ -1506,17 +1567,17 @@ function guideInput(inp, params, rebuild) {
   const set = (v) => { params[inp.name] = v; rebuild(); };
   let el;
   if (inp.kind === "bool") {
-    el = h("input", { type: "checkbox", checked: !!inp.value, onchange: (e) => set(e.target.checked) });
+    el = h("input", { type: "checkbox", checked: !!inp.value, onchange: (e) => set(e.currentTarget.checked) });
   } else if (inp.kind === "choice") {
-    el = h("select", { onchange: (e) => set(e.target.value) },
+    el = h("select", { value: inp.value, onchange: (e) => set(e.currentTarget.value) },
       inp.choices.map(([v, label]) => h("option", { value: v, selected: v === inp.value }, label)));
   } else {
     el = h("input", { type: "number", min: inp.min, max: inp.max, value: inp.value, class: "num",
-      onchange: (e) => { const v = parseInt(e.target.value, 10); set(Number.isFinite(v) ? v : inp.default); } });
+      onchange: (e) => { const v = parseInt(e.currentTarget.value, 10); set(Number.isFinite(v) ? v : inp.default); } });
   }
   const label = inp.kind === "bool" ? h("label", { class: "check" }, el, inp.label)
     : h("label", {}, h("span", {}, inp.label), el, inp.unit ? h("span", { class: "muted small" }, inp.unit) : null);
-  return h("div", { class: "ginput" }, label, inp.help ? h("div", { class: "muted small" }, inp.help) : null);
+  return h("div", { class: "ginput", key: `input-${inp.name}` }, label, inp.help ? h("div", { class: "muted small" }, inp.help) : null);
 }
 
 // After a step is applied, the guide is built again. A firewall can hold that request: OpenSnitch, restarted by its
@@ -1524,74 +1585,81 @@ function guideInput(inp, params, rebuild) {
 // app (WebKitGTK opens one for every POST), holding it until answered or timed out. The page says so, not frozen.
 const SLOW_REFRESH_MS = 4000;
 
-async function refreshAfterApply(refresh, msg) {
-  msg.className = "small muted";
-  msg.textContent = "Updating the guide…";
+// say(kind, text): the step's message (a guide drawn in place keeps it in its state)
+async function refreshAfterApply(refresh, say) {
+  say("muted", "Updating the guide…");
   const slow = setTimeout(() => {
-    msg.textContent = "Still waiting for the app to answer. If a firewall such as OpenSnitch is asking about a "
+    say("muted", "Still waiting for the app to answer. If a firewall such as OpenSnitch is asking about a "
       + "connection to 127.0.0.1 or localhost, that is this window reaching the app itself: allow it. "
-      + "Otherwise it goes on once the question times out.";
+      + "Otherwise it goes on once the question times out.");
   }, SLOW_REFRESH_MS);
   try { await refresh(); } finally { clearTimeout(slow); }
 }
 
-function guideStep(step, n, refresh, params = {}, rebuild = refresh) {
-  const box = h("div", { class: `gstep${step.done ? " done" : ""}` });
+// The helper's actions that ask for the password again, each time, whatever access is held (helper.CONSENT): said
+// before, where a plan has one, so the second prompt isn't a surprise (asks_again on the step, from the server)
+const ASKS_AGAIN = "It asks for your password again for this, even if administrator access is held: deleting what can't be "
+  + "had back, or reaching beyond your own account, is confirmed each time.";
+const asksAgain = (plan) => plan.steps.some(st => st.asks_again);
+
+// A guide's step, drawn from `ui` (the guide's state: the option chosen, the deletions confirmed, a step being
+// applied and its message, per step) so that the guide can be drawn again in place (patch) as an input changes or an
+// answer comes, the focus and what was chosen kept; ui.redraw draws it again. Without `ui` it is drawn once, as the
+// commands-only guides of Retire a drive are.
+function guideStep(step, n, refresh, params = {}, rebuild = refresh, ui = null) {
+  ui = ui || { chosen: {}, confirmed: {}, busy: {}, applied: {}, msg: {}, redraw: () => {} };
+  const box = h("div", { class: `gstep${step.done ? " done" : ""}`, key: `step-${n}` });
   box.append(h("div", { class: "ghead" }, h("span", { class: "num" }, n), h("b", {}, step.title),
     step.done ? h("span", { class: "badge st-pass" }, "done") : null));
   if (step.text) box.append(h("p", {}, step.text));
   if (step.parts?.length) box.append(h("dl", { class: "gparts" }, step.parts.flatMap(([head, text]) => [h("dt", {}, head), h("dd", {}, text)])));
   if (step.inputs?.length) box.append(h("div", { class: "ginputs" }, step.inputs.map(i => guideInput(i, params, rebuild))));
   if (step.options.length) {
-    let chosen = Math.max(0, step.options.findIndex(o => o.recommended));
-    const detail = h("div", { class: "optdetail" });
-    const confirm = h("input", { type: "checkbox" });
-    const apply = h("button", { class: "primary" }, "Apply this step");
-    const msg = h("div", { class: "small" });
-    const show = () => {
-      const o = step.options[chosen], plan = o.plan;
-      const irreversible = plan.steps.some(st => st.irreversible);
-      confirm.checked = false;
-      fill(detail,
-        o.detail ? h("p", { class: "muted small" }, o.detail) : null,
-        plan.blockers.length ? h("div", { class: "warnbox bad" }, plan.blockers.join(" ")) : null,
-        h("ul", { class: "steps" }, plan.steps.map(stepLine)),
-        plan.side_effects.length ? h("ul", { class: "small effects" }, plan.side_effects.map(x => h("li", {}, x))) : null,
-        irreversible ? h("label", { class: "check confirm" }, confirm,
-          "I understand that what the items marked “can't be undone” delete, or clear from a file, is gone for good.") : null,
-        plan.needs_root && !S.adminActive ? h("p", { class: "muted small" }, ROOT_NOTE) : null);
-      apply.className = irreversible ? "danger" : "primary";
-      apply.textContent = irreversible ? "Apply and delete" : "Apply this step";
-      apply.disabled = plan.blockers.length > 0 || irreversible;
-      confirm.onchange = () => { apply.disabled = plan.blockers.length > 0 || !confirm.checked; };
-    };
+    const rec = Math.max(0, step.options.findIndex(o => o.recommended));
+    const chosen = ui.chosen[n] !== undefined && ui.chosen[n] < step.options.length ? ui.chosen[n] : rec;
+    const o = step.options[chosen], plan = o.plan;
+    const irreversible = plan.steps.some(st => st.irreversible);
+    // the tick confirms the deletions of the plan shown: one built again (an input changed) is confirmed again
+    const confirmed = !!plan.id && ui.confirmed[n] === plan.id;
+    const busy = !!ui.busy[n], applied = ui.applied[n] === plan.id;
+    const msg = ui.msg[n];
     if (step.options.length > 1) {
-      const name = `opt-${Math.random().toString(36).slice(2)}`;
-      box.append(h("div", { class: "opts" }, step.options.map((o, i) => h("label", { class: "opt" },
-        h("input", { type: "radio", name, checked: i === chosen, onchange: () => { chosen = i; show(); } }),
-        o.label, o.recommended ? h("span", { class: "rec" }, "recommended") : null))));
+      box.append(h("div", { class: "opts", role: "radiogroup", "aria-label": step.title }, step.options.map((x, i) => h("label", { class: "opt" },
+        h("input", { type: "radio", name: `opt-${ui.id || "g"}-${n}`, checked: i === chosen,
+          onchange: () => { ui.chosen[n] = i; ui.redraw(); } }),
+        x.label, x.recommended ? h("span", { class: "rec" }, "recommended") : null))));
     }
-    show();
-    apply.addEventListener("click", async () => {
-      const plan = step.options[chosen].plan;
-      apply.disabled = true;
-      apply.textContent = "Applying…";
-      try {
-        const r = await applyPlan(plan, confirm.checked);
-        toast(`Done: ${plan.title}.` + (r.result?.status === "pass" ? " The check passes now." : ""), "ok");
-        apply.textContent = "Applied";
-        doneDialog([r.entry]);
-        await refreshAfterApply(refresh, msg);
-      } catch (e) {
-        msg.className = "small errmsg";
-        msg.textContent = applyFailed(e);
-        apply.textContent = "Apply this step";
-        apply.disabled = false;
-        setStatus(e.message, "failed");
-        if (e.data?.entry) doneDialog([e.data.entry], e.message);
-      }
-    });
-    box.append(detail, h("div", { class: "gactions" }, apply, msg));
+    box.append(h("div", { class: "optdetail", key: "detail" },
+      o.detail ? h("p", { class: "muted small" }, o.detail) : null,
+      plan.blockers.length ? h("div", { class: "warnbox bad" }, plan.blockers.join(" ")) : null,
+      h("ul", { class: "steps" }, plan.steps.map(stepLine)),
+      plan.side_effects.length ? h("ul", { class: "small effects" }, plan.side_effects.map(x => h("li", {}, x))) : null,
+      irreversible ? h("label", { class: "check confirm" }, h("input", { type: "checkbox", checked: confirmed,
+          onchange: (e) => { ui.confirmed[n] = e.currentTarget.checked ? plan.id : null; ui.redraw(); } }),
+        "I understand that what the items marked “can't be undone” delete, or clear from a file, is gone for good.") : null,
+      plan.needs_root && !S.adminActive ? h("p", { class: "muted small" }, ROOT_NOTE) : null,
+      asksAgain(plan) ? h("p", { class: "muted small asks-again" }, ASKS_AGAIN) : null),
+      h("div", { class: "gactions", key: "actions" },
+        h("button", { class: irreversible ? "danger" : "primary",
+          disabled: busy || applied || plan.blockers.length > 0 || (irreversible && !confirmed), onclick: async () => {
+            if (ui.busy[n]) return;
+            ui.busy[n] = true; ui.msg[n] = null; ui.redraw();
+            const say = (kind, text) => { ui.msg[n] = { kind, text }; ui.redraw(); };
+            try {
+              const r = await applyPlan(plan, irreversible && confirmed);
+              toast(`Done: ${plan.title}.` + (r.result?.status === "pass" ? " The check passes now." : ""), "ok");
+              ui.busy[n] = false; ui.applied[n] = plan.id; ui.confirmed[n] = null;
+              doneDialog([r.entry]);
+              await refreshAfterApply(refresh, say);
+              ui.applied[n] = null; ui.msg[n] = null; ui.redraw();
+            } catch (e) {
+              ui.busy[n] = false;
+              say("errmsg", applyFailed(e));
+              setStatus(e.message, "failed");
+              if (e.data?.entry) doneDialog([e.data.entry], e.message);
+            }
+          } }, busy ? "Applying…" : applied ? "Applied" : irreversible ? "Apply and delete" : "Apply this step"),
+        h("div", { class: `small ${msg?.kind || ""}`, role: "status" }, msg?.text || "")));
   }
   if (step.commands.length) {
     box.append(h("div", { class: "muted small" }, step.options.length ? "Or yourself, in a terminal:" : "In a terminal:"),
@@ -1604,30 +1672,37 @@ function guideStep(step, n, refresh, params = {}, rebuild = refresh) {
 }
 
 // after: as for openFix, run once the guide is closed
+// The guide is built again whenever an input changes or a step was applied, and drawn in place (patch): the input being
+// changed keeps the focus, an option chosen stays chosen (ui). Each request for it is numbered and only the answer to
+// the last one is drawn: an older answer that came last showed a dry run for a value no longer chosen.
 async function openGuide(spec, after = null) {
   const body = h("div", { class: "guide" });
   const params = {};          // the guide's inputs as set here
-  let m;
+  const ui = { id: `g${++modalSeq}`, chosen: {}, confirmed: {}, busy: {}, applied: {}, msg: {}, redraw: () => { if (last) render(last); } };
+  let m, last = null, asked = 0;
   const load = async () => {
-    const data = await api("POST", `/api/fix/${encodeURIComponent(spec.id)}/plan`, { params });
+    const mine = ++asked;
+    const data = await api("POST", `/api/fix/${encodeURIComponent(spec.id)}/plan`, { params: { ...params } });
+    if (mine !== asked) return null;                  // a later request is under way: its answer is the one to show
     if (data.result && S.report) { S.report.results[spec.id] = data.result; renderChecks(); }
     return data;
   };
   const render = (data) => {
+    last = data;
     const g = data.guide;
     const passing = data.result?.status === "pass";
-    fill(body,
-      passing ? h("div", { class: "notebox info" }, "This check passes now.") : null,
-      g.intro ? h("p", {}, g.intro) : null,
-      h("p", { class: "muted small" }, g.advice
+    patch(body,
+      passing ? h("div", { class: "notebox info", key: "passing" }, "This check passes now.") : null,
+      g.intro ? h("p", { key: "intro" }, g.intro) : null,
+      h("p", { class: "muted small", key: "how" }, g.advice
         ? "The app doesn't make this change itself: each step says what to do, for this machine."
         : "Nothing changes until you apply a step. Each one shows exactly what it does; "
           + "settings changes can be reverted from History."),
-      g.steps.map((st, i) => guideStep(st, i + 1, refresh, params, refresh)));
+      g.steps.map((st, i) => guideStep(st, i + 1, refresh, params, refresh, ui)));
   };
   const refresh = async () => {
-    try { render(await load()); } catch (e) {
-      body.replaceChildren(h("div", { class: "warnbox" }, e.message));
+    try { const d = await load(); if (d) render(d); } catch (e) {
+      patch(body, h("div", { class: "warnbox", key: "error" }, e.message));
     }
   };
   let data;
@@ -1968,12 +2043,27 @@ async function openExport(what = "report") {
   const sel = h("select", {}, Object.entries(EXPORT_WHAT).map(([k, [label]]) =>
     h("option", { value: k, selected: k === what, disabled: k === "report" && !S.report }, label)));
   const about = h("p", { class: "muted small" });
-  const pre = h("pre", {}, "…");
+  const pre = h("pre", { "aria-live": "polite" }, "…");
+  // Each change of what, format or redaction asks again; only the answer to the last request is shown, and Copy and
+  // Save wait for it: Copy took whatever the box held, an unredacted report under a ticked Redact among it, when an
+  // older answer came last or the new one hadn't come yet.
+  let gen = 0, copyBtn = null, saveBtn = null;
+  const ready = (on) => { if (copyBtn) copyBtn.disabled = !on; if (saveBtn) saveBtn.disabled = !on; };
   const load = async () => {
+    const mine = ++gen;
     about.textContent = EXPORT_WHAT[sel.value][2];
     const path = sel.value === "everything" ? "/api/export" : "/api/report";
-    try { pre.textContent = await api("GET", `${path}?format=${fmt.value}&redact=${redact.checked ? 1 : 0}`, undefined, true); }
-    catch (e) { pre.textContent = e.message; }
+    pre.textContent = "Loading…";
+    pre.setAttribute("aria-busy", "true");
+    ready(false);
+    let text, ok = false;
+    try { text = await api("GET", `${path}?format=${fmt.value}&redact=${redact.checked ? 1 : 0}`, undefined, true); ok = true; }
+    catch (e) { text = e.message; }
+    if (mine !== gen) return;                     // a later request is under way: its answer is the one to show
+    pre.textContent = text;
+    pre.removeAttribute("aria-busy");
+    if (copyBtn) copyBtn.disabled = !ok;
+    if (saveBtn) saveBtn.disabled = false;        // a failed reading may still be saved: the server makes the file anew
   };
   redact.addEventListener("change", load);
   fmt.addEventListener("change", load);
@@ -1988,8 +2078,10 @@ async function openExport(what = "report") {
     clipboardKept("A report"),
     pre);
   modal({ title: everything ? "Export everything" : "Export the report", wide: true, body, buttons: [
-    { label: "Copy", onclick: (close, el) => copyText(pre.textContent, el) },
-    { label: "Save…", onclick: (close, el) => saveExport({ what: sel.value, format: fmt.value, redact: redact.checked }, el) },
+    { label: "Copy", ref: (el) => { copyBtn = el; }, disabled: pre.getAttribute("aria-busy") === "true",
+      onclick: (close, el) => { if (pre.getAttribute("aria-busy") !== "true") copyText(pre.textContent, el); } },
+    { label: "Save…", ref: (el) => { saveBtn = el; },
+      onclick: (close, el) => saveExport({ what: sel.value, format: fmt.value, redact: redact.checked }, el) },
     { label: "Close", kind: "primary" }] });
 }
 
@@ -2041,8 +2133,8 @@ function helperRow() {
       h("p", {}, "The changes it made stay as they are, and can still be reverted from History once it is installed again. "
         + "Until then, nothing runs as administrator: scans leave out what needs it, and fixes that need it can't be "
         + "applied or reverted."),
-      h("p", { class: "muted small" }, "You can install it again from the note at the top, or with "
-        + "`daprivacyscanner --install-helper`."),
+      h("p", { class: "muted small" }, "Removing it asks for your password, again if administrator access is held now. "
+        + "You can install it again from the note at the top, or with `daprivacyscanner --install-helper`."),
     ], buttons: [{ label: "Keep it" }, { label: "Remove it", kind: "danger",
       onclick: (close, el) => uninstallHelper(close, el, row) }] }) }, "Remove it…"));
   return row;
@@ -5508,7 +5600,8 @@ function openJournalOthers(names, j) {
       + (j.checksums ? "" : " On this filesystem, which keeps no checksums on its folders' records, that is every folder's.")),
     h("div", { class: "warnbox" }, "With administrator access you can read them, and so can this app. They can include other "
       + "people's file names. Many are of files that still exist: without the folder, the app can't tell which were deleted."),
-    h("p", { class: "small muted" }, "They are shown here only, never saved, and are gone when you close this window."));
+    h("p", { class: "small muted" }, "They are shown here only, never saved, and are gone when you close this window. "
+      + "Showing them asks for your password again, even if administrator access is held: they can be other people's."));
   const m = modal({ title: "Names in the journal that aren't tied to your folders", wide: true, body, buttons: [
     { label: "Close" },
     { label: "Show them", kind: "primary", onclick: async (close, el) => {
@@ -5741,10 +5834,13 @@ async function openOnline() {
     data.proxy_vars?.length ? h("div", { class: "warnbox bad" }, `Your proxy settings (${data.proxy_vars.join(", ")}) are not `
       + "used: these tests connect directly, so the hosts named below see this computer's own address, not the proxy's. "
       + "If the proxy is what hides your address, don't run them from here.") : null,
-    h("label", { class: "check oadmin" }, admin, data.admin_active
+    h("label", { class: "check oadmin" }, admin, (data.admin_active
       ? `Administrator access is active: used by ${gains.map(t => `“${t.title}”`).join(" and ")}.`
       : `Use administrator access (asks for your password). Only ${gains.length} of these tests use it, `
-        + `${gains.map(t => `“${t.title}”`).join(" and ")}; the rest run the same either way.`),
+        + `${gains.map(t => `“${t.title}”`).join(" and ")}; the rest run the same either way.`)
+      // the helper's observe_traffic asks again each time (helper.CONSENT): it sees every account's lookups
+      + (gains.some(t => t.id === "tel.observed_traffic") ? " Watching every account's traffic asks for the password once "
+        + "more as it starts, even with access held." : "")),
     h("div", { class: "orow" }, h("button", { class: "small ghost", onclick: () => boxes.forEach(b => { b.checked = true; }) }, "Select all"),
       h("button", { class: "small ghost", onclick: () => boxes.forEach((b, id) => { b.checked = data.tests.find(t => t.id === id).default; }) }, "Defaults"),
       h("button", { class: "small ghost", onclick: () => boxes.forEach(b => { b.checked = false; }) }, "None"),

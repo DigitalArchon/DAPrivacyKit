@@ -259,6 +259,16 @@ class Action:
     # programs that must still be closed when this is applied (InUse), as they were when the plan was shown
     in_use: tuple[InUse, ...] = ()
 
+    @property
+    def asks_again(self) -> bool:
+        """Whether the helper asks for the password again for this, each time, even with access held (helper.CONSENT):
+        the page says so beforehand."""
+        request = getattr(self, "request", None)
+        if not self.needs_root or not isinstance(request, str):
+            return False
+        from . import helper
+        return request in helper.CONSENT
+
     def unless(self, *uses: InUse) -> "Action":
         """This step, refused when one of these programs runs by the time it is applied (precheck)."""
         self.in_use = tuple(self.in_use) + tuple(uses)
@@ -2186,7 +2196,8 @@ class FixPlan:
                 "side_effects": self.side_effects, "needs_root": self.needs_root, "via": dict(self.via),
                 "steps": [{"kind": a.kind, "text": a.describe(), "reversible": a.reversible,
                            "irreversible": a.destructive, "needs_root": a.needs_root, "commands": cmds,
-                           "lines": a.preview()} for a, cmds in zip(self.actions, self.step_commands())],
+                           "lines": a.preview(), "asks_again": a.asks_again}
+                          for a, cmds in zip(self.actions, self.step_commands())],
                 "irreversible_files": sum(len(a.files) for a in self.irreversible if isinstance(a, DeleteFiles))}
 
 
