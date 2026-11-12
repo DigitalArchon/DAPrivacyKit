@@ -1,9 +1,11 @@
 #!/bin/bash
 # Runs inside the build container (see Containerfile); started by packaging/build-appimage.sh.
-#   build.sh build   /src.tar (git archive of the commit) -> /out/DAPrivacyKit-<version>-x86_64.AppImage
+#   build.sh build   /src.tar (git archive of the commit) -> /out/DAPrivacyKit-<version>-x86_64.AppImage, its
+#                    .sha256 and its .zsync (from which an AppImage updater fetches only the blocks that changed)
 #   build.sh lock    re-resolve the *.lock files into /out (review, then commit them)
 # Inputs are pinned (pins.sh, *.lock with hashes) and every timestamp is SOURCE_DATE_EPOCH, so the
-# same commit gives the same AppImage, byte for byte.
+# same commit gives the same AppImage, byte for byte. VERSION names the file (a dev build's carries +dev.<commit>);
+# COMMIT is the commit built (for the SBOM); UPDATE_INFO=0 leaves the update information out (dev builds).
 set -euo pipefail
 umask 022
 export LC_ALL=C.UTF-8 TZ=UTC PYTHONHASHSEED=0 PIP_DISABLE_PIP_VERSION_CHECK=1 PIP_ROOT_USER_ACTION=ignore \
@@ -120,9 +122,11 @@ blocks = re.split(r"(?m)^(?=[\w.-]+==)", text)
 open(sys.argv[2], "w").write("".join(b for b in blocks if b.split("==", 1)[0] not in skip))
 PY
 
-# the AppImage's Python: locked wheels only (hash-checked), then the ones built here
+# the AppImage's Python: locked wheels only (downloaded and hash-checked first, so the SBOM can name the very files),
+# then the ones built here
 PY="$W/AppDir/usr/python/bin/python3"
-"$PY" -m pip install -q --no-compile --no-deps --require-hashes --only-binary :all: -r "$W/binary.lock"
+"$PY" -m pip download -q --no-deps --require-hashes --only-binary :all: -d "$W/dl" -r "$W/binary.lock"
+"$PY" -m pip install -q --no-compile --no-deps --no-index "$W/dl"/*.whl
 "$PY" -m pip install -q --no-compile --no-deps "$W/wheels"/*.whl
 "$PY" -m pip uninstall -q -y pip                  # nothing is installed at run time
 # girepository-2.0 for hosts that don't have it (Debian/Ubuntu split it out of GLib); loaded only
@@ -135,6 +139,69 @@ install -D -m 644 "$(readlink -f /usr/lib/x86_64-linux-gnu/libgirepository-2.0.s
 for t in $(dpkg -L gir1.2-freedesktop | grep '\.typelib$'); do
     install -D -m 644 "$t" "$W/AppDir/usr/lib/girepository-fallback/typelibs/$(basename "$t" .typelib)/$(basename "$t")"
 done
+
+# Licences, in usr/share/licenses/daprivacyscanner: DA Privacy Kit's; the bundled Python's and the runtime's, with
+# those of the libraries built into each, from packaging/appimage/licenses (its SOURCES says where each came from);
+# pycairo's, from its sdist, since the wheel built from it carries none; and the copyright file of each Ubuntu package
+# a fallback came from, with where their source is (the LGPL asks that whoever gets the binary can get it). Every
+# other Python package carries its licence in its dist-info, checked below.
+D="$W/AppDir/usr/share/licenses/daprivacyscanner"
+install -D -m 644 "$W/src/LICENSE" "$D/LICENSE"
+cp -r "$P/licenses/." "$D/"
+install -D -m 644 -t "$D/pycairo" "$W/srcs/pycairo/COPYING" "$W/srcs/pycairo/COPYING-LGPL-2.1" \
+    "$W/srcs/pycairo/COPYING-MPL-1.1"
+F="$W/AppDir/usr/lib/girepository-fallback"
+packages="$(find "$F" -type f -printf '%f\n' | sort | while read -r f; do
+                dpkg -S "*/$f" | cut -d: -f1 | tr "," " "; done | tr ' ' '\n' | sed '/^$/d' | sort -u)"
+mkdir -p "$D/fallbacks"
+for pkg in $packages; do
+    install -m 644 "/usr/share/doc/$pkg/copyright" "$D/fallbacks/$pkg.copyright"
+done
+# shellcheck disable=SC2086
+dpkg-query -W -f='${Package}\t${Version}\t${source:Package} ${source:Version}\n' $packages | sort > "$W/debs.txt"
+{
+    printf '%s\n' \
+        "The fallback library and typelibs in usr/lib/girepository-fallback are these packages of Ubuntu 24.04, as" \
+        "the Ubuntu archive had them at $APT_SNAPSHOT. Their source is in the same snapshot of the archive:" \
+        "" \
+        "  https://snapshot.ubuntu.com/ubuntu/$APT_SNAPSHOT/" \
+        "  suites noble, noble-updates and noble-security; components main and universe" \
+        "" \
+        "On a system with apt, a file in /etc/apt/sources.list.d ending .sources holding" \
+        "" \
+        "  Types: deb-src" \
+        "  URIs: https://snapshot.ubuntu.com/ubuntu/$APT_SNAPSHOT/" \
+        "  Suites: noble noble-updates noble-security" \
+        "  Components: main universe" \
+        "  Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg" \
+        "" \
+        "then apt-get update, and apt-get source <source package>=<version> fetches one." \
+        "Each package's copyright file is beside this one, as <package>.copyright." \
+        ""
+    printf '%-34s %-26s %s\n' "package" "version" "source package and version"
+    while IFS=$'\t' read -r name version source; do
+        printf '%-34s %-26s %s\n' "$name" "$version" "$source"
+    done < "$W/debs.txt"
+} > "$D/fallbacks/SOURCES"
+"$PY" - "$D" "$W"/AppDir/usr/python/lib/python3.*/site-packages <<'PY'
+import pathlib, re, sys
+
+licenses, folder = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+bare = []
+for info in sorted(folder.glob("*.dist-info")):
+    name = re.sub(r"[-_.]+", "-", info.name[:-len(".dist-info")].rpartition("-")[0]).lower()
+    carried = [p for p in info.rglob("*") if p.is_file() and re.match(r"(LICEN[CS]E|COPYING|NOTICE)", p.name, re.I)]
+    if not carried and not (licenses / name).is_dir():
+        bare.append(info.name)
+if bare:
+    sys.exit("No licence in the image for " + ", ".join(bare) + ": add it to packaging/appimage/licenses, and say "
+             "in its SOURCES where it came from")
+PY
+# what is in it, from the pins and the locks, each with the hash of the file used (packaging/appimage/sbom.py)
+PBS_URL="$PBS_URL" PBS_SHA256="$PBS_SHA256" RUNTIME_URL="$RUNTIME_URL" RUNTIME_SHA256="$RUNTIME_SHA256" \
+APT_SNAPSHOT="$APT_SNAPSHOT" BASE_IMAGE="$BASE_IMAGE" "$W/buildpy/bin/python3" -I "$P/sbom.py" "$D/sbom.cdx.json" \
+    "$VERSION" "${COMMIT:-unknown}" "$W"/AppDir/usr/python/lib/python3.*/site-packages "$W/dl" "$W/sdists" "$W/debs.txt"
+
 find "$W/AppDir" -name direct_url.json -delete    # build paths
 find "$W/AppDir" -name __pycache__ -type d -prune -exec rm -rf {} +
 # bytecode keyed to the source's hash, not its timestamp: reproducible, and valid on a read-only mount
@@ -163,6 +230,35 @@ mksquashfs "$W/AppDir" "$W/app.squashfs" -quiet -noappend -root-owned -no-xattrs
     -comp zstd -Xcompression-level 19 -b 1M
 
 NAME="DAPrivacyKit-$VERSION-x86_64.AppImage"
-cat /cache/runtime-x86_64 "$W/app.squashfs" > "/out/$NAME"
+# Update information, in the runtime's .upd_info section, where AppImageUpdate, Gear Lever and AppImageLauncher read
+# it: the latest GitHub release's .zsync, made below, from which an updater fetches only the blocks that changed and
+# checks the result against the SHA-1 the .zsync carries. Reading it is theirs to do, when the user asks; the app
+# itself never looks for updates. Left out of a dev build, which no release replaces.
+cp /cache/runtime-x86_64 "$W/runtime"
+if [ "${UPDATE_INFO:-1}" = 1 ]; then
+    "$W/buildpy/bin/python3" - "$W/runtime" \
+        "gh-releases-zsync|DigitalArchon|DAPrivacyKit|latest|DAPrivacyKit-*-x86_64.AppImage.zsync" <<'PY'
+import re, subprocess, sys
+path, info = sys.argv[1], sys.argv[2].encode()
+sections = subprocess.run(["readelf", "-SW", path], capture_output=True, text=True, check=True).stdout
+found = re.search(r"\.upd_info\s+PROGBITS\s+[0-9a-f]+\s+([0-9a-f]+)\s+([0-9a-f]+)", sections)
+if not found:
+    sys.exit("the runtime has no .upd_info section")
+offset, size = int(found.group(1), 16), int(found.group(2), 16)
+if len(info) >= size:
+    sys.exit("update information too long for .upd_info")
+with open(path, "r+b") as runtime:
+    runtime.seek(offset)
+    if runtime.read(size).strip(b"\0"):
+        sys.exit("the runtime's .upd_info isn't empty")
+    runtime.seek(offset)
+    runtime.write(info + b"\0" * (size - len(info)))
+PY
+fi
+cat "$W/runtime" "$W/app.squashfs" > "/out/$NAME"
 chmod 755 "/out/$NAME"
+# zsyncmake writes the file's modification time into the .zsync (MTime): the commit's, like everything else. The URL
+# is the file's name, relative to where the .zsync is (the release page), so nothing of this machine goes in.
+touch -d "@$SOURCE_DATE_EPOCH" "/out/$NAME"
+(cd /out && rm -f "$NAME.zsync" && zsyncmake -u "$NAME" -o "$NAME.zsync" "$NAME" >/dev/null)
 (cd /out && sha256sum "$NAME" > "$NAME.sha256" && cat "$NAME.sha256")

@@ -8,6 +8,11 @@
 # Run it from a clone of the repository, with the tag fetched (git fetch --tags). Your working tree isn't
 # touched: the tag is checked out beside it, built there, and removed. Exit status 0 when they are the same,
 # 1 when they differ, 2 when it couldn't be checked.
+# The tag itself is checked first (packaging/verify-tag.sh): from 0.1.0b9 on a release's tag is signed by a release
+# key whose public half is docs/release-key.asc of your clone, so whoever could move the tag on GitHub can't point it
+# at other code. A tag with a bad signature, or one by another key, isn't built. Older tags carry no signature: then
+# the build still ties the published file to the commit the tag names, and the commit's id is shown to compare with
+# the release page.
 set -euo pipefail
 trap 'exit 2' ERR       # anything else that fails means it couldn't be checked (set -e alone gave 1: "they differ")
 RELEASES="https://github.com/DigitalArchon/DAPrivacyKit/releases/download"
@@ -16,8 +21,16 @@ die() { echo "$*" >&2; exit 2; }
 [ $# -ge 1 ] && [ $# -le 2 ] || die "usage: $0 TAG [FILE.AppImage | FILE.sha256 | SHA256]"
 tag="$1"; given="${2:-}"
 cd "$(git rev-parse --show-toplevel 2>/dev/null)" || die "Run this from a clone of the repository."
-commit="$(git rev-parse --verify --quiet "$tag^{commit}")" \
-    || die "There is no '$tag' here. Fetch the tags first: git fetch --tags"
+git rev-parse -q --verify "refs/tags/$tag" >/dev/null || die "There is no tag '$tag' here. Fetch the tags first: git fetch --tags"
+commit="$(git rev-parse --verify --quiet "refs/tags/$tag^{commit}")" || die "The tag '$tag' names no commit."
+rc=0; packaging/verify-tag.sh "$tag" || rc=$?
+case "$rc" in
+    0) ;;
+    3) echo "Note: the tag $tag carries no signature (releases before 0.1.0b9). What follows ties the published" \
+            "file to commit $commit; compare that id with the release page." >&2 ;;
+    *) die "Not building $tag: its signature isn't good, or isn't by a release key in docs/release-key.asc (an old" \
+           "clone may lack a newer key: git pull, then try again)." ;;
+esac
 
 WORK="$(mktemp -d)"
 cleanup() { git worktree remove --force "$WORK/src" >/dev/null 2>&1 || true; rm -rf "$WORK"; }
@@ -25,6 +38,7 @@ trap cleanup EXIT
 git worktree add --quiet --detach "$WORK/src" "$commit"
 version="$(python3 -c 'import sys, tomllib; print(tomllib.load(open(sys.argv[1], "rb"))["project"]["version"])' \
     "$WORK/src/pyproject.toml")"
+[ "$tag" = "v$version" ] || die "The tag $tag names a commit whose version is $version: a release's tag is v<version>."
 name="DAPrivacyKit-$version-x86_64.AppImage"
 
 # what it should be
@@ -46,13 +60,16 @@ fi
 expected="${expected,,}"
 [[ "$expected" =~ ^[0-9a-f]{64}$ ]] || die "No SHA-256 checksum in $from."
 
-echo "Building $tag ($(git rev-parse --short "$commit"), version $version) from a clean checkout..."
+echo "Building $tag ($commit, version $version) from a clean checkout..."
 (cd "$WORK/src" && packaging/build-appimage.sh build) || die "The build failed."
 built="$(sha256sum "$WORK/src/dist/$name" | cut -d' ' -f1)"
 
 echo
 echo "Built here:  $built"
 echo "Expected:    $expected  ($from)"
+if [ -f "$WORK/src/dist/$name.zsync" ]; then        # for packaging/second-build.sh --record, on the maintainer's side
+    echo "Its .zsync:  $(sha256sum "$WORK/src/dist/$name.zsync" | cut -d' ' -f1)"
+fi
 if [ "$built" = "$expected" ]; then
     echo "The same: $name of $tag is what this source builds to."
 else
