@@ -276,7 +276,7 @@ def situation(host: Host, current: str = __version__, repo: Path | None = None, 
     tree: git), or "package" (installed some other way: its package manager). `started`: started_from(), when known:
     a file there that isn't it any more was put there since (another window updated it)."""
     appimage = host.environ.get("APPIMAGE") or ""
-    out = {"version": current, "path": None, "problem": "", "how": [], "commands": [],
+    out: dict = {"version": current, "path": None, "problem": "", "how": [], "commands": [],
            "hosts": {"check": list(CHECK_HOSTS), "download": list(DOWNLOAD_HOSTS)},
            "releases": about.LINKS["releases"]}
     if appimage and os.path.isfile(appimage):
@@ -290,14 +290,14 @@ def situation(host: Host, current: str = __version__, repo: Path | None = None, 
             return out
         out.update(mode="appimage", problem=replace_problem(host, path))
         rec = load_pending(host)
-        mine = rec is not None and rec["path"] == str(path)
+        by = rec["to"] if rec is not None and rec["path"] == str(path) else ""     # the version another window put there
         try:
             moved = started is not None and _identity(os.stat(path)) != started
         except OSError:
             moved = False
-        if not out["problem"] and (moved or mine and rec["to"] != current):
+        if not out["problem"] and (moved or by and by != current):
             out["problem"] = (f"{path} has been replaced since this window started"
-                              + (f", by version {rec['to']}" if mine else "")
+                              + (f", by version {by}" if by and by != current else "")
                               + " (another window of the app updated it?). Quit this window and start the app again.")
         return out
     repo = _repo() if repo is None else repo
@@ -392,9 +392,14 @@ def download(host: Host, net, rel: Release, job: dict, stop: Callable[[], bool])
 def read_version(host: Host, path: Path) -> str:
     """The version the AppImage at `path` says it is: it is run once with --version (app.py prints "DA Privacy Kit
     <version>" and ends before anything else), as the user, under the host's environment, for at most
-    VERSION_TIMEOUT seconds. Only ever on a file whose signature has been verified as the app's own release key's."""
+    VERSION_TIMEOUT seconds. Only ever on a file whose signature has been verified as the app's own release key's.
+    AppImageLauncher, where it is installed, runs every AppImage started through binfmt_misc and first asks whether to
+    integrate it: APPIMAGELAUNCHER_DISABLE has it run the file as it is, with no question (VERIFY on a machine with
+    AppImageLauncher)."""
     os.chmod(path, 0o700)
-    env = {"APPIMAGE_EXTRACT_AND_RUN": "1"} if host.environ.get("APPIMAGE_EXTRACT_AND_RUN") == "1" else None
+    env = {"APPIMAGELAUNCHER_DISABLE": "1"}
+    if host.environ.get("APPIMAGE_EXTRACT_AND_RUN") == "1":
+        env["APPIMAGE_EXTRACT_AND_RUN"] = "1"
     r = host.run(str(path), "--version", timeout=VERSION_TIMEOUT, env=env)
     lines = [ln.strip() for ln in (r.stdout or "").splitlines() if ln.strip()]
     m = re.fullmatch(r"DA Privacy Kit (\S{1,64})", lines[-1]) if r.ok and lines else None
@@ -440,7 +445,7 @@ def verify(host: Host, staged: Staged, current: str = __version__, projects=None
     if _sha256(staged.file) != before:
         raise UpdateError("The download changed while it was checked. It was deleted, and nothing was replaced.")
     staged.sha256, staged.inside = before, inside
-    staged.verdict = {"title": v.title, "text": v.text, "signer": s.project.name, "key_name": s.key_name,
+    staged.verdict = {"title": v.title, "text": v.text, "signer": ours[0].name, "key_name": s.key_name,
                       "fingerprint": s.fingerprint, "fingerprint_grouped": K.group(s.fingerprint)
                       if re.fullmatch(r"[0-9A-F]{40}", s.fingerprint) else s.fingerprint,
                       "signed_at": s.signed_at, "notes": list(v.notes), "version": inside, "sha256": staged.sha256}

@@ -834,6 +834,11 @@ bubblewrap. The panel gives two ways round it, with what each costs.
 **The browser won't start: "a newer version is out".** Save what you need from its Downloads, click
 **Close and overwrite…**, and set it up again.
 
+**Check for updates… says the download isn't verified.** It was deleted and nothing changed. If the release is
+signed with a key your copy doesn't know yet (the release notes say so), download the new AppImage from the releases
+page and check it by hand as in section 1. "GitHub didn't answer the question now": it answers 60 questions an hour
+from one address; try again later.
+
 **Something is wrong on GNOME, Xfce or KDE Plasma 5.** Those desktops aren't supported; see section 1.
 
 **Closing a RAM disk is refused.** A program still uses a file in it. The message names the program;

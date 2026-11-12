@@ -476,7 +476,8 @@ def test_the_version_is_read_by_running_the_file_with_the_hosts_environment(tmp_
     runner.handlers[str(target)] = run
     runner.installed.add(str(target))
     assert U.read_version(host, target) == "9.1.0"
-    assert seen == [(str(target), "--version")] and runner.envs[-1] == {"APPIMAGE_EXTRACT_AND_RUN": "1"}
+    assert seen == [(str(target), "--version")]
+    assert runner.envs[-1] == {"APPIMAGE_EXTRACT_AND_RUN": "1", "APPIMAGELAUNCHER_DISABLE": "1"}
     assert os.stat(target).st_mode & 0o777 == 0o700
 
 
