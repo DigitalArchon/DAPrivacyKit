@@ -137,3 +137,137 @@ def test_export_never_writes_over_a_file_nor_through_a_link(cat, tmp_path, monke
         assert app.export_cli(cat, str(tmp_path) + "/", False) == 2
     finally:
         os.umask(old)
+
+
+# ------------------------------------------------------------------ online.py: https only, ports, Stop
+
+@pytest.mark.parametrize("url, ok", [
+    ("https://api.ipify.org", True), ("https://[2001:db8::1]:8443/x", True),
+    ("http://192.168.1.1:5000/rootDesc.xml", True), ("http://10.0.0.138/desc", True), ("http://[fe80::1%25eth0]/d", True),
+    ("http://127.0.0.1:8080/", True), ("http://localhost/", True), ("http://router.local/", True),
+    ("http://example.com/", False), ("http://8.8.8.8/", False), ("http://[2001:4860::8888]/", False),
+    ("http://192.168.1.1.evil.example/", False), ("file:///etc/passwd", False), ("ftp://ftp.debian.org/x", False),
+    ("data:text/plain,hi", False), ("https:///nohost", False)])
+def test_only_https_is_used_plain_http_only_on_the_local_network(url, ok):
+    from daprivacyscanner import online
+    if ok:
+        online.check_url(url)
+    else:
+        with pytest.raises(online.NotHttps):
+            online.check_url(url)
+
+
+def test_the_real_opener_reads_no_files_and_nothing_but_http(tmp_path):
+    """build_opener added file:, ftp: and data: handlers: an address in online.json or a download index naming
+    file:///home/... was read from the disk."""
+    import urllib.request
+
+    from daprivacyscanner import online
+    secret = tmp_path / "secret.txt"
+    secret.write_text("the user's file")
+    net = online.RealNet()
+    r = net.http_get(f"file://{secret}")
+    assert r.status is None and b"the user's file" not in r.body and "https" in r.error
+    for url in (f"file://{secret}", "data:text/plain,hi", "ftp://127.0.0.1/x"):
+        with pytest.raises(online.NotHttps):
+            net._opener.open(urllib.request.Request(url))
+    assert not any(isinstance(h, (urllib.request.FileHandler, urllib.request.FTPHandler, urllib.request.DataHandler))
+                   for h in net._opener.handlers)
+    r = net.download(f"file://{secret}", tmp_path / "out")
+    assert r.status is None and not (tmp_path / "out").exists()
+
+
+def _follow(url, to, hosts=()):
+    import io
+    import urllib.request
+    from email.message import Message
+
+    from daprivacyscanner import online
+    req = urllib.request.Request(url)
+    req.allowed_hosts = tuple(hosts)
+    return online.ConfinedRedirects().redirect_request(req, io.BytesIO(), 302, "Found", Message(), to)
+
+
+def test_a_redirect_to_another_port_of_the_same_host_is_stopped():
+    from daprivacyscanner import online
+    assert _follow("https://api.ipify.org/", "https://api.ipify.org:443/x") is not None
+    assert _follow("http://192.168.1.1/", "https://192.168.1.1/x") is not None        # the upgrade, 80 to 443
+    assert _follow("http://192.168.1.1:5000/a", "http://192.168.1.1:5000/b") is not None
+    for to, hosts in [("https://api.ipify.org:8443/x", ()), ("http://192.168.1.1:8080/b", ()),
+                      ("https://dist.torproject.org:8443/x", ("dist.torproject.org",)),
+                      ("http://example.org/x", ())]:
+        src = "http://192.168.1.1:5000/a" if to.startswith("http://192") else "https://api.ipify.org/"
+        with pytest.raises(online.Redirected):
+            _follow(src, to, hosts)
+    with pytest.raises(online.Redirected, match="isn't https"):     # same host and port, but plain http on the internet
+        _follow("http://example.org/a", "http://example.org/b")
+
+
+class _SlowServer:
+    """A server on 127.0.0.1 that sends headers saying `length` bytes, then `first` bytes, then a byte every `drip`
+    seconds (or nothing more, drip None) until closed."""
+
+    def __init__(self, length=10_000_000, first=1000, drip=None):
+        import socket
+        import threading
+        self.sock = socket.socket()
+        self.sock.bind(("127.0.0.1", 0))
+        self.sock.listen(1)
+        self.port = self.sock.getsockname()[1]
+        self.length, self.first, self.drip, self.closed = length, first, drip, threading.Event()
+        threading.Thread(target=self.serve, daemon=True).start()
+
+    def serve(self):
+        import time
+        conn, _ = self.sock.accept()
+        with conn:
+            conn.recv(65536)
+            conn.sendall(f"HTTP/1.1 200 OK\r\nContent-Length: {self.length}\r\n\r\n".encode() + b"x" * self.first)
+            while not self.closed.is_set():
+                if self.drip is not None:
+                    try:
+                        conn.sendall(b"x")
+                    except OSError:
+                        return
+                self.closed.wait(self.drip or 0.1)
+
+    def close(self):
+        self.closed.set()
+        self.sock.close()
+
+
+def test_stop_ends_a_stalled_download_at_once(tmp_path, monkeypatch):
+    """The download read 1 MiB at a time, and a read waited for the whole MiB however slowly it came: Stop wasn't
+    looked at for as long as a stalled server liked (up to the 60 s timeout per read, and on)."""
+    import threading
+    import time
+
+    from daprivacyscanner import online
+    monkeypatch.setattr(online, "STOP_EVERY", 0.1)
+    srv = _SlowServer()
+    try:
+        stop, done = threading.Event(), []
+        t = threading.Thread(target=lambda: done.append(online.RealNet().download(
+            f"http://127.0.0.1:{srv.port}/f", tmp_path / "f", stop=stop.is_set, timeout=30)))
+        t.start()
+        time.sleep(0.5)
+        t0 = time.monotonic()
+        stop.set()
+        t.join(5)
+        assert done and done[0].error == "stopped" and time.monotonic() - t0 < 2
+        assert (tmp_path / "f").stat().st_size == 1000
+    finally:
+        srv.close()
+
+
+def test_an_answer_trickling_in_is_cut_off_at_its_timeout(tmp_path):
+    import time
+
+    from daprivacyscanner import online
+    srv = _SlowServer(length=5_000_000, first=10, drip=0.05)
+    try:
+        t0 = time.monotonic()
+        r = online.RealNet().http_get(f"http://127.0.0.1:{srv.port}/x", timeout=0.6)
+        assert r.status is None and "took longer" in r.error and time.monotonic() - t0 < 3
+    finally:
+        srv.close()

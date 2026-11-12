@@ -8,11 +8,13 @@ anything runs. Requests carry no identifier of this machine or of the app."""
 
 from __future__ import annotations
 
+import contextlib
 import ipaddress
 import json
 import re
 import socket
 import ssl
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -214,35 +216,152 @@ class Redirected(urllib.error.URLError):
     pass
 
 
+class NotHttps(urllib.error.URLError):
+    """An address the app won't reach: anything but https, but plain http to this computer or the local network."""
+
+
+DEFAULT_PORTS = {"http": 80, "https": 443}
+STOP_EVERY = 2.0                # a download that stalls looks at Stop this often (seconds), within its own timeout
+
+
+def is_local_host(host: str | None) -> bool:
+    """An address on this computer or the local network, where plain http is allowed (the router's UPnP description):
+    loopback, the private ranges, link-local, unique-local IPv6, "localhost" and .local names. Tor's onion services too
+    (Tor encrypts them end to end). Never a name that merely resolves to one: that is decided by whoever answers DNS."""
+    if not host:
+        return False
+    h = host.strip("[]").lower().rstrip(".")
+    if h == "localhost" or h.endswith((".localhost", ".local", ".onion")):
+        return True
+    try:
+        ip = ipaddress.ip_address(h.split("%", 1)[0])
+    except ValueError:
+        return False
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    return ip.is_loopback or ip.is_private or ip.is_link_local
+
+
+def check_url(url: str) -> None:
+    """Raises NotHttps unless the app may reach `url`: https anywhere, http only to a local address (rule: HTTPS only,
+    local addresses excepted). file:, ftp:, data: and the rest are never opened."""
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme == "https" and parts.hostname:
+        return
+    if parts.scheme == "http" and is_local_host(parts.hostname):
+        return
+    raise NotHttps(f"only https:// addresses are used (plain http only on this computer's own network), not "
+                   f"{parts.scheme or 'this'}://{parts.hostname or ''}")
+
+
+def _port(parts) -> int | None:
+    try:
+        return parts.port or DEFAULT_PORTS.get(parts.scheme)
+    except ValueError:                              # a port that isn't a number
+        return None
+
+
 class ConfinedRedirects(urllib.request.HTTPRedirectHandler):
-    """Follows a redirect only to the request's own host, or to one in its `allowed_hosts`; never
-    from https to http. Anything else stops the request (Redirected) instead of reaching a host the
-    user wasn't told about."""
+    """Follows a redirect only to the request's own host and port (http to https there: from port 80 to 443), or to one
+    of its `allowed_hosts` on the https port; never from https to http, never to anything but http or https, and plain
+    http only to a local address (check_url). Anything else stops the request (Redirected) instead of reaching a host,
+    or a port on it, the user wasn't told about."""
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         old, new = urllib.parse.urlsplit(req.full_url), urllib.parse.urlsplit(newurl)
-        allowed = {old.hostname} | set(getattr(req, "allowed_hosts", ()))
-        if new.hostname not in allowed or (old.scheme == "https" and new.scheme != "https") \
+        named = set(getattr(req, "allowed_hosts", ()))
+        same = new.hostname == old.hostname and (
+            _port(new) == _port(old)
+            or old.scheme == "http" and new.scheme == "https" and _port(old) == 80 and _port(new) == 443)
+        to_named = new.hostname in named and new.scheme == "https" and _port(new) == 443
+        if not (same or to_named) or (old.scheme == "https" and new.scheme != "https") \
                 or new.scheme not in ("http", "https"):
-            raise Redirected(f"it redirected to {new.scheme}://{new.hostname}, which isn't one of the hosts named, "
-                             "so it was stopped there")
+            where = f"{new.scheme}://{new.hostname}" + (f":{new.port}" if _port(new) not in (None, 80, 443) else "")
+            raise Redirected(f"it redirected to {where}, which isn't one of the hosts named, so it was stopped there")
+        try:
+            check_url(newurl)
+        except NotHttps as e:
+            raise Redirected(f"it redirected to an address that isn't https ({e.reason}), so it was stopped there") \
+                from None
         out = super().redirect_request(req, fp, code, msg, headers, newurl)
         if out is not None:
             out.allowed_hosts = getattr(req, "allowed_hosts", ())
         return out
 
 
+class RefuseOthers(urllib.request.BaseHandler):
+    """Anything that isn't http or https (file:, ftp:, data:): never opened. build_opener added a handler for each,
+    so a setting or an index naming file:///home/... would have been read from the disk."""
+    handler_order = 1000
+
+    def unknown_open(self, req):
+        raise NotHttps(f"only https:// addresses are used, not {req.type}:")
+
+
+def _opener() -> urllib.request.OpenerDirector:
+    """http and https alone, no proxies from the environment (a test of what the network does should see it directly:
+    the page and --online say so when one is set, proxy_vars), redirects confined."""
+    o = urllib.request.OpenerDirector()
+    for h in (urllib.request.ProxyHandler({}), urllib.request.HTTPHandler(), urllib.request.HTTPSHandler(),
+              urllib.request.HTTPDefaultErrorHandler(), ConfinedRedirects(), urllib.request.HTTPErrorProcessor(),
+              RefuseOthers()):
+        o.add_handler(h)
+    return o
+
+
+def _read_body(r, limit: int, timeout: float) -> bytes:
+    """At most `limit` bytes of an answer, as they come, for no longer than `timeout` seconds after the headers (each
+    read waits that long at most anyway): a server trickling its answer held a 2 MiB read, and with it the online
+    tests' Stop, for as long as it liked."""
+    deadline, parts, size = time.monotonic() + timeout, [], 0
+    while size < limit:
+        chunk = r.read1(min(256 * 1024, limit - size))
+        if not chunk:
+            break
+        parts.append(chunk)
+        size += len(chunk)
+        if time.monotonic() > deadline:
+            raise TimeoutError(f"the answer took longer than {timeout:g} s to arrive")
+    return b"".join(parts)
+
+
+@contextlib.contextmanager
+def _cut_when(r, stopped: Callable[[], bool], every: float | None = None):
+    """While the body is read: every `every` seconds a look at `stopped`, and once it says so the connection is shut
+    down, so a read waiting on a stalled server returns at once (a socket whose read timed out can't be read again, so
+    short timeouts were no way to look at Stop)."""
+    done, every = threading.Event(), STOP_EVERY if every is None else every
+
+    def watch():
+        while not done.wait(every):
+            if stopped():
+                try:
+                    sock = r.fp.raw._sock
+                    socket.socket.shutdown(sock, socket.SHUT_RDWR)   # the plain socket's: an SSL one's own drops its state
+                except (AttributeError, OSError):
+                    pass
+                return
+    t = threading.Thread(target=watch, name="download-stop", daemon=True)
+    t.start()
+    try:
+        yield
+    finally:
+        done.set()
+
+
 class RealNet(Net):
     def __init__(self):
-        # no proxies from the environment: a test of what the network does should see it directly (the page and
-        # --online say so when one is set: proxy_vars)
-        self._opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), ConfinedRedirects())
+        self._opener = _opener()
+
+    def _open(self, req: urllib.request.Request, timeout: float):
+        check_url(req.full_url)
+        return self._opener.open(req, timeout=timeout)
 
     def _request(self, req: urllib.request.Request, timeout: float) -> HttpResult:
         req.add_header("User-Agent", USER_AGENT)
         try:
-            with self._opener.open(req, timeout=timeout) as r:
-                return HttpResult(r.status, r.read(MAX_BODY))
+            with self._open(req, timeout) as r:
+                return HttpResult(r.status, _read_body(r, MAX_BODY, timeout))
         except urllib.error.HTTPError as e:
             return HttpResult(e.code, e.read(MAX_BODY) if e.fp else b"", str(e))
         except (urllib.error.URLError, OSError, ValueError) as e:
@@ -279,16 +398,25 @@ class RealNet(Net):
         req = urllib.request.Request(url)
         req.allowed_hosts = tuple(hosts)
         req.add_header("User-Agent", USER_AGENT)
+        stopped = lambda: stop is not None and stop()  # noqa: E731
         try:
-            with self._opener.open(req, timeout=timeout) as r, open(dest, "wb") as out:
+            with self._open(req, timeout) as r, open(dest, "wb") as out, _cut_when(r, stopped):
                 total = int(r.headers.get("Content-Length") or 0) or None
                 if limit and total and total > limit:
                     return HttpResult(None, b"", f"the file is larger than expected ({total} bytes)")
                 done = 0
+                # in pieces as they come (read1: one read of the socket): a 1 MiB read waited for the whole MiB, however
+                # slowly it came, and Stop wasn't looked at meanwhile. A read that waits is cut short by Stop
+                # (_cut_when); one that gets nothing for `timeout` seconds fails
                 while True:
-                    if stop is not None and stop():
+                    if stopped():
                         return HttpResult(None, b"", "stopped")
-                    chunk = r.read(1024 * 1024)
+                    try:
+                        chunk = r.read1(256 * 1024)
+                    except OSError:
+                        if stopped():
+                            return HttpResult(None, b"", "stopped")
+                        raise
                     if not chunk:
                         break
                     out.write(chunk)
@@ -297,12 +425,16 @@ class RealNet(Net):
                         return HttpResult(None, b"", "the file is larger than expected")
                     if progress is not None:
                         progress(done, total)
+                if stopped():                        # cut by Stop: an end, not the whole file
+                    return HttpResult(None, b"", "stopped")
                 if total is not None and done != total:
                     return HttpResult(None, b"", f"the download stopped early ({done} of {total} bytes)")
                 return HttpResult(r.status)
         except urllib.error.HTTPError as e:
             return HttpResult(e.code, b"", str(e))
         except (urllib.error.URLError, OSError, ValueError) as e:
+            if stopped():
+                return HttpResult(None, b"", "stopped")
             return HttpResult(None, b"", str(getattr(e, "reason", e)))
 
     def ssdp_search(self, target, timeout=3.0):

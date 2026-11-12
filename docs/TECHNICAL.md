@@ -389,9 +389,13 @@ listening have changed also when the list of them has, though some still listen.
 
 A scan never uses the network. Online tests (`scope: online`) run only when the user starts them, after
 the page has listed every host each one contacts (`contacts` in the YAML; endpoints configurable in
-`~/.config/daprivacyscanner/online.json`). All network access goes through `online.Net`, which follows a
-redirect only to the host asked or one the call names, and never from https to http. The test suite uses
-`FakeNet` and never goes online. The browser download (section 7) is the only tool that uses the network,
+`~/.config/daprivacyscanner/online.json`). All network access goes through `online.Net`, which opens https
+addresses only, plain http only to this computer or the local network (an address in the private, loopback or
+link-local ranges, `localhost`, a `.local` name: the router's UPnP description), never `file:`, `ftp:` or `data:`
+(`online.check_url`; the opener has no handler for them); it follows a redirect only to the host and port asked
+(http to https there) or to one the call names on the https port, and never from https to http. A download reads
+what arrives as it arrives, and Stop shuts its connection down, so a stalled server doesn't hold Stop up; an
+online test's answer has its timeout as a whole. The test suite uses `FakeNet` and never goes online. The browser download (section 7) is the only tool that uses the network,
 also through `online.Net`, and only when the user starts it.
 
 ---
