@@ -1228,6 +1228,11 @@ function modal({ title, body, buttons = [], wide = false, cls = "", sticky = fal
     if (b.ref) b.ref(el);
   }
   if (foot) bar.prepend(foot);
+  // a tool opened from the Tools panel, in its place (fromTools): a way back to it
+  if (S.toolsReturn && !sticky) {
+    S.toolsReturn = false;
+    bar.prepend(h("button", { class: "ghost back-to-tools", onclick: () => close({ then: () => openTools() }) }, "‹ Tools"));
+  }
   box.append(bar);
   // sticky: only its own buttons close it (the welcome warning must be read, not clicked away). A click beside it closes
   // it only when the press began beside it too: selecting text in it with a drag that ended outside it is a "click" on
@@ -2101,8 +2106,10 @@ function historyEntry(en, rerender) {
       msg.className = `small ${r.ok ? "okmsg" : "errmsg"}`;
       msg.replaceChildren(r.messages.join(" "));
       if (blocked && !how.later_first) {
+        // named, so what it reverts is known before it is pressed: the later ones, newest first, then this one
         msg.append(" ", h("button", { class: "small", onclick: () => revert({ later_first: true }) },
-          r.blocked_by.length === 1 ? "Revert that one first, then this" : `Revert those ${r.blocked_by.length} first, then this`));
+          r.blocked_by.length === 1 ? `Revert “${r.blocked_by[0].title}” first, then this`
+            : `Revert those ${r.blocked_by.length} first (newest first), then this`));
       }
       if (r.conflict) {
         msg.append(" ", h("button", { class: "small danger", onclick: () => forceAfterAsking(r.force_does || []) },
@@ -2115,8 +2122,9 @@ function historyEntry(en, rerender) {
     } catch (e) { toast(e.message, "error"); setStatus(e.message, "failed"); }      // not "Waiting for …" for good
   };
   return h("div", { class: "entry", "data-entry": en.id },
+    // a change found in the helper's own record has no check: its time alone (" · 12 Nov" read as a stray dot)
     h("div", { class: "ehead" }, h("b", {}, en.title), h("span", { class: "muted small" },
-      `${checkTitle(en.check_id)} · ${when}`),
+      en.check_id ? `${checkTitle(en.check_id)} · ${when}` : when),
       h("span", { class: `badge state-${en.state.replace(" ", "-")}` }, en.state),
       en.undone_since ? h("span", { class: "badge undone", title: "What this fixed is a problem again: something changed it back" },
         `changed back (found ${new Date(en.undone_since * 1000).toLocaleDateString([], { dateStyle: "medium" })})`) : null,
@@ -2325,6 +2333,16 @@ async function toolsInfo() {
   return api("GET", "/api/tools");
 }
 
+// A tool opened from its tile takes the Tools panel's place, with "‹ Tools" to go back to it, rather than opening on
+// top of it: the panels' own dialogs (a download, a guide, what was done) stacked four and five deep. S.toolsReturn
+// marks the next dialog opened as the tool's (modal() takes it); it is cleared however the tool's opening ends.
+let toolsPanel = null;
+const fromTools = (open) => async () => {
+  toolsPanel?.close();
+  S.toolsReturn = true;
+  try { await open(); } finally { S.toolsReturn = false; }
+};
+
 async function openTools() {
   let data;
   try { data = await toolsInfo(); } catch (e) { toast(e.message, "error"); return; }
@@ -2349,7 +2367,9 @@ async function openTools() {
       h("p", { class: "muted small", key: "features-about" }, "Each is set up step by step, and can be undone from History."),
       h("div", { class: "features", key: "features", role: "list" }, d.features.map(id => featureRow(id, reload))));
   };
-  modal({ title: "Tools", wide: true, body, buttons: [{ label: "Close", kind: "primary" }] });
+  const m = modal({ title: "Tools", wide: true, body, buttons: [{ label: "Close", kind: "primary" }],
+    onClose: () => { if (toolsPanel === m) toolsPanel = null; } });
+  toolsPanel = m;
   render(data);
 }
 
@@ -2430,31 +2450,31 @@ function toolCard(t, data, reload, redraw = () => {}) {
     t.short ? h("details", { class: "toolmore small" }, h("summary", {}, "More about it"), h("p", {}, t.text))
       : h("p", { class: "small" }, t.text));
   if (t.id === "verify") {
-    card.append(h("div", { class: "orow" }, h("button", { class: "primary small", onclick: () => openVerify(data) }, t.button)));
+    card.append(h("div", { class: "orow" }, h("button", { class: "primary small", onclick: fromTools(() => openVerify(data)) }, t.button)));
   } else if (t.id === "metadata") {
-    card.append(h("div", { class: "orow" }, h("button", { class: "primary small", onclick: () => openMetadata(data) }, t.button)));
+    card.append(h("div", { class: "orow" }, h("button", { class: "primary small", onclick: fromTools(() => openMetadata(data)) }, t.button)));
   } else if (t.id === "ramdisk") {
     card.append(ramdiskPanel(data.ramdisk, reload, redraw));
   } else if (t.id === "browser") {
-    card.append(h("div", { class: "orow" }, h("button", { class: "primary small", onclick: () => openBrowserTool(reload) }, t.button)));
+    card.append(h("div", { class: "orow" }, h("button", { class: "primary small", onclick: fromTools(() => openBrowserTool(reload)) }, t.button)));
   } else if (t.id === "trim") {
-    card.append(h("div", { class: "orow" }, h("button", { class: "primary small", onclick: openTrim }, t.button)));
+    card.append(h("div", { class: "orow" }, h("button", { class: "primary small", onclick: fromTools(() => openTrim()) }, t.button)));
   } else if (t.id === "names") {
-    card.append(h("div", { class: "orow" }, h("button", { class: "primary small", onclick: () => openNames() }, t.button)));
+    card.append(h("div", { class: "orow" }, h("button", { class: "primary small", onclick: fromTools(() => openNames()) }, t.button)));
   } else if (t.id === "handover") {
-    card.append(h("div", { class: "orow" }, h("button", { class: "primary small", onclick: openHandover }, t.button)));
+    card.append(h("div", { class: "orow" }, h("button", { class: "primary small", onclick: fromTools(() => openHandover()) }, t.button)));
   } else if (t.id === "retire") {
-    card.append(h("div", { class: "orow" }, h("button", { class: "primary small", onclick: openRetire }, t.button)));
+    card.append(h("div", { class: "orow" }, h("button", { class: "primary small", onclick: fromTools(() => openRetire()) }, t.button)));
   } else if (t.id === "travel") {
-    card.append(h("div", { class: "orow" }, h("button", { class: "primary small", onclick: openTravel }, t.button)));
+    card.append(h("div", { class: "orow" }, h("button", { class: "primary small", onclick: fromTools(() => openTravel()) }, t.button)));
   } else if (t.id === "presentation") {
     card.append(presentationCard(reload));
   } else if (t.id === "inuse") {
-    card.append(h("div", { class: "orow" }, h("button", { class: "primary small", onclick: openInuse }, t.button)));
+    card.append(h("div", { class: "orow" }, h("button", { class: "primary small", onclick: fromTools(() => openInuse()) }, t.button)));
   } else if (t.id === "trial") {
-    card.append(h("div", { class: "orow" }, h("button", { class: "primary small", onclick: () => openTrial(reload) }, t.button)));
+    card.append(h("div", { class: "orow" }, h("button", { class: "primary small", onclick: fromTools(() => openTrial(reload)) }, t.button)));
   } else if (t.id === "keeps") {
-    card.append(h("div", { class: "orow" }, h("button", { class: "primary small", onclick: openKeeps }, t.button)));
+    card.append(h("div", { class: "orow" }, h("button", { class: "primary small", onclick: fromTools(() => openKeeps()) }, t.button)));
   }
   return card;
 }

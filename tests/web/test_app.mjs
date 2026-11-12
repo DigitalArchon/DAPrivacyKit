@@ -895,8 +895,8 @@ routes["GET /api/undo"] = () => ({ entries: [] });
   check([...entry().querySelectorAll(".step .tag")].map(t => t.textContent).includes("not known"), "a step under way is marked not known");
   const button = (label) => $$(".modal button").find(b => b.textContent === label);
   button("Revert").click(); await tick(); await tick();
-  check(button("Revert that one first, then this"), "a revert refused for a later change offers to revert that one first");
-  button("Revert that one first, then this").click(); await tick(); await tick();
+  check(button("Revert “B” first, then this"), "a revert refused for a later change offers to revert that one, named, first");
+  button("Revert “B” first, then this").click(); await tick(); await tick();
   check(posted[1]?.later_first === true, "which reverts it first: " + JSON.stringify(posted[1]));
   button("Revert").click(); await tick(); await tick();
   button("Revert anyway…").click(); await tick();
@@ -2930,6 +2930,30 @@ while ($$(".modal").length) { $$(".modal .buttons button").at(-1).click(); await
   check(copied === "rm -- 'photo\u202Egpj.sh'", "Copy copies the command as it is");
   block.remove();
   if (clip0) Object.defineProperty(window.navigator, "clipboard", clip0); else delete window.navigator.clipboard; }
+
+// a tool opened from its tile takes the Tools panel's place, with a way back: dialogs no longer stack as deep
+{ while ($$(".modal").length) { $$(".modal").at(-1).querySelector(".buttons button:last-child").click(); await tick(); }
+  await window.openTools(); await tick(); await tick();
+  $$(".modal .toolcard button").find(b => b.textContent === "Open the checklist…").click(); await tick(); await tick();
+  check($$(".modal").length === 1 && $(".modal h2").textContent === "Before you travel"
+        && $(".modal .buttons button.back-to-tools")?.textContent === "‹ Tools", "a tool opens in the Tools panel's place, with ‹ Tools");
+  $(".modal .buttons button.back-to-tools").click(); await tick(); await tick();
+  check($$(".modal").length === 1 && $(".modal h2").textContent === "Tools", "‹ Tools goes back to the panel");
+  $(".modal .buttons button:last-child").click(); await tick();
+  await window.openTravel(); await tick();
+  check(!$(".modal .back-to-tools"), "a tool opened any other way has no ‹ Tools");
+  $(".modal .buttons button:last-child").click(); await tick(); }
+
+// History: a change found only in the helper's own record has no check, and reads so
+{ const undo0 = routes["GET /api/undo"];
+  routes["GET /api/undo"] = () => ({ entries: [{ id: "r1", check_id: "", title: "Recovered: kernel.sysrq set to 176",
+    applied: 1790000000, state: "applied", undone_since: null, can_revert: true, needs_root: true,
+    via_text: "Found in the administrator helper's own record of its changes", steps: [] }] });
+  await window.openHistory(); await tick();
+  const head = $(".modal .history .entry .ehead .muted")?.textContent || "";
+  check(!head.startsWith(" ·") && !head.includes(" · ·") && head.length > 0, "a recovered entry's head is its time alone: " + head);
+  while ($$(".modal").length) { $$(".modal").at(-1).querySelector(".buttons button:last-child").click(); await tick(); }
+  routes["GET /api/undo"] = undo0; }
 
 // the text's size: Ctrl+plus, Ctrl+minus, Ctrl+0 in the window, remembered
 { const doc = window.document;
