@@ -1870,7 +1870,8 @@ drive they came from (its model, serial, size and WWN, `retire.identity`): anoth
     `at-spi2`, XML catalogues, the magic files, `inputrc`, `terminfo`, `shells`, what names the distribution, and
     LibreOffice's `/etc/libreoffice`. Tested on Mint 22.3 on a private Xvfb display with xed, xreader and
     gnome-calculator (GTK 3), baobab and gnome-font-viewer (GTK 4) and LibreOffice Writer: each started and drew its
-    window as before (Writer opens no window on a bare Xvfb either way, checked against the computer's whole `/etc`);
+    window as before (Writer opens no window on a bare Xvfb either way, checked against the computer's whole `/etc`),
+    and a Qt 5 program drew its window with the same 267 font families and the same style either way;
     and on Arch (the Omarchy VM, Hyprland) with Nautilus (GTK 4) through the marked Wayland socket, where the
     sandbox's `/etc` had 31 entries, 798 fonts were found in it, and `passwd-`, `group-`, `pacman.conf`,
     `environment`, `locale.conf`, `profile.d`, `sddm.conf.d` and `resolv.conf` were all absent.
