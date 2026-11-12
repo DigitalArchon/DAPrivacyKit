@@ -813,6 +813,15 @@ def http_repos(check, scan, outcome):
                           (f"Switch {', '.join(good)} to HTTPS in this file." if good else "")
                           + (f" {', '.join(none)} has no HTTPS: choose another mirror for it." if none else ""),
                           commands=[f"sudo sed -i 's|http://{h}|https://{h}|g' {shlex.quote(path)}" for h in good]))
+    from ..telemetry import mirror_lists_unsure
+    lists = [path for path, text in _repo_files(scan) if mirror_lists_unsure(text)]
+    if lists:
+        steps.append(Step("Ask the mirror lists for HTTPS mirrors only",
+                          "These files take their mirrors from a list (metalink= or mirrorlist=) that hands out "
+                          "plain-HTTP mirrors too. Adding &protocol=https to each such line, where its address has "
+                          "parameters already (a ?), makes Fedora's and RPM Fusion's lists hand out HTTPS mirrors only.",
+                          commands=[r"sudo sed -i -E '/^(metalink|mirrorlist)=https:[^ ]*\?/{/protocol=https/!s/$/\&"
+                                    rf"protocol=https/}}' {shlex.quote(p)}" for p in lists]))
     steps.append(Step("Refresh the package lists", commands=["sudo apt update" if family(scan) == "debian" else
                                                              "sudo dnf makecache" if family(scan) == "fedora" else
                                                              "sudo zypper refresh" if family(scan) == "suse" else

@@ -73,7 +73,7 @@ def test_location(cat, tmp_path):
     host = make_host(tmp_path, commands={"gsettings get org.gnome.system.location enabled": "true\n"},
                      files={"/etc/geoclue/geoclue.conf": "[wifi]\nenable=true\nurl=https://api.beacondb.net/v1/geolocate\n"})
     o = detect(cat, "tel.location", make_scan(host))
-    assert o.status is Status.FAIL and ev(o)["GeoClue Wi-Fi lookup"] == "on, via api.beacondb.net"
+    assert o.status is Status.FAIL and ev(o)["GeoClue's online lookups"] == "Wi-Fi networks nearby, via api.beacondb.net"
     assert detect(cat, "tel.location", make_scan(host, desktop=("kde",))).status is Status.WARN
     assert detect(cat, "tel.location", make_scan(make_host(tmp_path / "n"), desktop=("kde",))).status is Status.NOT_APPLICABLE
 
@@ -126,7 +126,8 @@ def test_http_repos(cat, tmp_path):
         "/etc/apt/sources.list.d/other.list": "deb [arch=amd64 signed-by=/k.gpg] http://ppa.example.org/x noble main\n"})
     o = detect(cat, "tel.http_repos", make_scan(host))
     assert o.status is Status.FAIL and set(ev(o)) == {"deb.debian.org", "ppa.example.org"}
-    host = make_host(tmp_path / "f", files={"/etc/yum.repos.d/fedora.repo": "[fedora]\nmetalink=https://mirrors.fedoraproject.org/x\n"})
+    host = make_host(tmp_path / "f", files={"/etc/yum.repos.d/fedora.repo": "[fedora]\nmetalink=https://mirrors.fedoraproject.org/x"
+                                                                          "?repo=fedora-44&protocol=https\n"})
     assert detect(cat, "tel.http_repos", make_scan(host)).status is Status.PASS
 
 
@@ -370,3 +371,73 @@ def test_flatpak_and_snap_browsers_are_found(cat, tmp_path):
 def test_no_browsers(cat, tmp_path):
     for check in ("br.extensions_broad", "br.history_retention", "br.webrtc", "br.disk_cache"):
         assert detect(cat, check, make_scan(make_host(tmp_path))).status is Status.NOT_APPLICABLE
+
+
+# ------------------------------------------------------------------ the review of 2026-11-12
+
+FEDORA_REPO = ("[fedora]\nname=Fedora $releasever - $basearch\n"
+               "metalink=https://mirrors.fedoraproject.org/metalink?repo=fedora-$releasever&arch=$basearch\n"
+               "enabled=1\n[fedora-debuginfo]\nmetalink=https://mirrors.fedoraproject.org/metalink?repo=fedora-debug-"
+               "$releasever&arch=$basearch\nenabled=0\n")
+
+
+def test_a_metalink_that_doesnt_ask_for_https_mirrors_isnt_called_https(cat, tmp_path):
+    """Fedora's own metalink (as fedora.repo ships it, read on the Fedora 44 VM) hands out plain-HTTP mirrors too
+    unless it asks for protocol=https: "used over HTTPS" rested on the metalink's own address."""
+    host = make_host(tmp_path, files={"/etc/yum.repos.d/fedora.repo": FEDORA_REPO})
+    o = detect(cat, "tel.http_repos", make_scan(host))
+    assert o.status is Status.WARN and "Mirror list from mirrors.fedoraproject.org (HTTP mirrors not ruled out)" in ev(o)
+    host = make_host(tmp_path / "http", files={"/etc/yum.repos.d/x.repo": "[x]\nmirrorlist=http://mirror.example/list\n"})
+    assert detect(cat, "tel.http_repos", make_scan(host)).status is Status.FAIL
+
+
+def test_the_metalink_how_to_adds_protocol_https(cat, tmp_path):
+    from test_browsers import guide
+    host = make_host(tmp_path, files={"/etc/yum.repos.d/fedora.repo": FEDORA_REPO, "/etc/os-release": "ID=fedora\n"})
+    g = guide(cat, host, "tel.http_repos")
+    step = next(s for s in g.steps if s.title == "Ask the mirror lists for HTTPS mirrors only")
+    assert "protocol=https" in step.commands[0] and "/etc/yum.repos.d/fedora.repo" in step.commands[0]
+
+
+@pytest.mark.parametrize("conf, status", [
+    # GeoClue 2.8.2 as Fedora 44 ships it (read on the lab): the address source on beside Wi-Fi
+    ("[ip]\nenable=true\nmethod=ichnaea\n[3g]\nenable=true\n[wifi]\nenable=true\n", Status.WARN),
+    # Wi-Fi off was called "online lookup is off", the address source still on: now said, as a rough location
+    ("[ip]\nenable=true\nmethod=ichnaea\n[3g]\nenable=false\n[wifi]\nenable=false\n", Status.PASS),
+    ("[ip]\nenable=false\n[3g]\nenable=false\n[wifi]\nenable=false\n", Status.PASS),
+    ("[3g]\nenable=true\n[wifi]\nenable=false\n", Status.WARN),
+    # no [ip] section, and which GeoClue it is isn't known: its own default for the address source can't be told
+    ("[3g]\nenable=false\n[wifi]\nenable=false\n", Status.PASS),
+], ids=["fedora-44", "wifi-off-ip-on", "all-off", "cells", "no-ip-section"])
+def test_geoclue_sources_beyond_wifi(cat, tmp_path, conf, status):
+    host = make_host(tmp_path, files={"/etc/geoclue/geoclue.conf": "[agent]\nwhitelist=x\n" + conf})
+    o = detect(cat, "tel.location", make_scan(host, desktop=("kde",)))
+    assert o.status is status, (o.summary, ev(o))
+    if conf.startswith("[ip]\nenable=true") and "wifi]\nenable=false" in conf:
+        assert "rough location" in o.summary and any(n.title == "Its address lookup is on" for n in o.notes)
+    if "[ip]" not in conf and status is Status.PASS:
+        assert "lookups are off" in o.summary and any(n.title == "Its address lookup" for n in o.notes)
+    assert "online lookups are off" not in o.summary or "[ip]\nenable=false" in conf
+
+
+def test_geoclue_before_2_8_has_no_address_source_of_its_own(cat, tmp_path):
+    """In 2.7 the address lookup was the Wi-Fi source's: with that off, nothing looks it up."""
+    from daprivacyscanner.appversions import Installed
+    host = make_host(tmp_path, files={"/etc/geoclue/geoclue.conf": "[3g]\nenable=false\n[wifi]\nenable=false\n"})
+    scan = make_scan(host, desktop=("kde",))
+    scan._installed_apps = {"geoclue": Installed((2, 7, 2), "2.7.2", "package geoclue-2.0")}
+    assert detect(cat, "tel.location", scan).status is Status.PASS
+
+
+@pytest.mark.parametrize("consent, status, said", [
+    ("consent_state = true\n", Status.FAIL, "consent given (linux)"),
+    ("consent_state = false\n", Status.PASS, "no consent given"),
+    (None, Status.PASS, "no consent given"),
+])
+def test_ubuntu_insights(cat, tmp_path, consent, status, said):
+    """Ubuntu 26.04 ships ubuntu-insights (0.9.3, read on the lab): its consent files are what decides."""
+    home = {".config/ubuntu-insights/linux-consent.toml": consent} if consent else {}
+    host = make_host(tmp_path, files={"/usr/lib/systemd/user/ubuntu-insights-upload.timer": "[Timer]\n"},
+                     home_files=home, installed=["systemctl"])
+    o = detect(cat, "tel.crash_reporters", make_scan(host))
+    assert o.status is status and said in ev(o)["Ubuntu Insights"]

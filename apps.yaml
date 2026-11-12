@@ -1484,6 +1484,41 @@ apps:
       notes: https://www.openssh.com/releasenotes.html
       source: https://github.com/openssh/openssh-portable
 
+  - id: geoclue
+    name: "GeoClue"
+    packages: [geoclue2, geoclue-2.0, geoclue]
+    checked: "2.8.2"
+    basis: current
+    checked_on: 2026-11-12
+    major_parts: 2
+    checks: [tel.location]
+    relies_on: >-
+      /etc/geoclue/geoclue.conf and conf.d (2.7 and later): the [wifi], [3g] and, from 2.8, [ip] sources' enable,
+      [wifi] url (the build's own default without one: BeaconDB since 2.8) and [ip] method (ichnaea, gmaps,
+      reallyfreegeoip); Fedora 44's 2.8.2 file read on the lab (2026-11-12)
+    upstream:
+      repology: geoclue
+      notes: https://gitlab.freedesktop.org/geoclue/geoclue/-/blob/master/NEWS
+      source: https://gitlab.freedesktop.org/geoclue/geoclue
+
+  - id: ubuntu-insights
+    name: "Ubuntu Insights"
+    packages: [ubuntu-insights]
+    checked: "0.9.3"
+    basis: current
+    checked_on: 2026-11-12
+    major_parts: 2
+    checks: [tel.crash_reporters]
+    data: [config:ubuntu-insights]
+    relies_on: >-
+      ~/.config/ubuntu-insights/<source>-consent.toml (consent_state = true | false; the platform's source is linux),
+      /etc/ubuntu-insights/system-config.toml (system_opt_out); its user timers ubuntu-insights-collect and -upload
+      (Ubuntu 26.04, read on the lab 2026-11-12)
+    upstream:
+      repology: ubuntu-insights
+      notes: https://github.com/ubuntu/ubuntu-insights/releases
+      source: https://github.com/ubuntu/ubuntu-insights
+
   - id: networkmanager
     name: "NetworkManager"
     packages: [network-manager, networkmanager, NetworkManager]

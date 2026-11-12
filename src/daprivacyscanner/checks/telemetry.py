@@ -5,6 +5,7 @@ from __future__ import annotations
 import fnmatch
 import posixpath
 import re
+import urllib.parse
 
 from .. import ini
 from ..host import Unreadable
@@ -54,6 +55,27 @@ class CrashReporters(Check):
                 len([ln for ln in script.splitlines() if ln.strip() and not ln.startswith("#")]) > 1:
             on.append("motd-news (sends details of this computer to Ubuntu)")
             ev.append(Evidence.val("motd-news", "on"))
+        # Ubuntu Insights (ubuntu-report's successor; Ubuntu 26.04 ships 0.9.3 with user timers that collect a report
+        # about this computer and upload it): sent only with consent, ~/.config/ubuntu-insights/<source>-consent.toml
+        # (consent_state = true | false; the platform's source is "linux"); without it only that there is none
+        insights = installed(host, "ubuntu-insights") or \
+            host.sys_path("/usr/lib/systemd/user/ubuntu-insights-upload.timer").exists()
+        if insights:
+            opted_out = re.search(r"^\s*system_opt_out\s*=\s*true", host.read_sys(
+                "/etc/ubuntu-insights/system-config.toml") or "", re.M)
+            consents = {}
+            for f in children(scan.paths.config_home / "ubuntu-insights"):
+                if f.name.endswith("-consent.toml"):
+                    m = re.search(r"^\s*consent_state\s*=\s*(true|false)", read_text(host, f) or "", re.M)
+                    consents[f.name.removesuffix("-consent.toml")] = m.group(1) == "true" if m else None
+            given = sorted(k for k, v in consents.items() if v)
+            if given and not opted_out:
+                on.append("Ubuntu Insights (sends a report about this computer to Ubuntu)")
+                ev.append(Evidence.val("Ubuntu Insights", f"consent given ({', '.join(given)})"))
+            else:
+                ev.append(Evidence.val("Ubuntu Insights", "off for every account (system opt-out)" if opted_out else
+                                       "no consent given: it sends nothing about this computer, only that it "
+                                       "has none"))
         notes = []
         if scan.context.desktop.is_kde:
             notes.append(Note("info", "KDE's own reporting", "DrKonqi asks before sending a crash report; Plasma's "
@@ -72,13 +94,40 @@ def wifi_adapters(scan: Scan) -> bool | None:
     return any((d / "wireless").exists() or (d / "phy80211").exists() for d in children(net))
 
 
+GEOCLUE_IP_SOURCE = (2, 8)      # the [ip] source of its own, on by default (before: part of the Wi-Fi source's lookup)
+
+
+def geoclue_online(scan: Scan, conf: dict) -> tuple[list[str], bool]:
+    """(the sources that ask an online service, in words; whether one's state couldn't be told) from GeoClue's merged
+    settings: [wifi] (nearby networks, and before 2.8 the address too), [3g] (mobile network cells, sent to the same
+    service, with a modem), and from 2.8 [ip] (the address: ichnaea, gmaps or reallyfreegeoip). A source enabled with
+    no url uses the one its build was made with (BeaconDB since 2.8; none in 2.7.2, which then turns them off in the
+    file it ships)."""
+    on, unsure = [], False
+    host_of = lambda u: re.sub(r"^\w+://([^/]+).*", r"\1", u)  # noqa: E731
+    url = ini.get(conf, "wifi", "url") or ""
+    if ini.truthy(ini.get(conf, "wifi", "enable")):
+        on.append("Wi-Fi networks nearby" + (f", via {host_of(url)}" if url else ""))
+    if ini.truthy(ini.get(conf, "3g", "enable")):
+        on.append("mobile network cells (with a mobile broadband modem)")
+    if ("ip",) in conf:
+        if ini.truthy(ini.get(conf, "ip", "enable")):
+            method = (ini.get(conf, "ip", "method") or "ichnaea").strip()
+            on.append(f"this computer's address ({ {'gmaps': 'Google', 'reallyfreegeoip': 'reallyfreegeoip.org'}.get(method, method) })")
+    else:
+        inst = scan.installed_apps().get("geoclue")
+        # from 2.8 a missing [ip] section is the source's own default, which the file shipped doesn't say
+        unsure = inst is None or inst.version[:2] >= GEOCLUE_IP_SOURCE
+    return on, unsure
+
+
 @register
 class Location(Check):
     id = "tel.location"
 
     def detect(self, scan: Scan) -> Outcome:
         host = scan.host
-        ev, wifi = [], False
+        ev, online, unsure = [], [], False
         conf_text = host.read_sys("/etc/geoclue/geoclue.conf")
         if conf_text is not None:
             # GeoClue 2.7+ reads conf.d after it, in name order, later files winning
@@ -88,15 +137,21 @@ class Location(Check):
                 if text:
                     layers.append(ini.parse(text))
             conf = ini.merge(*layers)
-            wifi = bool(ini.truthy(ini.get(conf, "wifi", "enable")))
-            url = ini.get(conf, "wifi", "url") or ""
-            ev.append(Evidence.val("GeoClue Wi-Fi lookup", ("on, via " + re.sub(r"^\w+://([^/]+).*", r"\1", url))
-                                   if wifi and url else "on" if wifi else "off"))
+            online, unsure = geoclue_online(scan, conf)
+            ev.append(Evidence.val("GeoClue's online lookups", "; ".join(online) if online else
+                                   "the address lookup couldn't be told ([ip] isn't in its settings)" if unsure else
+                                   "off (Wi-Fi, address and mobile network sources)"))
+        # the Wi-Fi networks and mobile cells place the computer to the street; the address lookup alone gives apps
+        # a rough location (the town), from what every website sees anyway, as the remedy says of the fix
+        precise = [s for s in online if not s.startswith("this computer's address")]
+        by_address = [s for s in online if s.startswith("this computer's address")]
         # what the lookup sends: GeoClue asks with the Wi-Fi networks it sees, and the service always has the address
         # the request comes from; with no Wi-Fi adapter that address is all (it looks the location up by it)
         adapters = wifi_adapters(scan)
         what = ("nearby Wi-Fi networks and this computer's internet address" if adapters is not False else
                 "this computer's internet address (it has no Wi-Fi adapter, so no networks)")
+        if precise and not any(s.startswith("Wi-Fi") for s in precise):
+            what = "the mobile network cells nearby and this computer's internet address"
         if scan.context.desktop.is_gnome:
             on = scan.gnome.gsettings("org.gnome.system.location", "enabled")
             if on is None:
@@ -107,10 +162,25 @@ class Location(Check):
             return passed("Location services are off.", *ev)
         if conf_text is None:
             return absent("GeoClue (location services) isn't installed.")
-        if wifi:
+        if precise:
             return warned(f"Apps can ask GeoClue for your location, which sends {what} to an online lookup service. "
                           "This desktop has no central switch for it.", *ev)
-        return passed("GeoClue's online lookup is off.", *ev)
+        if by_address:
+            service = by_address[0].split("(")[-1].rstrip(")")
+            return passed("GeoClue's Wi-Fi and mobile network lookups are off: apps get no more than a rough location, "
+                          "from your internet address.", *ev, notes=[Note(
+                              "risk", "Its address lookup is on",
+                              f"GeoClue still looks this computer's internet address up ({service}) for apps that ask: "
+                              "that gives them a rough location, the town, and tells the lookup service your address, "
+                              "as any website you visit sees it. [ip] enable=false in GeoClue's settings turns it off "
+                              "too.")])
+        if unsure:
+            return passed("GeoClue's Wi-Fi and mobile network lookups are off.", *ev, notes=[Note(
+                "limitation", "Its address lookup", "Whether GeoClue looks this computer's internet address up online "
+                "(a rough location) isn't known: its settings have no [ip] section, the address source of GeoClue 2.8 "
+                "and later.")])
+        return passed("GeoClue's online lookups are off: Wi-Fi networks, this computer's address and mobile network "
+                      "cells.", *ev)
 
 
 def mozilla_telemetry_apps() -> tuple[str, ...]:
@@ -407,6 +477,29 @@ def http_hosts(text: str) -> list[str]:
     return out
 
 
+# dnf's and zypper's lists of mirrors: fetched over HTTPS, a metalink or mirrorlist still hands out plain-HTTP mirrors
+# unless it is asked for HTTPS ones only (MirrorManager's protocol=https: Fedora's own metalink lists 43 plain-HTTP
+# mirrors of 120 without it, none with it, 2026-11-12); dnf downloads from those it is given
+_MIRROR_LIST = re.compile(r"^[ \t]*(metalink|mirrorlist)[ \t]*=[ \t]*(\S+)", re.M | re.I)
+
+
+def mirror_lists_unsure(text: str) -> list[str]:
+    """The hosts of the HTTPS metalink and mirrorlist lines (repositories in use) that don't ask for HTTPS mirrors
+    only (no protocol=https among their parameters): the mirrors they hand out may be plain HTTP. One fetched over
+    plain HTTP itself is http_hosts'."""
+    out = []
+    for part in _parts_in_use(text):
+        for m in _MIRROR_LIST.finditer(part):
+            url = m.group(2)
+            if not url.lower().startswith("https://"):
+                continue
+            params = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)
+            protocols = [p.lower() for v in params.get("protocol", []) for p in v.split(",")]
+            if not protocols or any(p != "https" for p in protocols):
+                out.append(urllib.parse.urlsplit(url).hostname or url)
+    return out
+
+
 @register
 class HttpRepos(Check):
     id = "tel.http_repos"
@@ -416,14 +509,34 @@ class HttpRepos(Check):
         if not files:
             return absent("No apt, dnf, zypper or pacman repositories were found.")
         hosts: dict[str, list[str]] = {}
+        lists: dict[str, list[str]] = {}
         for path, text in files:
-            for host in http_hosts(text):
+            for host in http_hosts(text) + [h for h in _mirror_list_http(text)]:
                 hosts.setdefault(host, []).append(path)
+            for host in mirror_lists_unsure(text):
+                lists.setdefault(host, []).append(path)
         ev = [Evidence.val(h, ", ".join(sorted(set(p)))[:200]) for h, p in sorted(hosts.items())]
+        ev += [Evidence.val(f"Mirror list from {h} (HTTP mirrors not ruled out)", ", ".join(sorted(set(p)))[:200])
+               for h, p in sorted(lists.items())]
         if hosts:
             return failed(f"{len(hosts)} package mirror{'s are' if len(hosts) > 1 else ' is'} used over plain HTTP, so "
                           "the network can see which packages you install.", *ev)
-        return passed("Package repositories are used over HTTPS.", Evidence.count("Repository files", len(files)))
+        if lists:
+            n = sum(len(set(p)) for p in lists.values())
+            return warned(f"Packages may come over plain HTTP: {n} repository file{'s' if n > 1 else ''} take mirrors "
+                          "from a list that doesn't ask for HTTPS ones only, and such lists hand out plain-HTTP mirrors "
+                          "too.", *ev, notes=[Note("info", "Asking for HTTPS mirrors only",
+                                                   "Fedora's and RPM Fusion's mirror lists hand out HTTPS mirrors only "
+                                                   "when asked: &protocol=https at the end of the metalink= line. How "
+                                                   "to… gives the command for each file.")])
+        return passed("Package repositories, and the mirror lists they take mirrors from, are used over HTTPS.",
+                      Evidence.count("Repository files", len(files)))
+
+
+def _mirror_list_http(text: str) -> list[str]:
+    """The hosts of metalink and mirrorlist lines fetched over plain HTTP themselves."""
+    return [h for part in _parts_in_use(text) for m in _MIRROR_LIST.finditer(part)
+            if m.group(2).lower().startswith("http://") for h in _HTTP_HOST.findall(m.group(2))]
 
 
 DNF5_OVERRIDE_DIRS = ("/usr/share/dnf5/repos.override.d", "/etc/dnf/repos.override.d")

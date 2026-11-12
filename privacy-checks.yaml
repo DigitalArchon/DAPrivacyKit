@@ -1842,6 +1842,10 @@ checks:
         disabled); it sends the installed packages and the mirror weekly (pkgstats 3.5.6, tested on CachyOS)'
       - 'Ubuntu: motd-news, /etc/default/motd-news ENABLED=1 with a real /etc/update-motd.d/50-motd-news (Mint ships it
         empty: not counted); it sends the release, kernel, processor, uptime and cloud to motd.ubuntu.com'
+      - 'Ubuntu Insights (ubuntu-report''s successor; 26.04 ships 0.9.3 with user timers ubuntu-insights-collect and
+        -upload, read on the lab): on where ~/.config/ubuntu-insights/<source>-consent.toml has consent_state = true
+        (the platform''s source is linux) and /etc/ubuntu-insights/system-config.toml has no system_opt_out = true;
+        without consent it sends only that there is none'
       - 'KDE: DrKonqi asks before sending; User Feedback has its own check (tel.kde_feedback)'
     fix: Disable or set to ask before sending.
     remedy: >
@@ -1862,7 +1866,13 @@ checks:
     why: GeoClue sends nearby Wi-Fi access points, and the computer's internet address, to an online lookup service.
     detect:
       - 'GNOME: gsettings get org.gnome.system.location enabled'
-      - '/etc/geoclue/geoclue.conf, then /etc/geoclue/conf.d/*.conf in name order (GeoClue 2.7+, later files win): [wifi] enable'
+      - '/etc/geoclue/geoclue.conf, then /etc/geoclue/conf.d/*.conf in name order (GeoClue 2.7+, later files win): [wifi]
+        enable (nearby networks, and before 2.8 the address too), [3g] enable (mobile network cells, sent to the same
+        service), and from 2.8 [ip] enable and method (the address: ichnaea, gmaps or reallyfreegeoip; Fedora 44''s
+        2.8.2 ships it on). A source enabled with no url uses the build''s own (BeaconDB since 2.8)'
+      - 'Wi-Fi or cells on: a risk (they place the computer to the street). The address lookup alone gives apps a rough
+        location, from what websites see anyway: a pass that says so, with a risk note. No [ip] section on 2.8 (or a
+        GeoClue whose version isn''t read): a note that whether it looks the address up isn''t known'
       - 'Wi-Fi adapters (/sys/class/net/*/wireless or phy80211): without one the lookup has only the internet address to
         go on, and the summary says so, never "nearby Wi-Fi networks"'
     fix: >
@@ -1876,7 +1886,7 @@ checks:
       location then find only a rough one, from your internet address, or none.
     verify: >
       That GeoClue 2.7 reads conf.d after geoclue.conf with later files winning (2.7.0 on Ubuntu 24.04 has the
-      folder), and that with [wifi] enable=false it makes no network lookups at all (GeoIP included).
+      folder), and that with [wifi] enable=false 2.7 makes no network lookups at all (its GeoIP included).
 
   - id: tel.browser_telemetry
     title: Browser telemetry and studies
@@ -1923,6 +1933,8 @@ checks:
     title: Package repositories over plain HTTP
     category: telemetry
     severity: 2
+    # a mirror list that may hand out plain-HTTP mirrors: a risk (1)
+    warn_lower: 2
     scope: system
     tier: advice
     why: Packages are signature-verified, but network observers can see what software is installed.
@@ -1932,7 +1944,11 @@ checks:
         cachyos-*-mirrorlist, chaotic-mirrorlist, EndeavourOS''s endeavouros-mirrorlist; a glob''s matches)'
       - 'An onion service''s address (tor+http://….onion, Debian''s onion mirrors) is no plain HTTP: Tor encrypts it end
         to end'
-    fix: Switch to HTTPS mirrors.
+      - 'dnf''s and zypper''s metalink= and mirrorlist= lines: one over plain HTTP is a problem; one over HTTPS still hands
+        out plain-HTTP mirrors unless it asks for HTTPS ones (MirrorManager''s protocol=https: Fedora''s own metalink
+        listed 43 plain-HTTP mirrors of 120 without it, none with it, 2026-11-12), and dnf downloads from those it is
+        given: a risk, never "used over HTTPS"'
+    fix: Switch to HTTPS mirrors; add &protocol=https to the metalink and mirrorlist lines.
     remedy: >
       Software downloads go over plain HTTP, so anyone on the network can see what you install (the
       packages themselves are still verified). How to… shows the change to HTTPS for each source.
