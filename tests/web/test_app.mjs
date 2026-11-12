@@ -160,7 +160,8 @@ Object.assign(routes, {
     features: ["desk.file_manager_actions"], can_pick: true, downloads_dir: "~/Downloads",
     downloads: [{ path: "/home/a/Downloads/linuxmint-22.3-cinnamon-64bit.iso", name: "linuxmint-22.3-cinnamon-64bit.iso", size: 3e9, mtime: 1 }],
     verify: { gpgv: true, sqv: false, install: null },
-    metadata: { mat2: { installed: true, install: "sudo apt install mat2" }, exiftool: { installed: false, install: "x" } },
+    metadata: { mat2: { installed: true, install: "sudo apt install mat2" }, exiftool: { installed: false, install: "x" },
+                sandbox: { available: true, why: "" } },
     ramdisk: ramdisk(), admin_active: false }),
   "POST /api/tools/pick": (body) => ({ paths: [body?.folder ? "/home/a/Documents" : "/home/a/Downloads/photo.jpg"] }),
   "POST /api/tools/verify": (body) => { toolBodies.verify = body; return { verdict: { path: body.path, name: "linuxmint-22.3-cinnamon-64bit.iso",
@@ -1005,6 +1006,9 @@ check(toolBodies.read?.paths?.[0] === "/home/a/photo.jpg" && toolBodies.read.hid
 check(toolBodies.show?.paths?.[0] === "/home/a/photo.jpg" && $(".modal .metagroup.warn h4")?.textContent === "Where it was made",
       "one file is shown whole, location highlighted");
 check($$(".modal .meta-filters").length === 0, "a single file needs no filters");
+check(text(".modal .metadata").includes("run in a sandbox of their own")
+      && text(".modal .metadata").includes("only the app's own working folder to write in"),
+      "it says the programs that read and clean the files are sandboxed (the review of 2026-11-12)");
 $$(".modal button").find(b => b.textContent === "Make clean copies of 1 ticked file").click(); await tick(); await waitMeta();
 check(toolBodies.clean.files?.[0] === "/home/a/photo.jpg" && toolBodies.clean.lightweight === false, "the ticked file is cleaned");
 check(text(".modal .meta-slot").includes("photo.cleaned.jpg") && text(".modal .meta-slot").includes("couldn't be cleaned"),

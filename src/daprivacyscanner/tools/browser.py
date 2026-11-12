@@ -343,7 +343,11 @@ def status(host: Host) -> dict:
         out.append(entry)
     from ..online import proxy_vars
     from . import kept
+    from . import metadata
     return {"platform": plat, "min_mb": MIN_MB, "mat2": bool(host.runner.which("mat2")),
+            # why mat2 can't be run in a sandbox of its own here, if it can't: the Outbox cleans what lands in it
+            # without being asked, and mat2 parses whatever the file holds (metadata.sandbox_why)
+            "mat2_sandbox": metadata.sandbox_why(host) or "",
             "kept": kept.view(host, BROWSERS.values()),       # downloads kept for next time, on the disk
             "ramdisk": {**rd.to_dict(host.home), "max_mb": ramdisk.max_mb(host), "default_mb": ramdisk.DEFAULT_MB,
                         "commands": ramdisk.commands(host, DISK),

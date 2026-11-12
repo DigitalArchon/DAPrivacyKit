@@ -665,3 +665,79 @@ def test_mat2_reaches_its_temporary_folder_by_a_short_name(tmp_path):
     host.runner.handlers["mat2"] = lambda argv: CommandResult(tuple(argv), 1, "", "Traceback (most recent call last):\n  File x\nOSError: AF_UNIX path too long\n")
     assert M.clean(host, pic, check_after=False).message == "mat2 stopped with an error: OSError: AF_UNIX path too long"
 
+
+# ------------------------------------------------------------------ the readers and the cleaner in a sandbox
+
+def _with_bwrap(tmp_path, **kw):
+    """A host where bubblewrap works (its probe passes), for the tools' sandbox."""
+    host = make_host(tmp_path, installed=("mat2", "exiftool", "bwrap"), **kw)
+    host.runner.handlers["bwrap"] = lambda argv: CommandResult(tuple(argv), 0, "")
+    M._SANDBOX.clear()
+    return host
+
+
+def test_the_readers_and_the_cleaner_run_in_a_sandbox(tmp_path):
+    """exiftool and mat2 parse whatever the file holds, and the files they are given are the ones nobody vouches for
+    (a download from the browser in memory, anything dropped in the Outbox): they run with no network, no home, the
+    files read-only and only the app's own working folder writable (the review of 2026-11-12)."""
+    host = _with_bwrap(tmp_path, home_files={"Pictures/a.jpg": "x"})
+    seen = []
+    host.runner.handlers["bwrap"] = lambda argv: seen.append(list(argv)) or CommandResult(tuple(argv), 0, "[]")
+    pic = host.home / "Pictures/a.jpg"
+    M.show(host, pic)
+    a = seen[-1]
+    assert a[0] == "bwrap" and "--unshare-all" in a and "--share-net" not in a, "no network of any kind"
+    pairs = lambda flag: [(a[i + 1], a[i + 2]) for i, x in enumerate(a) if x == flag]       # noqa: E731
+    assert (str(pic), str(pic)) in pairs("--ro-bind"), "the file read-only, where it is"
+    assert not pairs("--bind") and ("/etc", "/etc") not in pairs("--ro-bind"), "nothing writable, not the computer's /etc"
+    env = dict(pairs("--setenv"))
+    assert env["HOME"] == M.TOOL_HOME and "TMPDIR" not in env and "DISPLAY" not in env
+    assert a[a.index("--dir") + 1] == M.TOOL_HOME
+    assert a[a.index("--") + 1:] == ["exiftool", "-json", "-G1", "-a", "-s", "-q", "--", str(pic)]
+    assert M.status(host)["sandbox"] == {"available": True, "why": ""}
+    M._SANDBOX.clear()
+
+
+def test_the_cleaner_gets_its_working_folder_and_a_short_tmpdir_in_the_sandbox(tmp_path):
+    """mat2's cleaned copies and its temporary files land where they would (its working folder, bound where it is),
+    and its temporary folder is bound at a short path as well, so its workers' sockets fit in 107 bytes."""
+    deep = "Documents/" + "/".join(["a folder with a long name"] * 5)
+    host = _with_bwrap(tmp_path, home_files={f"{deep}/a.jpg": "x"})
+    seen = []
+
+    def bwrap(argv):
+        inner = list(argv)[list(argv).index("--") + 1:]
+        if inner[0] == "mat2":                      # the probe around /usr/bin/true comes first
+            seen.append(list(argv))
+            Path(inner[-1]).with_name("a.cleaned.jpg").write_text("x")  # mat2 writes beside the copy it was given
+        return CommandResult(tuple(argv), 0, "")
+    host.runner.handlers["bwrap"] = bwrap
+    pic = host.home / deep / "a.jpg"
+    assert M.clean(host, pic, check_after=False).ok
+    a = seen[0]
+    pairs = lambda flag: [(a[i + 1], a[i + 2]) for i, x in enumerate(a) if x == flag]       # noqa: E731
+    env = dict(pairs("--setenv"))
+    assert env["TMPDIR"] == M.TOOL_TMP and len(M.TOOL_TMP) < 20, "short, whatever the real path is"
+    tmp_bind = [src for src, dst in pairs("--bind") if dst == M.TOOL_TMP]
+    assert len(tmp_bind) == 1 and Path(tmp_bind[0]).name.startswith(M.TMP_PREFIX)
+    work = [src for src, dst in pairs("--bind") if src == dst]
+    assert work and Path(tmp_bind[0]).parent == Path(work[0]), "the temporary folder is inside the working folder"
+    assert (pic.parent / "a.cleaned.jpg").exists() and not os.path.exists(tmp_bind[0])
+    M._SANDBOX.clear()
+
+
+def test_without_bubblewrap_the_tools_run_as_before_and_the_panel_says_so(tmp_path):
+    """Never at the cost of the tool itself: where bubblewrap can't run, exiftool and mat2 run as they did, and
+    the panel says they do."""
+    host = make_host(tmp_path, installed=("mat2", "exiftool"), home_files={"Pictures/a.jpg": "x"})
+    M._SANDBOX.clear()
+    def mat2(argv):
+        Path(argv[-1]).with_name("a.cleaned.jpg").write_text("x")
+        return CommandResult(tuple(argv), 0)
+    host.runner.handlers["mat2"] = mat2
+    pic = host.home / "Pictures/a.jpg"
+    assert M.clean(host, pic, check_after=False).ok
+    assert host.runner.calls[-1][0] == "mat2" and host.runner.envs[-1].get("TMPDIR")
+    st = M.status(host)["sandbox"]
+    assert st["available"] is False and "bubblewrap" in st["why"]
+    M._SANDBOX.clear()

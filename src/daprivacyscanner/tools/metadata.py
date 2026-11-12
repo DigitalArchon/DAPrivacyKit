@@ -242,15 +242,16 @@ def parse_mat2_show_files(out: str, paths: list[str]) -> dict[str, tuple[list[It
 
 
 def show(host: Host, path: Path) -> FileMeta:
-    """What the file carries. Reads it; changes nothing."""
+    """What the file carries. Reads it; changes nothing. The reader runs in a sandbox (`run_tool`): it parses
+    whatever the file holds."""
     path = Path(path)
     if host.runner.which("exiftool"):
-        r = host.run("exiftool", "-json", "-G1", "-a", "-s", "-q", "--", str(path), timeout=TIMEOUT)
+        r = run_tool(host, ["exiftool", "-json", "-G1", "-a", "-s", "-q", "--", str(path)], read=[path])
         if r.ok or r.stdout.strip().startswith("["):
             return FileMeta(path, parse_exiftool(r.stdout), "exiftool")
         return FileMeta(path, [], "exiftool", error=(r.stderr or r.stdout).strip()[:300] or "exiftool couldn't read it")
     if host.runner.which("mat2"):
-        r = host.run("mat2", "--show", "--", str(path), timeout=TIMEOUT)
+        r = run_tool(host, ["mat2", "--show", "--", str(path)], read=[path])
         items, supported, error = parse_mat2_show(r.stdout + r.stderr, str(path))
         return FileMeta(path, items, "mat2", error=error, supported=supported)
     return FileMeta(path, [], "", error="Reading metadata needs exiftool or mat2, and neither is installed.")
@@ -281,6 +282,73 @@ class CleanResult:
 
 TMP_PREFIX = ".daprivacyscanner-mat2-"
 
+# exiftool and mat2 parse whatever the file holds, and the files they are given are the ones nobody vouches for: a
+# download from the browser in memory, anything dropped in the Outbox (cleaned without being asked), a stranger's
+# photo. exiftool is perl with a long history of its own (CVE-2021-22204 ran a command from a DjVu file's metadata),
+# and mat2 pulls in poppler, GdkPixbuf, mutagen and ffmpeg's libraries. So both run in a sandbox like View offline…'s
+# (the review of 2026-11-12): no network, no home folder, no display, no session bus, /usr read-only, an /etc of its
+# own holding only what programs read, the files to read bound read-only one by one (not their folder: nothing else
+# of it is there), and only the app's own working folder writable, at a short path of its own. One sandbox per run,
+# as the batches are. Where bubblewrap can't run here they run as before, and the panel and the result say so.
+TOOL_HOME = "/home/user"                 # an empty folder in the sandbox: perl and python write nothing there
+TOOL_TMP = "/tmp/work"                   # the working folder, bound: short, so mat2's workers' sockets fit in 107 bytes
+_SANDBOX: dict[str, str | None] = {}     # bubblewrap's path (or "") -> why a tool can't be sandboxed here, or None
+
+
+def sandbox_why(host: Host) -> str | None:
+    """Why exiftool and mat2 can't be run in a sandbox here, or None (the answer is kept: it is asked for every
+    batch)."""
+    from . import sandbox
+    key = sandbox.program(host, sandbox.BWRAP) or ""
+    if key not in _SANDBOX:
+        _SANDBOX[key] = sandbox.probe(host) if key else "bubblewrap (bwrap) isn't installed."
+    return _SANDBOX[key]
+
+
+def sandboxed_argv(host: Host, argv: list[str], read: list[Path], write: list[Path], tmp: Path | None,
+                   etc: Path) -> list[str]:
+    """`argv` in the tools' sandbox. Everything is bound where it really is, so the tools name files as the app
+    does and what they write lands where it would: `read` (the files to read) read-only, `write` (the app's own
+    working folders) writable, and `tmp` (mat2's temporary folder, inside one of them) again at TOOL_TMP, which
+    is short enough for its workers' sockets whatever the real path is. The sandbox's own /etc is written in
+    `etc`. Without `tmp`, TMPDIR is the sandbox's own /tmp, in memory (mat2 --show unpacks an archive there:
+    on its own it would use the computer's /tmp, on the disk)."""
+    from . import sandbox
+    a = [sandbox._need(host, sandbox.BWRAP), "--die-with-parent", *sandbox.namespaces(False),
+         *sandbox.system(host, etc=False),
+         *sandbox.app_etc(host, sandbox.identity_files(etc, None), resolv=False),
+         "--perms", "0700", "--dir", TOOL_HOME]
+    for folder in dict.fromkeys(str(p) for p in write):
+        a += ["--bind", folder, folder]
+    for path in dict.fromkeys(str(p) for p in read):
+        a += ["--ro-bind", path, path]
+    env = {"HOME": TOOL_HOME, "PATH": "/usr/local/bin:/usr/bin:/bin", "LC_ALL": "C", "LANG": "C"}
+    if tmp is not None:
+        a += ["--bind", str(tmp), TOOL_TMP]
+        env["TMPDIR"] = TOOL_TMP
+    for k, v in env.items():
+        a += ["--setenv", k, v]
+    return a + ["--chdir", TOOL_HOME, "--", *argv]
+
+
+def run_tool(host: Host, argv: list[str], read: list[Path], write: list[Path] | None = None, tmp: Path | None = None,
+             env: dict | None = None, timeout: float = TIMEOUT):
+    """exiftool or mat2 on files the app doesn't vouch for, in the sandbox above where it can be built; as before
+    where it can't (`sandbox_why`), with `env` (mat2's TMPDIR) as its own. The sandbox's own /etc goes in a folder
+    in the runtime folder, else beside the working folder, and is removed afterwards."""
+    if sandbox_why(host):
+        return host.run(*argv, timeout=timeout, env=env or None)
+    base = host.environ.get("XDG_RUNTIME_DIR")
+    where = base if base and os.path.isdir(base) else (str(write[0]) if write else None)
+    try:
+        etc = Path(tempfile.mkdtemp(prefix=".daprivacyscanner-etc-", dir=where))
+    except OSError:
+        return host.run(*argv, timeout=timeout, env=env or None)
+    try:
+        return host.run(*sandboxed_argv(host, argv, read, write or [], tmp, etc), timeout=timeout)
+    finally:
+        shutil.rmtree(etc, ignore_errors=True)
+
 
 @contextlib.contextmanager
 def _tmp_beside(folder: Path, runtime: str | None = None):
@@ -288,16 +356,19 @@ def _tmp_beside(folder: Path, runtime: str | None = None):
     (the RAM disk, for the browser's files), removed afterwards: left to itself it writes them to /tmp, on the disk on
     Debian, Ubuntu and Mint, and a document's parts (an office file's or EPUB's every member, a PDF's pages as images,
     an audio file's cover) would stay there in free space after it deletes them (mat2 0.15: archive.py, pdf.py,
-    audio.py). Yields the environment to add; nothing where the folder can't be written to (mat2's own default then).
+    audio.py). Yields (the folder itself, the environment to add); (None, {}) where the folder can't be written to
+    (mat2's own default then).
 
     mat2 reaches that folder by a short name, a link in `runtime` ($XDG_RUNTIME_DIR, the user's own and in memory): with
     Python 3.14 its worker processes start through a socket made in TMPDIR, and a socket's path may be 107 bytes at
     most, which a hidden folder beside a file in some folder of the user's soon exceeds (mat2 then failed with
-    "AF_UNIX path too long": seen on CachyOS, Python 3.14.7, mat2 0.15). The files still land beside what is cleaned."""
+    "AF_UNIX path too long": seen on CachyOS, Python 3.14.7, mat2 0.15). The files still land beside what is cleaned.
+    In the sandbox (run_tool) the folder is bound at TOOL_TMP instead, which is short on its own; the link is for a
+    run without one."""
     try:
         tmp = Path(tempfile.mkdtemp(prefix=TMP_PREFIX, dir=folder))
     except OSError:
-        yield {}
+        yield None, {}
         return
     link = None
     if runtime and os.path.isdir(runtime):
@@ -307,7 +378,7 @@ def _tmp_beside(folder: Path, runtime: str | None = None):
         except OSError:
             link = None
     try:
-        yield {"TMPDIR": str(link or tmp)}
+        yield tmp, {"TMPDIR": str(link or tmp)}
     finally:
         if link is not None:
             with contextlib.suppress(OSError):
@@ -511,8 +582,9 @@ def show_many(host: Host, paths: list[Path], progress=None, stop=None) -> list[F
             raise Stopped()
         batch = [Path(p) for p in paths[i:i + BATCH]]
         if exiftool:
-            r = host.run("exiftool", "-json", "-G1", "-a", "-s", "-q", "--", *map(str, batch),
-                         timeout=TIMEOUT + 10 * len(batch))
+            # one sandbox for the batch, with the batch's files read-only in it (run_tool)
+            r = run_tool(host, ["exiftool", "-json", "-G1", "-a", "-s", "-q", "--", *map(str, batch)],
+                         read=list(batch), timeout=TIMEOUT + 10 * len(batch))
             got = parse_exiftool_files(r.stdout)
             for p in batch:
                 if str(p) in got:
@@ -521,7 +593,8 @@ def show_many(host: Host, paths: list[Path], progress=None, stop=None) -> list[F
                 else:
                     out.append(show(host, p))
         elif mat2:
-            r = host.run("mat2", "--show", "--", *map(str, batch), timeout=TIMEOUT + 10 * len(batch))
+            r = run_tool(host, ["mat2", "--show", "--", *map(str, batch)], read=list(batch),
+                         timeout=TIMEOUT + 10 * len(batch))
             got = parse_mat2_show_files(r.stdout + r.stderr, [str(p) for p in batch])
             for p in batch:
                 if str(p) in got:
@@ -628,9 +701,12 @@ def cant_write(host: Host, folder: Path) -> str:
 
 
 def _mat2(host: Host, lightweight: bool, files: list[Path]):
-    with _tmp_beside(files[0].parent, host.environ.get("XDG_RUNTIME_DIR")) as env:
-        return host.run("mat2", *(["--lightweight"] if lightweight else []), "--", *map(str, files),
-                        timeout=TIMEOUT + 30 * len(files), env=env)
+    """mat2 on the app's own working copies, in the sandbox (`run_tool`): their folders are the only writable
+    thing in it, so its cleaned copies and its temporary files land where they would."""
+    with _tmp_beside(files[0].parent, host.environ.get("XDG_RUNTIME_DIR")) as (tmp, env):
+        return run_tool(host, ["mat2", *(["--lightweight"] if lightweight else []), "--", *map(str, files)],
+                        read=[], write=[f.parent for f in files], tmp=tmp, env=env,
+                        timeout=TIMEOUT + 30 * len(files))
 
 
 def _failure(r) -> str:
@@ -919,7 +995,10 @@ def install_command(host: Host, program: str) -> str | None:
 
 
 def status(host: Host) -> dict:
-    return {p: {"installed": host.runner.which(p), "install": install_command(host, p)} for p in PACKAGES}
+    why = sandbox_why(host)
+    return {**{p: {"installed": host.runner.which(p), "install": install_command(host, p)} for p in PACKAGES},
+            # both tools parse what the file holds, so they run in a sandbox; the panel says when they can't
+            "sandbox": {"available": not why, "why": why or ""}}
 
 
 # ------------------------------------------------------------------ the Outbox

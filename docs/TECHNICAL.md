@@ -1717,7 +1717,27 @@ drive they came from (its model, serial, size and WWN, `retire.identity`): anoth
   more); *Lightweight* keeps the text and removes less. Linux allows any bytes in a file name: one that
   isn't UTF-8 reaches Python as lone surrogates, which UTF-8 can't encode, so the server's JSON escapes
   everything beyond ASCII (`server.JSONResponse`, every response): the page shows such a name with a
-  replacement character and sends the same escaped path back, which names the file again. The **Outbox** (`app.metadata_outbox`) is a systemd user path unit that runs
+  replacement character and sends the same escaped path back, which names the file again.
+
+  Both programs run in a sandbox of their own (`run_tool`, `sandboxed_argv`, `sandbox_why`; the review of
+  2026-11-12): they parse whatever the file holds, and the files are the ones nobody vouches for — a download from
+  the browser in memory, anything dropped in the Outbox, which is cleaned without being asked. exiftool is perl
+  with a history of its own (CVE-2021-22204 ran a command from a DjVu file's metadata) and mat2 pulls in poppler,
+  GdkPixbuf, mutagen and ffmpeg's libraries. The sandbox is View offline…'s: bubblewrap with no network, no home
+  folder (an empty `/home/user`), no display, no session bus, `/usr` read-only, an `/etc` of its own
+  (`sandbox.app_etc`), the files to read bound read-only one by one where they are (not their folder), and only the
+  app's own working folder writable, bound where it is, so the tools name files as the app does and their output
+  lands where it would. mat2's temporary folder is bound a second time at `/tmp/work` with `TMPDIR` pointing there,
+  which is short whatever the real path is (the socket limit `_tmp_beside`'s link was for); `mat2 --show`, with no
+  `TMPDIR` of its own, unpacks an archive into the sandbox's `/tmp`, in memory, where before it used the computer's
+  `/tmp` on the disk. One sandbox per batch, as the batches already are. Where bubblewrap can't run here the tools
+  run as they did and both the panel and the TempOutbox say so (`status`'s `sandbox`, `browser.sandbox_status`'s
+  `mat2_sandbox`). Live-tested on Mint 22.3: exiftool read the same 54 and 23 tags from a JPEG and a PDF sandboxed
+  and not; mat2 cleaned a file beside itself and a folder into `NAME (cleaned)` with its subfolders; and a shell in
+  the tools' sandbox had an empty home, could not reach the real home or the network, could not write to the file it
+  was given, and saw 44 entries in `/etc` with no `/etc/environment`.
+
+  The **Outbox** (`app.metadata_outbox`) is a systemd user path unit that runs
   `daprivacyscanner --outbox` when files land in `~/Outbox`: each is cleaned into `~/Outbox/Cleaned` and the
   original moved to `~/Outbox/Originals`; a file mat2 can't clean goes to `~/Outbox/Not cleaned`, and so
   does one whose cleaned copy still says what the page would flag (nobody looks in `Cleaned` before

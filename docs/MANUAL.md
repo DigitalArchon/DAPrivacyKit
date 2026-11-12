@@ -358,6 +358,11 @@ reading or cleaning (what was cleaned by then stays). For a PDF, cleaning turns 
 a little less. Needs `mat2` (the tool gives the install command). Right-click entries (below) open it on
 the files or folders you right-clicked.
 
+The two programs that read and clean your files (`exiftool` and `mat2`) open whatever is inside a file, so
+they run in a sandbox of their own: no network, no home folder, the files read-only, and only the app's own
+working folder to write in. A file made to break one of them gets no further than that. Where bubblewrap
+isn't installed there is no sandbox for them, and the window says so.
+
 ### RAM disk
 
 A folder in memory, `~/RAMDisk`, for work that shouldn't touch the disk.

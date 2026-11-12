@@ -2286,6 +2286,15 @@ async function openMetadata(data, paths = []) {
     need ? h("div", { class: "warnbox" }, "Making clean copies needs mat2"
       + (data.metadata.exiftool.installed ? " (exiftool, installed, can only show what files carry)." : "."),
       data.metadata.mat2.install ? commandBlock([data.metadata.mat2.install]) : null) : null,
+    // the two programs parse whatever a file holds, so they run in a sandbox; where they can't, the panel says it
+    data.metadata.sandbox?.available === false ? h("div", { class: "notebox risk small" },
+      h("b", {}, "The programs that read and clean your files run without a sandbox here. "),
+      `${data.metadata.sandbox.why} They open whatever is in the file, and a file made to break one of them would `
+      + "then be reading and writing as you do. Files you made yourself are no concern; be careful with one you "
+      + "were sent or downloaded.")
+      : h("p", { class: "muted small" }, "The programs that read and clean the files (exiftool, mat2) run in a "
+        + "sandbox of their own: no network, no home folder, the files read-only, and only the app's own working "
+        + "folder to write in. They open whatever is in a file, so they are kept where a crafted file can do no harm."),
     chosenList,
     h("div", { class: "orow" }, data.can_pick ? [addFiles, addFolder] : null, typed),
     h("div", { class: "gactions" }, showBtn, cleanBtn,
@@ -3495,6 +3504,9 @@ function browserOutbox(b, data, reload, showBtn) {
       + ": closing ~/TempBrowser, or quitting the app, deletes them. Copy out what you need first.") : null,
     !o.mat2 ? h("div", { class: "warnbox small" }, "Removing metadata needs mat2, which isn't installed: nothing put there is "
       + "passed on until it is.") : null,
+    // mat2 cleans what lands here without being asked, and parses whatever the file holds: normally in a sandbox
+    data.mat2_sandbox ? h("div", { class: "warnbox small" }, "The program that cleans them (mat2) runs without a "
+      + `sandbox here: ${data.mat2_sandbox} It opens whatever is in a file, so take care with one you were sent.`) : null,
     !o.watched ? h("div", { class: "warnbox small" }, "This copy of the app isn't watching it: files wait there until the app "
       + "is started again.") : h("div", { class: "muted" }, "The app empties it while it is open; quit the app and files wait "
       + "there until it is opened again."),
