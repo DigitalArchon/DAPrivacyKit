@@ -37,6 +37,7 @@ MARK="Written by DA Privacy Kit."
 HELPER_DIR=/usr/libexec/daprivacyscanner
 POLICY=/usr/share/polkit-1/actions/au.com.digitalarchon.daprivacyscanner.policy
 JOURNAL=/var/lib/daprivacyscanner
+DONE=/run/daprivacyscanner/done   # the helper's record of changes put back since boot (list_changes); gone at reboot anyway
 
 say() { printf '%s\n' "$*"; }
 confirm() {  # question: yes when --yes, never when --dry-run
@@ -237,7 +238,7 @@ fi
 say "The administrator helper, and its record of the root changes it made (needs your password):"
 root=()
 for f in "$HELPER_DIR" "$POLICY"; do [ -e "$f" ] && root+=("$f"); done
-[ "$keep" -eq 1 ] || { [ -e "$JOURNAL" ] && root+=("$JOURNAL"); }
+[ "$keep" -eq 1 ] || { [ -e "$JOURNAL" ] && root+=("$JOURNAL"); [ -e "$DONE" ] && root+=("$DONE"); }
 if [ "$noroot" -eq 1 ]; then
     say "  left (--no-root)"
 elif [ "${#root[@]}" -gt 0 ]; then
