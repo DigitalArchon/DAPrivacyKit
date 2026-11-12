@@ -2931,6 +2931,28 @@ while ($$(".modal").length) { $$(".modal .buttons button").at(-1).click(); await
   block.remove();
   if (clip0) Object.defineProperty(window.navigator, "clipboard", clip0); else delete window.navigator.clipboard; }
 
+// the browser panel: what to do first, then one line naming what stands in the way, the most serious box in view and
+// the rest behind More; the long explanations behind More too, nothing of them left out
+{ await window.openBrowserTool(); await tick(); await tick();
+  const panel = $(".modal .browser-tool");
+  const kids = [...panel.children];
+  const at = (sel) => kids.findIndex(k => k.matches(sel));
+  check(at(".lead-box") === 0 && at(".lead-box") < at(".before-start") && at(".before-start") < at(".sandbox-box")
+        && at(".sandbox-box") < at(".toolgrid") && at(".toolgrid") < at("details.more-about"),
+        "it opens with what it is for, then what stands in the way, how it starts, the browsers, and the rest behind More");
+  const before = panel.querySelector(".before-start");
+  const shown = [...before.children].filter(c => c.classList.contains("notebox"));
+  const behind = before.querySelector("details.more-about");
+  check(before.querySelector("h3").textContent.startsWith("Before you start:") && shown.length === 1
+        && shown[0].textContent.includes("swap reaches the disk") && !behind.open
+        && behind.querySelectorAll(".notebox").length >= 4 && behind.querySelector("summary").textContent.includes("More before you start"),
+        "the most serious box (swap) is in view, the others behind More, all named in one line");
+  check(!panel.querySelector(".sandbox-box details.more-about").open && text(".modal .sandbox-box").includes("Run it in a sandbox"),
+        "the sandbox's choices are in view, what it keeps from the browser at length behind More");
+  check(text(".modal .browser-tool").includes("It never updates itself") && !panel.querySelector("details.more-about:last-of-type").open,
+        "the tool's long explanation is still there, behind More");
+  while ($$(".modal").length) { $$(".modal").at(-1).querySelector(".buttons button:last-child").click(); await tick(); } }
+
 // a tool opened from its tile takes the Tools panel's place, with a way back: dialogs no longer stack as deep
 { while ($$(".modal").length) { $$(".modal").at(-1).querySelector(".buttons button:last-child").click(); await tick(); }
   await window.openTools(); await tick(); await tick();

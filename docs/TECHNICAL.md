@@ -198,6 +198,22 @@ another program in between.
   No CDN or remote asset is ever loaded.
 - **Links** in the UI open in the default browser through `/api/open`, by name, from `about.LINKS` only:
   the page can't make the server open an arbitrary URL.
+- **The page** (`web/app.js`, one script, no framework) builds every node with `h()` and text nodes: nothing a server,
+  a file or a program says is parsed as HTML (ESLint refuses `innerHTML` and its kin). A name from outside the app
+  (a file's, a download's, a menu entry's, a drive's) is shown isolated (`<bdi>`), its control characters and the
+  marks that reorder text shown as `⟨U+202E⟩`, never obeyed (`nameText`). What follows a job (the online tests'
+  strip, the tools' progress, the browser panel) and the list of checks are drawn in place (`patch`): the nodes are
+  kept and brought up to date, so a press on Stop as the panel is drawn again still clicks it, and the focus, a
+  selection and an open `<details>` stay; what is typed and chosen, and a button waiting for its answer, live in the
+  page's state, never only in an element. Requests whose answers can come out of order (a guide's plan, an export)
+  are numbered and only the last is drawn. Every dialog goes through `modal()`: a dialog for a screen reader, the
+  focus kept inside, Escape and a click beside it close it (a click only when the press began beside it too), and
+  one whose content can't be had back (a list of deleted file names) asks first. Toasts can be dismissed, wait under
+  the pointer or the keyboard, and are all kept in Messages while the page is open (never saved). No answer at all
+  from the server puts one notice at the top until it answers again; a GET is given up after 60 seconds; an error
+  nothing caught is said, with where to report it. Text sizes are in rem: Ctrl+plus, Ctrl+minus and Ctrl+0 set the
+  page's zoom in the window, which follows the desktop's text scaling by itself (WebKitGTK zooms by GTK's
+  `gtk-xft-dpi`).
 - **Background work** (`jobs.py`). Long work the page follows (the online tests, the TRIM test, Deleted file
   names and their clean-up, Remove metadata, setting up a browser, What does this app keep?) is a job, one of
   each kind at a time, with a `cancel` flag its work looks at. What blocks for long (a job's work, a file
@@ -2586,6 +2602,14 @@ browser's download, kept on the disk for next time when the user ticks it (secti
 - Every auto fix is applied and reverted from the undo log in a test. Every `can()` is called on a bare
   machine.
 - The suite never goes online (`FakeNet`) and never applies fixes to a real machine.
+- The page is tested three ways. `tests/web/test_app.mjs` runs it in jsdom against the state the server gives after
+  a scan of a fixture machine (`tests/test_web.py`). ESLint (`tests/web/eslint.config.mjs`, pinned in
+  `tests/web/package-lock.json`) refuses undefined and unused names, HTML parsed from text, eval, and a promise
+  dropped unawaited (a rule of the project's own). `tests/test_webkit_smoke.py` opens it in pywebview's WebKitGTK
+  window on a private Xvfb display, against a canned API, and with real key and mouse events checks what jsdom
+  can't see: Tab going round inside a dialog, a press on a Stop being drawn again that still clicks it, and no breach
+  of the page's Content-Security-Policy (pywebview's own injected `<style>` is refused by it, and counted apart);
+  it saves a screenshot per theme. `make check` runs all three (the last where Xvfb and xdotool are installed).
 - Behaviour described above as "tested" or "live-tested" was checked on real systems: Linux Mint 22,
   Sway 1.12 in a container, and KDE Plasma 6.7 on CachyOS.
 - `packaging/test-appimage.sh` smoke-tests the AppImage on Ubuntu, Debian, Fedora, Arch and CachyOS.

@@ -138,10 +138,8 @@ Across the top:
 | **Scan** | Runs a scan. Read-only. |
 | **with administrator access** | Tick it before scanning to let checks that need root read what they need. You are asked for your password. |
 | **Unprivileged / Administrator** badge | Whether administrator access is active now. **Drop** ends it at once. |
-| **Filter checks…** | Type to narrow the list. |
-| **show not applicable** | Also lists checks that don't apply to this computer. |
 | **What a scan reads…** | Exactly what a scan looks at, and what it never does. |
-| **Tools…** | The tools (section 9) and set-ups that last (section 10). |
+| **Tools…** | The tools (section 9) and set-ups that last (section 10). A tool opened from it takes its place; **‹ Tools** goes back. |
 | **Online tests…** | Tests that need the network (section 8). |
 | **History** | Fixes you have applied, with Revert (section 6). |
 | **Light / Dark** | Switches the theme. |
@@ -152,7 +150,18 @@ Below that are two panes:
 
 - **Context** (left): facts about this computer that decide how serious each problem is, such as
   whether the disk is encrypted, whether it is a laptop, or whether a VPN is on.
-- **Checks** (right): every check and its result.
+- **Checks** (right): every check and its result. Above the list, **Filter checks…** narrows it as you type, and
+  **show not applicable** also lists checks that don't apply to this computer.
+
+At the bottom, the status line says what the app is doing, and **Messages** lists everything the app said in this
+window, the short messages that go by themselves in the corner included (they can be dismissed with ×, and wait
+while the pointer is on them). Nothing of it is saved. If the app stops answering, a notice at the top says so until
+it answers again.
+
+**Text size:** Ctrl+plus and Ctrl+minus make the text bigger or smaller in the app's window, Ctrl+0 puts it back
+(remembered). The window also follows your desktop's text scaling. With the keyboard, Tab goes from control to
+control (the first stop, *Skip to the checks*, jumps past the top bar); in a dialog, Tab stays inside it and Escape
+closes it.
 
 ---
 
@@ -191,7 +200,7 @@ The second set of buttons chooses the source: **Scan**, **Online** (the online t
 
 - **Status**: passed, failed, a warning, couldn't be checked, or not applicable. Coloured only when
   there is a problem.
-- **Severity**, from 1 to 10: **9+** critical, **7+** high, **4+** medium, **1+** low. The same problem can
+- **Severity**, from 1 to 10: **9–10** critical, **6–8** high, **3–5** medium, **1–2** low. The same problem can
   be more serious on one computer than another; a missing screen lock matters more on a laptop than on a
   desktop at home. The context decides, and the details say why. Data left on the disk (saved secrets,
   histories, caches) is one lower when the disk is encrypted: safe while the computer is off, though not from
@@ -199,6 +208,11 @@ The second set of buttons chooses the source: **Scan**, **Online** (the online t
 - A severity shown as a **range** ("6–10") depends on something this scan couldn't tell, such as whether the disk
   unlocks with nothing typed (from the TPM without a PIN), which only a scan with administrator access can read.
   It is ranked, counted and notified about at the highest it could be, and the row says what would settle it.
+- On the right, its button (**Fix…**, **Guide…**, **How to…**) and what can be done: **one-step fix** (applied after
+  one look at what it changes), **step by step** (a guide, each step confirmed), **instructions** (the app explains,
+  you make the change), **no fix here** (and why, in its details); **needs admin** when it needs administrator
+  access. The summary above the list counts findings by how serious they are (a coloured square and a number: a
+  count, not a severity).
 
 Click a row for its details:
 

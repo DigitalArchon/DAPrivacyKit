@@ -12,7 +12,7 @@ front-end test), [uv](https://docs.astral.sh/uv/) (for the CI's venvs), and root
 ```sh
 python3 -m venv --system-site-packages .venv     # the system's PyGObject for the WebKitGTK window
 .venv/bin/pip install -e '.[dev]'
-npm ci --prefix tests/web                         # jsdom, exactly as tests/web/package-lock.json pins it
+npm ci --prefix tests/web                         # jsdom and ESLint, exactly as tests/web/package-lock.json pins them
 .venv/bin/python -m pytest                        # the suite: about 2,800 tests, a few minutes
 .venv/bin/daprivacyscanner                        # the app (or --browser, --dev)
 ```
@@ -24,11 +24,14 @@ variables): only what a user sees says DA Privacy Kit.
 
 The project's CI runs on your computer, not on GitHub: `make check` (or `packaging/check.sh`; `--help` lists the
 steps). It runs ruff and a check for programs started without a timeout, mypy, shellcheck on the packaging
-scripts, and the whole suite on the dev venv and on Python 3.11, 3.12, 3.13 and 3.14 with exactly the packages the
+scripts, ESLint on the page's script, the page in a real WebKitGTK window on a private Xvfb display (where Xvfb and
+xdotool are installed: it never touches your display; screenshots in `.ci/webkit-shots/`), and the whole suite on
+the dev venv and on Python 3.11, 3.12, 3.13 and 3.14 with exactly the packages the
 AppImage ships, the front-end test included (it fails, never skips, there), and coverage (the 3.12 run, branches,
 `.ci/coverage/html/index.html`). Every tool is pinned with hashes; the venvs are made under `.ci/` the first time,
 which takes a minute (`uv python install 3.11 3.13 3.14` first, if uv doesn't have those Pythons yet). `make quick`
-is the short version (lint, types and the dev venv's suite); `JOBS=3 make check` runs three suites at once.
+is the short version (lint, types, the page's checks and the dev venv's suite); `JOBS=3 make check` runs three
+suites at once.
 `packaging/install-hooks.sh` makes git run `make check` before every push, if you want that.
 
 The linters came in after the code: what they found then is counted per file and rule in
