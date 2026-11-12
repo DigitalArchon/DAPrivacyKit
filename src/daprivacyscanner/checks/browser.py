@@ -1430,7 +1430,7 @@ class SurveillanceBrowsers(Check):
         ev = [Evidence.val(f.name, f.describe()) for f in bad]
         ev.append(Evidence.val("Default browser", default.name if default else (did or f"unknown ({how})")))
         if not bad:
-            return passed("None of them is installed.", *ev, findings=findings)
+            return passed("None of them was found on this computer.", *ev, findings=findings)
         notes = []
         for f in bad:
             notes += [Note(n.kind if n.title != "DA Privacy Kit's view" else "risk", f"{f.name}: {n.title}", n.text)

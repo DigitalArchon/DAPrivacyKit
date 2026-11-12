@@ -1769,6 +1769,10 @@ class WifiHistory(Check):
         if stale:
             return failed(f"{len(stale)} saved network{'s' if len(stale) > 1 else ''} haven't been used for "
                           f"{STALE_DAYS} days or more; together, saved networks are a history of places.", *ev, notes=[note])
+        if len(ages) < len(nets):
+            return passed(f"Every saved network with a last-used time was used in the last {STALE_DAYS} days "
+                          f"({len(nets) - len(ages)} {'have' if len(nets) - len(ages) > 1 else 'has'} none).", *ev,
+                          notes=[note])
         return passed(f"Every saved network was used in the last {STALE_DAYS} days.", *ev, notes=[note])
 
 

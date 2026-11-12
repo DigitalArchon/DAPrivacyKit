@@ -249,7 +249,7 @@ class Office(Check):
             return absent("No LibreOffice or ONLYOFFICE data.")
         if items:
             return failed("Office apps keep a list of recent documents and backup copies.", *ev)
-        return passed("Office apps keep no recent documents or backup copies.", *ev)
+        return passed("The office apps the app reads keep no recent documents or backup copies.", *ev)
 
 
 CELLULOID_FLATPAK = "io.github.celluloid_player.Celluloid"
@@ -332,7 +332,7 @@ class MediaPlayers(Check):
             return absent("No mpv, VLC, SMPlayer, Celluloid or Haruna data.")
         if items:
             return failed("Media players remember what you watched.", *ev)
-        return passed("Media players keep no history.", *ev)
+        return passed("The media players the app reads keep no history.", *ev)
 
 
 def cups_seconds(value: str) -> int | None:
@@ -455,7 +455,7 @@ class PdfReaders(Check):
         if found:
             return failed(f"{' and '.join(found)} remember{'s' if len(found) == 1 else ''} the documents you've opened "
                           "and where you stopped.", *ev, notes=notes)
-        return passed("PDF readers keep no per-document history.", *ev, notes=notes)
+        return passed("The PDF readers the app reads keep no per-document history.", *ev, notes=notes)
 
 
 # ------------------------------------------------------------------ KDE apps' own recent lists
@@ -912,7 +912,7 @@ class MailRemoteContent(Check):
         if unread:
             return unknown("Couldn't read whether Evolution loads remote content in mail (its setting isn't readable "
                            "here: a Flatpak keeps it in its own sandbox).", *ev)
-        return passed("Mail clients block remote content.", *ev)
+        return passed("The mail clients the app reads block remote content.", *ev)
 
 
 # ------------------------------------------------------------------ what starts at login
@@ -1083,7 +1083,8 @@ class LoginItems(Check):
         if yours:
             return warned(f"{len(yours)} of your own: programs that start by themselves, or run instead of the "
                           "system's.", *ev, notes=notes, items=items)
-        return passed("Only the system's own programs start when you log in.", *ev, notes=notes, items=items)
+        return passed("Only the system's own programs start at login from the places the app reads (autostart entries, "
+                      "user services, your crontab, session scripts and PATH).", *ev, notes=notes, items=items)
 
 
 # ------------------------------------------------------------------ apps newer than the checks

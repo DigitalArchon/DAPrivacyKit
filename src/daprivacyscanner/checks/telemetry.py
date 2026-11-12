@@ -82,7 +82,7 @@ class CrashReporters(Check):
                               "user feedback has its own check.", ("tel.kde_feedback",)))
         if on:
             return failed(f"Crash or usage reporting is on: {', '.join(on)}.", *ev, notes=notes)
-        return passed("No crash reporter or usage survey is reporting.", *ev, notes=notes)
+        return passed("None of the crash reporters and usage surveys the app knows is reporting.", *ev, notes=notes)
 
 
 def wifi_adapters(scan: Scan) -> bool | None:
@@ -392,7 +392,7 @@ class Devtools(Check):
             return absent("No developer tools with telemetry were found.")
         if on:
             return failed(f"Developer tools send telemetry: {', '.join(dict.fromkeys(on))}.", *ev, notes=notes)
-        return passed("Developer tool telemetry is off.", *ev, notes=notes)
+        return passed("The developer tools the app knows have their telemetry off.", *ev, notes=notes)
 
 
 # ------------------------------------------------------------------ package repositories
@@ -709,4 +709,4 @@ class BackgroundCallers(Check):
             n = len(ev)
             return warned(f"{n} service{'s contact' if n > 1 else ' contacts'} servers in the background on a schedule.",
                           *ev, notes=[note])
-        return passed("No scheduled background callers were found.", notes=[note])
+        return passed("None of the background services the app knows contacts servers on a schedule.", notes=[note])
