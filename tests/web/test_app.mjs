@@ -2838,5 +2838,97 @@ while ($$(".modal").length) { $$(".modal .buttons button").at(-1).click(); await
   while ($$(".modal").length) { $$(".modal .buttons button").at(-1).click(); await tick(); }
   browserJob = null; }
 
+// toasts can be dismissed, wait while the pointer is on them, are never more than a few, and are all in Messages
+{ const doc = window.document, S = window.eval("S");
+  for (const t of $$("#toasts .toast")) t.remove();
+  S.messages = []; window.eval("renderMessagesButton")();
+  check($("#messages-btn").hidden, "(no Messages button before anything was said)");
+  window.toast("First.", "info", 60);
+  const first = $("#toasts .toast");
+  first.dispatchEvent(new window.MouseEvent("mouseenter"));
+  await new Promise(r => setTimeout(r, 120));
+  check(first.isConnected, "a toast under the pointer waits");
+  first.dispatchEvent(new window.MouseEvent("mouseleave"));
+  await new Promise(r => setTimeout(r, 1600));
+  check(!first.isConnected, "and goes once the pointer leaves it");
+  window.toast("Refused: close Firefox first.", "error", 60000);
+  const close = $("#toasts .toast .toast-close");
+  check(close?.getAttribute("aria-label") === "Dismiss" && $("#toasts .toast").textContent === "Refused: close Firefox first.",
+        "a toast has a Dismiss button, which adds nothing to what it says");
+  close.click();
+  check(!$$("#toasts .toast").length, "Dismiss takes it away");
+  for (let i = 0; i < 8; i++) window.toast(`Note ${i}.`, "info", 60000);
+  check($$("#toasts .toast").length === 5 && $$("#toasts .toast").at(-1).textContent === "Note 7.",
+        "no more than five are shown at once, the newest last");
+  check(!$("#messages-btn").hidden && $("#messages-btn").textContent === `Messages (${S.messages.length})` && S.messages.length === 10,
+        "every one is in the Messages log, the status bar's button says how many");
+  $("#messages-btn").click(); await tick();
+  const log = $$(".modal").at(-1);
+  check(log.querySelector("h2").textContent === "Messages" && log.querySelectorAll(".messages li").length === 10
+        && log.querySelector(".messages li").textContent.includes("Note 7.") && log.textContent.includes("Problem: Refused: close Firefox first.")
+        && log.textContent.includes("never saved"), "Messages lists them, newest first, problems marked, said to be kept nowhere");
+  log.querySelector(".buttons button").click(); await tick();
+  check(!S.messages.length && $("#messages-btn").hidden, "Clear empties the log");
+  log.querySelectorAll(".buttons button")[1].click(); await tick();
+  for (const t of $$("#toasts .toast")) t.remove(); }
+
+// the app's server gone: one notice at the top until it answers again; a GET can be given up, a change never
+{ const fetch0 = window.fetch, signals = [];
+  window.fetch = async (path, opts) => { signals.push([opts.method, opts.signal]); throw new TypeError("NetworkError when attempting to fetch resource."); };
+  let err = null;
+  try { await window.eval("api")("GET", "/api/online/status"); } catch (e) { err = e; }
+  check(err?.unreachable && err.message === "The app isn't answering." && !$("#offline").hidden
+        && $("#offline").getAttribute("role") === "alert" && $("#offline").textContent.includes("The app isn't answering"),
+        "no answer at all puts one notice at the top of the page");
+  try { await window.eval("api")("POST", "/api/scan", {}); } catch { /* the same */ }
+  check(signals[0][1] instanceof window.AbortSignal && signals[1][1] === undefined,
+        "a GET carries a signal to give it up after a while; a request that changes something doesn't");
+  window.fetch = fetch0;
+  await window.eval("api")("GET", "/api/online/status");
+  check($("#offline").hidden, "the next answer takes the notice away"); }
+
+// what nothing caught is said, with where to report it, once per problem
+{ for (const t of $$("#toasts .toast")) t.remove();
+  const ev = new window.Event("unhandledrejection");
+  ev.reason = new window.TypeError("x.closest is not a function");
+  window.dispatchEvent(ev); window.dispatchEvent(ev);
+  const said = $$("#toasts .toast");
+  check(said.length === 1 && said[0].textContent.includes("Something went wrong in this page (TypeError: x.closest is not a function)")
+        && [...said[0].querySelectorAll("button")].some(b => b.textContent === "Report it…"),
+        "an error nothing caught is said once, with a button to report it");
+  const refused = new window.Event("unhandledrejection");
+  refused.reason = Object.assign(new Error("Close Firefox first."), { status: 409 });
+  window.dispatchEvent(refused);
+  check($$("#toasts .toast").at(-1).textContent === "Close Firefox first.", "a refusal nothing caught says what the server said");
+  for (const t of $$("#toasts .toast")) t.remove(); }
+
+// the filters say which is on in words too, before the first scan the page says what to do, and names from outside the
+// app are isolated, their invisible marks shown
+{ const S = window.eval("S"), report0 = S.report;
+  window.setShow("findings"); await tick();
+  check($$("#show button").every(b => b.getAttribute("aria-pressed") === String(b.dataset.show === "findings")),
+        "the list's filters say which is on (aria-pressed), not by colour alone");
+  check($$("#checks-list h3.cat-head").length > 1 && $$("#checks-list [role=list] > .citem[role=listitem]").length > 0,
+        "each category is a heading over a list of its rows");
+  S.report = null; window.renderChecks(); await tick();
+  const first = $("#checks-list .first-run");
+  check(first && first.querySelector("h2").textContent === "Scan this computer"
+        && [...first.querySelectorAll("button")].some(b => b.textContent === "Scan now"), "before the first scan, one clear Scan now");
+  S.report = report0; window.renderChecks(); await tick();
+  const nameText = window.eval("nameText");
+  const n = nameText("invoice\u202Egpj.exe");
+  check(n.tagName === "BDI" && n.textContent === "invoice⟨U+202E⟩gpj.exe", "a name's reordering mark is shown, never obeyed");
+  check(nameText("a\nb\u0007").textContent === "a⟨U+000A⟩b⟨U+0007⟩", "and its control characters too"); }
+
+// the text's size: Ctrl+plus, Ctrl+minus, Ctrl+0 in the window, remembered
+{ const doc = window.document;
+  const key = (k, code) => doc.dispatchEvent(new window.KeyboardEvent("keydown", { key: k, code, ctrlKey: true, bubbles: true, cancelable: true }));
+  key("=", "Equal");
+  check(doc.documentElement.style.fontSize === "110%" && window.localStorage.getItem("daps-zoom") === "1.1", "Ctrl+plus makes the text bigger, remembered");
+  key("-", "Minus"); key("-", "Minus");
+  check(doc.documentElement.style.fontSize === "90%", "Ctrl+minus smaller");
+  key("0", "Digit0");
+  check(doc.documentElement.style.fontSize === "" && window.localStorage.getItem("daps-zoom") === "1", "Ctrl+0 puts it back"); }
+
 if (failures) { console.error(`${failures} front-end checks failed`); process.exit(1); }
 console.log("front-end: all checks passed");

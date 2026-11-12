@@ -214,12 +214,33 @@ function takeAdmin(data) {
   if (S.state) renderTop();
 }
 
+// A GET that hasn't answered in this long is given up (AbortController): a request left hanging kept a panel saying
+// "Looking…" for good. Requests that change something are never cut short: what they did is said when they answer.
+const GET_TIMEOUT_MS = 60000;
+
 async function api(method, path, body, raw = false) {
-  const res = await fetch(path, {
-    method, credentials: "omit",
-    headers: { "X-Token": S.token, "Content-Type": "application/json" },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
+  const ctl = method === "GET" && typeof AbortController === "function" ? new AbortController() : null;
+  const timer = ctl ? setTimeout(() => ctl.abort(), GET_TIMEOUT_MS) : null;
+  let res;
+  try {
+    res = await fetch(path, {
+      method, credentials: "omit",
+      headers: { "X-Token": S.token, "Content-Type": "application/json" },
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal: ctl?.signal,
+    });
+  } catch {
+    // no answer at all: the app's server has stopped (quit, crashed) or is stuck. Said once, at the top of the page
+    // (setOffline), until an answer comes again
+    const err = new Error(ctl?.signal.aborted ? `The app didn't answer within ${GET_TIMEOUT_MS / 1000} seconds.`
+      : "The app isn't answering.");
+    err.unreachable = true;
+    setOffline(true);
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+  setOffline(false);
   followAdmin(res);
   if (raw) {
     if (!res.ok) {                    // an error is JSON all the same: what it says, not "500 Internal Server Error"
@@ -234,9 +255,13 @@ async function api(method, path, body, raw = false) {
   if (!res.ok) {
     const err = new Error(data.error || data.detail || `${res.status} ${res.statusText}`);
     err.declined = !!data.declined;
-    // refused because the helper isn't installed (or is another version's): offered, rather than left at the refusal
-    if (err.declined && S.state && /administrator helper (isn't installed|is from another version)/.test(err.message))
+    // refused because the helper isn't installed (or is another version's): offered at once, in a dialog that installs
+    // it, and the refusal says so rather than send the user to "the note at the top" with that dialog in front of it
+    if (err.declined && S.state && /administrator helper (isn't installed|is from another version)/.test(err.message)) {
       setTimeout(() => openHelperNote(true), 0);
+      err.message = "Nothing was changed: administrator access goes through DA Privacy Kit's own helper, which needs "
+        + "installing first. The dialog that opened installs it; then try again.";
+    }
     err.status = res.status;
     err.data = data;                  // a failed fix still reports what was re-checked after the rollback
     throw err;
@@ -244,13 +269,88 @@ async function api(method, path, body, raw = false) {
   return data;
 }
 
+/* A toast says what just happened, and many refusals are said only there, so: it can be dismissed (×), it waits while
+   the pointer is on it or the keyboard is in it, no more than TOAST_MAX are on screen at once (the oldest goes first),
+   and every one is kept in the Messages log (the status bar's Messages button) while the page is open: never saved. */
+const TOAST_MAX = 5, LOG_MAX = 200;
+
 function toast(text, kind = "info", ms = 6000, action = null) {
+  S.messages.push({ when: Date.now(), kind, text: String(text) });
+  if (S.messages.length > LOG_MAX) S.messages.shift();
+  renderMessagesButton();
   // read out by a screen reader as it appears: an error at once, the rest when it has finished speaking
   const el = h("div", { class: `toast ${kind}`, role: kind === "error" ? "alert" : "status" }, text,
-    action ? h("button", { class: "small", onclick: () => { el.remove(); action.onclick(); } }, action.label) : null);
-  $("#toasts").append(el);
-  setTimeout(() => el.remove(), ms);
+    action ? h("button", { class: "small", onclick: () => { el.remove(); action.onclick(); } }, action.label) : null,
+    h("button", { class: "toast-close", "aria-label": "Dismiss", title: "Dismiss", onclick: () => el.remove() }));
+  let left = kind === "error" ? Math.max(ms, 10000) : ms, since = 0, timer = null;
+  const go = () => { if (!timer && el.isConnected) { since = Date.now(); timer = setTimeout(() => el.remove(), left); } };
+  const pause = () => { if (timer) { clearTimeout(timer); timer = null; left = Math.max(1500, left - (Date.now() - since)); } };
+  on(el, "mouseenter", pause);
+  on(el, "mouseleave", () => { if (!el.contains(document.activeElement)) go(); });
+  on(el, "focusin", pause);
+  on(el, "focusout", (e) => { if (!el.contains(e.relatedTarget) && !el.matches(":hover")) go(); });
+  const root = $("#toasts");
+  root.append(el);
+  while (root.children.length > TOAST_MAX) root.firstElementChild.remove();
+  go();
 }
+
+function renderMessagesButton() {
+  const b = $("#messages-btn");
+  if (!b) return;
+  const errors = S.messages.filter(m => m.kind === "error").length;
+  b.hidden = !S.messages.length;
+  b.textContent = `Messages (${S.messages.length})`;
+  b.title = errors ? `What the app said in this window, ${plural(errors, "error")} among it` : "What the app said in this window";
+}
+
+// everything the toasts said since the page opened, newest first (in memory only: gone when the window closes)
+function openMessages() {
+  const list = h("ol", { class: "messages", reversed: true });
+  const draw = () => fill(list, S.messages.length ? [...S.messages].reverse().map(m => h("li", { class: `msg ${m.kind}` },
+    h("span", { class: "muted small" }, new Date(m.when).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })),
+    m.kind === "error" ? h("b", { class: "errmsg" }, " Problem: ") : " ", m.text))
+    : h("li", { class: "muted" }, "Nothing yet."));
+  draw();
+  modal({ title: "Messages", wide: true, body: [h("p", { class: "small muted" }, "What the app said in this window, newest "
+    + "first, the messages that go by themselves included. Kept only while the window is open: never saved."), list],
+    buttons: [{ label: "Clear", onclick: () => { S.messages = []; renderMessagesButton(); draw(); } },
+              { label: "Close", kind: "primary" }] });
+}
+
+// The app's server answers nothing (quit, crashed, stuck): one notice at the top of the page, which stays until an
+// answer comes, rather than one failure after another from every panel asking
+function setOffline(on) {
+  if (on === S.offline) return;
+  S.offline = on;
+  let el = $("#offline");
+  if (!el) {
+    el = h("div", { id: "offline", role: "alert", hidden: true });
+    document.body.append(el);
+  }
+  el.hidden = !on;
+  fill(el, on ? [h("b", {}, "The app isn't answering. "), "It may be busy for a moment, or it has stopped (quit or "
+    + "crashed). What this page shows may be out of date, and nothing you do here reaches it until it answers again. If "
+    + "you quit the app, close this window.", " ",
+    h("button", { class: "small", onclick: () => { api("GET", "/api/online/status").catch(() => {}); } }, "Try again")] : null);
+}
+
+// What nothing caught (a bug in the page, or a refusal no handler took): said, with where to report a bug, rather than
+// leave a button that did nothing. Each different problem once. A refusal says what the server said.
+const SAID_PROBLEMS = new Set();
+function pageProblem(err) {
+  if (err?.unreachable) return;                          // the notice at the top says so
+  if (err?.status) { toast(err.message, "error", 12000); return; }
+  const what = err instanceof Error ? `${err.name}: ${err.message}` : String(err ?? "an unknown error");
+  if (SAID_PROBLEMS.has(what)) return;
+  SAID_PROBLEMS.add(what);
+  toast(`Something went wrong in this page (${what}). What you were doing may not have finished: check, and try again. `
+    + "If it happens again, please report it, with what you did just before.", "error", 20000,
+    S.state?.welcome?.links?.issues ? { label: "Report it…", onclick: () => {
+      api("POST", "/api/open", { link: "issues" }).catch((e) => toast(e.message, "error")); } } : null);
+}
+window.addEventListener("error", (e) => pageProblem(e.error || e.message));
+window.addEventListener("unhandledrejection", (e) => pageProblem(e.reason));
 
 function setStatus(text, kind = "idle") {
   $("#status").className = kind;
@@ -367,19 +467,20 @@ function noteBox(n) {
 
 // ------------------------------------------------------------------ context pane
 
+// built apart, then put in place: a failure while building leaves the pane as it was
 function renderContext() {
   const list = $("#context-list");
-  list.replaceChildren();
+  const out = [];
   const ctx = S.report?.context;
   if (!ctx) {
-    list.append(h("div", { class: "empty" }, "Scan to see this machine's context."));
+    fill(list, h("div", { class: "empty" }, "Scan to see this machine's context."));
     return;
   }
   for (const key of S.state.context_keys) {
     const c = ctx.values[key];
     if (!c) continue;
     const unknown = c.value === null;
-    list.append(h("div", { class: `ctx${unknown ? " unknown" : ""}` },
+    out.push(h("div", { class: `ctx${unknown ? " unknown" : ""}` },
       h("div", { class: "head" }, h("span", { class: "name" }, CONTEXT_LABEL[key] || key), contextValue(c.value)),
       isDev() ? h("span", { class: "key" }, key) : null,
       c.note ? h("span", { class: "note" }, c.note) : null,
@@ -388,7 +489,8 @@ function renderContext() {
       (c.notes || []).map(noteBox),
     ));
   }
-  list.append(h("div", { class: "desk" }, `Desktop: ${ctx.desktop.label}`));
+  out.push(h("div", { class: "desk" }, `Desktop: ${ctx.desktop.label}`));
+  fill(list, out);
 }
 
 // ------------------------------------------------------------------ checks pane
@@ -585,7 +687,7 @@ function summaryBar(views) {
   const ranged = views.filter(v => isFinding(v) && v.lo !== undefined && v.lo !== v.sev);
   const rangedAdmin = ranged.filter(v => (v.uncertain || []).some(ctxNeedsAdmin)).length;
   const counter = (n, label, show, title) => n ? h("button", { class: `band${S.show === show ? " on" : ""}`, title,
-    onclick: () => setShow(S.show === show ? "all" : show) }, `${n} ${label}`) : null;
+    "aria-pressed": String(S.show === show), onclick: () => setShow(S.show === show ? "all" : show) }, `${n} ${label}`) : null;
   const ch = S.report.changes;
   const fresh = ch ? newShown(ch.new) : [];
   // a finding whose severity changed and that has been fixed since is resolved now; one resolved at the
@@ -598,10 +700,12 @@ function summaryBar(views) {
   const chips = (ids, cls) => ids.map(id => h("button", { class: `chip ${cls}`, title: "Show it in the list", onclick: () => reveal(id) }, titleOf(id)));
   return h("div", { class: "report" },
     h("span", { class: "headline" }, total ? plural(total, "finding") : "No findings"),
+    // a count: a swatch of the band's colour and the number, never the pill a severity is drawn in (a row's "7" is a
+    // severity; "3 high" here is how many)
     Object.entries(bands).filter(([, n]) => n).map(([b, n]) =>
       h("button", { class: `band${S.band === b ? " on" : ""}`, title: S.band === b ? "Show every severity again"
-          : `Show only the ${BAND_LABEL[b]} findings`, onclick: () => setBand(b) },
-        h("span", { class: `sev sev-${b}` }, n), ` ${BAND_LABEL[b]}`)),
+          : `Show only the ${BAND_LABEL[b]} findings`, "aria-pressed": String(S.band === b), onclick: () => setBand(b) },
+        h("span", { class: `swatch swatch-${b}`, "aria-hidden": "true" }), h("b", { class: "count" }, n), ` ${BAND_LABEL[b]}`)),
     S.band ? h("button", { class: "small ghost", onclick: () => setBand(null) }, "Show all") : null,
     counter(hygiene, "hygiene", "hygiene", KIND_TITLE.hygiene),
     counter(info, "to know about", "info", KIND_TITLE.info),
@@ -752,8 +856,15 @@ function renderChecks() {
     parts.push(plural(findings, "finding"));
   }
   $("#checks-count").textContent = parts.join(" · ");
-  document.querySelectorAll("#source button").forEach(b => b.classList.toggle("on", b.dataset.source === S.source));
-  document.querySelectorAll("#show button").forEach(b => b.classList.toggle("on", b.dataset.show === S.show));
+  // which one is on is said in words to a screen reader too (aria-pressed), not by colour alone
+  for (const b of document.querySelectorAll("#source button")) {
+    b.classList.toggle("on", b.dataset.source === S.source);
+    b.setAttribute("aria-pressed", String(b.dataset.source === S.source));
+  }
+  for (const b of document.querySelectorAll("#show button")) {
+    b.classList.toggle("on", b.dataset.show === S.show);
+    b.setAttribute("aria-pressed", String(b.dataset.show === S.show));
+  }
   list.scrollTop = keepScroll;
   if (spot) findSpot(spot)?.focus({ preventScroll: true });
 }
@@ -1037,7 +1148,7 @@ function modalFocusables(box) {
 function modalBackground() {
   const top = modalTop();
   for (const el of document.body.children) {
-    if (el.id !== "modal-root" && el.id !== "toasts" && el.tagName !== "SCRIPT") el.toggleAttribute("inert", !!top);
+    if (!["modal-root", "toasts", "offline"].includes(el.id) && el.tagName !== "SCRIPT") el.toggleAttribute("inert", !!top);
   }
   for (const m of MODALS) m.overlay.toggleAttribute("inert", m !== top);
 }
@@ -2198,8 +2309,9 @@ const fmtSize = (n) => n >= 1e12 ? `${(n / 1e12).toFixed(1)} TB` : n >= 1e9 ? `$
 // once, and it goes on asking.
 const LOST_AFTER = 3;
 function lostContact(lost, e) {
-  if (lost === LOST_AFTER) toast(`Lost contact with the app's server (${e.message}): what this shows may be out of date. `
-    + "It keeps asking.", "error", 10000);
+  // no answer at all is said once for the whole page (setOffline); this is for a server that answers, with errors
+  if (lost === LOST_AFTER && !e?.unreachable) toast(`Lost contact with the app's server (${e.message}): what this shows `
+    + "may be out of date. It keeps asking.", "error", 10000);
 }
 
 async function toolsInfo() {
@@ -2397,8 +2509,7 @@ async function openVerify(data, path = "") {
   const file = pathPicker(data, { label: "File", onPick: () => run() });
   file.input.value = path;
   const keyfile = pathPicker(data, { label: "Key file (optional)" });
-  const paste = h("input", { type: "text", class: "path", autocomplete: "off", placeholder: "a checksum from the download page (optional)",
-    spellcheck: "false" });
+  const paste = h("input", { type: "text", class: "path", autocomplete: "off", spellcheck: "false", id: "verify-paste" });
   const keyring = h("input", { type: "checkbox", checked: true });
   const btn = h("button", { class: "primary" }, "Verify");
   const run = async () => {
@@ -2428,7 +2539,8 @@ async function openVerify(data, path = "") {
     file.row, recent,
     h("details", {}, h("summary", { class: "small" }, "More: a pasted checksum, a key file"),
       h("div", { class: "vmore" },
-        h("div", { class: "orow" }, h("span", { class: "small muted" }, "Checksum"), paste),
+        h("div", { class: "orow" }, h("label", { class: "small muted", for: "verify-paste" },
+          "Checksum (optional): paste the one on the download page"), paste),
         keyfile.row,
         h("label", { class: "check small" }, keyring, "Also use the keys in my GnuPG keyring (only read, never changed)"))),
     h("div", { class: "gactions" }, btn),
@@ -2551,8 +2663,9 @@ async function openMetadata(data, paths = []) {
   const light = h("input", { type: "checkbox" });
   const showBtn = h("button", { class: "primary" }, "Show what they carry");
   const cleanBtn = h("button", { disabled: !mat2 }, "Make clean copies");
-  const typed = h("input", { type: "text", class: "path", spellcheck: "false", autocomplete: "off",
-    placeholder: "or type a path and press Enter: ~/Pictures/Holiday, /home/you/photo.jpg" });
+  // what to do with the box is its label, not a placeholder (gone as soon as one types, and too faint to read)
+  const typed = h("input", { type: "text", class: "path", spellcheck: "false", autocomplete: "off", id: "meta-typed",
+    "aria-describedby": "meta-typed-hint" });
   const addFiles = h("button", { class: "small", onclick: () => pickInto(false) }, "Add files…");
   const addFolder = h("button", { class: "small", onclick: () => pickInto(true) }, "Add a folder…");
 
@@ -2650,7 +2763,8 @@ async function openMetadata(data, paths = []) {
       for (const f of visible) if (f.cleanable !== false) on ? ticked.add(f.path) : ticked.delete(f.path);
       cleanLabel(); renderRead();
     };
-    const search = h("input", { type: "search", class: "meta-search", placeholder: "Find by name", value: query, autocomplete: "off" });
+    const search = h("input", { type: "search", class: "meta-search", placeholder: "Find by name", value: query, autocomplete: "off",
+      "aria-label": "Find files by name" });
     search.addEventListener("input", () => { query = search.value; const at = search.selectionStart; renderRead();
       const s2 = out.querySelector(".meta-search"); s2.focus(); s2.setSelectionRange(at, at); });
     const single = files.length <= 3;
@@ -2663,7 +2777,8 @@ async function openMetadata(data, paths = []) {
       skipped.length ? h("div", { class: "small muted" }, `Left out: ${skipped.join(", ")}.`,
         sel.skipped?.hidden && !hidden.checked ? " Tick “Include hidden files” to read those too." : "") : null,
       single ? null : h("div", { class: "meta-filters" }, META_FILTERS.filter(([k]) => k === "all" || counts[k]).map(([k, label]) =>
-        h("button", { class: `chip${filter === k ? " on" : ""}`, onclick: () => { filter = k; renderRead(); } }, `${label} ${counts[k]}`)),
+        h("button", { class: `chip${filter === k ? " on" : ""}`, "aria-pressed": String(filter === k),
+          onclick: () => { filter = k; renderRead(); } }, `${label} ${counts[k]}`)),
         search),
       mat2 && !single ? h("div", { class: "orow" }, h("button", { class: "small ghost", onclick: () => tickAll(true) },
         filter === "all" && !q ? "Tick all" : "Tick these"),
@@ -2733,7 +2848,10 @@ async function openMetadata(data, paths = []) {
         + "sandbox of their own: no network, no home folder, the files read-only, and only the app's own working "
         + "folder to write in. They open whatever is in a file, so they are kept where a crafted file can do no harm."),
     chosenList,
-    h("div", { class: "orow" }, data.can_pick ? [addFiles, addFolder] : null, typed),
+    h("div", { class: "orow" }, data.can_pick ? [addFiles, addFolder] : null,
+      h("label", { class: "small muted", for: "meta-typed" }, data.can_pick ? "or type a path:" : "Type a path:"), typed),
+    h("div", { class: "small muted", id: "meta-typed-hint" }, "A file or a folder, then Enter: for example ~/Pictures/Holiday, "
+      + "or /home/you/photo.jpg."),
     h("div", { class: "gactions" }, showBtn, cleanBtn,
       h("label", { class: "check small", title: "Files whose names start with a dot, and hidden folders" }, hidden,
         "Include hidden files"),
@@ -3035,7 +3153,7 @@ async function openRetire() {
 function retireDrive(d, data, answers, render, m) {
   const facts = data.facts[d.name];
   const out = h("div", { class: "guide" });
-  const typed = h("input", { type: "text", class: "path", placeholder: d.name, spellcheck: "false", autocomplete: "off" });
+  const typed = h("input", { type: "text", class: "path", spellcheck: "false", autocomplete: "off", id: `retire-typed-${d.name}` });
   const show = h("button", { class: "primary" }, "Show the commands");
   show.addEventListener("click", async () => {
     try {
@@ -3078,7 +3196,8 @@ function retireDrive(d, data, answers, render, m) {
     d.luks.length ? h("label", { class: "check small" }, h("input", { type: "checkbox", checked: answers.from_start,
       onchange: (e) => { answers.from_start = e.target.checked; } }),
       `Everything on it was encrypted (${d.luks.join(", ")}) from the day it was first used`) : null,
-    h("div", { class: "orow" }, h("span", { class: "small" }, `Type the drive's name (${d.name}) to show the commands:`), typed, show),
+    h("div", { class: "orow" }, h("label", { class: "small", for: `retire-typed-${d.name}` },
+      `Type the drive's name (${d.name}) to show the commands:`), typed, show),
     out);
 }
 
@@ -4637,7 +4756,7 @@ function trialReady(data, t, call) {
     const spec = S.state.catalogue.find(s => s.id === id);
     return spec ? h("button", { class: "small", onclick: () => openGuide(spec) }, label) : null;
   };
-  const args = h("input", { type: "text", class: "path", autocomplete: "off", spellcheck: "false", placeholder: "none",
+  const args = h("input", { type: "text", class: "path", autocomplete: "off", spellcheck: "false",
     "aria-label": "Arguments" });
   const radio = (value, label, note, disabled) => h("label", { class: "check" },
     h("input", { type: "radio", name: "trial-net", checked: o.network === value, disabled, onchange: () => { o.network = value; } }),
@@ -4668,7 +4787,7 @@ function trialReady(data, t, call) {
       h("div", { class: "applist" }, t.candidates.map(c => h("label", {},
         h("input", { type: "radio", name: "trial-prog", checked: c.rel === program, onchange: () => { program = c.rel; } }),
         h("code", {}, c.rel), h("span", { class: "small muted" }, `${c.what}${c.label ? `: ${c.label}` : ""}`))))] : null,
-    h("div", { class: "orow" }, h("span", { class: "small muted" }, "Arguments for it"), args),
+    h("div", { class: "orow" }, h("span", { class: "small muted" }, "Arguments for it (optional; most programs need none)"), args),
     h("h4", {}, "Network"),
     radio("off", "None", "it can reach nothing: not the internet, not this computer, not your network"),
     flat ? radio("on", "Its usual network", "Flatpak's sandbox can't be put behind the observer: what it contacts isn't listed")
@@ -4756,12 +4875,17 @@ const HOST_NAMED = { dns: "The name it looked up: this computer's resolver gave 
   program: "The name it gave when connecting, which it hadn't looked up for this address: only its own word",
   address: "It connected to the address without looking up a name" };
 
+// how each host was named is said in its cell (it was only the cell's tooltip), in a few words, the full sentence for a
+// screen reader
+const HOST_NAMED_SHORT = { dns: "looked up", tls: "given when connecting", program: "named by the program",
+  address: "no name looked up" };
 function hostsTable(hosts) {
   return h("table", { class: "places" },
     h("thead", {}, h("tr", {}, h("th", {}, "Host"), h("th", {}, "Addresses"), h("th", {}, "Ports"), h("th", {}, "Connections"),
       h("th", {}, "Sent"), h("th", {}, "Received"))),
-    h("tbody", {}, hosts.map(x => h("tr", {}, h("td", { class: "folder", title: HOST_NAMED[x.named_by] || HOST_NAMED.address },
-        x.host, x.named_by === "program" ? h("span", { class: "muted" }, " (named by the program)") : null),
+    h("tbody", {}, hosts.map(x => h("tr", { key: `host-${x.host}` }, h("td", { class: "folder", title: HOST_NAMED[x.named_by] || HOST_NAMED.address },
+        nameText(x.host), h("span", { class: "muted small", "aria-label": `: ${HOST_NAMED[x.named_by] || HOST_NAMED.address}` },
+          ` (${HOST_NAMED_SHORT[x.named_by] || HOST_NAMED_SHORT.address})`)),
       h("td", { class: "folder" }, (x.addresses || []).join(", ") + (x.more_addresses ? ", and more" : "")),
       h("td", {}, x.ports.join(", ") + (x.more_ports ? ", and more" : "")), h("td", {}, `${x.connections}`), h("td", {}, fmtSize(x.sent)), h("td", {}, fmtSize(x.received))))));
 }
@@ -6071,9 +6195,35 @@ function toggleTheme() {
   try { localStorage.setItem(THEME_KEY, theme); } catch { /* no storage */ }
 }
 
+/* The text's size, the page's own zoom: Ctrl+plus, Ctrl+minus and Ctrl+0 in the app's window (WebKitGTK has none of its
+   own there), remembered in this browser's storage. Every size of text is in rem, so it follows the root's. In the user's
+   browser (--browser) its own zoom does this, and the page leaves those keys to it. */
+const ZOOM_KEY = "daps-zoom", ZOOMS = [0.8, 0.9, 1, 1.1, 1.25, 1.4, 1.6, 1.8, 2];
+function savedZoom() {
+  try { const z = parseFloat(localStorage.getItem(ZOOM_KEY)); return ZOOMS.includes(z) ? z : 1; } catch { return 1; }
+}
+function applyZoom(z) { document.documentElement.style.fontSize = z === 1 ? "" : `${Math.round(z * 100)}%`; }
+function setZoom(step) {
+  const i = Math.max(0, ZOOMS.indexOf(savedZoom()));
+  const next = step === 0 ? 1 : ZOOMS[Math.max(0, Math.min(ZOOMS.length - 1, i + step))];
+  applyZoom(next);
+  try { localStorage.setItem(ZOOM_KEY, String(next)); } catch { /* no storage: this page alone */ }
+  setStatus(`Text size ${Math.round(next * 100)}% (Ctrl+plus and Ctrl+minus change it, Ctrl+0 puts it back).`);
+}
+document.addEventListener("keydown", (e) => {
+  if (!(e.ctrlKey || e.metaKey) || e.altKey || S.state?.in_browser) return;
+  const bigger = e.key === "+" || e.key === "=" || e.code === "Equal" || e.code === "NumpadAdd";
+  const smaller = e.key === "-" || e.code === "Minus" || e.code === "NumpadSubtract";
+  const reset = e.key === "0" || e.code === "Digit0" || e.code === "Numpad0";
+  if (!bigger && !smaller && !reset) return;
+  e.preventDefault();
+  setZoom(bigger ? 1 : smaller ? -1 : 0);
+});
+
 async function init() {
   S.token = sessionToken();
   applyTheme(savedTheme());
+  applyZoom(savedZoom());
   $("#theme-btn").addEventListener("click", toggleTheme);
   try {
     S.state = await api("GET", "/api/state");
@@ -6121,6 +6271,10 @@ async function init() {
   }
   $("#brand").addEventListener("click", () => openWelcome());
   $("#brand").addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openWelcome(); } });
+  $("#messages-btn").addEventListener("click", openMessages);
+  // to the list, past the header's controls (the keyboard's first stop on the page)
+  $("#skip-link").addEventListener("click", (e) => { e.preventDefault(); $("#checks-list").focus(); });
+  renderMessagesButton();
   renderAll();
   const ot = S.state.open_tool;                 // started from a file manager's right-click entry (--tool)
   if (ot?.tool === "verify") openVerify(null, ot.paths[0] || "");
