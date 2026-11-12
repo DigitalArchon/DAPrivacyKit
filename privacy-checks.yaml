@@ -3306,6 +3306,12 @@ checks:
       - 'apps.yaml: each app''s packages (dpkg-query, rpm -q, pacman -Q), Flatpak ids (flatpak list --app) and snaps
         (snap list), read once per scan; the newest installed version against `checked`, by major version
         (major_parts, tolerance)'
+      - 'An app installed another way (a tarball, an AppImage, a copy in /opt: Tor Browser, Firefox''s own download):
+        the version that last ran, from its own files where that is cheap: a Chromium-family folder''s Last Version, a
+        Firefox-family profile''s compatibility.ini LastVersion; never a folder another listed app keeps too
+        (Chromium''s, shared with ungoogled-chromium and Cromite)'
+      - 'An app whose files are here but whose version nothing gave is named in a note, never taken for current: the
+        pass then says "whose version could be read"; with no version read at all, couldn''t check'
       - 'Where the app keeps its data (`data`, natively, in its Flatpak and its Snap): nothing there while it is
         newer makes the checks that read it "couldn''t check" unless they found a problem anyway'
       - 'Notes on each check that reads such an app, and a line in its fix''s dry run (appversions.annotate,

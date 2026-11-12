@@ -1096,8 +1096,20 @@ class NewerThanChecked(Check):
         from .. import appversions
         apps = appversions.load()
         have = scan.installed_apps()
+        # apps whose files are here but whose version nothing gave (a tarball, an AppImage, a copy in /opt, or one
+        # removed with its files left): never taken for a version the checks were made for
+        unread = [app.name for app in apps if app.id not in have and app.data and app.data_found(scan.paths)]
+        unread_note = Note("limitation", "Versions that couldn't be read",
+                           f"{', '.join(unread)}: their files are here, but not their version (installed another way, "
+                           "such as a download or an AppImage, or removed with their files left). If one is newer than "
+                           "this app was made for, the checks that read it may miss what it changed.") if unread else None
         if not have:
-            return absent("None of the apps the checks read was found by its package, Flatpak or Snap.")
+            if unread:
+                return unknown(f"Couldn't read the version of {', '.join(unread[:6])}"
+                               f"{' and others' if len(unread) > 6 else ''}: their files are here, but no package, "
+                               "Flatpak or Snap, nor their own files, says which version they are.", notes=[unread_note])
+            return absent("None of the apps the checks read was found by its package, Flatpak or Snap, or its own "
+                          "files.")
         ev, newer = [], []
         for app in apps:
             inst = have.get(app.id)
@@ -1106,9 +1118,14 @@ class NewerThanChecked(Check):
             newer.append(app.name)
             where = "" if not app.data or app.data_found(scan.paths) else "; nothing where the older version kept its data"
             how = "tested with" if app.basis == "tested" else "made for"
-            ev.append(Evidence.val(app.name, f"{inst.short} installed, {how} {app.checked_text}{where}"))
+            src = f" (from {inst.source})" if inst.source.startswith("its ") else ""
+            ev.append(Evidence.val(app.name, f"{inst.short} installed{src}, {how} {app.checked_text}{where}"))
         ev.append(Evidence.count("Apps the checks read, installed here", len(have)))
+        if unread:
+            ev.append(Evidence.count("Apps whose version couldn't be read", len(unread)))
+        notes = [unread_note] if unread_note else []
         if newer:
             return warned(f"{', '.join(newer)} {'is' if len(newer) == 1 else 'are'} newer than this version of DA Privacy "
-                          "Kit was made for.", *ev)
-        return passed("Every app the checks read is a version this app was made for.", *ev)
+                          "Kit was made for.", *ev, notes=notes)
+        return passed("Every app the checks read whose version could be read is a version this app was made for."
+                      if unread else "Every app the checks read is a version this app was made for.", *ev, notes=notes)

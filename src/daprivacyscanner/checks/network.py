@@ -1506,6 +1506,7 @@ def firefox_doh(scan: Scan) -> tuple[int, list[str]]:
 @register
 class DnsUnencrypted(Check):
     id = "net.dns_unencrypted"
+    reads_context = ("exposed_services",)           # the listeners, for which program answers at 127.0.0.1
 
     def detect(self, scan: Scan) -> Outcome:
         host = scan.host

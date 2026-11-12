@@ -5,9 +5,12 @@ a line in its fix's dry run), and one that found nothing of an app that is newer
 where it used to says it couldn't check rather than passing.
 
 Installed versions are read offline, as the user: the package managers (dpkg-query, rpm, pacman),
-`flatpak list` and `snap list`, each run once per scan. An app installed some other way (a tarball,
-an AppImage) has no version here and gets no note. packaging/check-app-versions.py compares the
-list with the latest releases upstream, for the maintainer."""
+`flatpak list` and `snap list`, each run once per scan, and for an app installed some other way (a
+tarball, an AppImage, a copy in /opt) the version that last ran, from its own files where that is
+cheap (a Chromium-family folder's Last Version, a Firefox-family profile's compatibility.ini). One
+whose files are here but whose version can't be read is named by app.newer_than_checked, never
+taken for current. packaging/check-app-versions.py compares the list with the latest releases
+upstream, for the maintainer."""
 
 from __future__ import annotations
 
@@ -251,16 +254,60 @@ def _snaps(host: "Host") -> dict[str, str]:
     return out
 
 
-def installed(host: "Host", apps: Apps) -> dict[str, Installed]:
-    """The newest version of each app installed here, however it was installed. Read-only; offline."""
+_LAST_VERSION = re.compile(r"^\s*LastVersion\s*=\s*(\d+(?:\.\d+)*)", re.M)
+
+
+def _read_small(p: Path, limit: int = 65536) -> str | None:
+    try:
+        if not p.is_file() or p.is_symlink() or p.stat().st_size > limit:
+            return None
+        return p.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+
+
+def own_files_version(app: App, paths: "PathResolver", shared: set[tuple[str, str]]) -> list[tuple[str, str]]:
+    """(version, where it was read) from the app's own files, for one installed some other way (a tarball, an
+    AppImage, a copy in /opt): a Chromium-family user data folder's `Last Version`, a Firefox-family profile's
+    compatibility.ini LastVersion (the version that last ran it). A folder another app in the list keeps too (Chromium's,
+    which ungoogled-chromium and Cromite use) says nothing of which ran there, and isn't read."""
+    out = []
+    for base, rel in app.data:
+        if (base, rel) in shared:
+            continue
+        for loc in paths.locate(BASES[base], rel, flatpak=app.flatpak, snap=app.snap):
+            text = _read_small(loc.path / "Last Version", 200)
+            if text and parse_version(text):
+                out.append((text.strip(), "its Last Version file"))
+            roots = _read_small(loc.path / "profiles.ini")
+            for m in re.finditer(r"^Path\s*=\s*(.+)$", roots or "", re.M):
+                rel_profile = m.group(1).strip()
+                prof = Path(rel_profile) if rel_profile.startswith("/") else loc.path / rel_profile
+                v = _LAST_VERSION.search(_read_small(prof / "compatibility.ini") or "")
+                if v:
+                    out.append((v.group(1), "its profile (compatibility.ini)"))
+    return out
+
+
+def installed(host: "Host", apps: Apps, paths: "PathResolver | None" = None) -> dict[str, Installed]:
+    """The newest version of each app installed here, however it was installed: the package managers, Flatpak and
+    Snap, and the app's own files for one installed otherwise (own_files_version). Read-only; offline."""
+    from .paths import PathResolver
+    paths = paths or PathResolver(host.home, host.environ)
     pkgs = _packages(host, sorted({p for a in apps for p in a.packages}))
     flat = _flatpaks(host) if any(a.flatpak for a in apps) else {}
     snaps = _snaps(host) if any(a.snap for a in apps) else {}
+    counts: dict[tuple[str, str], int] = {}
+    for a in apps:
+        for d in set(a.data):
+            counts[d] = counts.get(d, 0) + 1
+    shared = {d for d, n in counts.items() if n > 1}
     out: dict[str, Installed] = {}
     for app in apps:
         found = [(v, f"package {p}") for p in app.packages if (v := pkgs.get(p))]
         found += [(v, "Flatpak") for f in app.flatpak if (v := flat.get(f))]
         found += [(v, "Snap") for s in app.snap if (v := snaps.get(s))]
+        found += own_files_version(app, paths, shared)
         best = None
         for text, source in found:
             v = parse_version(text)

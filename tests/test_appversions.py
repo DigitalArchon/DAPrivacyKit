@@ -15,7 +15,7 @@ from daprivacyscanner.host import CommandResult
 from daprivacyscanner.model import Outcome, Status
 from daprivacyscanner.runner import Runner
 
-from conftest import make_host, make_scan
+from conftest import detect, ev, make_host, make_scan
 from test_runner import check, laptop_host, run
 
 
@@ -198,3 +198,39 @@ def test_json_that_doesnt_parse_is_couldnt_check(cat, tmp_path):
     host = laptop_host(tmp_path / "empty", home_files={".config/Signal/config.json": ""})
     assert Runner(cat, host, {impl.id: impl}).scan(only=[impl.id]).results[impl.id].status is not Status.UNKNOWN
 
+
+
+# ------------------------------------------------------------------ versions from the apps' own files
+
+
+def test_a_tarball_firefox_has_its_version_read_from_its_profile(cat, tmp_path):
+    """Firefox from Mozilla's download, in /opt: no package, Flatpak or Snap says it is there, and it was taken for
+    a version the checks were made for. Its profile's compatibility.ini says which version last ran it."""
+    files = {**FIREFOX_PROFILE, ".mozilla/firefox/abc.default/compatibility.ini":
+             "[Compatibility]\nLastVersion=170.0.1_20270101000000/20270101000000\nLastOSABI=Linux_x86_64-gcc3\n"}
+    host = _package_managers(make_host(tmp_path, home_files=files))
+    have = appversions.installed(host, appversions.load())
+    assert have["firefox"].version == (170, 0, 1) and have["firefox"].source == "its profile (compatibility.ini)"
+    o = detect(cat, "app.newer_than_checked", make_scan(host))
+    assert o.status is Status.WARN and "from its profile" in ev(o)["Firefox"]
+
+
+def test_a_chromium_family_folder_s_last_version_is_read(tmp_path):
+    host = _package_managers(make_host(tmp_path, home_files={".config/net.imput.helium/Last Version": "0.25.1.1\n",
+                                                             ".config/chromium/Last Version": "160.0.1\n"}))
+    have = appversions.installed(host, appversions.load())
+    assert have["helium"].version == (0, 25, 1, 1)
+    # Chromium's folder is ungoogled-chromium's and Cromite's too: which of them ran there it doesn't say
+    assert not {"chromium", "ungoogled-chromium", "cromite"} & set(have)
+
+
+def test_apps_whose_version_couldnt_be_read_are_named(cat, tmp_path):
+    host = _package_managers(make_host(tmp_path, home_files={**FIREFOX_PROFILE, ".config/Code/User/settings.json": "{}"}),
+                             dpkg="ii \tvlc\t3.0.20-1\n")
+    o = detect(cat, "app.newer_than_checked", make_scan(host))
+    assert o.status is Status.PASS and "whose version could be read" in o.summary
+    note = next(n for n in o.notes if n.title == "Versions that couldn't be read")
+    assert "Firefox" in note.text and "Visual Studio Code" in note.text
+    host = _package_managers(make_host(tmp_path / "none", home_files=FIREFOX_PROFILE))
+    o = detect(cat, "app.newer_than_checked", make_scan(host))
+    assert o.status is Status.UNKNOWN and "Firefox" in o.summary
