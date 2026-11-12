@@ -975,7 +975,6 @@ def test_the_box_says_its_site_codes_can_be_tested(cat, tmp_path):
 def test_a_newer_copy_of_a_boxs_program_replaces_the_old_one_and_reverts(cat, tmp_path, monkeypatch):
     """Found in the review: keeping a newer program of the same file name in its Box silently kept the old one (the
     copy was skipped since the Box's app folder was there, and the guide said there was nothing left to do)."""
-    from daprivacyscanner.tools import box as B
     from daprivacyscanner.tools import integration as I
     from daprivacyscanner.runner import Runner
     from test_guides import apply, build, options, revert

@@ -625,7 +625,7 @@ def test_https_only_policies(cat, tmp_path):
 
 def test_https_only_guide_sets_one_pref_and_says_where_for_the_rest(cat, tmp_path):
     from test_checks_telemetry_browser import chrome, firefox
-    from test_guides import build, options
+    from test_guides import build
     host = make_host(tmp_path)
     firefox(host.home)
     firefox(host.home, root=".librewolf", name="lw.default")

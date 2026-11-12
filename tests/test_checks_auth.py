@@ -501,7 +501,6 @@ def test_basic_store_forced_for_an_electron_app_and_its_plain_cookies(cat, tmp_p
     app's unencrypted cookies (Electron leaves cookie encryption off unless the app turns it on) are counted in a
     note, never read."""
     import sqlite3
-    from daprivacyscanner.model import Status
     from conftest import detect, ev, make_host, make_scan
     host = make_host(tmp_path, home_files={".config/code-flags.conf": "--password-store=basic\n",
                                            ".config/Slack/GPUCache/data_0": "x"},

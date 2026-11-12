@@ -3,12 +3,11 @@ write, reverting a value the user had already put back, KDE settings a distribut
 
 from daprivacyscanner.checks import load_all
 from daprivacyscanner.fix import FixPlan, GSettingsSet, MakeDir, WriteFile, apply_plan, bus_reload, revert_entry
-from daprivacyscanner.host import CommandResult
 from daprivacyscanner.undo import UndoLog
 
 from conftest import make_host, make_scan
 from fakes import FakeGSettings, FakeKwriteconfig
-from test_guides import apply, build, options, revert
+from test_guides import apply, build, options
 
 
 def _log(host):

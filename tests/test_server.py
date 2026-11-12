@@ -120,8 +120,8 @@ def test_ending_administrator_access_never_holds_up_the_event_loop(cat, tmp_path
 
     for how in ("idle", "drop"):
         closing, release, helper = threading.Event(), threading.Event(), FakePrivileged()
-        helper.close = lambda: closing.set() or release.wait(5)          # a helper busy with a request
-        session = AdminSession(lambda: helper, idle=0 if how == "idle" else 300)
+        helper.close = lambda closing=closing, release=release: closing.set() or release.wait(5)   # busy with a request
+        session = AdminSession(lambda helper=helper: helper, idle=0 if how == "idle" else 300)
         assert session.get(prompt=True) is helper
         dropping = threading.Thread(target=session.drop)
         if how == "drop":
@@ -147,7 +147,7 @@ def test_the_prompt_holds_nothing_else_up_and_one_prompt_serves_every_request(ca
     for outcome in ("granted", "declined"):
         asked, answer, helper = threading.Event(), threading.Event(), FakePrivileged()
 
-        def start():
+        def start(asked=asked, answer=answer, outcome=outcome, helper=helper):
             asked.set()
             answer.wait(5)
             if outcome == "declined":
@@ -156,7 +156,7 @@ def test_the_prompt_holds_nothing_else_up_and_one_prompt_serves_every_request(ca
         session = AdminSession(start)
         got: list = []
 
-        def ask():
+        def ask(got=got, session=session):
             try:
                 got.append(session.get(prompt=True))
             except HelperDeclined as e:

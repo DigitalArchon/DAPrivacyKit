@@ -311,7 +311,7 @@ def test_the_loaded_helper_installs_the_bytes_it_checked_not_the_file_read_again
     data = open(HELPER, "rb").read()
     g = {"__name__": "loaded", "__file__": str(tmp_path / "helper.py"), "__daprivacyscanner_source__": data}
     (tmp_path / "helper.py").write_text("print('swapped')\n")
-    exec(compile(data, str(tmp_path / "helper.py"), "exec"), g)
+    exec(compile(data, str(tmp_path / "helper.py"), "exec"), g)  # noqa: S102 - the helper's bytes run as its loader runs them
     assert g["own_source"]() == data
 
 

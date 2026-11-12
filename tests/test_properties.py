@@ -290,7 +290,7 @@ def test_pcap_dns_over_tcp_that_never_finishes_holds_bounded_bytes(segments):
     """A program's own DNS-over-TCP connections that never complete a message: what is held stays bounded."""
     f = pcap.Flows("169.254.0.1")
     stream = pcap_header()
-    for i, (port, data) in enumerate(segments):
+    for port, data in segments:
         src, dst = b"\x0a\x00\x02\x0f", b"\x08\x08\x08\x08"
         stream += record(ether(0x0800, ipv4(src, dst, 6, tcp(port, 53, 0x02, 7))))
         stream += record(ether(0x0800, ipv4(src, dst, 6, tcp(port, 53, 0x18, 8, b"\xff\xff" + data))))
@@ -499,7 +499,7 @@ def test_rpm_reader_fails_only_as_verify_expects(tmp_path_factory, sig, main, pa
     except TypeError as e:
         # recorded below as its own failing test
         assume(False)
-        raise AssertionError(e)
+        raise AssertionError(e) from e
 
 
 @pytest.mark.parametrize("sig,main", [([(1002, 4, b"\0\0\0\1", 1)], []),

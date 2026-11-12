@@ -6,11 +6,8 @@ import errno
 import json
 import os
 import stat
-from pathlib import Path
 
-import pytest
-
-from daprivacyscanner.fix import (CopyQTabSet, DeleteFiles, FixError, FixPlan, GSettingsSet, InUse, RootChange,
+from daprivacyscanner.fix import (CopyQTabSet, DeleteFiles, FixPlan, GSettingsSet, InUse, RootChange,
                                   WriteFile, _write_atomic, apply_plan, make_writable, merge_back, revert_entry)
 from daprivacyscanner.privileged import HelperError
 from daprivacyscanner.undo import UndoLog

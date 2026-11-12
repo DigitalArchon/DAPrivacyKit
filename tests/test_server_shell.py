@@ -218,7 +218,6 @@ class _SlowServer:
         threading.Thread(target=self.serve, daemon=True).start()
 
     def serve(self):
-        import time
         conn, _ = self.sock.accept()
         with conn:
             conn.recv(65536)

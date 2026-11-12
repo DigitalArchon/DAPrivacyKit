@@ -11,7 +11,6 @@ import signal
 import stat
 import sys
 import time
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -429,7 +428,7 @@ def test_a_packages_usr_is_laid_over_by_bubblewrap_itself_where_it_can(trial_hos
     """Ubuntu 26.04's AppArmor profile for bubblewrap takes every capability from what it starts, so a first
     bubblewrap's mount failed; bubblewrap 0.10 and later mount the overlay themselves, which works there (tested)."""
     from daprivacyscanner.tools import sandbox, trial
-    from test_trial import a_trial, pairs, parts
+    from test_trial import a_trial, parts
     host = overlay_host(trial_host, native=True)
     monkeypatch.setattr(sandbox, "program", lambda h, name: name)
     t = a_trial(tmp_path, kind="deb", argv=["/usr/bin/foo"])

@@ -48,7 +48,7 @@ def stat(img: str, path: str) -> dict:
     mode = int(re.search(r"Mode:\s+(\d+)", text).group(1), 8)
     uid, gid = (int(x) for x in re.search(r"User:\s+(\d+)\s+Group:\s+(\d+)", text).groups())
     extents = []
-    for a, b, c, d in re.findall(r"\((\d+)(?:-(\d+))?\):(\d+)(?:-(\d+))?", text.split("EXTENTS:")[-1]):
+    for a, b, c, _d in re.findall(r"\((\d+)(?:-(\d+))?\):(\d+)(?:-(\d+))?", text.split("EXTENTS:")[-1]):
         n = int(b or a) - int(a) + 1
         extents.append([int(c) * 4096, n * 4096, 0, int(a) * 4096])
     return {"type": "dir", "ino": ino, "gen": gen, "flags": flags, "mode": 0o40000 | mode, "uid": uid, "gid": gid,

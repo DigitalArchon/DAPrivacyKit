@@ -127,7 +127,7 @@ def test_nothing_is_searched_when_the_app_opened_none_of_the_users_files(tmp_pat
 
 # ------------------------------------------------------------------ the helper's watch
 
-def tally(procs, minute=[0]):
+def tally(procs, minute=(0,)):
     return helper._Tally(1000, "/home/alice", ["daprivacyscanner-watch-ab.scope", "app-flatpak-org.x.App-*.scope"],
                          proc=lambda pid: procs.get(pid), clock=lambda: minute[0] * 60.0)
 

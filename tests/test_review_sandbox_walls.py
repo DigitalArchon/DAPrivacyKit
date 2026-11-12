@@ -331,13 +331,13 @@ def test_in_pasta_s_namespace_the_sandbox_can_t_go_round_the_filter(tmp_path):
 # ------------------------------------------------------------------ the program's own words
 
 def test_text_from_inside_is_shown_only_as_the_program_s_own():
-    shown = S.visible("evil‮gnp.exe\x1b[2J" + "x" * 500, 40)
+    shown = S.visible("evil\u202egnp.exe\x1b[2J" + "x" * 500, 40)
     assert shown.startswith("evil<U+202E>gnp.exe<U+001B>[2Jxxx") and shown.endswith("x…") and len(shown) == 40
     assert S.visible("one\ntwo\n\n three") == "one / two / three"
     assert S.start_reason("pasta: Failed to open tun\n", 1).startswith("its network of its own (pasta) couldn't be set up")
     assert S.start_reason("Mullvad Browser needs an update: call 0800 123 456\n", 1, own_output=False) == \
         "it stopped at once (exit status 1)"
-    said = S.start_reason("Loading failed: ‮fdp.exe\n", 3)
+    said = S.start_reason("Loading failed: \u202efdp.exe\n", 3)
     assert said.startswith("it stopped at once (exit status 3); the last it printed: “") and "<U+202E>" in said
 
 

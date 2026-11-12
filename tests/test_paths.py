@@ -133,5 +133,6 @@ def test_sqlite_count_sees_what_is_still_in_the_write_ahead_log(tmp_path):
     assert sqlite_count(db, "select count(*) from t") == 5
     (tmp_path / "a?b#c.sqlite-shm").unlink()
     assert sqlite_count(db, "select count(*) from t") == 5
+    assert db.read_bytes() == before
     con.close()
     assert sqlite_count(tmp_path / "missing.sqlite", "select 1") is None

@@ -352,7 +352,7 @@ class SimDisk:
             f.seek(0)
             f.write(bytes(DEVICE_SIZE))
             pos = 1 << 20
-            for name, data in sorted(blobs):
+            for _name, data in sorted(blobs):
                 if self.hide_small and len(data) < 2048:
                     continue
                 f.seek(pos)
