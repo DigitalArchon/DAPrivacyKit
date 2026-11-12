@@ -569,6 +569,10 @@ def outbox_cli() -> int:
         if sys.stderr.isatty():
             raise
         print(f"The Outbox couldn't be emptied: {type(e).__name__}", file=sys.stderr)
+        try:                                        # said, not left silent (a file's own trouble is caught per file)
+            metadata.notify_outbox_failed(host)
+        except Exception:  # noqa: BLE001
+            pass
         return 1
     metadata.notify_outbox(host, run)
     if tty:

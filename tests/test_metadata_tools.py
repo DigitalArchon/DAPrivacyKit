@@ -473,10 +473,10 @@ def test_outbox_unit_run_waits_for_the_file_that_started_it(tmp_path):
     (tmp_path / "run").mkdir()
     host.runner.handlers["mat2"] = fake_mat2()
     box, naps = host.home / "Outbox", []
+    old = time.time() - 60
 
     def nap(seconds):                                   # time passes: the file settles, and another lands meanwhile
         naps.append(seconds)
-        old = time.time() - 60
         os.utime(box / "photo.jpg", (old, old)) if (box / "photo.jpg").exists() else None
         if len(naps) == 1:
             (box / "second.jpg").write_text("img2")

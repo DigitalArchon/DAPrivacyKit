@@ -627,7 +627,9 @@ fix.
 - **~/Outbox**: drop a file in, and a cleaned copy (metadata removed) appears in `~/Outbox/Cleaned`; the
   original moves to `~/Outbox/Originals`. A file that can't be cleaned goes to `~/Outbox/Not cleaned`, and
   so does one whose cleaned copy still says where it was made, who made it, the device or a title or
-  comment. Nothing is deleted.
+  comment, or one that couldn't be cleaned at all (it can't be read, or there isn't room); the others are
+  still cleaned, and the notification counts both. A file is taken once it has finished arriving. Nothing is
+  deleted.
 - **Right-click entries**: adds *Verify download…* and *Remove metadata…* to the file manager (Nemo,
   Dolphin, Nautilus).
 - **A Box for an app**: keeps an app you need but don't fully trust in a sandbox for good, with a home

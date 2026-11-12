@@ -1686,7 +1686,13 @@ drive they came from (its model, serial and size, `retire.identity`): another dr
   `daprivacyscanner --outbox` when files land in `~/Outbox`: each is cleaned into `~/Outbox/Cleaned` and the
   original moved to `~/Outbox/Originals`; a file mat2 can't clean goes to `~/Outbox/Not cleaned`, and so
   does one whose cleaned copy still says what the page would flag (nobody looks in `Cleaned` before
-  sharing what is there). Nothing is deleted.
+  sharing what is there), and one that couldn't be cleaned at all (unreadable, no room, an error: one file's
+  trouble never stops the rest, and the notification counts it). A file has arrived as the TempOutbox's do:
+  unchanged for 2 seconds, open for writing by no program of the user's (`transfer.open_for_writing`), unchanged
+  while it is copied and cleaned (read through one descriptor, never a link), and unchanged since the run's last
+  look (`OutboxLooks`); a stalled copy was cleaned half-written before. The working copy goes in the runtime folder
+  when it has room for it and the cleaned copy (`_outbox_work`), else in a hidden folder inside `~/Outbox`, on the
+  disk the original is on, never `/tmp`. A run that stops anyway says so in a notification. Nothing is deleted.
 - **File chooser** (`tools/pick.py`): pywebview's dialog in the window (GTK's recent-files recording
   turned off for the app, which outranks the desktop's setting), zenity or kdialog in a browser, else a
   typed path. The server accepts only absolute paths of regular files the user can read (and, for Remove

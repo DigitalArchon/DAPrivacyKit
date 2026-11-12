@@ -946,50 +946,170 @@ class OutboxRun:
     skipped: list[str] = field(default_factory=list)
 
 
-def run_outbox(host: Host, folder: Path | None = None, settle: float = 2.0) -> OutboxRun:
-    """Each file put directly in the Outbox: copied into a private temporary folder (in memory where
-    there is one), cleaned there, the clean copy moved to Cleaned/ and the original to Originals/.
-    A file mat2 can't clean goes to "Not cleaned/", and so does one whose cleaned copy still says what
-    the page would warn of (`FileMeta.telling`): nobody looks at Cleaned/ before sharing it. Files still
-    being written (changed in the last `settle` seconds), hidden files and partial downloads are left
-    for the next run."""
-    folder = Path(folder) if folder else outbox_dir(host.home)
-    run = OutboxRun()
-    if not folder.is_dir() or folder.is_symlink():
-        return run
+@dataclass
+class OutboxLooks:
+    """What one run of the unit has seen across its passes (run_outbox_settled): each file's (inode, size, mtime)
+    at the last look, and the files given up on in this run (one that couldn't even be moved aside would
+    otherwise be tried again every second until the run's time is up)."""
+    seen: dict[str, tuple[int, int, int]] = field(default_factory=dict)
+    gave_up: set[tuple[int, int, int]] = field(default_factory=set)
+
+
+ROOM_MARGIN = 64 * 1024 * 1024          # left free beyond the working copy and mat2's cleaned copy of it
+
+
+def _room(folder) -> int:
+    st = os.statvfs(folder)
+    return st.f_bavail * st.f_frsize
+
+
+def _outbox_work(host: Host, folder: Path, size: int) -> tuple[str, bool] | None:
+    """(folder, in memory) for a file's working copy: the runtime folder when it has room for it and mat2's cleaned
+    copy (a tmpfs, often a tenth of the memory, which a video soon exceeds), else a hidden folder inside the Outbox,
+    on the disk the original is already on (the path unit ignores hidden names), never /tmp; None when neither has."""
+    need = 2 * size + ROOM_MARGIN
     base = host.environ.get("XDG_RUNTIME_DIR")
-    for entry in sorted(folder.iterdir()):
-        if entry.is_symlink() or not entry.is_file() or SKIP_NAMES.search(entry.name):
+    for where, memory in ((base, True), (str(folder), False)):
+        if not where or not os.path.isdir(where):
             continue
         try:
-            if time.time() - entry.stat().st_mtime < settle:
-                run.skipped.append(entry.name)
-                continue
+            if _room(where) >= need:
+                return where, memory
         except OSError:
             continue
-        # the working copy goes in the runtime folder (memory); without one, in a hidden folder inside the Outbox,
-        # beside the original, never in /tmp on the disk (the path unit ignores hidden names and folders)
-        with tempfile.TemporaryDirectory(prefix="daprivacyscanner-outbox-" if base and os.path.isdir(base) else
-                                         ".daprivacyscanner-outbox-",
-                                         dir=base if base and os.path.isdir(base) else folder) as tmp:
+    return None
+
+
+def _problem(e: BaseException) -> str:
+    """An error in words without the path it may carry (the unit's output reaches the journal)."""
+    return (e.strerror or type(e).__name__) if isinstance(e, OSError) else type(e).__name__
+
+
+def _outbox_one(host: Host, folder: Path, entry: Path, st: os.stat_result) -> tuple[str, str]:
+    """One file of the Outbox: ("cleaned", ""), ("not_cleaned", why), ("settling", "") when it changed while it was
+    copied or cleaned (looked at again later), or ("gone", "") when it was moved away or replaced meanwhile. Read
+    through one descriptor, never through a link, and judged again before anything is moved: a copy that stalled
+    was cleaned half-written."""
+    try:
+        fd = os.open(entry, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    except (FileNotFoundError, NotADirectoryError):
+        return "gone", ""
+    except OSError as e:
+        if e.errno == errno.ELOOP:                       # a link now: not a file put in the Outbox
+            return "gone", ""
+        return "not_cleaned", f"It can't be read ({_problem(e)})."
+    try:
+        first = os.fstat(fd)
+        if first.st_ino != st.st_ino or not stat.S_ISREG(first.st_mode):
+            return "gone", ""
+
+        def unchanged() -> bool:
+            now = os.fstat(fd)
+            return (now.st_size, now.st_mtime_ns, now.st_ctime_ns) == (first.st_size, first.st_mtime_ns, first.st_ctime_ns)
+        where = _outbox_work(host, folder, first.st_size)
+        if where is None:
+            return "not_cleaned", (f"There isn't room to clean it: it is {first.st_size // (1024 * 1024)} MB, and "
+                                   "neither the runtime folder (in memory) nor the disk the Outbox is on has room for "
+                                   "it and its cleaned copy.")
+        base, memory = where
+        with tempfile.TemporaryDirectory(prefix="daprivacyscanner-outbox-" if memory else ".daprivacyscanner-outbox-",
+                                         dir=base) as tmp:
             work = Path(tmp) / entry.name
-            shutil.copy2(entry, work)
-            os.chmod(work, stat.S_IMODE(os.stat(work).st_mode) | stat.S_IRUSR | stat.S_IWUSR)   # as _working_copy's
+            with os.fdopen(os.dup(fd), "rb") as src, open(work, "xb") as out:
+                src.seek(0)
+                shutil.copyfileobj(src, out, 1 << 20)
+            os.chmod(work, 0o600)                       # its owner's to write, as _working_copy's (mat2 copies the mode)
+            if not unchanged():
+                return "settling", ""
             res = clean(host, work)
             left = res.remaining.telling() if res.ok and res.remaining else []
             if left:
                 res = CleanResult(work, False, message=f"Its cleaned copy still says {says(left)}: mat2 couldn't remove "
                                                        f"all of it, so it wasn't put in {CLEANED}.")
-            if res.ok and res.output:
-                (folder / CLEANED).mkdir(mode=0o700, exist_ok=True)
-                (folder / ORIGINALS).mkdir(mode=0o700, exist_ok=True)
-                shutil.move(str(res.output), _free_name(folder / CLEANED, entry.name))
-                shutil.move(str(entry), _free_name(folder / ORIGINALS, entry.name))
-                run.cleaned.append(entry.name)
-            else:
-                (folder / NOT_CLEANED).mkdir(mode=0o700, exist_ok=True)
-                shutil.move(str(entry), _free_name(folder / NOT_CLEANED, entry.name))
-                run.not_cleaned.append((entry.name, res.message))
+            if not unchanged():
+                return "settling", ""
+            if not (res.ok and res.output):
+                return "not_cleaned", res.message
+            (folder / CLEANED).mkdir(mode=0o700, exist_ok=True)
+            (folder / ORIGINALS).mkdir(mode=0o700, exist_ok=True)
+            shutil.move(str(res.output), _free_name(folder / CLEANED, entry.name))
+        try:
+            os.rename(entry, _free_name(folder / ORIGINALS, entry.name))
+        except FileNotFoundError:
+            pass                                        # moved away meanwhile: its cleaned copy is in Cleaned
+        return "cleaned", ""
+    finally:
+        os.close(fd)
+
+
+def run_outbox(host: Host, folder: Path | None = None, settle: float = 2.0,
+               looks: OutboxLooks | None = None) -> OutboxRun:
+    """Each file put directly in the Outbox: copied into a private temporary folder (in memory where
+    there is one with room), cleaned there, the clean copy moved to Cleaned/ and the original to Originals/.
+    A file mat2 can't clean goes to "Not cleaned/", and so does one whose cleaned copy still says what
+    the page would warn of (`FileMeta.telling`): nobody looks at Cleaned/ before sharing it; and so does one
+    that couldn't be cleaned at all (no room, unreadable, an error), so that one file never stops the rest. A
+    file counts as arrived as the TempOutbox's do: unchanged for `settle` seconds, open for writing by no program
+    of the user's, unchanged while it is copied and cleaned, and, given `looks` (the unit's run), unchanged since
+    the last look. Hidden files and partial downloads are left alone, files still arriving for the next pass."""
+    from .transfer import open_for_writing
+    folder = Path(folder) if folder else outbox_dir(host.home)
+    run = OutboxRun()
+    if not folder.is_dir() or folder.is_symlink():
+        return run
+    ready: dict[Path, os.stat_result] = {}
+    seen: dict[str, tuple[int, int, int]] = {}
+    for entry in sorted(folder.iterdir()):
+        if entry.is_symlink() or not entry.is_file() or SKIP_NAMES.search(entry.name):
+            continue
+        try:
+            st = os.stat(entry, follow_symlinks=False)
+        except OSError:
+            continue
+        key = (st.st_ino, st.st_size, st.st_mtime_ns)
+        if looks is not None:
+            if key in looks.gave_up:
+                continue
+            seen[entry.name] = key
+            if looks.seen.get(entry.name) != key:
+                run.skipped.append(entry.name)
+                continue
+        if time.time() - st.st_mtime < settle:
+            run.skipped.append(entry.name)
+            continue
+        ready[entry] = st
+    if looks is not None:
+        looks.seen = seen
+    writing = open_for_writing(host, {(st.st_dev, st.st_ino) for st in ready.values()})
+    for entry, st in ready.items():
+        key = (st.st_ino, st.st_size, st.st_mtime_ns)
+        if (st.st_dev, st.st_ino) in writing:
+            run.skipped.append(entry.name)
+            continue
+        try:
+            outcome, why = _outbox_one(host, folder, entry, st)
+        except Exception as e:  # noqa: BLE001 - one file's trouble (a full disk, a file moved away) never stops the rest
+            outcome, why = "not_cleaned", f"It couldn't be cleaned ({_problem(e)})."
+        if outcome == "settling":
+            run.skipped.append(entry.name)
+            if looks is not None:
+                looks.seen.pop(entry.name, None)
+            continue
+        if outcome == "gone":
+            continue
+        if outcome == "cleaned":
+            run.cleaned.append(entry.name)
+            continue
+        try:
+            (folder / NOT_CLEANED).mkdir(mode=0o700, exist_ok=True)
+            os.rename(entry, _free_name(folder / NOT_CLEANED, entry.name))
+        except FileNotFoundError:
+            continue
+        except OSError as e:
+            why += f" It couldn't be moved to {NOT_CLEANED} either ({_problem(e)}), so it is still in the Outbox."
+            if looks is not None:
+                looks.gave_up.add(key)
+        run.not_cleaned.append((entry.name, why))
     return run
 
 
@@ -1003,9 +1123,9 @@ def run_outbox_settled(host: Host, folder: Path | None = None, settle: float = 2
     and doesn't start it again for a folder that hasn't changed since, nor for what lands while it runs: a single pass
     left the file that started it where it was (seen on Mint 22.3, where the AppImage starts within a second). So it
     goes on, a pass a second, until one finds nothing to do and nothing still settling, or `wait` is up."""
-    total, deadline = OutboxRun(), time.monotonic() + wait
+    total, deadline, looks = OutboxRun(), time.monotonic() + wait, OutboxLooks()
     while True:
-        run = run_outbox(host, folder, settle)
+        run = run_outbox(host, folder, settle, looks)
         total.cleaned += run.cleaned
         total.not_cleaned += run.not_cleaned
         total.skipped = run.skipped
@@ -1026,3 +1146,12 @@ def notify_outbox(host: Host, run: OutboxRun) -> None:
         parts.append(f"{len(run.not_cleaned)} couldn't be cleaned (moved to ~/Outbox/{NOT_CLEANED})")
     host.run("notify-send", "--app-name=DA Privacy Kit", "--icon=document-send",
              "Outbox: " + "; ".join(parts), "The originals are in ~/Outbox/" + ORIGINALS + ".")
+
+
+def notify_outbox_failed(host: Host) -> None:
+    """When a run stopped before it was through (each file's trouble is caught, so this is the Outbox itself: a
+    folder that can't be read, say): said rather than left silent, nothing named."""
+    if host.runner.which("notify-send"):
+        host.run("notify-send", "--app-name=DA Privacy Kit", "--icon=dialog-warning", "Outbox: files couldn't be cleaned",
+                 "Something stopped the Outbox before it was through: what is left in ~/Outbox wasn't cleaned. "
+                 "Open the app and clean those files with Remove metadata.")
