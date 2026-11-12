@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 
 from ...context import read_swaps
-from ...fix import Command, DeleteFiles, MakeDir, RootChange, WriteFile, shell
+from ...fix import Command, DeleteFiles, InUse, MakeDir, RootChange, WriteFile, shell
 from ...guide import Guide, Input, Step
 from .._util import (files_under, isdir, isfile, processes, read_text, recent_files, recent_hrefs,
                      systemctl_state)
@@ -188,7 +188,8 @@ def indexers(check, scan, outcome):
     if recoll is not None:
         conf = recoll[0]
         db = conf / "xapiandb"
-        acts = [DeleteFiles(db, files_under(db)[0], "Recoll's index", host.display(db))]
+        acts = [DeleteFiles(db, files_under(db)[0], "Recoll's index", host.display(db)).unless(InUse(
+            "Recoll", test=lambda pc: "recollindex" in pc.processes(own=False)))]
         auto = scan.paths.config_home / "autostart" / "recollindex.desktop"
         text = read_text(host, auto)
         if text is not None and not re.search(r"^Hidden\s*=\s*true", text, re.M):

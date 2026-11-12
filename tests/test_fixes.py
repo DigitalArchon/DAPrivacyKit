@@ -772,7 +772,8 @@ def test_processes_are_read_once_per_plan(cat, tmp_path, monkeypatch):
     host = make_host(tmp_path, home_files={f".config/App{i}/Cache/f": "x" for i in range(4)}
                      | {f".config/App{i}/GPUCache/d": "x" for i in range(4)})
     run_fix(cat, host, "app.electron_caches")
-    assert len(calls) == 1
+    # once to build the plan, and once more just before it is applied (fix.Precheck), for all its steps together
+    assert len(calls) == 2
 
 
 def test_folder_view_records(cat, tmp_path):

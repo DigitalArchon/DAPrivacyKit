@@ -949,10 +949,13 @@ def _home_display(scan, p) -> str:
 
 
 def _os_window_setting(scan, key: str, value: str, label: str, by_hand: str, group: str = "global"):
-    from ...fix import QSettingsSet
+    from ...fix import InUse, QSettingsSet
     from ...opensnitch import settings_file
     p = settings_file(scan.paths)
-    return QSettingsSet(p, _home_display(scan, p), group, key, value, label, by_hand)
+    # written while the window is closed (it reads it when it starts, and writes it as it quits): asked again just
+    # before applying, as _os_close_window asks when the plan is shown
+    return QSettingsSet(p, _home_display(scan, p), group, key, value, label, by_hand).unless(
+        InUse("OpenSnitch's window", test=lambda pc: "opensnitch-ui" in pc.processes(own=False)))
 
 
 def _os_close_window(s) -> list[str]:

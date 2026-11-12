@@ -4,12 +4,18 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ...fix import DeleteFiles, RootChange, WriteFile, shell
+from ...fix import DeleteFiles, InUse, RootChange, WriteFile, guarded, shell
 from ...guide import Guide, Step
 from .. import Scan
 from .._util import children, files_under, installed, isdir, isfile, read_text
 from ..fixes import gset, in_use
 from . import evidence, guide, option, install, ff_prefs
+
+
+def _libreoffice(profile: Path) -> InUse:
+    """LibreOffice, as the plan found it closed: it keeps copies of open documents in its profile, and rewrites its
+    settings as it exits."""
+    return InUse("LibreOffice", names=("soffice.bin", "soffice"), held=(profile,))
 
 
 @guide("app.photo_dbs")
@@ -19,10 +25,12 @@ def photo_dbs(check, scan, outcome):
     caches = []
     for loc in scan.paths.locate(Base.CACHE, "gthumb", flatpak=["org.gnome.gThumb"]):
         if not in_use(scan, loc.path, "gthumb"):
-            caches.append(DeleteFiles(loc.path, files_under(loc.path)[0], "gThumb cache", host.display(loc.path)))
+            caches.append(DeleteFiles(loc.path, files_under(loc.path)[0], "gThumb cache", host.display(loc.path))
+                          .unless(InUse("gThumb", names=("gthumb",), held=(loc.path,))))
     for loc in scan.paths.locate(Base.CACHE, "shotwell", flatpak=["org.gnome.Shotwell"]):
         if not in_use(scan, loc.path, "shotwell"):
-            caches.append(DeleteFiles(loc.path, files_under(loc.path)[0], "Shotwell thumbnails", host.display(loc.path)))
+            caches.append(DeleteFiles(loc.path, files_under(loc.path)[0], "Shotwell thumbnails", host.display(loc.path))
+                          .unless(InUse("Shotwell", names=("shotwell",), held=(loc.path,))))
     caches = [c for c in caches if c.files]
     if caches:
         steps.append(Step("Delete thumbnail caches", "The apps make them again as you browse.",
@@ -65,7 +73,8 @@ def editor_residue(check, scan, outcome):
         if in_use(scan, d, *procs):
             skipped.append(f"{label}: close {procs[0]} first.")
             continue
-        acts.append(DeleteFiles(d, files, label, host.display(d), prune=False))
+        acts.append(DeleteFiles(d, files, label, host.display(d), prune=False)
+                    .unless(InUse(procs[0], names=procs, held=(d,))))
     from ..fixes import running
     from .._util import holders
     for label, p, procs in (("Vim history and registers", host.home / ".viminfo", ("vim", "gvim")),
@@ -80,7 +89,7 @@ def editor_residue(check, scan, outcome):
             skipped.append(f"{label}: close {', '.join(users)} first (it writes them as it quits).")
             continue
         acts.append(DeleteFiles(p if isdir(p) else p.parent, files, label, host.display(p if isdir(p) else p.parent),
-                                prune=False))
+                                prune=False).unless(InUse(procs[0], names=procs, held=(p,))))
     stray, held, stack = [], set(), [(host.home, 0)]
     while stack:
         d, depth = stack.pop()
@@ -114,7 +123,8 @@ def editor_residue(check, scan, outcome):
                      + f": an editor's swap file is how it recovers the document after a crash. Close {progs} first.")
         steps.append(Step("Backup files next to your documents", text.strip(),
                           options=[option(check, f"Delete {n} backup file{'s' if n != 1 else ''}",
-                                          [DeleteFiles(host.home, stray, "editor backup files", "~", prune=False)])]
+                                          [DeleteFiles(host.home, stray, "editor backup files", "~", prune=False)
+                                           .unless(InUse("the program that has one of them open", held=tuple(stray)))])]
                           if stray else []))
     from ..apps import VSCODE_PROCESSES, editor_histories
     from ..fixes import set_jsonc_key
@@ -128,6 +138,7 @@ def editor_residue(check, scan, outcome):
                        'Set "workbench.localHistory.enabled": false', host.display(h.settings))] if off else [])
         if not acts:
             continue
+        guarded(acts, InUse("the editor", names=VSCODE_PROCESSES if h.settings else (), held=(h.owner,)))
         users = in_use(scan, h.owner, *(VSCODE_PROCESSES if h.settings else ()))
         steps.append(Step(f"{h.label[0].upper() + h.label[1:]}",
                           "A copy of each version of a file is kept every time you save it, deleted files' included"
@@ -226,7 +237,8 @@ def office(check, scan, outcome):
     for loc in scan.paths.config("libreoffice/4/user", flatpak=["org.libreoffice.LibreOffice"], snap=["libreoffice"]):
         files = files_under(loc.path / "backup")[0]
         if files:
-            acts.append(DeleteFiles(loc.path / "backup", files, "LibreOffice backup copies", host.display(loc.path / "backup")))
+            acts.append(DeleteFiles(loc.path / "backup", files, "LibreOffice backup copies", host.display(loc.path / "backup"))
+                        .unless(_libreoffice(loc.path)))
             busy |= bool(in_use(scan, loc.path, "soffice.bin", "soffice"))
     if acts and busy:
         blockers.append("Close LibreOffice first: it keeps copies of open documents there.")
@@ -306,7 +318,7 @@ def shared_file_metadata(check, scan, outcome):
         m = LO_REMOVE_INFO.search(read_text(host, xcu) or "")
         if m and m.group(1) == "true":
             continue
-        acts.append(_lo_remove_personal_info(xcu, host.display(xcu)))
+        acts.append(_lo_remove_personal_info(xcu, host.display(xcu)).unless(_libreoffice(loc.path)))
         if in_use(scan, loc.path, "soffice.bin", "soffice"):
             blockers.append("Close LibreOffice first: it rewrites its settings as it exits.")
     steps = [Step("LibreOffice: remove personal information when saving",
@@ -320,7 +332,8 @@ def shared_file_metadata(check, scan, outcome):
         gacts, gblock = [], []
         for label, rc in gimps:
             if gimp_exported(read_text(host, rc) or ""):
-                gacts.append(_gimp_no_export(rc, host.display(rc), label))
+                gacts.append(_gimp_no_export(rc, host.display(rc), label)
+                             .unless(InUse("GIMP", names=GIMP_PROCESSES, held=(rc.parent,))))
                 if in_use(scan, rc.parent, *GIMP_PROCESSES) and not gblock:
                     gblock.append("Close GIMP first: it rewrites its settings as it exits.")
         steps.append(Step("GIMP: don't copy a photo's details into exported images",
@@ -637,18 +650,22 @@ def kde_recent_files(check, scan, outcome):
         if not x.entries:
             return []
         if x.kind == "kconfig":
-            return [ClearInFile(x.path, clear_kconfig_group(x.group), f"Clear {x.label}'s recent files ({x.entries})",
+            acts = [ClearInFile(x.path, clear_kconfig_group(x.group), f"Clear {x.label}'s recent files ({x.entries})",
                                 host.display(x.path), settings=True)]
-        if x.kind == "folder":
-            return [DeleteFiles(x.path, [f for f in children(x.path) if f.is_file()], f"{x.label}'s recent folders",
+        elif x.kind == "folder":
+            acts = [DeleteFiles(x.path, [f for f in children(x.path) if f.is_file()], f"{x.label}'s recent folders",
                                 host.display(x.path), prune=False)]
-        return [DeleteFiles(x.path.parent, [x.path], f"{x.label}'s recent files", host.display(x.path.parent), prune=False)]
+        else:
+            acts = [DeleteFiles(x.path.parent, [x.path], f"{x.label}'s recent files", host.display(x.path.parent),
+                                prune=False)]
+        return guarded(acts, InUse(x.app, names=(x.program,)))
 
     def stop(x) -> list:
         if x.kind == "kconfig":
             # the lock goes beneath the app's own file (kdedefaults), which it reads but never writes: in its own file,
             # the app dropped the marker as it rewrote the file, and the list came back (Gwenview, Okular 26.08)
-            return clear(x) + [KConfigLock(x.lock, host.display(x.lock), x.group, f"Stop {x.label} listing what you open")]
+            return clear(x) + [KConfigLock(x.lock, host.display(x.lock), x.group, f"Stop {x.label} listing what you open")
+                               .unless(InUse(x.app, names=(x.program,)))]
         acts = []
         if x.kind == "folder" and x.path.is_dir():
             acts.append(DeleteFiles(x.path, [f for f in children(x.path) if f.is_file()], f"{x.label}'s recent folders",
@@ -658,7 +675,7 @@ def kde_recent_files(check, scan, outcome):
         missing = [d for d in x.path.parents if not d.is_dir() and d.is_relative_to(host.home)]
         acts += [MakeDir(d, host.display(d), mode=0o700, phase=4) for d in reversed(missing)]
         acts.append(MakeDir(x.path, host.display(x.path), mode=0o500, phase=4))      # empty and read-only
-        return acts
+        return guarded(acts, InUse(x.app, names=(x.program,)))
 
     listed = [x for x in lists if x.entries]
     cleared = [a for x in listed for a in clear(x)]

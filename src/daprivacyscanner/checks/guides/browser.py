@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ...fix import DeleteFiles
+from ...fix import DeleteFiles, InUse
 from ...guide import Guide, Step
 from .._util import chromium_dirs, files_under, mozilla_cache, mozilla_profiles
 from ...helper import CLEAR_ON_EXIT
@@ -109,7 +109,10 @@ def disk_cache(check, scan, outcome):
         cache = mozilla_cache(scan.paths, p)
         files = files_under(cache)[0]
         if files:
-            cleanup.append(DeleteFiles(cache, files, f"{p.label} disk cache", scan.host.display(cache)))
+            # the plan's "Close Firefox first", asked again just before it is applied (it holds its cache open)
+            from ..fixes import _mozilla_procs
+            cleanup.append(DeleteFiles(cache, files, f"{p.label} disk cache", scan.host.display(cache)).unless(
+                InUse(p.app, names=_mozilla_procs(p.app), held=(cache,))))
     running = mozilla_open(scan, ("Firefox", "LibreWolf"))
     steps = [Step("Firefox", options=opts, done=not opts)]
     if cleanup:

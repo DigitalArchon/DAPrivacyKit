@@ -16,8 +16,9 @@ from typing import Callable
 
 from .. import ini
 from ..desktop import parse_gvariant
-from ..fix import (ClearCommand, ClearInFile, Command, CopyQCommand, CopyQTabSet, DeleteFiles, FixPlan, GSettingsSet,
-                   HashKnownHosts, KConfigSet, NmSet, PlasmaTraySet, RootChange, WriteFile, XfconfSet)
+from ..fix import (COPYQ_IN_USE, ClearCommand, ClearInFile, Command, CopyQCommand, CopyQTabSet, DeleteFiles, FixPlan,
+                   GSettingsSet, HashKnownHosts, InUse, KConfigSet, NmSet, PlasmaTraySet, RootChange, WriteFile, XfconfSet,
+                   guarded)
 from ..model import Outcome
 from . import Check, No, Scan
 from ._util import (children, chromium_dirs, chromium_in_use, files_under, holders, isdir, isfile, own_dir, processes,
@@ -493,19 +494,23 @@ def crashpad(check, scan, outcome):
     procs = processes(scan.host)
     flatpaks = None
     for c in crash_dumps(scan):
+        name = c.label.removesuffix(" (Electron)") if c.kind == "electron" else c.app
+        # what decides it is running now is asked again just before the plan is applied (fix.InUse)
         if c.kind == "chromium":
             busy = running(scan, *_browser_procs(c.app)) or chromium_in_use(c.root.parent) or holders(scan, c.root.parent)
+            use = InUse(name, names=_browser_procs(c.app), held=(c.root.parent,), locks=(c.root.parent / "SingletonLock",))
         elif c.kind == "mozilla":
             busy = c.app in mozilla_open(scan, (c.app,)) or holders(scan, c.root)
+            use = InUse(name, names=_mozilla_procs(c.app), held=(c.root,))
         else:
             if flatpaks is None:
                 flatpaks = _flatpak_running(scan)
             busy = (c.app in flatpaks if "." in c.app else _app_running(c.app, procs)) or holders(scan, c.root.parent)
-        name = c.label.removesuffix(" (Electron)") if c.kind == "electron" else c.app
+            use = _electron_in_use(name, c.app, c.root.parent)
         if busy:
             blockers.append(f"Close {name} first.")
             continue
-        a.append(DeleteFiles(c.root, c.files, f"{c.label} crash dumps", scan.host.display(c.root)))
+        a.append(DeleteFiles(c.root, c.files, f"{c.label} crash dumps", scan.host.display(c.root)).unless(use))
     blockers = list(dict.fromkeys(blockers))
     return FixPlan(check.id, "Delete browser and app crash dumps", a, blockers=blockers if not a else [],
                    side_effects=[f"Skipped: {b}" for b in blockers] if a and blockers else [])
@@ -551,7 +556,8 @@ def shader_cache(check, scan, outcome):
             continue
         for root, t in olds.items():
             files, _ = files_under(root)
-            a.append(DeleteFiles(root, files, f"{c.name}'s shader cache", host.display(root), remove_root=True))
+            a.append(DeleteFiles(root, files, f"{c.name}'s shader cache", host.display(root), remove_root=True)
+                     .unless(InUse(c.name, held=(c.own,))))
         if not mesa_on:
             continue
         if c.cache is None:
@@ -614,7 +620,7 @@ def start_script(check, scan, outcome):
             else:
                 files, _ = files_under(s.old_cache)
                 a.append(DeleteFiles(s.old_cache, files, f"{s.name}'s cache in yours", host.display(s.old_cache),
-                                     remove_root=True))
+                                     remove_root=True).unless(InUse(s.name, held=(s.old_cache, s.profile or s.old_cache))))
         home = "~/.tor-browser" if s.name == "Tor Browser" else "~/.mullvad-browser"
         effects += [f"{s.name} then keeps the files it makes in a home folder of its own, {home}, and saves downloads to "
                     f"{home}/Downloads unless you choose a folder in its settings, as with its makers' own package. Its "
@@ -729,6 +735,7 @@ def _klipper(scan: Scan, a: list, effects: list, blockers: list) -> None:
     if not k.on and not files:
         return
     applet = scan.kde.applet(KLIPPER_APPLET)
+    klipper_use = InUse("Klipper", names=("klipper",), held=(k.folder,))
     if not k.on:                                # already off: what it left
         users = in_use(scan, k.folder, "klipper")
         if users == ["plasmashell"]:
@@ -737,7 +744,7 @@ def _klipper(scan: Scan, a: list, effects: list, blockers: list) -> None:
         elif users:
             blockers.append(f"Close {', '.join(users)} first: it has Klipper's old history open.")
         else:
-            a += delete(scan, k.folder, "Klipper clipboard history")
+            a += guarded(delete(scan, k.folder, "Klipper clipboard history"), klipper_use)
         return
     a += kset(scan, "klipperrc", "General", "KeepClipboardContents", "false", default="true")
     if not k.plasma6 or not applet.trays:
@@ -753,7 +760,7 @@ def _klipper(scan: Scan, a: list, effects: list, blockers: list) -> None:
             effects.append("Klipper has its history file open, so the file is left for now: log out and back in, "
                            "then Fix… deletes it.")
         else:
-            a += delete(scan, k.folder, "Klipper clipboard history")
+            a += guarded(delete(scan, k.folder, "Klipper clipboard history"), klipper_use)
         return
     if applet.widget:
         blockers.append("Remove the Clipboard widget from your panel or desktop first (right-click it → Remove): "
@@ -768,7 +775,7 @@ def _klipper(scan: Scan, a: list, effects: list, blockers: list) -> None:
     if why:
         effects.append(why)
         if not in_use(scan, k.folder, "klipper"):
-            a += delete(scan, k.folder, "Klipper clipboard history")
+            a += guarded(delete(scan, k.folder, "Klipper clipboard history"), klipper_use)
         return
     if files:
         a.append(ClearCommand(clear, "Klipper deletes its history, with what was copied, while it still runs"))
@@ -810,9 +817,11 @@ def _copyq(scan: Scan, a: list, effects: list, blockers: list) -> None:
         if q.tab_bytes and (not q.others or not q.items):
             # with no other tab, every item file is this tab's; with other tabs, they may be theirs
             for f in q.tab_files:               # beside copyq.conf (to CopyQ 16) or in its data folder (17)
-                a.append(DeleteFiles(f.parent, [f], "CopyQ clipboard history", scan.host.display(f.parent)))
+                a.append(DeleteFiles(f.parent, [f], "CopyQ clipboard history", scan.host.display(f.parent))
+                         .unless(COPYQ_IN_USE(q.config / "copyq.conf")))
             if q.items and not q.others:
-                a.append(DeleteFiles(q.data / "items", q.items, "CopyQ's larger copied items", scan.host.display(q.data)))
+                a.append(DeleteFiles(q.data / "items", q.items, "CopyQ's larger copied items", scan.host.display(q.data))
+                         .unless(COPYQ_IN_USE(q.config / "copyq.conf")))
         elif q.tab_bytes:
             effects.append(f'CopyQ deletes its old history of "{q.tab}" itself the next time it starts, and the larger '
                            "items in it when it quits: they share a folder with your other tabs' items, so the app "
@@ -874,7 +883,8 @@ def clipboard(check, scan, outcome):
         if users:
             blockers.append(f"Close {', '.join(users)} first: it keeps {label}'s history open.")
             continue
-        a.append(DeleteFiles(root, files, f"{label} clipboard history", scan.host.display(root)))
+        a.append(DeleteFiles(root, files, f"{label} clipboard history", scan.host.display(root)).unless(
+            InUse(label, names=() if stop or comes_back is None else procs, held=(root,))))
         if comes_back:
             effects.append(comes_back)
     if files_under(p.data_home / "pano@elhan.io", pattern=CLIPBOARD_FILES)[0]:
@@ -1004,42 +1014,46 @@ def media_players(check, scan, outcome):
         effects.append("Skipped mpv: close it first.")
     else:
         for d in mpv_dirs:
-            a += delete(scan, d, "mpv resume points")
+            a += guarded(delete(scan, d, "mpv resume points"), InUse("mpv", names=("mpv",), held=tuple(mpv_dirs)))
     vlc_dirs = [loc.path for loc in scan.paths.config("vlc", flatpak=["org.videolan.VLC"], snap=["vlc"])]
     if running(scan, "vlc") or any(holders(scan, d) for d in vlc_dirs):
         effects.append("Skipped VLC: close it first.")
     else:
+        vlc = InUse("VLC", names=("vlc",), held=tuple(vlc_dirs))
         for loc in scan.paths.config("vlc", flatpak=["org.videolan.VLC"], snap=["vlc"]):
             qt = loc.path / "vlc-qt-interface.conf"
             text = read_text(scan.host, qt) or ""
             if _clear_vlc_recents(text) != text:
                 a.append(ClearInFile(qt, _clear_vlc_recents, "Empty VLC's list of recent media", scan.host.display(qt),
-                                     settings=True))
+                                     settings=True).unless(vlc))
             vlcrc = loc.path / "vlcrc"
             if isfile(vlcrc) and not re.search(r"^qt-recentplay=0", read_text(scan.host, vlcrc) or "", re.M):
                 a.append(WriteFile(vlcrc, lambda old: re.sub(r"^#?\s*qt-recentplay=.*$", "qt-recentplay=0", old or "", flags=re.M)
                                    if re.search(r"^#?\s*qt-recentplay=", old or "", re.M) else (old or "") + "\n[qt]\nqt-recentplay=0\n",
-                                   "Stop VLC from keeping recent media", scan.host.display(vlcrc)))
+                                   "Stop VLC from keeping recent media", scan.host.display(vlcrc)).unless(vlc))
     for loc in scan.paths.config("smplayer", flatpak=["info.smplayer.SMPlayer"]):
         if in_use(scan, loc.path, "smplayer"):
             effects.append("Skipped SMPlayer: close it first.")
             continue
         ini_file = loc.path / "smplayer.ini"
         text = read_text(scan.host, ini_file) or ""
+        smplayer = InUse("SMPlayer", names=("smplayer",), held=(loc.path,))
         if _clear_smplayer_recents(text) != text:          # it rewrites the file as it quits: only while closed
             a.append(ClearInFile(ini_file, _clear_smplayer_recents, "Empty SMPlayer's list of recent files",
-                                 scan.host.display(ini_file), settings=True))
-        a += delete(scan, loc.path / "file_settings", "SMPlayer per-file settings")
+                                 scan.host.display(ini_file), settings=True).unless(smplayer))
+        a += guarded(delete(scan, loc.path / "file_settings", "SMPlayer per-file settings"), smplayer)
     from .apps import CELLULOID_FLATPAK, HARUNA_NEVER, haruna
     for loc in scan.paths.config("celluloid/watch_later", flatpak=[CELLULOID_FLATPAK]):
         if in_use(scan, loc.path, "celluloid"):
             effects.append("Skipped Celluloid: close it first.")
             continue
-        a += delete(scan, loc.path, "Celluloid resume points")
+        a += guarded(delete(scan, loc.path, "Celluloid resume points"),
+                     InUse("Celluloid", names=("celluloid",), held=(loc.path,)))
     for h in haruna(scan):
         if running(scan, "haruna") or holders(scan, h.db.parent):
             effects.append("Skipped Haruna: close it first.")
             continue
+        start = len(a)
         if (h.recent or h.positions) and h.only_history:
             a += delete(scan, h.db.parent, "Haruna's database of recent files and resume points (it holds nothing "
                         "else; Haruna makes it again)", re.compile(r"^haruna\.db(-wal|-shm|-journal)?$"))
@@ -1058,6 +1072,7 @@ def media_players(check, scan, outcome):
                 effects.append("From now on Haruna keeps no recent files list and no resume points (only for videos "
                                "longer than 9999 minutes, the most its settings offer). Reverting turns them back on. "
                                "It still notes the last file it played: no setting stops that (tested with Haruna 1.8).")
+        guarded(a[start:], InUse("Haruna", names=("haruna",), held=(h.db.parent,)))
     return FixPlan(check.id, "Clear media player history", a, side_effects=effects)
 
 
@@ -1090,7 +1105,8 @@ def pdf_readers(check, scan, outcome):
             blockers.append("Close Okular first.")
         else:
             for loc in locs:
-                a += delete(scan, loc.path, "Okular document history")
+                a += guarded(delete(scan, loc.path, "Okular document history"),
+                             InUse("Okular", names=("okular",), held=tuple(x.path for x in locs)))
             effects.append("Okular forgets where you stopped reading each document. Its Open Recent list is cleared "
                            "with the other KDE apps' lists (app.kde_recent_files).")
     zfiles, zdocs, marks = zathura_history(scan)
@@ -1103,7 +1119,8 @@ def pdf_readers(check, scan, outcome):
                                scan.host.display(f) for f in zfiles) + "). `set database \"null\"` in zathurarc stops "
                            "it keeping anything, bookmarks included.")
         else:
-            a += [DeleteFiles(f.parent, [f], "Zathura's document history", scan.host.display(f.parent)) for f in zfiles]
+            a += [DeleteFiles(f.parent, [f], "Zathura's document history", scan.host.display(f.parent))
+                  .unless(InUse("Zathura", names=("zathura",))) for f in zfiles]
             effects.append("Zathura forgets the documents you opened and the page each was left at. "
                            "`set database \"null\"` in zathurarc stops it keeping them.")
     return FixPlan(check.id, "Clear PDF readers' document history", a,
@@ -1139,9 +1156,24 @@ def electron_caches(check, scan, outcome):
             effects.append(f"Skipped {d.name}: it is running. Close it and run the fix again.")
             continue
         for c in caches:
-            a += delete(scan, c, f"{d.name} cache")
+            a += guarded(delete(scan, c, f"{d.name} cache"), _electron_in_use(d.name, owner, d))
     return FixPlan(check.id, "Clear Electron app caches", a, side_effects=effects,
                    blockers=[] if a or not effects else ["Every app with a cache is running; close them first."])
+
+
+def _electron_in_use(name: str, owner: str, folder: Path) -> InUse:
+    """An Electron app (or a Flatpak app) as the plan found it closed: its Flatpak id running, or a process named like
+    it (any account's, as _app_running is asked), or one of the user's holding a file in its folder."""
+    if "." in owner:
+        return InUse(name, flatpaks=(owner,), held=(folder,))
+    return InUse(name, held=(folder,), test=lambda pc: _app_running(owner, pc.processes(own=False)))
+
+
+def _mozilla_procs(app: str) -> tuple[str, ...]:
+    """The processes a Firefox-family program runs as (guides.mozilla_open's names), and GeckoMain, which counts as any
+    of them."""
+    from .guides import MOZILLA_PROGRAMS
+    return tuple(p for p, label in MOZILLA_PROGRAMS.items() if label == app) + ("GeckoMain",)
 
 
 def _flatpak_running(scan: Scan) -> set[str]:
@@ -1160,5 +1192,5 @@ def flatpak_caches(check, scan, outcome):
         if app in busy or holders(scan, root):
             effects.append(f"Skipped {app}: it is running.")
             continue
-        a += delete(scan, root, f"{app} cache")
+        a += guarded(delete(scan, root, f"{app} cache"), InUse(app, flatpaks=(app,), held=(root,)))
     return FixPlan(check.id, "Clear Flatpak app caches", a, side_effects=effects)
