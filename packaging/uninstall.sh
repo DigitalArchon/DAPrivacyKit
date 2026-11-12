@@ -209,7 +209,7 @@ fi
 if [ "${#ramdisks[@]}" -gt 0 ]; then
     if confirm "  Put them back as they were?"; then
         for d in "${ramdisks[@]}"; do
-            how="$(ramdisk_left "$d" do)" && [ -n "$how" ] && say "  $how" || say "  $d couldn't be put back."
+            if how="$(ramdisk_left "$d" "do")" && [ -n "$how" ]; then say "  $how"; else say "  $d couldn't be put back."; fi
         done
     fi
 else

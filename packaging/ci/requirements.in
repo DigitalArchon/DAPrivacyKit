@@ -1,0 +1,13 @@
+# The local CI's own tools and the test runner (packaging/check.sh), locked with hashes in requirements.lock:
+#   uv pip compile --universal --python-version 3.11 --generate-hashes --exclude-newer 2026-10-29T00:00:00Z \
+#       packaging/ci/requirements.in -o packaging/ci/requirements.lock
+# (packaging/check.sh --lock does it.) Installed beside packaging/appimage/requirements.lock, the AppImage's runtime
+# packages, into a venv per Python version under .ci/. Change a version deliberately, as with the AppImage's pins.
+ruff==0.17.3
+mypy==2.4.1
+coverage==7.17.0
+shellcheck-py==0.11.0.1
+types-PyYAML==6.0.12.20260906
+pytest==9.1.1
+httpx==0.28.1
+hypothesis==6.170.13

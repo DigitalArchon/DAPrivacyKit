@@ -1,0 +1,20 @@
+# ruff, as packaging/check.sh runs it (make check). Rules chosen for bugs, not style: pyflakes, bugbear, pylint's
+# errors, text files opened without an encoding (PLW1514: the helper runs as root under pkexec in whatever locale it
+# is given), subprocess.run without check (PLW1510), and a few security rules (eval, exec, yaml.load, shell=True).
+# Programs started without a timeout are packaging/ci/check_timeouts.py's (ruff has no such rule).
+# What these found when they came in is counted in packaging/ci/ruff-baseline.txt, per file and rule, to burn down:
+# packaging/ci/ratchet.py fails a run only on more than that. Plain `ruff check` shows everything, baseline included.
+target-version = "py311"
+line-length = 120
+
+[lint]
+preview = true                       # PLW1514 is a preview rule; only the preview rules named here are on
+explicit-preview-rules = true
+select = ["E9", "E711", "E712", "E721", "E722", "F", "W605", "B", "PLE", "PLW0120", "PLW0711", "PLW1508", "PLW1509",
+          "PLW1510", "PLW1514", "S102", "S307", "S506", "S602", "S604", "S605", "RUF006", "ASYNC", "EXE", "T10"]
+ignore = ["B905"]                    # zip() without strict=: style here
+
+[lint.per-file-ignores]
+# pytest fixtures imported into a test module are redefined by the tests that take them; tests run in a known
+# environment, where the locale's encoding and an unchecked run are what the test means
+"tests/*" = ["F811", "PLW1514", "PLW1510", "S602"]

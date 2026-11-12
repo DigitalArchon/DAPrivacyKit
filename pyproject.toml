@@ -35,3 +35,45 @@ daprivacyscanner = ["web/*.html", "web/*.js", "web/*.css", "web/*.svg", "web/*.j
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+
+# ------------------------------------------------------------------ the local CI (packaging/check.sh, make check)
+
+[tool.mypy]
+# Not strict over the package to start, stricter on the modules whose mistakes cost most (below). What mypy found
+# when it came in is counted in packaging/ci/mypy-baseline.txt, per file and error code, to burn down:
+# packaging/ci/ratchet.py fails a run only on more than that.
+python_version = "3.11"
+files = ["src/daprivacyscanner"]
+mypy_path = "src"
+cache_dir = ".ci/mypy-cache"
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+show_error_codes = true
+
+[[tool.mypy.overrides]]
+module = ["gi", "gi.*", "webview", "webview.*", "daprivacyscanner._built"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# root's own code, and what decides whether a file is called verified or a packet is read right
+module = ["daprivacyscanner.helper", "daprivacyscanner.privileged", "daprivacyscanner.tools.verify",
+          "daprivacyscanner.tools.keys", "daprivacyscanner.tools.packages", "daprivacyscanner.tools.pcap",
+          "daprivacyscanner.tools.sniff"]
+check_untyped_defs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+warn_return_any = true
+strict_equality = true
+warn_unreachable = true
+
+[tool.coverage.run]
+branch = true
+source = ["daprivacyscanner"]          # every module, helper.py and the scripts run by the host's python3 included
+parallel = true
+patch = ["subprocess"]                 # what the tests start with sys.executable is measured too
+data_file = ".ci/coverage/data"
+
+[tool.coverage.report]
+skip_empty = true
+precision = 1

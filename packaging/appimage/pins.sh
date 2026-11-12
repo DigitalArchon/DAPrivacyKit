@@ -1,3 +1,4 @@
+# shellcheck shell=bash disable=SC2034
 # Everything the AppImage build downloads, pinned. Change these deliberately: a new value means
 # a different AppImage. (Sourced by build-appimage.sh on the host and build.sh in the container.)
 

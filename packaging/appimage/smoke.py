@@ -1,11 +1,15 @@
-"""Smoke test for an extracted AppImage, run by the AppImage's own Python inside a distro
-container with a virtual display (see packaging/test-appimage.sh).
+"""Smoke test for an AppImage, run by the AppImage's own Python inside a distro container with a
+virtual display (see packaging/test-appimage.sh).
 
-    smoke.py <AppDir> <out-dir> <name> fallback   WebKitGTK absent: a terminal scan; the app refuses to open
-                                                  without its window and says why; with --browser it opens in
+    smoke.py <AppDir> <out-dir> <name> fallback [PROGRAM]   WebKitGTK absent: a terminal scan; the app refuses to
+                                                  open without its window and says why; with --browser it opens in
                                                   the browser, says what that exposes, and scans through the API
-    smoke.py <AppDir> <out-dir> <name> full       WebKitGTK present: the app window, and a screenshot
-                                                  of the page rendered by the host's WebKitGTK"""
+    smoke.py <AppDir> <out-dir> <name> full [PROGRAM]       WebKitGTK present: the app window, and a screenshot
+                                                  of the page rendered by the host's WebKitGTK
+
+PROGRAM is what is run as the app: <AppDir>/AppRun of an extracted AppImage (the default), or the AppImage file
+itself, which its runtime mounts with FUSE each time (test-appimage.sh --mounted; <AppDir> is then a mount of it
+made beforehand, for the Python running this)."""
 
 import html
 import json
@@ -17,6 +21,7 @@ import time
 import urllib.request
 
 APPDIR, OUT, NAME, MODE = sys.argv[1:5]
+APP = sys.argv[5:6] or [f"{APPDIR}/AppRun"]
 ENV = {**os.environ, "XDG_CONFIG_HOME": "/tmp/smoke/config", "XDG_DATA_HOME": "/tmp/smoke/data",
        "XDG_STATE_HOME": "/tmp/smoke/state", "XDG_CACHE_HOME": "/tmp/smoke/cache"}
 PORT = 8790
@@ -31,7 +36,7 @@ def check(ok: bool, what: str) -> None:
 def start(*args: str) -> tuple[subprocess.Popen, str, str, str]:
     """Run the app; once it prints its one-time link, open it as a browser would: the page that comes back
     carries the session token in its body (data-token), which every API call then sends as X-Token."""
-    proc = subprocess.Popen([f"{APPDIR}/AppRun", "--port", str(PORT), *args], env=ENV, text=True,
+    proc = subprocess.Popen([*APP, "--port", str(PORT), *args], env=ENV, text=True,
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     log = []
     for line in proc.stdout:
@@ -59,14 +64,14 @@ def errors_of(report: dict) -> list[str]:
 
 if MODE == "fallback":
     # a terminal scan: the catalogue, every check and the report, with no window at all
-    r = subprocess.run([f"{APPDIR}/AppRun", "--scan", "--json"], env=ENV, capture_output=True, text=True, timeout=300)
+    r = subprocess.run([*APP, "--scan", "--json"], env=ENV, capture_output=True, text=True, timeout=300, check=False)
     report = json.loads(r.stdout)["report"] if r.stdout.startswith("{") else None
     check(r.returncode in (0, 1) and report is not None and len(report["results"]) > 80,
           f"{NAME}: a terminal scan runs every check" + ("" if report else f"\n  | {r.stderr[-800:]}"))
     errs = errors_of(report)
     check(not errs, f"{NAME}: no check fails with an error" + "".join(f"\n  | {e}" for e in errs))
     # without its window it stops and says why: never the browser unasked
-    r = subprocess.run([f"{APPDIR}/AppRun", "--port", str(PORT)], env=ENV, capture_output=True, text=True, timeout=60)
+    r = subprocess.run([*APP, "--port", str(PORT)], env=ENV, capture_output=True, text=True, timeout=60, check=False)
     check(r.returncode == 2 and "WebKitGTK" in r.stderr and "--browser" in r.stderr and "http://" not in r.stdout,
           f"{NAME}: without WebKitGTK it says why and doesn't open the browser by itself")
     # webbrowser honours $BROWSER: "echo" stands in for opening a browser
@@ -85,7 +90,7 @@ if MODE == "fallback":
     sys.exit(0)
 
 # --- full: the app window first
-win = subprocess.Popen([f"{APPDIR}/AppRun"], env=ENV, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+win = subprocess.Popen(APP, env=ENV, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
 time.sleep(8)
 alive = win.poll() is None
 win.terminate()
