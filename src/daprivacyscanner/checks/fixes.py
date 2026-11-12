@@ -453,12 +453,8 @@ def kde_feedback(check, scan, outcome):
                    side_effects=["System Settings → Security & Privacy → User Feedback shows Disabled."])
 
 
-@fix("tel.countme", needs_root=True)
-def countme(check, scan, outcome):
-    return FixPlan(check.id, "Turn off DNF's countme", [
-        RootChange("edit_config", {"target": "countme"}, "Set countme=0 wherever a repository file in "
-                                                          "/etc/yum.repos.d or /etc/dnf/dnf.conf has countme=1")],
-        side_effects=["Fedora's anonymous count of active systems no longer includes this machine."])
+# tel.countme is a guide (checks/guides/telemetry.py): DNF5 gets an override file of the app's own, DNF4 the edit of the
+# repository files, which isn't an Easy fix there
 
 
 @fix("kern.dmesg_restrict", needs_root=True)

@@ -968,6 +968,11 @@ DROPINS = {
                    _keys(UMask="0027|0077"), ["daemon-reload"]),
     # GeoClue 2.7+ reads conf.d after geoclue.conf, later files winning: its online Wi-Fi lookup off
     "geoclue": ("/etc/geoclue/conf.d/90-daprivacyscanner.conf", "ini", "wifi", _keys(enable="false"), []),
+    # DNF5 adjusts every repository's settings with the override files after reading the repository files, a section
+    # name being a glob of repository ids (dnf5-config-manager(8): "Override files also support globs"; the last file
+    # read wins): countme off for every repository, those added later too, with the repository files left as their
+    # packages installed them (rpm keeps a package's new version of an edited one beside it, as .rpmnew)
+    "dnf-countme": ("/etc/dnf/repos.override.d/60-daprivacyscanner-countme.repo", "ini", "*", _keys(countme="0"), []),
 }
 ZRAM_GENERATOR = "/usr/lib/systemd/system-generators/zram-generator"
 DROPIN_HEADER = "# Written by DA Privacy Kit. Revert the fix in the app to remove it.\n"
@@ -1060,6 +1065,8 @@ def write_dropin(args: dict) -> dict:
             raise Refused("sshd_config doesn't read /etc/ssh/sshd_config.d, so a drop-in would have no effect")
     if name == "geoclue" and settings is not None and not os.path.isdir(_p("/etc/geoclue/conf.d")):
         raise Refused("this GeoClue doesn't read /etc/geoclue/conf.d, so a drop-in would have no effect")
+    if name == "dnf-countme" and settings is not None and not os.path.exists(_p("/usr/bin/dnf5")):
+        raise Refused("DNF5 isn't installed: only it reads /etc/dnf/repos.override.d, so the file would have no effect")
     if name == "zram" and settings is not None:
         if not os.path.exists(_p(ZRAM_GENERATOR)):
             raise Refused("zram-generator isn't installed")

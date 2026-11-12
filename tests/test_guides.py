@@ -682,9 +682,7 @@ def test_autologin_off_and_back(cat, tmp_path, system, monkeypatch):
 
 def test_root_step_without_the_helper_fails_cleanly(cat, tmp_path):
     host = make_host(tmp_path, files={"/etc/yum.repos.d/f.repo": "[f]\ncountme=1\n"})
-    check = load_all()["tel.countme"](cat["tel.countme"])
-    scan = make_scan(host)
-    plan = check.plan_fix(scan, check.detect(scan))
+    plan = options(build(cat, host, "tel.countme"))["Set countme=0 in the repository files"]
     res = apply_plan(plan, host, UndoLog(host.home / "log"))
     assert not res.ok and "administrator access" in res.error
 

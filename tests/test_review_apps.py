@@ -528,10 +528,9 @@ def test_mint_sources_go_through_software_sources(cat, tmp_path):
 
 
 def test_countme_on_is_rewritten_as_the_check_reads_it(cat, tmp_path, system, monkeypatch):
-    from test_fixes import run_fix
     host = rooted(make_host(tmp_path, files={"/etc/yum.repos.d/fedora.repo": "[fedora]\nenabled=1\ncountme=on\n"}),
                   system, monkeypatch)
-    plan, res, log = run_fix(cat, host, "tel.countme")
+    log, res = apply(host, options(build(cat, host, "tel.countme"))["Set countme=0 in the repository files"])
     assert res.ok and detect(cat, "tel.countme", make_scan(host)).status is Status.PASS
 
 

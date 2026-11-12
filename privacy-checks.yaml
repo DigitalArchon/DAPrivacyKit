@@ -1845,14 +1845,19 @@ checks:
     category: telemetry
     severity: 1
     scope: system
-    tier: auto
+    tier: guided
     applies_to: [Fedora, RHEL family]
     detect:
       - 'grep countme /etc/dnf/dnf.conf /etc/yum.repos.d/*.repo'
-    fix: Set countme=0 (anonymous weekly counter; informational).
+      - 'DNF5: then the .repo files of /usr/share/dnf5/repos.override.d and /etc/dnf/repos.override.d (sorted by name, /etc masking the same name), each section a glob of repository ids'
+    fix: >
+      DNF5: /etc/dnf/repos.override.d/60-daprivacyscanner-countme.repo with [*] countme=0 (the helper's dnf-countme
+      drop-in; repository files untouched, later repositories covered, removed on revert). DNF4: countme=0 in the
+      repository files (edit_config countme), which makes rpm save their packages' new versions as .rpmnew: no Easy fix there.
     remedy: >
-      Fix… stops the anonymous weekly count Fedora keeps for its statistics.
-    easy: true
+      Guide… stops the anonymous weekly count Fedora keeps for its statistics.
+    easy:
+      option: "off"
 
   - id: tel.kde_feedback
     title: KDE user feedback (telemetry) enabled

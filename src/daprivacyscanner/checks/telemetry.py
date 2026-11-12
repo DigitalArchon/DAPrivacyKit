@@ -398,6 +398,20 @@ class HttpRepos(Check):
         return passed("Package repositories are used over HTTPS.", Evidence.count("Repository files", len(files)))
 
 
+DNF5_OVERRIDE_DIRS = ("/usr/share/dnf5/repos.override.d", "/etc/dnf/repos.override.d")
+
+
+def dnf5_repo_overrides(host) -> list[tuple[str, dict[str, str]]]:
+    """DNF5's repository overrides, in the order it applies them after the repository files (dnf5-config-manager(8)): the
+    .repo files of both folders sorted by name, one in /etc masking the distribution's of the same name; each section a
+    glob of repository ids, with the settings it gives them."""
+    files = {}
+    for d in DNF5_OVERRIDE_DIRS:
+        files.update({f.name: f for f in children(host.sys_path(d)) if f.suffix == ".repo"})
+    return [(group[0], dict(keys)) for name in sorted(files)
+            for group, keys in ini.parse(read_text(host, files[name]) or "").items() if group]
+
+
 @register
 class Countme(Check):
     id = "tel.countme"
@@ -407,12 +421,21 @@ class Countme(Check):
         repos = [f for f in children(host.sys_path("/etc/yum.repos.d")) if f.suffix == ".repo"]
         if not repos:
             return absent("DNF isn't used on this system.")
+        from .kernel import is_dnf5
+        overrides = dnf5_repo_overrides(host) if is_dnf5(host) else []
         counting = []
         for f in repos:
             for name, keys in ini.parse(read_text(host, f) or "").items():
-                if name and ini.truthy(keys.get("enabled", "1")) and ini.truthy(keys.get("countme")):
+                if not name:
+                    continue
+                keys = dict(keys)
+                for pattern, changed in overrides:                  # applied in order: the last one wins
+                    if fnmatch.fnmatchcase(name[0], pattern):
+                        keys.update(changed)
+                if ini.truthy(keys.get("enabled", "1")) and ini.truthy(keys.get("countme")):
                     counting.append(name[0])
-        # VERIFY: whether [main] countme=0 in dnf.conf overrides repo files on DNF4 and DNF5
+        # [main] countme in dnf.conf is only the default for repositories that don't set it (dnf5.conf(5), "Options for
+        # both [main] and repo"), and Fedora's repository files set countme=1 themselves
         if counting:
             return failed(f"DNF's weekly anonymous counter is on for {len(counting)} repositor"
                           f"{'ies' if len(counting) > 1 else 'y'}.", *(Evidence.val("countme=1", r) for r in counting[:10]))

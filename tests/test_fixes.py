@@ -44,7 +44,7 @@ def test_every_auto_check_has_a_fix(cat):
     auto = {s.id for s in cat if s.tier.value == "auto"}
     assert auto == set(FIXES)
     assert all(load_all()[i].supports_fix for i in FIXES)
-    assert {i for i in FIXES if load_all()[i].fix_needs_root} == {"tel.countme", "kern.dmesg_restrict"}
+    assert {i for i in FIXES if load_all()[i].fix_needs_root} == {"kern.dmesg_restrict"}
 
 
 # ------------------------------------------------------------------ settings fixes (apply, then revert)

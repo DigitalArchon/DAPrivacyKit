@@ -86,3 +86,53 @@ def browser_telemetry(check, scan, outcome):
                                "off (in Brave also \"Privacy-preserving product analytics\" and \"Automatically send "
                                "daily usage ping\").", chromium, not flagged))
     return Guide(check.id, "Turn off browser telemetry", "", steps)
+
+
+COUNTME_OVERRIDE = "/etc/dnf/repos.override.d/60-daprivacyscanner-countme.repo"
+RPMNEW_COST = ("DNF4 has no override folder, so the repository files themselves are changed. rpm then counts them as "
+               "edited: when a package brings a new version of one (fedora-repos at an upgrade, epel-release), rpm keeps "
+               "yours and saves its new one beside it as .rpmnew, so changes to that repository's settings don't arrive "
+               "until you merge them (sudo rpmconf -a, or by hand).")
+
+
+@guide("tel.countme", keys=("off",))
+def countme(check, scan, outcome):
+    """DNF5: one override file of the app's own ([*] countme=0, the helper's dnf-countme drop-in), read after the
+    repository files, which stay as their packages installed them, and covering repositories added later. DNF4 has no
+    overrides: the repository files are edited, at the cost of .rpmnew files at their packages' updates, so it is no
+    Easy fix there (its option has no key)."""
+    from ...helper import dropin_content
+    from .._util import read_text
+    from ..kernel import is_dnf5
+    counting = [str(e.value) for e in outcome.evidence if e.label == "countme=1"]
+    effects = ["Fedora's anonymous count of active systems no longer includes this machine."]
+    title = "Turn off DNF's countme"
+    if not counting:
+        return Guide(check.id, title, "", [Step("Turn off countme", "countme is off for every repository.", done=True)])
+    if is_dnf5(scan.host):
+        mine = read_text(scan.host, scan.host.sys_path(COUNTME_OVERRIDE)) == dropin_content(
+            "dnf-countme", {"countme": "0"}).decode()
+        if mine:
+            # an override file read later wins over the app's (dnf config-manager setopt writes 99-config_manager.repo)
+            step = Step("Turn off countme", f"The app's override file, {COUNTME_OVERRIDE}, turns countme off for every "
+                        "repository, but an override file DNF5 reads after it turns it on again for "
+                        f"{', '.join(counting)}: dnf config-manager's own (99-config_manager.repo) takes it out.",
+                        commands=["sudo dnf config-manager unsetopt " + " ".join(f"{r}.countme" for r in counting)])
+        else:
+            step = Step("Turn off countme", "DNF5 adjusts the repositories' settings with the files in "
+                        "/etc/dnf/repos.override.d after reading the repository files: one file of the app's own turns "
+                        "countme off for every repository.", options=[option(
+                            check, "Turn off countme for every repository",
+                            [RootChange("write_dropin", {"name": "dnf-countme", "settings": {"countme": "0"}},
+                                        f"Write {COUNTME_OVERRIDE} with [*] countme=0")], recommended=True, key="off",
+                            side_effects=effects + ["The repository files stay as their packages installed them, so "
+                                                    "their updates arrive as usual; repositories added later are covered "
+                                                    "too. Reverting removes the file."])])
+    else:
+        step = Step("Turn off countme", "DNF4 reads countme from each repository's file.", options=[option(
+            check, "Set countme=0 in the repository files",
+            [RootChange("edit_config", {"target": "countme"}, "Set countme=0 wherever a repository file in "
+                                                              "/etc/yum.repos.d or /etc/dnf/dnf.conf has countme=1")],
+            side_effects=effects + [RPMNEW_COST])])
+    return Guide(check.id, title, "DNF adds a counter to one request a week for each repository that has countme on, "
+                 "so Fedora can count the systems in use without identifying them.", [step])

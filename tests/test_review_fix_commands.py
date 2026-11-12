@@ -7,10 +7,13 @@ import subprocess
 import pytest
 
 from daprivacyscanner.checks.guides import append_line
-from daprivacyscanner.model import Status
+from daprivacyscanner.context import ContextValue
+from daprivacyscanner.model import Evidence, Status
+from daprivacyscanner.runner import Runner
+from daprivacyscanner.undo import UndoLog
 
-from conftest import make_host, make_scan
-from test_guides import _advice
+from conftest import detect, make_host, make_scan
+from test_guides import _advice, apply, build, options, revert, rooted, system  # noqa: F401 - system is a fixture
 
 
 def _run(cmd: str, path, tmp_path) -> None:
@@ -123,3 +126,113 @@ def test_tpm_reenrol_shows_the_old_binding_first(cat, tmp_path):
     dev = step.commands[0].split()[3]
     assert step.commands[:2] == [f"sudo cryptsetup luksDump {dev} | grep -E 'tpm2-(hash-pcrs|pubkey-pcrs|pcrlock)'",
                                  f"sudo systemd-cryptenroll --wipe-slot=tpm2 --tpm2-device=auto --tpm2-with-pin=yes {dev}"]
+
+
+# ------------------------------------------------------------------ DNF's countme
+
+REPO = "[fedora]\nname=Fedora\nenabled=1\ncountme=1\n"
+OVERRIDE = "etc/dnf/repos.override.d/60-daprivacyscanner-countme.repo"
+
+
+def _dnf5(host):
+    host.runner.installed.add("dnf5")
+    host.sys_path("/usr/bin").mkdir(parents=True, exist_ok=True)
+    host.sys_path("/usr/bin/dnf5").write_text("")
+    return host
+
+
+def test_countme_with_dnf5_is_an_override_file_of_the_apps_own(cat, tmp_path, system, monkeypatch):
+    """Editing the repository files made rpm save fedora-repos' new versions as .rpmnew: DNF5 reads an override file
+    after them, and the repository files stay as they were."""
+    host = _dnf5(rooted(make_host(tmp_path, files={"/etc/yum.repos.d/fedora.repo": REPO}), system, monkeypatch))
+    g = build(cat, host, "tel.countme")
+    [opt] = [o for s in g.steps for o in s.options]
+    assert opt.key == "off" and opt.recommended
+    log, res = apply(host, opt.plan)
+    assert (host.root / OVERRIDE).read_text().endswith("[*]\ncountme=0\n")
+    assert (host.root / "etc/yum.repos.d/fedora.repo").read_text() == REPO
+    assert detect(cat, "tel.countme", make_scan(host)).status is Status.PASS
+    assert UndoLog.needs_root(log.get(res.entry_id))
+    revert(host, log, res)
+    assert not (host.root / OVERRIDE).exists() and not (host.root / "etc/dnf/repos.override.d").exists()
+    assert detect(cat, "tel.countme", make_scan(host)).status is Status.FAIL
+
+
+def test_countme_easy_only_with_dnf5(cat, tmp_path):
+    """DNF4 has no overrides: the edit of the repository files, with its .rpmnew cost, stays in the guide, not Easy."""
+    host = make_host(tmp_path / "4", files={"/etc/yum.repos.d/fedora.repo": REPO})
+    assert [r.id for r, _ in Runner(cat, host).plan_easy(["tel.countme"])] == []
+    assert not Runner(cat, host).run_check(Runner(cat, host).registry["tel.countme"](cat["tel.countme"]),
+                                           make_scan(host)).easy
+    [opt] = [o for s in build(cat, host, "tel.countme").steps for o in s.options]
+    assert not opt.key and any(".rpmnew" in e for e in opt.plan.side_effects)
+    host = _dnf5(make_host(tmp_path / "5", files={"/etc/yum.repos.d/fedora.repo": REPO}))
+    [(result, [plan])] = Runner(cat, host).plan_easy(["tel.countme"])
+    assert result.easy and plan.actions[0].args == {"name": "dnf-countme", "settings": {"countme": "0"}}
+
+
+def test_countme_reads_dnf5s_overrides_in_order(cat, tmp_path):
+    """Sorted by name, /etc masking /usr/share's file of the same name, sections being globs of repository ids."""
+    host = _dnf5(make_host(tmp_path, files={
+        "/etc/yum.repos.d/fedora.repo": REPO + "\n[updates]\nenabled=1\ncountme=1\n",
+        "/usr/share/dnf5/repos.override.d/50-distro.repo": "[fed*]\ncountme=0\n",
+        "/etc/dnf/repos.override.d/99-config_manager.repo": "[updates]\ncountme=0\n"}))
+    assert detect(cat, "tel.countme", make_scan(host)).status is Status.PASS
+    # a file in /etc of the same name masks the distribution's
+    host.sys_path("/etc/dnf/repos.override.d/50-distro.repo").write_text("[other]\ncountme=0\n")
+    o = detect(cat, "tel.countme", make_scan(host))
+    assert o.status is Status.FAIL and [e.value for e in o.evidence] == ["fedora"]
+    # DNF4 reads no overrides
+    host.runner.installed.discard("dnf5")
+    assert detect(cat, "tel.countme", make_scan(host)).status is Status.FAIL
+
+
+def test_countme_turned_on_again_by_a_later_override_is_said(cat, tmp_path):
+    from daprivacyscanner.helper import dropin_content
+    host = _dnf5(make_host(tmp_path, files={
+        "/etc/yum.repos.d/fedora.repo": REPO, "/" + OVERRIDE: dropin_content("dnf-countme", {"countme": "0"}).decode(),
+        "/etc/dnf/repos.override.d/99-config_manager.repo": "[fedora]\ncountme=1\n"}))
+    step = build(cat, host, "tel.countme").steps[0]
+    assert not step.options and step.commands == ["sudo dnf config-manager unsetopt fedora.countme"]
+    assert [r.id for r, _ in Runner(cat, host).plan_easy(["tel.countme"])] == []
+
+
+def test_the_helper_writes_the_override_only_for_dnf5(tmp_path, monkeypatch):
+    from daprivacyscanner import helper
+    monkeypatch.setattr(helper, "ROOT", str(tmp_path))
+    with pytest.raises(helper.Refused, match="DNF5 isn't installed"):
+        helper.write_dropin({"name": "dnf-countme", "settings": {"countme": "0"}})
+    with pytest.raises(helper.Refused, match="isn't allowed"):
+        helper.write_dropin({"name": "dnf-countme", "settings": {"countme": "1"}})
+
+
+# ------------------------------------------------------------------ automatic login
+
+def _autologin_guide(cat, host, user="alice"):
+    av = ContextValue("autologin", True, [Evidence.val("LightDM [Seat:*] autologin-user", user)], "")
+    return build(cat, host, "auth.autologin", autologin=av)
+
+
+@pytest.mark.parametrize("status, blocked", [("P", None), ("L", "has its password locked"), ("NP", "has no password")])
+def test_autologin_is_turned_off_only_with_a_password_to_type(cat, tmp_path, status, blocked):
+    """Turned off on an account whose password is locked (or empty), it left nobody able to log in at the login
+    screen."""
+    host = make_host(tmp_path, files={"/etc/lightdm/lightdm.conf": "[Seat:*]\nautologin-user=alice\n"},
+                     env={"USER": "alice"}, commands={"passwd -S": f"alice {status} 2026-10-14 0 99999 7 -1\n"})
+    g = _autologin_guide(cat, host)
+    plan = options(g)["Turn off automatic login"]
+    if blocked:
+        assert blocked in plan.blockers[0] and "sudo passwd alice" in plan.blockers[0]
+    else:
+        assert not plan.blockers and not any("couldn't be told" in s for s in g.steps[0].side_effects)
+
+
+def test_autologin_of_another_account_is_checked_with_the_helper(cat, tmp_path):
+    from daprivacyscanner.privileged import FakePrivileged
+    host = make_host(tmp_path, files={"/etc/lightdm/lightdm.conf": "[Seat:*]\nautologin-user=kiosk\n"},
+                     env={"USER": "alice"})
+    g = _autologin_guide(cat, host, "kiosk")
+    assert not options(g)["Turn off automatic login"].blockers
+    assert any("sudo passwd -S kiosk" in s for s in g.steps[0].side_effects)        # without root: said, not guessed
+    host.privileged = FakePrivileged(empty_passwords=["kiosk"])
+    assert "has no password" in options(_autologin_guide(cat, host, "kiosk"))["Turn off automatic login"].blockers[0]

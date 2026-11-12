@@ -13,20 +13,73 @@ from ..fixes import gset
 from . import guide, option, evidence, service_off, install, dropin, remote_session
 
 
+AUTOLOGIN_USER_LABELS = ("GDM ", "SDDM [Autologin] User", "Plasma Login [Autologin] User", "LXDM autologin")
+_LOGIN_NAME = re.compile(r"^[a-z_][a-z0-9_.-]*\$?$", re.I)
+
+
+def _autologin_users(ev) -> list[str]:
+    """The accounts the display manager logs in by itself, as its configuration names them (GDM's "enabled" without a
+    name, a guest session and the console's overrides name none)."""
+    names = [str(e.value) for e in ev if e.label.startswith(AUTOLOGIN_USER_LABELS)
+             or (e.label.startswith("LightDM [") and e.label.endswith("autologin-user"))]
+    return list(dict.fromkeys(n for n in names if _LOGIN_NAME.match(n) and n != "enabled"))
+
+
+def password_state(scan, user: str) -> str | None:
+    """"P" (a password that can be typed), "L" (locked: none can), "NP" (empty), or None when it can't be told. The
+    account's own, from `passwd -S` (which shadow's passwd answers for one's own account: Mint, Ubuntu, Fedora 44 and
+    CachyOS, tested); another account's emptiness only, from the helper's reading of /etc/shadow."""
+    from .._util import user_names
+    if user == user_names(scan.host)[0]:
+        r = scan.host.run("passwd", "-S")
+        f = r.stdout.split() if r.ok else []
+        if len(f) >= 2 and f[0] == user and f[1] in ("P", "L", "NP"):
+            return f[1]
+    if scan.privileged is not None:
+        try:
+            if user in scan.privileged.empty_password_accounts():
+                return "NP"
+        except Exception:  # noqa: BLE001 - unreadable: can't be told
+            return None
+    return None
+
+
+def _autologin_blockers(scan, users: list[str]) -> tuple[list[str], list[str]]:
+    """Why turning automatic login off would lock someone out at the login screen (an account it logs in whose password
+    is locked or empty: nothing could be typed, or an empty one gets in anyway), and what couldn't be told."""
+    blockers, unsure = [], []
+    for u in users:
+        state = password_state(scan, u)
+        if state == "L":
+            blockers.append(f"The account {u}, which logs in automatically, has its password locked (passwd -S says L): "
+                            "with automatic login off, nobody could log in as it at the login screen. Give it a "
+                            f"password first (sudo passwd {u}), then come back here.")
+        elif state == "NP":
+            blockers.append(f"The account {u}, which logs in automatically, has no password: with automatic login off, "
+                            "the login screen would ask for one it hasn't got (or let anyone in without one). Give it "
+                            f"a password first (sudo passwd {u}), then come back here.")
+        elif state is None:
+            unsure.append(u)
+    return blockers, unsure
+
+
 @guide("auth.autologin")
 def autologin(check, scan, outcome):
     ev = scan.context.values["autologin"].evidence
     manual = [e for e in ev if e.label.startswith(("greetd", "Console autologin"))]
     steps = []
     if any(not e.label.startswith(("greetd", "Console autologin", "Display manager", "Needs")) for e in ev):
+        blockers, unsure = _autologin_blockers(scan, _autologin_users(ev))
         steps.append(Step("Turn off automatic login", options=[option(check, "Turn off automatic login", [RootChange(
             "edit_config", {"target": "autologin"},
             "Comment out the automatic login lines in the display manager's configuration under /etc, and override "
             "those in its packaged files (/usr/lib, /usr/share) with a file of the app's own")],
-            recommended=True)],
+            recommended=True, blockers=blockers)],
             side_effects=["Takes effect at the next boot or logout.",
                           "Make sure you know your login password first: lock the screen and unlock it with the "
-                          "password. Without it, you can't get back to your desktop after the next restart."]))
+                          "password. Without it, you can't get back to your desktop after the next restart."]
+            + [f"Whether {u} has a password couldn't be told here: check with sudo passwd -S {u} (P means it has "
+               "one) before turning automatic login off." for u in unsure]))
     if manual:
         steps.append(Step("Automatic login set up elsewhere",
                           "These need editing by hand: remove the [initial_session] section from "

@@ -251,6 +251,10 @@ def test_easy_fixes_that_need_root_ask_once_and_go_on_without_it(cat, tmp_path, 
     (host.root / "etc/yum.repos.d").mkdir(parents=True)
     repo = host.root / "etc/yum.repos.d/fedora.repo"
     repo.write_text("[fedora]\nname=Fedora\nenabled=1\ncountme=1\n")
+    host.runner.installed.add("dnf5")                                              # DNF5: the override file is Easy
+    (host.root / "usr/bin").mkdir(parents=True)
+    (host.root / "usr/bin/dnf5").write_text("")
+    override = host.root / "etc/dnf/repos.override.d/60-daprivacyscanner-countme.repo"
     monkeypatch.setattr(helper, "ROOT", str(host.root))
     c = TestClient(create_app(TOKEN, cat, make_host=lambda: host, start_helper=start))
     c.post("/api/scan", headers=H)
@@ -260,10 +264,11 @@ def test_easy_fixes_that_need_root_ask_once_and_go_on_without_it(cat, tmp_path, 
     r = c.post("/api/easy/apply", headers=H, json={"plan_ids": ids}).json()
     assert asked == [1] and gs.values[("org.gnome.desktop.notifications", "show-in-lock-screen")] == "false"
     count = {x["check_id"]: x for x in r["results"]}["tel.countme"]
+    assert "countme=1" in repo.read_text()                                          # the repository file stays
     if grant:
-        assert r["ok"] and count["ok"] and "countme=0" in repo.read_text()
+        assert r["ok"] and count["ok"] and "[*]\ncountme=0\n" in override.read_text()
     else:
-        assert not r["ok"] and count.get("declined") and "countme=1" in repo.read_text()
+        assert not r["ok"] and count.get("declined") and not override.exists()
         assert [e["check_id"] for e in c.get("/api/undo", headers=H).json()["entries"]] == ["auth.lockscreen_notifications"]
 
 

@@ -275,9 +275,9 @@ def test_a_root_fix_asks_for_administrator_access_when_applied(cat, tmp_path, mo
 
     c, host = root_client(cat, tmp_path, monkeypatch, start)
     h = {"X-Token": TOKEN}
-    r = c.post("/api/fix/tel.countme/plan", headers=h).json()
-    assert r["plan"]["needs_root"] and not asked                       # the dry run needs no root
-    applied = c.post("/api/fix/apply", headers=h, json={"plan_id": r["plan"]["id"]}).json()
+    plan = c.post("/api/fix/tel.countme/plan", headers=h).json()["guide"]["steps"][0]["options"][0]["plan"]
+    assert plan["needs_root"] and not asked                            # the dry run needs no root
+    applied = c.post("/api/fix/apply", headers=h, json={"plan_id": plan["id"]}).json()
     assert applied["ok"] and asked == [1] and applied["result"]["status"] == "pass"
     assert "countme=0" in (host.root / "etc/yum.repos.d/fedora.repo").read_text()
     [entry] = c.get("/api/undo", headers=h).json()["entries"]
@@ -294,7 +294,7 @@ def test_declining_root_changes_nothing(cat, tmp_path, monkeypatch):
 
     c, host = root_client(cat, tmp_path, monkeypatch, decline)
     h = {"X-Token": TOKEN}
-    plan = c.post("/api/fix/tel.countme/plan", headers=h).json()["plan"]
+    plan = c.post("/api/fix/tel.countme/plan", headers=h).json()["guide"]["steps"][0]["options"][0]["plan"]
     r = c.post("/api/fix/apply", headers=h, json={"plan_id": plan["id"]})
     assert r.status_code == 403 and r.json()["declined"] and "countme=1" in (host.root / "etc/yum.repos.d/fedora.repo").read_text()
     assert c.get("/api/undo", headers=h).json()["entries"] == []
