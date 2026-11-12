@@ -16,8 +16,11 @@ any name was any address. A name the program gave when connecting that the resol
 only the program's word, and such a host is kept apart, named_by "program" (the review of 2026-11-04: everything
 sent to one server of its own could be listed as dns.google and github.com). A TCP connection is counted once,
 however often its first packet is sent again (one lookup hanging on a server that didn't answer was counted as five
-connections). What can't be told: what was sent (it is encrypted), and a name hidden by Encrypted Client Hello.
-Standard library only."""
+connections). Every IP packet the program sends counts for its destination: IPv6's extension headers are walked to
+the transport's, a fragmented datagram's later pieces go with its first, and anything else (ICMP, SCTP, pieces whose
+first wasn't seen) is listed under its protocol's name (the review of 2026-11-12: only TCP and UDP right after the IP
+header were counted, so a Fragment or Routing header hid where a packet went). What can't be told: what was sent (it
+is encrypted), and a name hidden by Encrypted Client Hello. Standard library only."""
 
 from __future__ import annotations
 
@@ -38,6 +41,13 @@ STREAM_MAX = 70000                      # DNS over TCP: what is kept of a messag
 # message held 171 MB, never dropped). A lookup past these isn't read, and its address is named by itself.
 STREAMS_MAX = 64
 BUFFERED_MAX = 1 << 20
+PORTS_MAX = 32                          # a host's ports kept to show; more are said as more (one per packet otherwise)
+FRAGMENTS_MAX = 1024                    # fragmented datagrams followed at once, to give later pieces to their connection
+LOCAL_MAX = 16                          # the sandbox's own addresses, learnt from what it sends
+# IPv6 extension headers that come before the transport's (RFC 8200, 4; 7045): hop-by-hop, routing, fragment,
+# destination options, authentication, mobility, host identity, shim6
+IPV6_EXTENSIONS = {0, 43, 44, 60, 51, 135, 139, 140}
+PROTO_NAMES = {1: "icmp", 2: "igmp", 58: "icmpv6", 132: "sctp", 136: "udplite", 47: "gre", 50: "esp", 51: "ah", 33: "dccp"}
 
 
 def _name(data: bytes, at: int, depth: int = 0) -> tuple[str, int]:
@@ -138,6 +148,8 @@ class Flows:
         self.folded: dict[tuple, dict] = {}             # connections the table had no more room for, summed by host
         self.used: set[str] = set()                     # the names looked up that those were made under (DNS, SNI, Host)
         self.streams: dict[tuple, list] = {}            # DNS over TCP, each way: [the next sequence number, bytes]
+        self.fragments: dict[tuple, tuple] = {}         # (src, dst, IP id) -> the connection its first piece was for
+        self.local: set[str] = set()                    # the sandbox's own addresses, seen sending
         self.packets = self.broken = self.left_out = 0
         self.stopped = False                            # the reader stopped watching partway (PipeReader): said
         self.lock = threading.Lock()                    # fed by the reader thread, summed up by the page's requests
@@ -184,24 +196,53 @@ class Flows:
         if kind == 0x8100 and len(p) >= 18:
             kind, at = struct.unpack_from(">H", p, 16)[0], 18
         try:
+            frag = None                                     # (IP id, offset, more to come) of a fragmented datagram
             if kind == 0x0800:
                 ihl = (p[at] & 0x0F) * 4
-                total = struct.unpack_from(">H", p, at + 2)[0]
+                total, ident, fl = struct.unpack_from(">HHH", p, at + 2)
                 proto, src, dst = p[at + 9], p[at + 12:at + 16], p[at + 16:at + 20]
                 body = p[at + ihl:at + total] if total >= ihl else b""
+                if fl & 0x3FFF:                             # more fragments, or not the first
+                    frag = (ident, (fl & 0x1FFF) * 8, bool(fl & 0x2000))
             elif kind == 0x86DD:
                 proto, src, dst = p[at + 6], p[at + 8:at + 24], p[at + 24:at + 40]
                 body = p[at + 40:at + 40 + struct.unpack_from(">H", p, at + 4)[0]]
+                # the extension headers before the transport's: a Fragment header (any datagram larger than the link
+                # takes, which pasta reassembles and sends on) or a Routing header (anyone may add one) hid the
+                # packet's destination from the report
+                for _ in range(16):
+                    if proto not in IPV6_EXTENSIONS or len(body) < 8:
+                        break
+                    if proto == 44:
+                        off = struct.unpack_from(">H", body, 2)[0]
+                        frag = (struct.unpack_from(">I", body, 4)[0], off & 0xFFF8, bool(off & 1))
+                        proto, body = body[0], body[8:]
+                    else:
+                        size = (body[1] + 2) * 4 if proto == 51 else (body[1] + 1) * 8
+                        proto, body = body[0], body[size:]
             else:
                 return
             src, dst = str(ipaddress.ip_address(src)), str(ipaddress.ip_address(dst))
+            if frag is not None and frag[1]:                # a later piece: no ports in it
+                self._piece(src, dst, frag, proto, len(body))
+                return
             if proto == 6 and len(body) >= 20:
                 sport, dport, seq = struct.unpack_from(">HHI", body, 0)
                 flags, data = body[13], body[(body[12] >> 4) * 4:]
                 self._tcp(src, sport, dst, dport, flags, seq, data)
+                key = (src, sport, dst, dport, "tcp")
             elif proto == 17 and len(body) >= 8:
                 sport, dport = struct.unpack_from(">HH", body, 0)
                 self._udp(src, sport, dst, dport, body[8:])
+                key = (src, sport, dst, dport, "udp")
+            else:
+                # anything else a program sends is still to somewhere: ICMP, SCTP, a protocol pasta drops or not
+                key = self._other(src, dst, PROTO_NAMES.get(proto, f"protocol {proto}"), len(body),
+                                  body[0] if body else None)
+            if frag is not None:                            # its first piece: the rest go with it
+                if len(self.fragments) >= FRAGMENTS_MAX:
+                    del self.fragments[next(iter(self.fragments))]
+                self.fragments[(src, dst, frag[0])] = key
         except (IndexError, struct.error, ValueError):
             self.broken += 1
 
@@ -250,6 +291,40 @@ class Flows:
 
     # ------------------------------------------------------------------ connections
 
+    def _sender(self, address: str) -> None:
+        if len(self.local) < LOCAL_MAX:
+            self.local.add(address)
+
+    def _other(self, src: str, dst: str, proto: str, size: int, kind: int | None = None) -> tuple:
+        """A packet that isn't TCP or UDP (or whose ports can't be read): still sent somewhere, so it is counted for
+        its destination, under its protocol's name. IPv6's neighbour discovery and multicast listener reports are the
+        link's own; something unasked for from outside isn't the program's. Returns the key it is counted under."""
+        out, back = (src, 0, dst, 0, proto), (dst, 0, src, 0, proto)
+        if proto == "icmpv6" and kind in (130, 131, 132, 133, 134, 135, 136, 137, 143) or proto == "igmp":
+            return out
+        c = self.conns.get(back)
+        if c is not None:
+            c["received"] += size
+            return back
+        if dst in self.local and src not in self.local:
+            return back
+        self._sender(src)
+        c = self.conns.get(out) or self._open(out, dst, 0, proto)
+        c["sent"] += size
+        return out
+
+    def _piece(self, src: str, dst: str, frag: tuple, proto: int, size: int) -> None:
+        """A later piece of a fragmented datagram: counted with the connection its first piece was for. One whose
+        first piece wasn't seen goes to its destination as "fragments"; one whose first piece was a lookup, nowhere."""
+        key = self.fragments.get((src, dst, frag[0]))
+        if key is None:
+            self._other(src, dst, "fragments", size)
+            return
+        rev = (key[2], key[3], key[0], key[1], key[4])
+        stored = key if key in self.conns else rev if rev in self.conns else None
+        if stored is not None:
+            self.conns[stored]["sent" if stored[0] == src else "received"] += size
+
     def _open(self, key: tuple, address: str, port: int, proto: str, isn: int | None = None) -> dict:
         if len(self.conns) >= CONNS_MAX:
             self._fold()
@@ -285,13 +360,17 @@ class Flows:
             if len(merged) >= HOSTS_MAX:
                 return False
             m = merged[(name, how == "program")] = {"host": name, "named_by": how, "addresses": set(),
-                                                    "more_addresses": False, "ports": set(), "connections": 0, "sent": 0,
-                                                    "received": 0}
+                                                    "more_addresses": False, "ports": set(), "more_ports": False,
+                                                    "connections": 0, "sent": 0, "received": 0}
         if c["address"] in m["addresses"] or len(m["addresses"]) < ADDRESSES_MAX:
             m["addresses"].add(c["address"])
         else:
             m["more_addresses"] = True
-        m["ports"].add(f"{c['port']}/udp" if c["proto"] == "udp" else str(c["port"]))
+        port = str(c["port"]) if c["proto"] == "tcp" else f"{c['port']}/udp" if c["proto"] == "udp" else c["proto"]
+        if port in m["ports"] or len(m["ports"]) < PORTS_MAX:          # a scan of every port: one each, unbounded
+            m["ports"].add(port)
+        else:
+            m["more_ports"] = True
         m["connections"] += 1
         m["sent"] += c["sent"]
         m["received"] += c["received"]
@@ -300,6 +379,7 @@ class Flows:
     def _tcp(self, src: str, sport: int, dst: str, dport: int, flags: int, seq: int, data: bytes) -> None:
         out, back = (src, sport, dst, dport, "tcp"), (dst, dport, src, sport, "tcp")
         if flags & 0x02 and not flags & 0x10:               # SYN: the program connects out
+            self._sender(src)
             c = self.conns.get(out)
             if c is not None and (not c["closed"] or seq == c["isn"]):
                 # the same SYN sent again, its first sequence number the same: the same attempt, also after the
@@ -345,6 +425,7 @@ class Flows:
 
     def _udp(self, src: str, sport: int, dst: str, dport: int, data: bytes) -> None:
         if dport == 53:
+            self._sender(src)
             self._questions(data)
             if self._resolver(dst):
                 return
@@ -356,6 +437,7 @@ class Flows:
         if c is not None:
             c["received"] += len(data)
             return
+        self._sender(src)
         c = self.conns.get(out) or self._open(out, dst, dport, "udp")
         c["sent"] += len(data)
 

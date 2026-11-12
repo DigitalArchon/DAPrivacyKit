@@ -4082,7 +4082,7 @@ function hostsTable(hosts) {
     h("tbody", {}, hosts.map(x => h("tr", {}, h("td", { class: "folder", title: HOST_NAMED[x.named_by] || HOST_NAMED.address },
         x.host, x.named_by === "program" ? h("span", { class: "muted" }, " (named by the program)") : null),
       h("td", { class: "folder" }, (x.addresses || []).join(", ") + (x.more_addresses ? ", and more" : "")),
-      h("td", {}, x.ports.join(", ")), h("td", {}, `${x.connections}`), h("td", {}, fmtSize(x.sent)), h("td", {}, fmtSize(x.received))))));
+      h("td", {}, x.ports.join(", ") + (x.more_ports ? ", and more" : "")), h("td", {}, `${x.connections}`), h("td", {}, fmtSize(x.sent)), h("td", {}, fmtSize(x.received))))));
 }
 
 function trialRunning(t, call) {

@@ -1807,7 +1807,12 @@ drive they came from (its model, serial and size, `retire.identity`): another dr
     sent to pasta's forwarder are the sandbox's own and no host, while DNS sent to any other server (one of the
     program's own choosing) is listed; a TCP connection is counted once however often its first packet is sent
     again (a lookup hanging on a silent server had counted as five). Names looked up and never used are listed
-    apart. No packet or payload is kept. A
+    apart. Every IP packet the program sends counts for its destination: IPv6's extension headers are walked to
+    the transport's (a Fragment header, which any datagram larger than the link takes, or a Routing header, which
+    anyone may add, had hidden where a packet went), a datagram's later fragments go with its first, and what isn't
+    TCP or UDP (ICMP, SCTP, fragments whose first piece wasn't seen) is listed under its protocol's name; IPv6's
+    neighbour discovery and replies nobody asked for aren't hosts. A host's ports are capped at 32 ("and more").
+    No packet or payload is kept. A
     Flatpak can't be put behind pasta (it would run as root of pasta's namespace): none, or its usual network,
     unobserved.
   - **The watch** (`tools/homewatch.py`): inotify on every folder under the throwaway home, as the user. It
