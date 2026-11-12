@@ -1331,15 +1331,18 @@ may be unmounted by the time the browser closes) and imports nothing of the app'
    `--args`, since its own init is its PID 1, and its filter's descriptor made from the program in the
    configuration), tor's output going to the gate through a pipe:
    ```
-   tor --defaults-torrc <Data/Tor>/torrc-defaults -f /run/user/1000/tor/torrc
+   tor --defaults-torrc <shipped>/torrc-defaults -f /run/user/1000/tor/torrc
        DataDirectory <Data/Tor>  ClientOnionAuthDir <Data/Tor>/onion-auth
-       GeoIPFile <Data/Tor>/geoip  GeoIPv6File <Data/Tor>/geoip6
+       GeoIPFile <shipped>/geoip  GeoIPv6File <shipped>/geoip6
        +__ControlPort unix:/run/user/1000/tor/tor-control
        +__SocksPort "unix:/run/user/1000/tor/socks IPv6Traffic PreferIPv6 KeepAliveIsolateSOCKSAuth"
        CookieAuthentication 1  CookieAuthFile /run/user/1000/tor/control_auth_cookie
    ```
    with `HOME`, a minimal `PATH` and `LD_LIBRARY_PATH` for tor's own libraries (`--setenv`, after
-   `--clearenv`). tor and its pluggable transports, which parse what the network sends them (Snowflake's: WebRTC
+   `--clearenv`). `<shipped>` is where the archive keeps tor's defaults and GeoIP files: beside tor
+   (`TorBrowser/Tor`) from Tor Browser 16, in `Data/Tor` before; the defaults hold the pluggable transports'
+   `ClientTransportPlugin` lines, without which no bridge can be used (16.0.1 with the old place: "there is no
+   configured transport called obfs4"). tor and its pluggable transports, which parse what the network sends them (Snowflake's: WebRTC
    from volunteers' proxies), get nothing of the browser's: its display's socket and X cookie, sound's socket,
    profile and Downloads (found in the review of 2026-10-17: tor's `/tmp` held `.X11-unix` and `.Xauthority`).
    Its own PID namespace means tor can't watch the gate by its PID (`__OwningControllerProcess`): it dies with
@@ -1371,10 +1374,12 @@ may be unmounted by the time the browser closes) and imports nothing of the app'
 
 Live-tested on 2026-11-12 with Tor Browser 16.0.1: on Ubuntu 26.04 (GNOME, Wayland, bubblewrap 0.11.1, AppArmor's
 profile on) check.torproject.org said the browser uses Tor, the security level was Safest with no restart asked and
-no bar, a page's no-JavaScript fallback was taken; the gate had only a loopback interface and the tor folder; Quit
-halted tor (its state file written at that moment) and left nothing running; killing the gate ended the browser and
+no bar, a page's no-JavaScript fallback was taken; obfs4 and Snowflake bridges connected (the circuit display with
+its countries); the gate had only a loopback interface and the tor folder; Quit halted tor (its state file written
+at that moment) and left nothing running; killing the keeper left nothing; killing the gate ended the browser and
 tor. On CachyOS (KDE Plasma, Wayland, bubblewrap 0.13.1, the compositor's marked socket) the same, with Firefox's own
-content processes in namespaces of their own.
+content processes in namespaces of their own; on Mint 22.3 (X11, bubblewrap 0.9) in Xephyr, where
+check.torproject.org also said "JavaScript is disabled".
 
 **The control-port filter.** Each browser connection gets its own upstream connection to tor,
 authenticated by the filter with the cookie, which the browser never sees. The browser's commands are

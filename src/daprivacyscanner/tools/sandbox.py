@@ -1538,6 +1538,7 @@ def gate_filter(profile: str) -> list[str]:
 # torrc with the bridges, and status.json.
 TOR_DATA = "Browser/TorBrowser/Data/Tor"             # in the browser's folder: tor's state, hidden from the browser
 TOR_PROGRAMS = "Browser/TorBrowser/Tor"              # tor and its pluggable transports
+TOR_DEFAULTS = "torrc-defaults"                       # in TOR_PROGRAMS from Tor Browser 16, in TOR_DATA before
 TOR_UPSTREAM = f"{TOR_DIR_IN}/tor-control"            # tor's own control port; the browser gets the gate's (CONTROL_IN)
 TOR_COOKIE = f"{TOR_DIR_IN}/control_auth_cookie"
 TOR_STALE = ("control", "socks", "tor-control", "control_auth_cookie")   # in the tor folder: left by an earlier run
@@ -1579,6 +1580,10 @@ def tor_argv(host: Host, lay: Layout, tor_dir: Path, disp: Display, with_sound: 
     tor_programs, tor_data = bind_source(lay.folder, TOR_PROGRAMS), bind_source(lay.folder, TOR_DATA)
     if tor_programs is None or tor_data is None:
         raise SandboxError("Tor Browser's own tor isn't in its folder: set Tor Browser up again.")
+    # tor's defaults (the pluggable transports' ClientTransportPlugin lines among them) and the GeoIP files: beside tor
+    # in Tor Browser 16, in its data folder in 15. With 16's in the old place tor found no defaults, and no bridge
+    # could be used ("there is no configured transport called obfs4", found on the lab, 2026-11-12)
+    shipped = programs if bind_source(lay.folder, f"{TOR_PROGRAMS}/{TOR_DEFAULTS}", "file") else data
     # tor and its pluggable transports (the review of 2026-10-17): nothing of the browser's, its display's socket and X
     # cookie, sound's socket, profile or Downloads, nor its processes, since a bridge's program parses what the network
     # sends it (Snowflake's: WebRTC from volunteers' proxies). The system, an /etc of the sandbox's own with the
@@ -1586,9 +1591,9 @@ def tor_argv(host: Host, lay: Layout, tor_dir: Path, disp: Display, with_sound: 
     # its data and the tor folder; Landlock's scopes where the kernel has them (abstract Unix sockets, signals: it
     # shares the computer's network). It dies with the keeper (--die-with-parent), which has the gate stop it over its
     # control port first (torgate.halt), so that it saves its state.
-    tor_cmd = [f"{programs}/tor", "--defaults-torrc", f"{data}/torrc-defaults",
+    tor_cmd = [f"{programs}/tor", "--defaults-torrc", f"{shipped}/{TOR_DEFAULTS}",
                "-f", f"{TOR_DIR_IN}/torrc", "DataDirectory", data, "ClientOnionAuthDir", f"{data}/onion-auth",
-               "GeoIPFile", f"{data}/geoip", "GeoIPv6File", f"{data}/geoip6",
+               "GeoIPFile", f"{shipped}/geoip", "GeoIPv6File", f"{shipped}/geoip6",
                "+__ControlPort", f"unix:{TOR_UPSTREAM}",
                "+__SocksPort", f"unix:{SOCKS_IN} IPv6Traffic PreferIPv6 KeepAliveIsolateSOCKSAuth",
                "CookieAuthentication", "1", "CookieAuthFile", TOR_COOKIE]

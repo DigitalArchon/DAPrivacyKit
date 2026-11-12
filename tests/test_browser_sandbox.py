@@ -368,6 +368,29 @@ def test_the_graphics_card_only_when_the_user_allows_it(host, monkeypatch):
     assert pairs(calls[-1][0], "--dev-bind") == [(d, d) for d in S.gpu(host)]
 
 
+def test_tor_s_defaults_and_geoip_where_each_tor_browser_has_them(host):
+    """Tor Browser 16 keeps torrc-defaults (the pluggable transports' ClientTransportPlugin lines) and the GeoIP files
+    beside tor; 15 kept them in tor's data folder. With 16's looked for in the old place no bridge could be used ("there
+    is no configured transport called obfs4", on the lab, 2026-11-12)."""
+    disk = installed(host, "tor")
+    bwrap_ok(host)
+    wayland(host)
+    identity_etc(host)
+    lay, private = layout(host, B.BROWSERS["tor"])
+    disp = S.display(host, private, landlock=False)
+    (private / "tor").mkdir()
+    etc = S.identity_files(private / "etc", None)
+
+    def tor_cmd():
+        tor = json.loads(S.tor_argv(host, lay, private / "tor", disp, False, False, etc, "GATE")[-1])["tor"]
+        cmd = tor[tor.index("--") + 1:]
+        return cmd[cmd.index("--defaults-torrc") + 1], cmd[cmd.index("GeoIPFile") + 1], cmd[cmd.index("GeoIPv6File") + 1]
+    inside = "/home/user/tor-browser/Browser/TorBrowser"
+    assert tor_cmd() == (f"{inside}/Data/Tor/torrc-defaults", f"{inside}/Data/Tor/geoip", f"{inside}/Data/Tor/geoip6")
+    (disk / "tor-browser/Browser/TorBrowser/Tor/torrc-defaults").write_text("ClientTransportPlugin obfs4 exec x\n")
+    assert tor_cmd() == (f"{inside}/Tor/torrc-defaults", f"{inside}/Tor/geoip", f"{inside}/Tor/geoip6")
+
+
 def test_the_panel_knows_when_apparmor_confines_what_bubblewrap_starts(host, monkeypatch):
     """Ubuntu's bwrap-userns-restrict runs what bubblewrap starts in unpriv_bwrap, without capabilities: Firefox's own
     sandbox can't make its namespaces in ours there (seen on Ubuntu 26.04), and the panel says so. Read from a program
