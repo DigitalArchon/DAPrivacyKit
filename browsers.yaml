@@ -463,16 +463,18 @@ browsers:
       desktop: [librewolf.desktop, io.gitlab.librewolf-community.desktop]
     why: >-
       Firefox with Mozilla's telemetry and advertising features removed, and uBlock Origin built in. It deletes
-      cookies when it closes; for every day, keep history (Settings → Privacy & Security → History).
+      cookies and site data when it closes, which signs you out of sites; it keeps your history.
     facts:
       - topic: blocking
         text: uBlock Origin comes preinstalled.
         source: https://www.xda-developers.com/reasons-why-you-should-use-librewolf/
         verified: 2026-10-04
       - topic: use
-        text: By default it deletes cookies and history when it closes; that can be turned off.
-        source: https://en.wikipedia.org/wiki/LibreWolf
-        verified: 2026-10-04
+        text: >-
+          By default it deletes cookies and site data when it closes, and keeps history (librewolf.cfg turns
+          sanitizeOnShutdown on with history and downloads left out); that can be changed in its settings.
+        source: https://codeberg.org/librewolf/settings/src/branch/master/librewolf.cfg
+        verified: 2026-11-12
 
   - id: waterfox
     name: Waterfox
@@ -506,7 +508,7 @@ browsers:
           independent again since July 2023.
         source: https://www.ghacks.net/2023/07/04/waterfox-browser-cuts-ties-with-system-1-to-celebrate-independence/
         verified: 2026-10-04
-    verify: Waterfox's desktop file ids and profile folder (.waterfox).
+    verify: Waterfox's desktop file ids.
 
   - id: zen
     name: Zen
@@ -545,7 +547,7 @@ browsers:
           unsigned updates; the advisory rated it High (8.0).
         source: https://github.com/zen-browser/desktop/security/advisories/GHSA-qpj9-m8jc-mw6q
         verified: 2026-10-04
-    verify: Zen's desktop file ids and profile folder (.zen).
+    verify: Zen's desktop file ids.
 
   - id: floorp
     name: Floorp
@@ -576,7 +578,7 @@ browsers:
           August 2025.
         source: https://en.wikipedia.org/wiki/Floorp
         verified: 2026-10-04
-    verify: Floorp's desktop file ids and profile folder (.floorp).
+    verify: Floorp's desktop file ids.
 
   - id: helium
     name: Helium
@@ -662,7 +664,7 @@ browsers:
         text: Built-in support for ad blocking; Linux builds are offered.
         source: https://github.com/uazo/cromite
         verified: 2026-10-04
-    verify: Cromite's desktop file id (it ships as a tarball).
+    verify: Cromite's desktop file id (it ships as a tarball), and that only one of Chromium, ungoogled-chromium and Cromite uses ~/.config/chromium at a time.
 
   - id: mullvad_browser
     name: Mullvad Browser
