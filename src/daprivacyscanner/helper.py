@@ -144,6 +144,12 @@ import subprocess
 import sys
 import time
 import uuid
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:                   # annotations only: nothing more is imported when it runs
+    import mmap
+    from collections.abc import Callable, Iterable, Iterator, Mapping
+    from typing import IO, Any, Literal
 
 # Bumped whenever the actions or their arguments change: an installed (root-owned) copy from an
 # older version is then refused with a clear message instead of failing on an unknown action. Also
@@ -212,7 +218,7 @@ def readable(path: str) -> bool:
 
 # ------------------------------------------------------------------ validation
 
-def _block_device(device) -> str:
+def _block_device(device: object) -> str:
     if not isinstance(device, str) or not _DEVICE.match(device) or ".." in device.split("/"):
         raise Refused("not a device path")
     real = os.path.realpath(device)
@@ -283,7 +289,8 @@ def parse_luks_dump(text: str) -> dict:
     """The parts of `cryptsetup luksDump` detection needs. Salts, digests and key material
     descriptions are left out."""
     out: dict = {"version": None, "keyslots": [], "tokens": [], "flags": None}
-    section, entry = None, None
+    section: str | None = None
+    entry: dict[str, Any] | None = None
     for line in text.splitlines():
         m = re.match(r"^Version:\s*(\d+)", line)
         if m:
@@ -685,7 +692,7 @@ def _journal_begin(change: dict) -> str:
     return change_id
 
 
-def _journal_save(change: dict, **fields) -> None:
+def _journal_save(change: dict, **fields: object) -> None:
     change.update(fields)
     change["text"] = _change_text(change)
     _write(f"{CHANGES_DIR}/{change['id']}.json", json.dumps(change).encode(), 0o600)
@@ -697,7 +704,7 @@ def _journal_forget(change: dict) -> None:
     _rmdir_empty(CHANGES_DIR, STATE_DIR)
 
 
-def _journal_close(change: dict, state: str, **fields) -> None:
+def _journal_close(change: dict, state: str, **fields: object) -> None:
     """A record with nothing left to put back ("reverted", or "failed" with everything put back): out of the journal,
     its folders removed once empty, and a line of it kept in /run (no copy of anything, gone at a reboot), so
     list_changes can still say what became of it."""
@@ -723,7 +730,7 @@ def _journal_close(change: dict, state: str, **fields) -> None:
         pass                                       # only list_changes' answer for it is lost
 
 
-def _load_change(change_id) -> dict:
+def _load_change(change_id: object) -> dict:
     if not isinstance(change_id, str) or not _CHANGE_ID.match(change_id):
         raise Refused("bad change id")
     data = _read(f"{CHANGES_DIR}/{change_id}.json", trusted=True)
@@ -770,7 +777,7 @@ def _file_record(path: str, before: bytes | None, after: bytes | None) -> dict:
 
 # Commands run after a change and after reverting it, so the change takes effect. Named here,
 # never sent by the app. "validate" runs first and undoes the write if it fails.
-HOOKS = {
+HOOKS: dict[str, dict[str, Any]] = {
     "journald": {"run": [["systemctl", "restart", "systemd-journald.service"]]},
     "resolved": {"run": [["systemctl", "try-restart", "systemd-resolved.service"]]},
     "networkmanager": {"run": [["systemctl", "try-reload-or-restart", "NetworkManager.service"]]},
@@ -844,7 +851,7 @@ def _unit_dirs() -> set[str]:
     return {f"{base}/{n}" for n in names if os.path.isdir(_p(f"{base}/{n}")) and not os.path.islink(_p(f"{base}/{n}"))}
 
 
-def _journal_add_dirs(change_id: str, dirs: list[str], **fields) -> None:
+def _journal_add_dirs(change_id: str, dirs: list[str], **fields: object) -> None:
     """Folders a change made after its journal entry was written (enabling its unit), added to it, with `fields`
     (its state once done)."""
     if dirs or fields:
@@ -867,7 +874,8 @@ def _remove_dirs(dirs: list[str]) -> list[str]:
     """The folders a change created, removed again deepest first, each only while it is empty: a folder that
     holds anything added since (by a package, an admin, another program) stays, with everything in it, and
     the note says why. Never through a link, never anything but an empty folder. Returns the notes."""
-    notes, kept = [], []
+    notes: list[str] = []
+    kept: list[str] = []
     for d in sorted(dict.fromkeys(dirs), key=lambda x: x.count("/"), reverse=True):
         if any(k.startswith(d + "/") for k in kept):
             kept.append(d)                        # holds a folder that stays: it stays too, said once
@@ -898,7 +906,7 @@ def _why(e: BaseException) -> str:
     return str(e) if isinstance(e, Refused) else getattr(e, "strerror", None) or type(e).__name__
 
 
-def _apply_files(files: dict[str, bytes | None], hooks: list[str], extra: dict | None = None,
+def _apply_files(files: Mapping[str, bytes | None], hooks: list[str], extra: dict | None = None,
                  more: bool = False) -> dict:
     """Journals what is there now and what it will write (the intent record), then writes the files (path -> new
     content, None removes), with the folders writing them makes, validates and runs the hooks. Unchanged files are
@@ -1141,12 +1149,13 @@ def _join(lines: list[str]) -> bytes:
     return "\n".join(lines).encode("utf-8", "surrogateescape")
 
 
-def _comment_out(pattern: str, section: str | None = None):
+def _comment_out(pattern: str, section: str | None = None) -> Callable[[list[str], dict], list[str]]:
     """Comments out lines matching `pattern` (inside [section] only, when given)."""
     rx = re.compile(pattern, re.I)
 
     def edit(lines: list[str], values: dict) -> list[str]:
-        out, current = [], None
+        out: list[str] = []
+        current = None
         for line in lines:
             m = re.match(r"^\s*\[([^\]]+)\]", line)
             if m:
@@ -1158,17 +1167,18 @@ def _comment_out(pattern: str, section: str | None = None):
     return edit
 
 
-def _replace(pattern: str, new: str):
+def _replace(pattern: str, new: str) -> Callable[[list[str], dict], list[str]]:
     rx = re.compile(pattern, re.I)
     return lambda lines, values: [new if rx.match(line) else line for line in lines]
 
 
-def _in_section(section: str, pattern: str, new: str):
+def _in_section(section: str, pattern: str, new: str) -> Callable[[list[str], dict], list[str]]:
     """Replaces the lines matching `pattern` inside [section] only."""
     rx = re.compile(pattern, re.I)
 
     def edit(lines: list[str], values: dict) -> list[str]:
-        out, current = [], None
+        out: list[str] = []
+        current = None
         for line in lines:
             m = re.match(r"^\s*\[([^\]]+)\]", line)
             if m:
@@ -1217,7 +1227,7 @@ def lowered(target: str, now: dict, values: dict) -> dict:
     are never written."""
     defaults = SNAPPER_DEFAULTS if target == "snapper" else TIMESHIFT_DEFAULTS
 
-    def top(v) -> int | None:
+    def top(v: object) -> int | None:
         m = re.fullmatch(r"\s*(?:[0-9]+-)?([0-9]+)\s*", str(v))
         return int(m.group(1)) if m else None
     out = {}
@@ -1226,7 +1236,9 @@ def lowered(target: str, now: dict, values: dict) -> dict:
         if value in ("no", "false"):
             lower = was is None or str(was).strip().lower() not in ("no", "false")
         else:
-            lower = value not in ("yes", "true") and (was is None or top(was) is None or top(value) < top(was))
+            # every value given is a count (the edit's validation): a limit now that isn't one is replaced
+            new, old = top(value), None if was is None else top(was)
+            lower = value not in ("yes", "true") and new is not None and (old is None or new < old)
         if lower:
             out[key] = value
     return out
@@ -1326,7 +1338,8 @@ def _autologin_overrides() -> dict[str, bytes]:
 
 # target -> (file patterns -> edit function, allowed values, hooks)
 _SNAP_COUNT = "[0-9]{1,3}(-[0-9]{1,3})?"
-EDITS = {
+# target -> (path patterns -> how each file is edited, the keys and values allowed, the hooks run after)
+EDITS: dict[str, tuple[dict[str, Callable[[list[str], dict], list[str]]], dict[str, re.Pattern], list[str]]] = {
     "countme": ({"/etc/yum.repos.d/*.repo": _replace(r"^\s*countme\s*=\s*(1|true|yes|on)\s*$", "countme=0"),
                  "/etc/dnf/dnf.conf": _replace(r"^\s*countme\s*=\s*(1|true|yes|on)\s*$", "countme=0")}, {}, []),
     "autologin": (_DM, {}, []),
@@ -1628,11 +1641,11 @@ def ufw_enable(args: dict) -> dict:
         if not active:
             _do(["ufw", "--force", "enable"])
             turned_on = True
-        if unit_needed:
+        if unit_needed and unit_before is not None:         # needed: there is a unit
             _set_unit(UFW_UNIT, True, True, unit_before)
     except Refused as e:
         now = _ufw_unit_state()
-        if unit_needed and now is not None and now != unit_before:
+        if unit_needed and unit_before is not None and now is not None and now != unit_before:
             _set_unit(UFW_UNIT, unit_before[0] == "enabled", unit_before[1] == "active", now)
         if turned_on:
             _do_code(["ufw", "--force", "disable"])
@@ -1666,7 +1679,7 @@ POLICY_FILES = {
     "edge": "/etc/opt/edge/policies/managed/daprivacyscanner.json",
     "vivaldi": "/etc/vivaldi/policies/managed/daprivacyscanner.json",
 }
-POLICIES = {
+POLICIES: dict[str, dict[str, tuple]] = {
     "firefox": {"DisableTelemetry": _BOOL, "DisableFirefoxStudies": _BOOL},
     "chromium": {"MetricsReportingEnabled": _BOOL, "BlockThirdPartyCookies": _BOOL,
                  "WebRtcIPHandling": ("default_public_interface_only", "disable_non_proxied_udp"),
@@ -1838,7 +1851,7 @@ def _os_real_program(path: str, root: str) -> str | None:
     return real
 
 
-def _os_hosts(hosts) -> str:
+def _os_hosts(hosts: Iterable[str]) -> str:
     """A regular expression matching exactly these names (and the names under a ".name")."""
     parts = [(r".+\." + h[1:].replace(".", r"\.")) if h.startswith(".") else h.replace(".", r"\.") for h in hosts]
     return "^(" + "|".join(parts) + ")$"
@@ -1915,8 +1928,10 @@ def _opensnitch_config(lines: list[str], values: dict) -> list[str]:
     for k, v in want.items():
         pattern = re.compile(rf'^(\s*"{k}"\s*:\s*)("[^"]*"|-?[0-9]+)(\s*,?\s*)$')
         hits = [i for i, line in enumerate(out) if pattern.match(line)]
-        if len(hits) == 1:
-            out[hits[0]] = pattern.sub(lambda m, v=v: m.group(1) + json.dumps(v) + m.group(3), out[hits[0]])
+        if len(hits) == 1:                  # the whole line matched (^…$): its value replaced
+            m = pattern.match(out[hits[0]])
+            if m is not None:
+                out[hits[0]] = m.group(1) + json.dumps(v) + m.group(3)
     try:
         edited = json.loads("\n".join(out))
     except ValueError:
@@ -2049,9 +2064,9 @@ def revert(args: dict) -> dict:
                   and not str(s["before"][0]).startswith("masked") and _unit_state(s["unit"])[0].startswith("masked")]
         if masked:                      # unmasked first: a masked unit can't be enabled or started
             _do(["systemctl", "unmask", *masked])
-        now = {s["unit"]: _unit_state(s["unit"]) for s in services}
+        states = {s["unit"]: _unit_state(s["unit"]) for s in services}
         _set_units({s["unit"]: (s["before"][0] == "enabled" if s["before"][0] in ("enabled", "disabled") else None,
-                                s["before"][1] == "active") for s in services}, now)
+                                s["before"][1] == "active") for s in services}, states)
         said += _units_said(services)
     if sc:
         with open(_check_path(_sysctl_path(sc["key"])), "w", encoding="utf-8") as fh:
@@ -2092,7 +2107,7 @@ def revert(args: dict) -> dict:
 def _units_said(services: list[dict]) -> list[str]:
     """What putting units back did, in words, units in the same state together ("avahi-daemon.socket and
     avahi-daemon.service enabled and running again")."""
-    def words(before) -> str:
+    def words(before: list[str]) -> str:
         en, active = before[0], before[1] == "active"
         if en == "enabled":
             return "enabled and running again" if active else "enabled again"
@@ -2125,7 +2140,7 @@ EPHEMERAL_SIZE_MB = (50, 65536)                # and at most half of the memory
 UNIT_MARK = "# Created by DA Privacy Kit: {what} kept in memory (tmpfs), empty at every {when}.\n" \
             "# Revert the fix in the app's History to remove it."
 _HOME = re.compile(r"^/[A-Za-z0-9._@+/-]+$")    # plain characters only: the path goes into a unit file
-CALLER = None                                  # (uid, gid, home) of the user asking; tests set it
+CALLER: tuple[int, int, str] | None = None     # (uid, gid, home) of the user asking; tests set it
 
 
 def unit_name(path: str, suffix: str = "mount") -> str:
@@ -2415,7 +2430,7 @@ def _ephemeral_has_files(mu: dict) -> bool:
         os.close(fd)
 
 
-def _stop_metadata_daemon(uid) -> None:
+def _stop_metadata_daemon(uid: object) -> None:
     """GVFS's metadata daemon of that user holds its folder open (its database mapped): stopped before the folder is
     unmounted, as applying stops it (as the user) before the folder is emptied. It starts again on demand, so this is
     the one program stopped here."""
@@ -2556,7 +2571,7 @@ MS_NOSUID, MS_NODEV, MS_NOEXEC = 2, 4, 8
 UMOUNT_NOFOLLOW, MNT_DETACH = 8, 2
 
 
-def _libc():
+def _libc() -> tuple[Any, Any]:
     import ctypes
     import ctypes.util
     libc = ctypes.CDLL(ctypes.util.find_library("c") or None, use_errno=True)
@@ -2583,7 +2598,7 @@ MOUNT, UMOUNT = _mount, _umount                # tests replace them
 def _kernel_has_noswap(release: str | None = None) -> bool:
     """tmpfs's noswap option arrived in Linux 6.4."""
     m = re.match(r"^(\d+)\.(\d+)", release or os.uname().release)
-    return bool(m) and (int(m.group(1)), int(m.group(2))) >= (6, 4)
+    return m is not None and (int(m.group(1)), int(m.group(2))) >= (6, 4)
 
 
 # systemd makes a mount unit of every mount it sees, and logs "<unit>: Deactivated successfully." at every unmount, in
@@ -2728,7 +2743,7 @@ def ramdisk_open(args: dict) -> dict:
             raise Refused(f"~/{name} has files in it on the disk: move them out first (a mount would hide them, "
                           "not remove them)")
         before = stat.S_IMODE(os.fstat(fd).st_mode)
-        undo = (before, None)                   # what a failed mount puts back: the mode, and the record that was there
+        undo: tuple[int, dict | None] = (before, None)  # what a failed mount puts back: the mode, the record there
         earlier = None if created else _record_of(fd)
         if earlier is not None:
             # left by an open whose mount a restart ended (the folder read-only, 0500): its record still says what the
@@ -2922,7 +2937,8 @@ def swap_on(args: dict) -> dict:
     _must_be_root()
     state = _swap_state() or {"devices": []}
     active = {s["name"] for s in swaps_on_disk()}
-    on, failed = [], []
+    on: list[str] = []
+    failed: list[str] = []
     for dev in state.get("devices", []):
         name, prio = (dev.get("name"), dev.get("priority")) if isinstance(dev, dict) else (None, None)
         if not isinstance(name, str) or not name.startswith("/") or "\0" in name or not _swap_target(name):
@@ -3005,9 +3021,10 @@ class _as_caller:
     with the fsuid and come back with it. As anyone but root (tests), nothing changes."""
 
     def __init__(self, uid: int, gid: int, groups: set[int]):
-        self.uid, self.gid, self.groups, self.saved = uid, gid, sorted(groups), None
+        self.uid, self.gid, self.groups = uid, gid, sorted(groups)
+        self.saved: list[int] | None = None
 
-    def __enter__(self):
+    def __enter__(self) -> _as_caller:
         if os.geteuid() != 0:
             return self
         libc = ctypes.CDLL(None, use_errno=True)
@@ -3018,7 +3035,7 @@ class _as_caller:
         self.libc = libc
         return self
 
-    def __exit__(self, *exc):
+    def __exit__(self, *exc: object) -> Literal[False]:
         if self.saved is not None:
             self.libc.setfsuid(0)
             self.libc.setfsgid(0)
@@ -3037,7 +3054,7 @@ def _caller_may(st: os.stat_result, uid: int, groups: set[int], bits: int) -> bo
     return mode & bits == bits
 
 
-def _trim_mount(mount) -> list[str]:
+def _trim_mount(mount: object) -> list[str]:
     """The mount table line for "/", the filesystem holding the caller's home, or another ext4 or
     btrfs filesystem on a device whose top folder the caller can create files in (a second SSD,
     an external one): the test writes its files there as the caller."""
@@ -3049,8 +3066,9 @@ def _trim_mount(mount) -> list[str]:
     h = _holding(table, home)
     if h is not None:
         allowed[_unescape(h[1])] = h
-    if allowed.get(mount) is not None:
-        return allowed[mount]
+    chosen = allowed.get(mount)
+    if chosen is not None:
+        return chosen
     line = next((f for f in reversed(table) if _unescape(f[1]) == mount), None)     # the one visible there
     if line is not None and line[2] in TRIM_FSTYPES and line[0].startswith("/dev/"):
         try:
@@ -3174,9 +3192,9 @@ def _ata_facts(disk: str) -> dict:
     """A SATA drive's IDENTIFY data, from smartctl (hdparm when smartmontools is missing): word 69
     has DRAT (bit 14), RZAT (bit 5) and "encrypts all user data" (bit 4); word 59 the Sanitize
     feature set (bit 12) with CRYPTO SCRAMBLE (bit 13); word 169 bit 0 is TRIM."""
-    out = {"disk": disk, "behaviour": None, "source": "", "why": "",
-           "encryption": {"encrypts_all": None, "crypto_erase": None, "tcg": None, "notes": []}}
-    enc = out["encryption"]
+    out: dict[str, Any] = {"disk": disk, "behaviour": None, "source": "", "why": "",
+                           "encryption": {"encrypts_all": None, "crypto_erase": None, "tcg": None, "notes": []}}
+    enc: dict[str, Any] = out["encryption"]
     code, text, _ = RUN(["smartctl", "--identify=wn", f"/dev/{disk}"])
     words = parse_smartctl_identify(text) if code != 127 else {}
     if 69 in words or 169 in words:
@@ -3217,9 +3235,9 @@ def _nvme_facts(disk: str) -> dict:
     bit 2: format with crypto erase), and a TCG Level 0 Discovery when it has security commands.
     NVMe has no flag like ATA's "encrypts all user data". VERIFY on real drives."""
     dev = _p(f"/dev/{disk}")
-    out = {"disk": disk, "behaviour": None, "source": "NVMe identify data, DLFEAT", "why": "",
-           "encryption": {"encrypts_all": None, "crypto_erase": None, "tcg": None, "notes": []}}
-    enc = out["encryption"]
+    out: dict[str, Any] = {"disk": disk, "behaviour": None, "source": "NVMe identify data, DLFEAT", "why": "",
+                           "encryption": {"encrypts_all": None, "crypto_erase": None, "tcg": None, "notes": []}}
+    enc: dict[str, Any] = out["encryption"]
     ns = NVME_ADMIN(dev, NVME_IDENTIFY, 0)
     if not ns or len(ns) < 64:
         out["why"] = "the drive didn't answer the identify command"
@@ -3295,7 +3313,7 @@ def erase_facts(args: dict) -> dict:
     base = _sysblock(disk)
     if not os.path.isdir(base) or os.path.exists(base + "/partition"):
         raise Refused("not a whole drive")
-    out = {"disk": disk, "ata": None, "nvme": None, "source": "", "notes": []}
+    out: dict[str, Any] = {"disk": disk, "ata": None, "nvme": None, "source": "", "notes": []}
     if disk.startswith("nvme"):
         ctrl = NVME_ADMIN(_p(f"/dev/{disk}"), NVME_IDENTIFY, 1, namespace=False)
         if not ctrl or len(ctrl) < 528:
@@ -3348,7 +3366,7 @@ TRIM_PIECE = 64 << 10                          # a failed read is retried in pie
 TRIM_BAD_RANGES = 1000                         # unreadable ranges kept per pass (bytes are always counted)
 
 
-def _read_window(fd: int, buf, pos: int, want: int) -> tuple[int, list[list[int]]]:
+def _read_window(fd: int, buf: mmap.mmap | bytearray, pos: int, want: int) -> tuple[int, list[list[int]]]:
     """Reads `want` bytes at `pos` into buf. Where the drive answers with an I/O error (a failing
     sector), the read is retried in pieces of TRIM_PIECE and the pieces it can't read are zero-filled
     and returned as [offset, length] ranges: nothing stale from an earlier read is left in them to be
@@ -3360,7 +3378,8 @@ def _read_window(fd: int, buf, pos: int, want: int) -> tuple[int, list[list[int]
         except OSError as e:
             if e.errno != errno.EIO:
                 raise Refused(f"the device couldn't be read: {e.strerror}") from None
-        n, bad = 0, []
+        n = 0
+        bad: list[list[int]] = []
         for q in range(0, want, TRIM_PIECE):
             k = min(TRIM_PIECE, want - q)
             try:
@@ -3449,7 +3468,8 @@ def _trim_run() -> dict:
     return _TRIM
 
 
-def _scan_window(buf, n: int, base: int, counted: int, run: dict, p: dict, keep_offsets: bool) -> None:
+def _scan_window(buf: mmap.mmap | bytes | bytearray, n: int, base: int, counted: int, run: dict, p: dict,
+                 keep_offsets: bool) -> None:
     """Counts what lies in buf[:n] (read at device offset `base`) and ends past `counted`:
     records whose run ID and checksum match, and the run's tag in file names."""
     needle = TRIM_MAGIC + run["run"]
@@ -3491,9 +3511,8 @@ def trim_scan(args: dict) -> dict:
     name, off, length = args.get("pass"), args.get("offset"), args.get("length")
     if name not in TRIM_PASSES:
         raise Refused("bad request")
-    for v in (off, length):
-        if not isinstance(v, int) or isinstance(v, bool):
-            raise Refused("bad request")
+    if not isinstance(off, int) or isinstance(off, bool) or not isinstance(length, int) or isinstance(length, bool):
+        raise Refused("bad request")
     if off < 0 or off % TRIM_ALIGN or not 0 < length <= TRIM_CALL_MAX or off >= run["size"]:
         raise Refused("bad range")
     p = run["passes"].setdefault(name, {"bits": bytearray(TRIM_MAX_RECORDS // 8), "found": 0, "copies": 0,
@@ -3720,7 +3739,8 @@ def parse_ext4_dir_block(block: bytes, skip_index: bool = False, live: bool = Fa
     ".." is the index, not entries. Index blocks further on (an empty entry over the whole block)
     have none. `live`: the live entries' names too (an old copy of the block, in the journal or
     freed, holds the names of files deleted since as live entries)."""
-    size, out, pos = len(block), set(), 0
+    size, pos = len(block), 0
+    out: set[bytes] = set()
     first = True
     while pos + 8 <= size:
         ino, rec_len, name_len, ftype = int.from_bytes(block[pos:pos + 4], "little"), \
@@ -3792,9 +3812,10 @@ class _Crc0:
     """crc32c from state 0 of many blocks: by the kernel (its hash interface, AF_ALG) where it answers as the
     table does, else by the table."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         import socket
-        self.op = self.sock = None
+        self.op: socket.socket | None = None
+        self.sock: socket.socket | None = None
         try:
             self.sock = socket.socket(socket.AF_ALG, socket.SOCK_SEQPACKET, 0)
             self.sock.bind(("hash", "crc32c"))
@@ -3805,7 +3826,7 @@ class _Crc0:
         except (OSError, AttributeError):
             self.close()
 
-    def __call__(self, data) -> int:
+    def __call__(self, data: bytes) -> int:
         if self.op is None:
             return _crc32c_raw(0, data)
         self.op.sendall(data)
@@ -3846,7 +3867,9 @@ def _xx_round(acc: int, value: int) -> int:
 def xxhash64(data: bytes, seed: int = 0) -> int:
     """XXH64, which btrfs can checksum its blocks with, in Python: the standard library doesn't have it."""
     n, p = len(data), 0
-    rotl = lambda x, r: ((x << r) | (x >> (64 - r))) & _U64  # noqa: E731
+
+    def rotl(x: int, r: int) -> int:
+        return ((x << r) | (x >> (64 - r))) & _U64
     if n >= 32:
         v = [(seed + _XX1 + _XX2) & _U64, (seed + _XX2) & _U64, seed & _U64, (seed - _XX1) & _U64]
         words = _struct.unpack_from(f"<{n // 32 * 4}Q", data)
@@ -3947,18 +3970,21 @@ def _btrfs_place(chunks: list[tuple], logical: int, devid: int) -> int | None:
         if start <= logical < start + length and not kind & BTRFS_BG_PROFILES & ~BTRFS_BG_DUP:
             for dev, offset in stripes:
                 if dev == devid:
-                    return offset + logical - start
+                    place: int = offset + logical - start
+                    return place
     return None
 
 
-def btrfs_chunk_map(read, fs: dict) -> list[tuple] | None:
+def btrfs_chunk_map(read: Callable[[int, int], bytes], fs: dict) -> list[tuple] | None:
     """Every chunk of a single-device btrfs, from its chunk tree (`read(offset, length)` reads the device): the tree
     found through the superblock's bootstrap chunks, each of its blocks checked as the scan checks a leaf (fsid, its
     own address, checksum). None when it can't be read."""
     boot = _btrfs_sys_chunks(fs["sys_chunks"])
     node = fs["nodesize"]
     chunks: dict[int, tuple] = {c[0]: c for c in boot}
-    todo, seen, uuid_ = [(fs["chunk_root"], fs["chunk_level"])], set(), None
+    todo: list[tuple[int, int]] = [(fs["chunk_root"], fs["chunk_level"])]
+    seen: set[int] = set()
+    uuid_: bytes | None = None
     while todo:
         logical, level = todo.pop()
         if logical in seen or len(seen) >= BTRFS_CHUNK_NODES or level > 7:
@@ -4100,7 +4126,8 @@ def parse_ext4_superblock(sb: bytes) -> dict | None:
     return out
 
 
-def ext4_extents(node: bytes, read_block, depth_left: int = 3, _seen: set | None = None) -> list[tuple[int, int, int]] | None:
+def ext4_extents(node: bytes, read_block: Callable[[int], bytes | None], depth_left: int = 3,
+                 _seen: set | None = None) -> list[tuple[int, int, int]] | None:
     """(first logical block, count, first physical block) of an extent tree whose root is `node`
     (an inode's 60-byte block map, or a tree block); `read_block(n)` reads tree blocks further down.
     None if it isn't an extent tree or can't be read. The journal's root is the superblock's copy of its
@@ -4228,8 +4255,8 @@ def _ext4_journal(fd: int, bsize: int) -> tuple[str, list[tuple[int, int, int]],
     if any(n <= 0 for _, n in phys) or any(a[0] + a[1] > b[0] for a, b in zip(phys, phys[1:])) or (
             blocks is not None and phys[-1][0] + phys[-1][1] > blocks):
         return "unknown", [], None, bad
-    jsb = read_block(extents[0][2]) if extents[0][0] == 0 else None
-    jsb = parse_jbd2_superblock(jsb or b"")
+    raw = read_block(extents[0][2]) if extents[0][0] == 0 else None
+    jsb = parse_jbd2_superblock(raw or b"")
     if jsb is None or jsb["block_size"] != bsize:
         return "unknown", [], None, bad
     return "read", extents, jsb, bad
@@ -4242,7 +4269,7 @@ def _journal_copies(fd: int, bsize: int, homes: set[int]) -> tuple[str, dict[int
     over a copy, what is there now is read, which is what someone with the disk would find."""
     import mmap
     state, extents, jsb, bad = _ext4_journal(fd, bsize)
-    if state != "read":
+    if state != "read" or jsb is None:              # read: with its superblock
         return state, {}, 0, bad
     first, incompat = jsb["first"], jsb["incompat"]
     maxlen = jsb["maxlen"] - (jsb["fast_commit"] if incompat & JBD2_FAST_COMMIT and jsb["fast_commit"] < jsb["maxlen"] - first else 0)
@@ -4281,8 +4308,8 @@ def _journal_copies(fd: int, bsize: int, homes: set[int]) -> tuple[str, dict[int
         where = phys(lblk)
         if where is None:
             continue
-        data, b = _aligned_read(fd, where * bsize, bsize)
-        bad += b
+        data, lost = _aligned_read(fd, where * bsize, bsize)
+        bad += lost
         if data:
             copies.setdefault(home, []).append(data)
     return "read", copies, read, bad
@@ -4301,7 +4328,7 @@ def _walk_folders_as(root: str, uid: int, groups: set[int], own_only: bool, ext4
     dirs: dict[tuple[int, int], str] = {}
     blocks: list = []
     gens: dict = {}
-    trees: dict[int, int] = {}                  # st_dev -> btrfs tree id
+    trees: dict[int, int | None] = {}           # st_dev -> btrfs tree id
     mounts = {_unescape(f[1]) for f in _proc_mounts()}
     full = False
     try:
@@ -4309,7 +4336,7 @@ def _walk_folders_as(root: str, uid: int, groups: set[int], own_only: bool, ext4
     except OSError:
         return dirs, blocks, full, gens
 
-    def allowed(st) -> bool:
+    def allowed(st: os.stat_result) -> bool:
         return st.st_uid == uid if own_only else _caller_may(st, uid, groups, 0o5)
 
     def visit(fd: int, rel: str, depth: int) -> None:
@@ -4320,9 +4347,10 @@ def _walk_folders_as(root: str, uid: int, groups: set[int], own_only: bool, ext4
         else:
             if st.st_dev not in trees:
                 trees[st.st_dev] = BTRFS_TREE_ID(fd)
-            tree = trees[st.st_dev]
-            if tree is None:
+            got = trees[st.st_dev]
+            if got is None:
                 return
+            tree = got
         dirs[(tree, st.st_ino)] = rel
         if not ext4:
             gen = GENERATION(fd)
@@ -4388,7 +4416,7 @@ BTRFS_TREE_ID = _btrfs_tree_id                 # tests replace it
 # ext4: the names in the journal's copies of folder blocks (see the notes above)
 
 def _journal_left(j: dict) -> bool:
-    return j["state"] == "read" and j["pos"] < j["total"]
+    return bool(j["state"] == "read" and j["pos"] < j["total"])
 
 
 def _ext4_checkpoint(s: dict, flags: int) -> None:
@@ -4418,10 +4446,11 @@ def _names_journal_begin(s: dict, gens: dict[int, int]) -> dict:
     """Where the journal is, what ties a folder block in it to a listed folder (each folder's key, see
     _ext4_seed_key), and whether this kernel can clear it."""
     bsize = os.statvfs(_p(s["home"])).f_bsize
-    j = {"state": "unknown", "extents": [], "bsize": bsize, "pos": 0, "total": 0, "csum": False, "seed": None,
-         "fast_commit": False, "inodes": None, "keys": {}, "basis": [], "orphans": {}, "norphans": 0, "kids": {},
-         "names": 0, "full": False, "clearable": False, "pending": {}, "wrapped": {}, "weak": [], "owner": {},
-         "first": 1, "last": 0, "incompat": 0, "itable": [], "icopies": {}, "nicopies": 0}
+    j: dict[str, Any] = {
+        "state": "unknown", "extents": [], "bsize": bsize, "pos": 0, "total": 0, "csum": False, "seed": None,
+        "fast_commit": False, "inodes": None, "keys": {}, "basis": [], "orphans": {}, "norphans": 0, "kids": {},
+        "names": 0, "full": False, "clearable": False, "pending": {}, "wrapped": {}, "weak": [], "owner": {},
+        "first": 1, "last": 0, "incompat": 0, "itable": [], "icopies": {}, "nicopies": 0}
     s["jfound"] = {}
     fd = _names_device(s)
     try:
@@ -4433,7 +4462,7 @@ def _names_journal_begin(s: dict, gens: dict[int, int]) -> dict:
     finally:
         os.close(fd)
     j["state"] = state
-    if state != "read" or fs is None:
+    if state != "read" or fs is None or jsb is None:      # read: with its superblock
         return j
     fast = fs["fast_commit"] or bool(jsb["incompat"] & JBD2_FAST_COMMIT)
     j.update(extents=extents, total=max(a + n for a, n, _ in extents), csum=fs["csum"] and bsize > 12, seed=fs["seed"],
@@ -4494,7 +4523,7 @@ def _names_journal_step(s: dict, fd: int) -> None:
             s["unreadable"] += sum(x for _, x in bad)
             for i in range(max(got, 0) // bsize):
                 at, blk = i * bsize, j["pos"] + i
-                if j["csum"]:
+                if crc is not None:                                     # j["csum"]: there are checksums to tie
                     home = j["pending"].pop(blk, None)
                     if buf[at:at + 4] == JBD2_MAGIC_BYTES:           # the journal's own block: a descriptor says
                         for t, of in enumerate(parse_jbd2_descriptor(buf[at:at + bsize], j["incompat"]) or []):
@@ -4689,7 +4718,7 @@ def _names_gone_folders(s: dict, fd: int) -> list[tuple[str, set[bytes]]]:
     if not j["csum"] or not j["inodes"] or not j["orphans"]:
         return []
     n = j["bsize"] - 12
-    uid = s["uid"]
+    uid: int = s["uid"]
     groups = s.get("groups", set())
 
     def covered(owner: tuple[int, int, int]) -> bool:
@@ -4699,7 +4728,9 @@ def _names_gone_folders(s: dict, fd: int) -> list[tuple[str, set[bytes]]]:
         st = os.stat_result((mode, 0, 0, 0, o_uid, o_gid, 0, 0, 0, 0))
         return _caller_may(st, uid, groups, 0o5)
 
-    out, seen, looked = [], set(), 0
+    out: list = []
+    seen: set[int] = set()
+    looked = 0
     budget = [NAMES_GONE_READS]                     # journal blocks read for this, all folders together
     queue = [(ino, s["dirs"][(0, ino)], kids) for ino, kids in j["kids"].items() if (0, ino) in s["dirs"]]
     while queue:
@@ -4710,7 +4741,8 @@ def _names_gone_folders(s: dict, fd: int) -> list[tuple[str, set[bytes]]]:
                 continue
             seen.add(ino)
             looked += 1
-            key, blocks = None, []
+            key = None
+            blocks: list[tuple[bytes, list[tuple[int, int, bytes]]]] = []
             for gen, (deleted, owners) in _ext4_inode_gens(fd, j, ino).items():
                 key = _ext4_seed_key(j["basis"], j["seed"], ino, gen)
                 if key not in j["orphans"]:
@@ -4736,7 +4768,8 @@ def _names_gone_folders(s: dict, fd: int) -> list[tuple[str, set[bytes]]]:
             if not blocks:
                 continue
             j["norphans"] -= len(j["orphans"].pop(key))
-            names, sub = set(), {}
+            names: set[bytes] = set()
+            sub: dict[bytes, int] = {}
             for b, entries in blocks:
                 names |= parse_ext4_dir_block(b, live=True)
                 sub.update({x: i for i, ftype, x in entries if ftype == 2 and x not in (b".", b"..")})
@@ -4768,10 +4801,11 @@ def names_begin(args: dict) -> dict:
     _NAMES.clear()
     groups = _caller_groups(uid, gid)
     dirs, blocks, full, gens = _walk_folders(root, uid, groups, own_only, ext4)
-    state = {"uid": uid, "gid": gid, "home": root, "scope": "home" if own_only else "mount", "fstype": f[2], "device": real,
-             "rdev": st.st_rdev, "ino": st.st_ino, "size": _device_size(real), "dirs": dirs, "blocks": blocks,
-             "done": 0, "found": {}, "full": full, "trees": {k[0] for k in dirs}, "unreadable": 0, "mount": f[1],
-             "own_only": own_only, "groups": groups}
+    state: dict[str, Any] = {
+        "uid": uid, "gid": gid, "home": root, "scope": "home" if own_only else "mount", "fstype": f[2], "device": real,
+        "rdev": st.st_rdev, "ino": st.st_ino, "size": _device_size(real), "dirs": dirs, "blocks": blocks,
+        "done": 0, "found": {}, "full": full, "trees": {k[0] for k in dirs}, "unreadable": 0, "mount": f[1],
+        "own_only": own_only, "groups": groups}
     if ext4:
         state["total"] = len(blocks)
         state["j"] = _names_journal_begin(state, gens)
@@ -4830,11 +4864,12 @@ def _add_name(s: dict, key: tuple[int, int], name: bytes) -> None:
         s["found"].setdefault(key, set()).add(name)
 
 
-def _dir_names(fd: int, buf, ext: list, indexed: bool, bsize: int, live: bool = False, tie: int | None = None,
-               crc=None) -> tuple[set[bytes], int]:
+def _dir_names(fd: int, buf: mmap.mmap, ext: list, indexed: bool, bsize: int, live: bool = False,
+               tie: int | None = None, crc: Callable[[bytes], int] | None = None) -> tuple[set[bytes], int]:
     """The names in a folder's blocks at `ext` (deleted ones; with `live`, all): (names, unreadable bytes). `tie`:
     the folder's checksum key (_ext4_seed_key), which each block must carry to be read as the folder's."""
-    names, bad, first = set(), 0, True
+    names: set[bytes] = set()
+    bad, first = 0, True
     n_tail = bsize - 12
     for phys, length in ext:
         length = min(length, NAMES_DIR_BYTES)
@@ -4853,7 +4888,7 @@ def _dir_names(fd: int, buf, ext: list, indexed: bool, bsize: int, live: bool = 
     return names, bad
 
 
-def _crc32c_raw_0(data) -> int:
+def _crc32c_raw_0(data: bytes) -> int:
     return _crc32c_raw(0, data)
 
 
@@ -4905,10 +4940,10 @@ def names_step(args: dict) -> dict:
                 while pos < end:
                     _check_cancel()
                     want = min(TRIM_READ, s["size"] - pos)
-                    n, bad = _read_window(fd, buf, pos, want)
+                    n, lost = _read_window(fd, buf, pos, want)
                     if n <= 0:
                         break
-                    s["unreadable"] += sum(o + k - max(o, covered) for o, k in bad if o + k > covered)
+                    s["unreadable"] += sum(o + k - max(o, covered) for o, k in lost if o + k > covered)
                     covered = pos + n
                     i = buf.find(fs["fsid"], 0, n)
                     while i != -1:
@@ -4946,7 +4981,7 @@ def names_step(args: dict) -> dict:
     return {"done": s["done"], "total": s["total"], "unit": "bytes", "phase": "disk", "more": s["done"] < s["total"]}
 
 
-def _live(s: dict, rel: str, names) -> set[bytes]:
+def _live(s: dict, rel: str, names: Iterable[bytes]) -> set[bytes]:
     """Those of `names` that a file in the folder at `rel` has now: looked up in that folder as the listing reached
     it (_open_kept), never by a path, which root would follow through a link the caller put on the way (a guess
     at every name in /root/.ssh, answered)."""
@@ -5024,7 +5059,7 @@ def names_result(args: dict) -> dict:
         if count + len(gone) > NAMES_MAX:
             gone, more = gone[:NAMES_MAX - count], True
         shown = os.fsencode(rel).decode(errors="replace")
-        entry = {"path": shown, "names": [n.decode() for n in gone]}
+        entry: dict[str, Any] = {"path": shown, "names": [n.decode() for n in gone]}
         journal = [n.decode() for n in gone if n not in own]
         if journal:                                      # the names only the journal holds
             entry["journal"] = journal
@@ -5052,12 +5087,13 @@ def names_result(args: dict) -> dict:
     return result
 
 
-def _kept(s: dict, path) -> dict:
+def _kept(s: dict, path: object) -> dict:
     if not s.get("handed"):
         raise Refused("the names haven't been listed yet")
     if not isinstance(path, str) or path not in s["kept"]:
         raise Refused("that folder isn't in the list")
-    return s["kept"][path]
+    kept: dict = s["kept"][path]
+    return kept
 
 
 def _open_kept(s: dict, rel: str, mounts: set[str] | None = None) -> int:
@@ -5554,7 +5590,7 @@ class _Monitor:
     blocked, and the lookups behind it were lost. Never a file in /tmp, which is on the disk on Debian, Ubuntu and
     Mint: every account's lookups would have been left in its free space."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.out = os.fdopen(os.memfd_create("daprivacyscanner-lookups", os.MFD_CLOEXEC), "w+b")
         try:
             self.proc = subprocess.Popen(["resolvectl", "monitor", "--json=short"], stdout=self.out,
@@ -5580,7 +5616,7 @@ MONITOR_MAX = 64 << 20                        # what is read of the monitor's ou
 MONITOR_END_WAIT = 5                          # seconds it is given to end before it is killed
 
 
-def _monitor():
+def _monitor() -> _Monitor:
     return _Monitor()
 
 
@@ -5588,7 +5624,7 @@ MONITOR = _monitor          # tests replace it, and SLEEP
 SLEEP = time.sleep
 
 
-def _walk(obj, names: list, addrs: list) -> None:
+def _walk(obj: object, names: list[str], addrs: list[str]) -> None:
     if isinstance(obj, dict):
         n = obj.get("name")
         if isinstance(n, str):
@@ -5612,7 +5648,8 @@ def parse_monitor(text: str) -> list[dict]:
             obj = json.loads(line)
         except ValueError:
             continue
-        names, addrs = [], []
+        names: list[str] = []
+        addrs: list[str] = []
         _walk(obj.get("question", []), names, addrs)
         _walk(obj.get("answer", []), [], addrs)
         if names:
@@ -5669,8 +5706,9 @@ def planned(request: str, args: dict, home: str | None = None) -> list[str]:
     q = lambda argv: " ".join(shlex.quote(a) for a in argv)  # noqa: E731
     out: list[str] = []
     try:
+        browser: Any = args.get("browser")              # any value: one that isn't a key finds nothing
         path = (DROPINS[args["name"]][0] if request == "write_dropin" and args.get("settings") is not None
-                else POLICY_FILES.get(args.get("browser")) if request in ("browser_policy", "block_extensions") else None)
+                else POLICY_FILES.get(browser) if request in ("browser_policy", "block_extensions") else None)
         paths = [path.format(uid=os.getuid()) if "{uid}" in path else path] if path else []
         if request == "edit_config" and args.get("target") == "autologin":
             paths = list(_autologin_overrides())
@@ -5742,7 +5780,11 @@ def planned_files(request: str, args: dict, uid: int | None = None, home: str | 
     """For the app's dry run: (path, what is there now, what the change writes there) for each file a drop-in or a
     line edit writes, so the page can show the lines; files the user can't read (cupsd.conf on some systems) are
     left out, as are requests that write no file of these kinds. Reads nothing that needs root; never raises."""
-    dec = lambda b: None if b is None else b.decode("utf-8", "replace")  # noqa: E731
+    def dec(b: bytes | None) -> str | None:
+        return None if b is None else b.decode("utf-8", "replace")
+
+    def text(b: bytes) -> str:
+        return b.decode("utf-8", "replace")
     try:
         if request == "write_dropin" and args.get("name") in DROPINS:
             name, settings = args["name"], args.get("settings")
@@ -5774,7 +5816,7 @@ def planned_files(request: str, args: dict, uid: int | None = None, home: str | 
                 except (Refused, OSError):
                     old = None
                 if old != new:
-                    out.append((path, dec(old), dec(new)))
+                    out.append((path, dec(old), text(new)))
             return out
         if request == "edit_config" and args.get("target") in EDITS:
             patterns, allowed, _ = EDITS[args["target"]]
@@ -5790,7 +5832,7 @@ def planned_files(request: str, args: dict, uid: int | None = None, home: str | 
                     except (Refused, OSError):
                         old = None
                     if old != content:
-                        out.append((path, dec(old), dec(content)))
+                        out.append((path, dec(old), text(content)))
             for pattern, edit in patterns.items():
                 for path in _expand(pattern):
                     try:
@@ -5800,7 +5842,7 @@ def planned_files(request: str, args: dict, uid: int | None = None, home: str | 
                     if data is not None:
                         new = _join(edit(_lines(data), values))
                         if new != data:
-                            out.append((path, dec(data), dec(new)))
+                            out.append((path, dec(data), text(new)))
             return out
     except (Refused, OSError, KeyError, TypeError, ValueError):
         return []
@@ -5853,7 +5895,7 @@ FAN_INFO_DFID_NAME, FAN_INFO_DFID, FAN_INFO_OLD_DFID_NAME, FAN_INFO_NEW_DFID_NAM
 _WATCH: dict = {}                              # the running watch: its child process and who asked
 
 
-def _watch_units(units) -> list[str]:
+def _watch_units(units: object) -> list[str]:
     if (not isinstance(units, list) or not 0 < len(units) <= WATCH_UNITS_MAX
             or not all(isinstance(u, str) and WATCH_UNIT.fullmatch(u) for u in units)):
         raise Refused("which app to watch isn't named as this expects")
@@ -5897,7 +5939,9 @@ class _Tally:
     """What the watch has seen, in memory: the app's files one by one (WATCH_FILES_MAX, then per folder), the
     files the caller's other programs wrote, and counts for the rest."""
 
-    def __init__(self, uid: int, home: str, units: list[str], proc=_watch_proc, clock=time.monotonic):
+    def __init__(self, uid: int, home: str, units: list[str],
+                 proc: Callable[[int], tuple[int, str, str] | None] = _watch_proc,
+                 clock: Callable[[], float] = time.monotonic) -> None:
         self.uid, self.home, self.units, self.proc, self.clock = uid, home, units, proc, clock
         self.keep = _watch_keep(uid, home)
         self.pids: dict[int, tuple[float, tuple[str, str] | None]] = {}
@@ -5962,8 +6006,8 @@ class _Tally:
         kept = _watch_inside(path, self.keep)
         if w[0] == "gone":
             if _watch_inside(path, (self.home,)):       # counted under its folder, two deep at most: never named
-                folder = "/".join(path.split("/")[:-1][:len(self.home.split("/")) + 2])
-                self.gone[folder] = self.gone.get(folder, 0) + 1
+                parent = "/".join(path.split("/")[:-1][:len(self.home.split("/")) + 2])
+                self.gone[parent] = self.gone.get(parent, 0) + 1
             return
         minute = int(self.clock() // 60)
         if w[0] == "other":
@@ -6041,7 +6085,7 @@ class _Tally:
                 "unresolved": self.unresolved, "others_left": self.others_left}
 
 
-def _fan_events(buf: bytes):
+def _fan_events(buf: bytes | bytearray) -> Iterator[tuple[int, int, list[tuple[int, int, bytes, bytes]]]]:
     """Each event in what a fanotify descriptor returned: (mask, pid, [(info type, handle type, handle, name)])."""
     i, size = 0, len(buf)
     while i + 24 <= size:
@@ -6053,7 +6097,8 @@ def _fan_events(buf: bytes):
                 os.close(fd)
             except OSError:
                 pass
-        infos, j, end = [], i + meta, i + length
+        infos: list[tuple[int, int, bytes, bytes]] = []
+        j, end = i + meta, i + length
         while j + 4 <= end:
             kind, _pad, n = _struct.unpack_from("=BBH", buf, j)
             if n < 4 or j + n > end:
@@ -6070,7 +6115,7 @@ def _fan_events(buf: bytes):
 
 
 def _watch_mountinfo() -> list[dict]:
-    out = []
+    out: list[dict] = []
     try:
         with open(_p("/proc/self/mountinfo"), "rb") as f:
             text = f.read(64 * MAX_FILE).decode(errors="surrogateescape")
@@ -6096,7 +6141,9 @@ def _watch_plan(uid: int, home: str) -> tuple[list[dict], list[list[str]]]:
     table = [m for m in _watch_mountinfo() if not _watch_inside(m["mount"], (WATCH_MOUNT_DIR,))]   # not its own
     base = [home, "/", "/tmp", "/var/tmp", "/dev/shm", f"/run/user/{uid}"]
     wanted = base + [m["mount"] for m in table if _watch_inside(m["mount"], _watch_keep(uid, home))]
-    plan, skipped, seen = [], [], set()
+    plan: list[dict] = []
+    skipped: list[list[str]] = []
+    seen: set[int] = set()
     for i, path in enumerate(wanted):
         held = [m for m in table if path == m["mount"] or path.startswith(m["mount"].rstrip("/") + "/")]
         if not held:
@@ -6143,7 +6190,7 @@ def _watch_why(fs: dict, uid: int, e: OSError) -> str:
         return "a running AppImage's own files (read-only)"
     if kind.startswith("fuse"):
         return "a filesystem run by a program of yours (FUSE), which administrator access can't look into"
-    return f"{e.strerror} ({errno.errorcode.get(e.errno, e.errno)})"
+    return f"{e.strerror} ({errno.errorcode.get(e.errno or 0, e.errno)})"
 
 
 class _FileHandle(ctypes.Structure):
@@ -6154,8 +6201,9 @@ class _Watched:
     """One filesystem under watch: its fanotify descriptors, the mount to open handles through (`at`), and how to
     turn what that gives into a path of the caller's (a btrfs subvolume's mount point)."""
 
-    def __init__(self, libc, fs: dict, index: int, private: bool = True):
-        self.libc, self.fs, self.paths = libc, fs, {}
+    def __init__(self, libc: Any, fs: dict, index: int, private: bool = True) -> None:
+        self.libc, self.fs = libc, fs
+        self.paths: dict[tuple[int, bytes], str | None] = {}
         self.fan = self.dirs = self.mfd = -1
         self.strip = self.made = self.at = ""
         self.dev = -1
@@ -6344,7 +6392,7 @@ class _Filesystems:
     """The filesystems under watch, as the mount table changes: one mounted during the watch is added (or said not
     to be), one unmounted is let go (closed, so nothing of it is held), a btrfs's subvolumes followed."""
 
-    def __init__(self, libc, uid: int, home: str, private: bool):
+    def __init__(self, libc: Any, uid: int, home: str, private: bool) -> None:
         self.libc, self.uid, self.home, self.private = libc, uid, home, private
         self.watched: list[_Watched] = []
         self.names_watched: list[str] = []           # every filesystem watched at some point, by its mount point
@@ -6403,7 +6451,7 @@ class _Filesystems:
             pass
 
 
-def _watch_loop(fss: _Filesystems, tally: _Tally, out, pending: bytes) -> None:
+def _watch_loop(fss: _Filesystems, tally: _Tally, out: IO[str], pending: bytes) -> None:
     """Reads the filesystems' events into the tally and answers the helper's words, until "end" or the end of
     its input. Every WATCH_REPLAN seconds, the mount table is read again."""
     import select
@@ -6554,7 +6602,7 @@ def _watch_ask(w: dict, word: str, timeout: float) -> dict:
         end = pending.index(b"\n")
         line = bytes(pending[:end])
         del pending[:end + 1]
-        reply = json.loads(line)
+        reply: dict = json.loads(line)              # the watch's own answer
         if reply.pop("seq", None) == seq:
             return reply
 
@@ -6589,6 +6637,8 @@ def watch_begin(args: dict) -> dict:
         os.close(code)
     _WATCH.update({"proc": proc, "uid": uid})
     try:
+        if proc.stdin is None:                      # never: started with a pipe
+            raise Refused("the watch couldn't be started")
         proc.stdin.write(json.dumps({"units": units}) + "\n")
         proc.stdin.flush()
         first = _watch_ask(_WATCH, "", WATCH_START_WAIT)
@@ -6655,7 +6705,7 @@ CONSENT = {
 }
 CONSENT_ACTIONS = frozenset(CONSENT) | {"revert"}      # the requests that may ask (revert: for remote access)
 SUBJECT: tuple[int, int, int] | None = None            # (pid, start time, uid) of the app that started the helper
-ASK = None                                             # tests replace it: (what) -> bool
+ASK: Callable[[str], bool] | None = None                # tests replace it: (what) -> bool
 
 
 def _proc_start(pid: int) -> int | None:
@@ -6751,7 +6801,7 @@ class _Input:
             self.skipping = True
         return True
 
-    def line(self, timeout: float):
+    def line(self, timeout: float) -> Any:
         """The next line (bytes); _TOO_LONG for one past MAX_REQUEST; None at the end of input or after `timeout`."""
         until = time.monotonic() + timeout
         while True:
@@ -6767,7 +6817,7 @@ class _Input:
                 if self.eof or time.monotonic() >= until:
                     return None
 
-    def cancelled(self, rid) -> bool:
+    def cancelled(self, rid: object) -> bool:
         """Whether a cancel for request `rid` has come (taken out of what is waiting; other lines stay, in order)."""
         while self._read(0):
             pass
@@ -6784,7 +6834,7 @@ class _Input:
         return found
 
 
-def _cancel_of(line: bytes):
+def _cancel_of(line: bytes | bytearray) -> object:
     """The id a cancel request names, or None if the line isn't one."""
     try:
         req = json.loads(line)
