@@ -803,6 +803,27 @@ def bwrap_has(host: Host, option: str) -> bool:
     return option in _BWRAP_HELP[bwrap]
 
 
+_CONFINED: dict[str, bool] = {}
+
+
+def bwrap_confined(host: Host) -> bool:
+    """Whether AppArmor confines what bubblewrap starts to a profile without capabilities (Ubuntu's bwrap-userns-
+    restrict: unpriv_bwrap, on in Ubuntu 26.04), read from a program started that way, as the user (the list of loaded
+    profiles is root's; trial.apparmor_strips_bwrap asks the same). Then nothing in a sandbox can make namespaces of its
+    own, whatever the system-call filter allows, nor can a bubblewrap there: Firefox's own sandbox runs without its
+    namespaces (tested on Ubuntu 26.04: its content processes stayed in the browser's user namespace, the kernel's log
+    saying apparmor="DENIED" operation="capable" profile="unpriv_bwrap" comm="firefox.real" capname="sys_admin"; on
+    CachyOS they had their own), and Tor Browser's sandboxes are started side by side (tor_argv). Asked once per
+    bubblewrap."""
+    bwrap = program(host, BWRAP)
+    if not bwrap or not host.sys_path("/sys/kernel/security/apparmor").is_dir():
+        return False
+    if bwrap not in _CONFINED:
+        r = host.run(bwrap, "--dev-bind", "/", "/", "--", "/bin/cat", "/proc/self/attr/current", timeout=10)
+        _CONFINED[bwrap] = "unpriv_bwrap" in (r.stdout or "")
+    return _CONFINED[bwrap]
+
+
 def no_new_userns(host: Host) -> list[str]:
     """bubblewrap's own refusal of further user namespaces inside (0.8 and later), for the strict sandboxes: on top of
     the filter, which refuses them anyway (where it can be built)."""

@@ -3206,9 +3206,13 @@ function browserSandbox(data, opts) {
       + "It can't change its own program files, only its profile and Downloads. "
       + (sb.seccomp === false ? "On this processor there is no filter on what it may ask the kernel. "
         : "A filter refuses what it may ask the kernel that no browser needs: the kernel's keyring, mounting, tracing "
-          + "other programs, and the kernel's less used parts where flaws are found. It may still make namespaces of its "
-          + "own, which the browser's own sandbox needs: through them a website that got past both could reach a little "
-          + "more of the kernel. "),
+          + "other programs, and the kernel's less used parts where flaws are found. "
+          + (sb.confined
+            ? "Here AppArmor's profile for bubblewrap (Ubuntu's) keeps it from making namespaces of its own, so the "
+              + "browser's own sandbox runs with its own filter but without its namespaces, as it would on a computer "
+              + "that doesn't allow them. "
+            : "It may still make namespaces of its own, which the browser's own sandbox needs: through them a website "
+              + "that got past both could reach a little more of the kernel. ")),
       h("b", {}, "Tor Browser"), " has no network of its own: only Tor's, through a filter that lets it show its "
       + "circuits and ask for a new identity but never change how Tor connects. So even a website that got past the "
       + "browser's own protections couldn't reach your real address, this computer's services or your local network. ",

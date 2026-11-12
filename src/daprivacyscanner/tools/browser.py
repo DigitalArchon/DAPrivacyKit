@@ -212,6 +212,8 @@ def sandbox_status(host: Host) -> dict:
             "apparmor": why is not None and restricted,
             "python": host.sys_path(sandbox.PYTHON).exists(),
             "seccomp": seccomp.supported(),             # the system-call filter (tools/seccomp.py): x86-64 only
+            # Ubuntu's AppArmor profile for bubblewrap: the browser's own sandbox can't make its namespaces in ours
+            "confined": why is None and sandbox.bwrap_confined(host),
             "xephyr": {"available": bool(host.runner.which(sandbox.XEPHYR)), "install": _install_command(host, "Xephyr")},
             "pasta": {"available": pasta is None, "why": pasta or "",
                       "install": _install_command(host, "passt"),

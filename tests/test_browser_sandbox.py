@@ -368,6 +368,33 @@ def test_the_graphics_card_only_when_the_user_allows_it(host, monkeypatch):
     assert pairs(calls[-1][0], "--dev-bind") == [(d, d) for d in S.gpu(host)]
 
 
+def test_the_panel_knows_when_apparmor_confines_what_bubblewrap_starts(host, monkeypatch):
+    """Ubuntu's bwrap-userns-restrict runs what bubblewrap starts in unpriv_bwrap, without capabilities: Firefox's own
+    sandbox can't make its namespaces in ours there (seen on Ubuntu 26.04), and the panel says so. Read from a program
+    bubblewrap started, once per bubblewrap; never where AppArmor isn't there."""
+    calls = []
+
+    def bwrap(argv):
+        calls.append(argv)
+        return CommandResult(tuple(argv), 0, "bwrap//&unpriv_bwrap (enforce)\n")
+    host.runner.handlers["bwrap"] = bwrap
+    S._CONFINED.clear()
+    assert S.bwrap_confined(host) is False and calls == []                  # no AppArmor here
+    (host.root / "sys/kernel/security/apparmor").mkdir(parents=True)
+    assert S.bwrap_confined(host) is True and S.bwrap_confined(host) is True and len(calls) == 1
+    assert calls[0][-2:] == ("/bin/cat", "/proc/self/attr/current")
+    monkeypatch.setattr(B.sandbox, "probe", lambda h: None)
+    monkeypatch.setattr(B.sandbox, "probe_pasta", lambda h: None)
+    monkeypatch.setattr(B.sandbox, "probe_fence", lambda h: None)
+    B._PROBED.clear()
+    assert B.sandbox_status(host)["confined"] is True
+    S._CONFINED.clear()
+    host.runner.handlers["bwrap"] = lambda argv: CommandResult(tuple(argv), 0, "unconfined\n")
+    B._PROBED.clear()
+    assert B.sandbox_status(host)["confined"] is False
+    S._CONFINED.clear()
+
+
 def test_tor_browser_s_three_sandboxes_get_their_system_call_filters(host):
     """tor's and the gate's the strict profile, with bubblewrap's own --disable-userns, the browser's the browser
     profile (Firefox's own sandbox makes namespaces), from programs in the keeper's configuration (the review of
