@@ -359,6 +359,23 @@ fstab, crypttab). A step can take `Input`s; the page sends them back and the gui
 so the dry run always matches what is applied. Advice checks may have a guide whose steps are commands
 only.
 
+Commands for the user are written for the form this machine's files have, and checked by running them on
+copies in the tests. A line added to a system file (/etc/fstab, /etc/crypttab, /etc/default/limine) gets a
+newline first when the file's last line has none (`guides.append_line`): `tee -a` alone glued it onto that
+line. GRUB's `GRUB_CMDLINE_LINUX_DEFAULT` is changed in double quotes, single quotes or none, and added
+when missing (a `grub.d` file that sets it again is named). A changed /etc/kernel/cmdline is taken by what
+makes the boot entries: `sdbootutil update-all-entries`, mkinitcpio's presets (`mkinitcpio -P`, which
+builds Arch's unified kernel images without kernel-install), `kernel-install add-all` from systemd 255,
+else each kernel added in turn. USBGuard's policy is made with `-P`, so a keyboard without a serial number
+isn't bound to its port, with `systemd.mask=usbguard.service` from the boot menu as the way back. A home
+folder given a btrfs subvolume of its own gets it at the filesystem's top level (`@home`, mounted from
+fstab, SELinux labels restored where enforcing): one made in place is nested in the system's subvolume and
+left behind by a rollback. tel.countme is a guide: on DNF5 one override file of the app's own
+(/etc/dnf/repos.override.d, `[*] countme=0`, an Easy fix); on DNF4 the repository files are edited, which
+makes rpm keep their packages' new versions as `.rpmnew`, so that option has no Easy key. Turning automatic
+login off is blocked while an account it logs in has a locked or empty password (`passwd -S` for one's own,
+the helper's /etc/shadow reading for another's).
+
 An online test's guide is never built by running the test: `Runner.plan_fix(stored=…)` takes the result the
 report keeps and `Outcome.from_dict` turns it back into the outcome the guide reads (the issuer seen, the
 ports forwarded, the resolver answering); the server passes the kept result for `scope: online` checks and
