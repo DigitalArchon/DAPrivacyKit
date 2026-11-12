@@ -72,8 +72,6 @@ it showed goes into the code and its comments, and its line goes.
     have no counterpart of the Flatpak check; and whether a Flatpak's X11 socket (on an X11 session, every window
     and keystroke) or PulseAudio's (the microphone without asking; most apps have it) counts as broad access.
   - Remote content in mail: KMail isn't checked.
-  - Content blocking: only uBlock Origin (and Lite) count, so a browser with another blocker is reported as
-    blocking nothing.
   - File search: locate's database, which lists file names, also on drives under /mnt or /run/media where the
     distribution doesn't exclude them.
   - Secrets kept with the built-in key: Signal's `encryptedKey` under `basic_text`, and safeStorage's choice for
@@ -84,7 +82,23 @@ it showed goes into the code and its comments, and its line goes.
   - Shell history: IPython's and Atuin's SQLite histories (the app only counts in databases, and can't clean lines
     out of them).
   - Editors: GNOME Text Editor's drafts and Sublime Text's session.
-  - Telemetry: ubuntu-insights, and Chrome's "Make searches and browsing better".
+
+- From the review round of 2026-11-12 (what each part left for later; the notes repository has the details):
+  - The helper: run the on-disk parsers (ext4, jbd2, btrfs) in a forked child that drops to nobody with no_new_privs
+    and memory and CPU limits; a helper action that tests whether a LUKS keyslot opens with an empty passphrase.
+  - Fixes: GeoClue's drop-in also turns off `[ip]` (2.8) and `[3g]`; the MAC drop-in could set
+    `ipv6.dhcp-duid=stable-uuid`; the helper's Chromium policy allowlist lacks UrlKeyedAnonymizedDataCollectionEnabled;
+    a remote session is checked at plan time, not again at apply.
+  - Detection: `vpn_active` doesn't see IPsec; defaults tables for Edge, Vivaldi, Opera and Brave (cookie defaults
+    per Chromium fork aren't in data); cliphist and clipse in apps.yaml, and Helium's and Cromite's package names
+    confirmed; the checks that still list system folders with `children(host.sys_path(…))` (the test's
+    LISTS_AS_THE_USER exemption) moved to `sys_children`.
+  - Tools: XLM macro sheets inside old OLE2 .xls files (needs an OLE reader); after a crash during a folder rebuild's
+    swap, a file deleted in that moment may come back (the note keeps no per-file list); mat2 and exiftool still
+    running after quitting's 10 s wait ended by process group; Snap browsers can't open the --browser launcher file
+    (the terminal prints the link); the server's peer check through netlink sock_diag rather than /proc/net/tcp.
+  - Tests and CI: tests whose fixture hosts name /run/user/1000 now keep their locks in their own tree, so check.sh's
+    bubblewrap isolation of each suite could go; a coverage floor once the suite is stable at a level.
 
 ## Not planned
 
@@ -93,13 +107,49 @@ Decided 2026-10-12:
   Plasma 5 are not tested and not supported: what the code does for them stays as it is, no tests for them are
   listed here, and the README and the manual say so.
 - English only, unless someone contributes translations.
-- No CI for now.
+- CI on GitHub (decided again 2026-11-12): the CI runs locally, `make check` (packaging/check.sh).
+- Package repositories (apt, AUR; decided 2026-11-12): updates come through the AppImage's update information and its
+  `.zsync`, and the app's own Check for updates…, which runs only when clicked.
 - Applying and reverting fixes stays in the window (the terminal is for testing).
 
 ## Tests still needed
 
 What unit tests, a CachyOS VM (KDE Plasma 6.7, Wayland), a Mint PC (Cinnamon, X11, LUKS on NVMe) and containers
 couldn't show. Grouped by what each needs.
+
+### The review round of 2026-11-12
+
+Built and unit-tested, some live on the lab VMs; what still needs a real system:
+- The helper: a reboot and a login with ~/Ephemeral "until logout" (Before=user@UID); KDE's and Cinnamon's polkit
+  agents showing the second prompt for a sensitive action (GNOME's was seen); pkexec's own prompt for a session (tested
+  through a polkit rule); a real install through the loader from the AppImage.
+- The window and the server: WebKitGTK with the new headers and the peer check; file dialogs; closing during a job;
+  logging out with a job running; `--browser` with Firefox from Flatpak and Snap (does the launcher open?); the
+  refusal for an AppImage run from /tmp, as the page shows it.
+- History: kill the app in the middle of applying (an interrupted entry); a helper answer that times out, then settled
+  by `list_changes`; a recovered entry; CopyQ or VLC started between the dry run and Apply; a Flatpak cache folder
+  swapped for a link while it is cleaned; a hand-edited ~/.ssh/config put back by lines; turning on ufw over SSH in a
+  VM; `[*] countme=0` with DNF5; the btrfs `@home` move; `usbguard generate-policy -P`; `mkinitcpio -P`; a hung NFS
+  mount during a scan.
+- Sandboxes: a Flatpak trial end to end with the portals' dialogs; KWrite on KDE under the /etc allowlist; the Outbox's
+  path unit with mat2 in its sandbox; a .deb trial on Ubuntu 26.04 (bubblewrap 0.10's own overlay with package_part);
+  Fedora/GNOME with glycin viewers under the strict filter; an X11 Box started from the menu (Xephyr); a 32-bit
+  program's socketcall path.
+- Verify a download: a large real pubring.kbx (time to read revocations), and a large detached-signature file checked
+  twice (the app's keys, the user's).
+- Drives and names: `nvme sanitize` with a namespace's by-id path; real by-id names on USB, SATA and NVMe drives; a
+  folder rebuild on real ext4 with protected_hardlinks, a sync client running, and recovery after `kill -9`; the Outbox
+  with a video larger than the runtime folder and a stalled copy from Nemo; whether pasta forwards IPv6 fragments and
+  routing headers; the TRIM test's headline on a drive with coarse discard granularity.
+- Detection: Ubuntu with TPM-backed encryption (the ubuntu-fde token JSON); systemd-tpm2 and FIDO2 tokens' JSON; Clevis
+  on LUKS1; `zfs get` as a user; zypper cache times and openSUSE's sysconfig autologin; COSMIC and NixOS autologin;
+  Secure Boot with MokSBStateRT set and with sbctl's own keys; GNOME's disable-lock-screen; DNF5 overrides on the
+  Fedora VM; Zen, Waterfox, Floorp and Helium installed; Chrome 157's HTTPS-First default and
+  `sync.selected_types_per_account`; NetworkManager with iwd; Mullvad VPN with a LAN DNS server; an IPv4-only
+  WireGuard tunnel on a dual-stack network; strongSwan; the metalink sed and `dnf makecache` on Fedora 44; GeoClue's
+  address source on KDE; Ubuntu Insights' consent; the Omarchy clipboard check on its VM; Docker with ufw.
+- Release: a release made the new way (signed tag, release build, second build, signing with the subkey), and the
+  update check downloading it on a lab VM.
 
 ### The repository made public, and the first release
 
