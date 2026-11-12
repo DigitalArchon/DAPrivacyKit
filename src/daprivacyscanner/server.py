@@ -301,8 +301,9 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
     connection that isn't is refused, the page's shell included. `on_quit` ends the process (POST /api/quit): in
     the browser, closing the tab doesn't. `close_window` closes the app's window, which quits it (POST /api/quit in
     the window: the page's Quit anyway, once it has asked, app.CloseGuard). `start_helper` asks for administrator
-    access (polkit) and returns the privileged helper. `make_net` gives the network to the online tests and to the
-    browser download the user starts in the Tools panel; a scan never calls it (rule 10). `dev` shows detection hints, unverified notes and timings.
+    access (polkit) and returns the privileged helper. `make_net` gives the network to the online tests, to the
+    browser download the user starts in the Tools panel and to Check for updates…; a scan never calls it (rule 10).
+    `dev` shows detection hints, unverified notes and timings.
     `install_helper` installs this version's helper root-owned (or removes it), asking for access.
     `pick` is the app window's file dialog (in the browser, zenity or kdialog are used when installed).
     `open_tool` ({"tool", "paths"}, from --tool) opens the page on a tool, once. `spawn_browser`
@@ -310,7 +311,7 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
     about.LINKS in the user's default browser (xdg-open, detached; a fake in tests). `watch_outbox` starts
     the watcher that empties the browsers' TempOutboxes into their To upload while the app runs, and removes trial
     folders an ended copy of the app left (both off in tests, which call them themselves). `spawn_app` starts an app for "What does this app keep?" and "Try an app"
-    (subprocess.Popen; a fake in tests).
+    (subprocess.Popen; a fake in tests), and the copy Check for updates… put in place (Restart now).
 
     Quitting goes through `app.state.shutdown()` (POST /api/quit in --browser mode, app.main as the window closes or
     a signal ends the session): every job told to stop, then what quitting closes."""
@@ -329,7 +330,8 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
     # the jobs the page follows, one of each kind (jobs.KINDS), as app.state.<kind>_job: the online tests; the TRIM
     # test; the names of the user's deleted files, handed to the page once, and cleaning the folders they are in
     # (ext4); Remove metadata, reading or cleaning files and folders; Tor or Mullvad Browser into the RAM disk
-    # (download, verify, unpack); What does this app keep?, the watch, then its result (memory only)
+    # (download, verify, unpack); What does this app keep?, the watch, then its result (memory only); Check for
+    # updates…, the new release downloaded beside the AppImage and verified (update.py)
     jobs = app.state.jobs = Jobs(app.state)
     app.state.names_listed = None          # (mount, the folders the last listing showed): what may be cleaned
     app.state.trim_cleaned = False         # leftovers of an unfinished TRIM test were looked for
@@ -337,6 +339,10 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
     app.state.trial = None                 # Try an app: the one trial, its sandbox and its report (memory only)
     app.state.trial_cleaned = False        # trial folders left by a run of the app that was killed were looked for
     app.state.left_open = None             # why the last quit left ~/TempBrowser open, for the panel (memory only)
+    # Check for updates…: the release last asked about, the download verified and waiting for the user's yes, what
+    # replacing did, what this copy's start finished of an earlier update, and the lock that keeps it to one copy
+    app.state.update = {"release": None, "staged": None, "replaced": None, "updated": None, "finished": False,
+                        "hold": None}
     scan_lock = asyncio.Lock()
     plans: dict[str, tuple[FixPlan, Host]] = {}
     easy_ids: set[str] = set()             # plans built by Easy fixes: the only ones it applies
@@ -552,6 +558,14 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
             await asyncio.to_thread(trimtest.leftovers, host)      # a test the app didn't finish (closed, crashed)
 
         def gather() -> dict:                      # files read, the helper's checked: off the event loop
+            if not app.state.update["finished"]:
+                # this copy has started (its page loaded): the old copy an update kept beside it goes now
+                from . import update
+                app.state.update["finished"] = True
+                try:
+                    app.state.update["updated"] = update.finish_pending(host)
+                except OSError as e:
+                    print(f"The copy an update kept couldn't be removed: {type(e).__name__}", file=sys.stderr)
             acc = Accepted(paths_of(host))
             return {"helper_installed": installed_helper() is not None, "helper_stale": installed_helper_stale(),
                     "accepted": acc.all(), "accepted_damaged": acc.damaged(host.display),   # said, never an empty list alone
@@ -2937,6 +2951,199 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
 
     app.state.close_browser_disk = close_browser_disk
 
+    # ------------------------------------------------------------------ Check for updates…
+    # Only when the user clicks it (rule 10), each step's hosts named by the page first (GET /api/update): asking
+    # api.github.com for the latest release, then downloading it from github.com (and its file servers) into a hidden
+    # folder beside the AppImage, verified with the app's own release key; replaced once the user confirms (update.py).
+
+    def update_busy() -> bool:
+        return jobs.running("update")
+
+    def update_let_go() -> None:
+        from .tools import owner
+        owner.let_go(app.state.update["hold"])
+        app.state.update["hold"] = None
+
+    def update_discard() -> None:
+        """The download not put in place (verified, or left by a job that ended), deleted, and the lock let go."""
+        from . import update
+        upd = app.state.update
+        staged, upd["staged"] = upd["staged"], None
+        update.discard(staged)
+        if not update_busy():
+            update_let_go()
+
+    def update_view(host: Host) -> dict:
+        from . import update
+        upd = app.state.update
+        rel, staged = upd["release"], upd["staged"]
+        plan = None
+        if staged is not None and staged.sha256:
+            try:
+                plan = update.plan(staged)
+            except OSError:
+                plan = None
+        return {**update.situation(host), "proxy_vars": online.proxy_vars(host.environ),
+                "release": rel.to_dict() if rel else None, "compare": update.compare(rel.version) if rel else None,
+                "job": job_view(app.state.update_job), "plan": plan, "replaced": upd["replaced"],
+                "updated": upd["updated"], "in_browser": on_quit is not None}
+
+    def update_refused(text: str, status: int = 409) -> JSONResponse:
+        return JSONResponse({"error": text}, status_code=status)
+
+    @app.get("/api/update", dependencies=[Depends(auth)])
+    async def update_state():
+        """What this copy is and how it updates, the hosts each step contacts (the page names them before anything is
+        contacted), and how far an update has come. Hidden folders a copy that ended left beside the AppImage go
+        while no copy has an update in hand (update.tidy, under the update lock)."""
+        from . import update
+        from .tools import owner
+        host = make_host()
+
+        def look() -> dict:
+            upd = app.state.update
+            if upd["staged"] is None and upd["hold"] is None and not update_busy():
+                fd = owner.hold(host, "update")
+                if fd is not None:
+                    try:
+                        update.tidy(host)
+                    finally:
+                        owner.let_go(fd)
+            return update_view(host)
+        return await asyncio.to_thread(look)
+
+    @app.post("/api/update/check", dependencies=[Depends(auth)])
+    async def update_check():
+        """Asks api.github.com which release is the latest (the page has named it). The view, with `release` and
+        `compare` ("newer", "same" or "older" than this copy)."""
+        from . import update
+        host = make_host()
+        s = await asyncio.to_thread(update.situation, host)
+        if s["mode"] != "appimage":
+            return update_refused(" ".join(s["how"]) or "This copy isn't updated this way.")
+        if update_busy():
+            return update_refused("An update is being downloaded.")
+        try:
+            rel = await in_thread(update.latest, make_net(), name="update-check")
+        except update.UpdateError as e:
+            return update_refused(str(e), 502)
+        app.state.update["release"] = rel
+        return await asyncio.to_thread(update_view, host)
+
+    async def run_update_job(job: Job, rel) -> None:
+        from . import update
+        host = make_host()
+        state, error, staged = "failed", "", None
+        try:
+            staged = await in_thread(update.download, host, make_net(), rel, job, lambda: job["cancel"],
+                                     name="update-download")
+            if job["cancel"]:
+                raise update.Stopped("Stopped: nothing was kept, and nothing was replaced.")
+            await in_thread(update.verify, host, staged, job=job, name="update-verify")
+            if job["cancel"]:
+                raise update.Stopped("Stopped: nothing was kept, and nothing was replaced.")
+            app.state.update["staged"] = staged
+            state = "done"
+        except update.Stopped as e:
+            state, error = "stopped", str(e)
+        except update.UpdateError as e:
+            error = str(e)
+        except OSError as e:
+            error = f"It couldn't be written beside the AppImage ({e.strerror or e}). Nothing was replaced."
+        except Exception as e:  # noqa: BLE001 - shown on the page rather than spin forever
+            error = f"The update stopped on an error the app didn't expect ({type(e).__name__}). Nothing was replaced."
+        finally:
+            if state != "done":
+                await asyncio.to_thread(update.discard, staged)
+                update_let_go()
+            job.update(state=state, error=error, finished=time.time(), phase=None)
+
+    @app.post("/api/update/download", dependencies=[Depends(auth)])
+    async def update_download():
+        """The release last checked, downloaded into a hidden folder beside the AppImage and verified: a job the page
+        follows with GET /api/update. Only a release newer than this copy, only where the AppImage can be replaced, and
+        one copy of the app at a time (the update lock, held until the download is put in place or discarded)."""
+        from . import update
+        from .tools import owner
+        host = make_host()
+        upd = app.state.update
+        rel = upd["release"]
+        if rel is None or update.compare(rel.version) != "newer":
+            return update_refused("No newer release is known: check for updates first.")
+        if update_busy():
+            return update_refused("An update is being downloaded.")
+        if upd["replaced"]:
+            return update_refused("This copy has been replaced already: restart it to use the new one.")
+        s = await asyncio.to_thread(update.situation, host)
+        if s["mode"] != "appimage" or s["problem"]:
+            return update_refused(s["problem"] or " ".join(s["how"]))
+        await asyncio.to_thread(update_discard)             # an earlier download not put in place
+        held = await asyncio.to_thread(owner.hold, host, "update")
+        if held is None:
+            return update_refused("Another window of this app is updating it.")
+        upd["hold"] = held
+        job = Job("update", "running", version=rel.version, phase="Starting", done=0, total=0, error="",
+                  created=time.time(), finished=None)
+        try:
+            jobs.start(job, lambda j: run_update_job(j, rel))
+        except Quitting:
+            update_let_go()
+            return quitting()
+        return await asyncio.to_thread(update_view, host)
+
+    @app.post("/api/update/stop", dependencies=[Depends(auth)])
+    async def update_stop():
+        job = app.state.update_job
+        if job is not None and job["state"] == "running":
+            job["cancel"] = True
+        return await asyncio.to_thread(update_view, make_host())
+
+    @app.post("/api/update/discard", dependencies=[Depends(auth)])
+    async def update_discard_route():
+        """The verified download deleted without putting it in place (the page's Discard, or its dialog closed)."""
+        if update_busy():
+            return update_refused("The download is still running: stop it first.")
+        await asyncio.to_thread(update_discard)
+        app.state.update_job = None
+        return await asyncio.to_thread(update_view, make_host())
+
+    @app.post("/api/update/replace", dependencies=[Depends(auth)])
+    async def update_replace(request: Request):
+        """Body {"confirm": true}: the verified download in place of the running AppImage (update.replace), this copy
+        kept beside it until the new one has started. Quitting waits for it."""
+        from . import update
+        body = await body_of(request)
+        host = make_host()
+        upd = app.state.update
+        if body.get("confirm") is not True:
+            return update_refused("Replacing needs your confirmation.", 400)
+        if upd["staged"] is None or not upd["staged"].sha256:
+            return update_refused("Nothing verified is waiting to be put in place: check for updates again.")
+        with changing():
+            try:
+                result = await in_thread(update.replace, host, upd["staged"], name="update-replace")
+            except update.UpdateError as e:
+                return update_refused(str(e))
+            except OSError as e:
+                return update_refused(f"It couldn't be put in place ({e.strerror or e}). Nothing was replaced.", 500)
+        upd["replaced"], upd["staged"] = result, None
+        update_let_go()
+        return await asyncio.to_thread(update_view, host)
+
+    @app.post("/api/update/restart", dependencies=[Depends(auth)])
+    async def update_restart():
+        """Starts the copy the update put in place; the page then quits this one the usual way (its Quit)."""
+        from . import update
+        if not app.state.update["replaced"]:
+            return update_refused("Nothing has been replaced yet.")
+        try:
+            await in_thread(update.restart, make_host(), spawn_app, on_quit is not None, name="update-restart")
+        except update.UpdateError as e:
+            return update_refused(str(e))
+        except OSError as e:
+            return update_refused(f"The new copy couldn't be started ({e.strerror or e}).", 500)
+        return {"started": True}
+
     def left_open_at_quit() -> list[str]:
         """What would keep ~/TempBrowser open if the app quit now, though quitting would close it (a viewer View
         offline… opened, another program using a file in it: browser.left_open_by). The page asks before it quits
@@ -2997,9 +3204,10 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
         SIGHUP, Ctrl+C), once: nothing new starts (jobs.quitting), every job is told to stop as its Stop does (the
         online tests, a download, mat2 over a folder, the TRIM test, a listing, a watch) and a file chooser left open
         is closed; then up to QUIT_WAIT seconds for the jobs to end, and CHANGES_WAIT for a fix, a revert or a set-up
-        under way (never cut short half-way); then what is for while the app runs: ~/TempBrowser closed (asking for
-        the password if it must, its files overwritten meanwhile), a trial discarded, administrator access dropped,
-        Presentation mode turned off. Off the event loop, which the jobs' work needs. Before, nothing was stopped:
+        under way (never cut short half-way, an update being put in place included); then what is for while the app
+        runs: ~/TempBrowser closed (asking for the password if it must, its files overwritten meanwhile), a trial
+        discarded, an update's download not put in place deleted, administrator access dropped, Presentation mode
+        turned off. Off the event loop, which the jobs' work needs. Before, nothing was stopped:
         Python waited for the jobs' threads at exit, an invisible process going on after the window closed. app.main
         ends the process (os._exit) once this has returned, whatever is left."""
         from .tools import presentation
@@ -3014,7 +3222,8 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
                 settled = in_flight.wait_for(lambda: changes["n"] == 0, CHANGES_WAIT if changes_wait is None
                                              else changes_wait)
             closed = close_browser_disk()
-            for what, step in (("The trial", discard_trial), ("Administrator access", admin.drop),
+            for what, step in (("The trial", discard_trial), ("The update's download", update_discard),
+                               ("Administrator access", admin.drop),
                                ("Presentation mode", lambda: presentation.turn_off(make_host()))):
                 try:
                     step()

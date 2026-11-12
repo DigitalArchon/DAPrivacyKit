@@ -19,7 +19,7 @@ from typing import Callable
 
 import uvicorn
 
-from . import catalogue
+from . import about, catalogue
 from .hostenv import host_env, set_for_self
 from .model import STATUS_WORD
 from .launch import scan_command, systemd_exec  # noqa: F401 - the timer, units and right-click entries use them
@@ -760,6 +760,10 @@ def main(argv: list[str] | None = None) -> None:
         epilog="Without options, the app's window opens: that is how it is meant to be used. The options here are for "
                "testing, and for what the app itself sets up (scheduled scans, the file manager's right-click "
                "entries, the Outbox). Fixes are applied and reverted only in the window.")
+    # "DA Privacy Kit <version>" (a dev build's with +dev.<commit>), printed before anything else runs: Check for
+    # updates… reads a verified new copy's version this way (update.read_version), so keep the line as it is
+    ap.add_argument("--version", action="version", version=f"DA Privacy Kit {about.version()}",
+                    help="print the version and exit")
     ap.add_argument("--browser", action="store_true", help="open in the default web browser instead of the app window")
     ap.add_argument("--no-open", action="store_true", help="with the browser: only print the URL")
     ap.add_argument("--port", type=int, default=0, help="port to listen on (default: random)")

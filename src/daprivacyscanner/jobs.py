@@ -1,7 +1,8 @@
 """The server's background work, and what quitting must stop.
 
 A job is long work the page follows by polling (the online tests, the TRIM test, Deleted file names and their
-clean-up, Remove metadata, setting up a browser, What does this app keep?): one of each kind at a time, a dict of what
+clean-up, Remove metadata, setting up a browser, What does this app keep?, downloading an update): one of each kind at
+a time, a dict of what
 the page reads, with a `cancel` flag the work looks at as it goes. The registry (`Jobs`) starts them, tells whether
 one is running, and at quit tells every one to stop and waits a while for them.
 
@@ -21,7 +22,7 @@ from typing import Any, Awaitable, Callable
 
 RUNNING = frozenset({"starting", "asking", "running", "ending"})     # every kind's states while it works
 HIDDEN = frozenset({"cancel", "abort", "archive"})                    # the work's own, never sent to the page
-KINDS = ("online", "trim", "names", "clean", "meta", "browser", "keeps")
+KINDS = ("online", "trim", "names", "clean", "meta", "browser", "keeps", "update")
 
 
 def running(job: dict | None) -> bool:

@@ -21,8 +21,9 @@ LINKS = {"tails": "https://tails.net/", "qubes": "https://www.qubes-os.org/",
          "releases": "https://github.com/DigitalArchon/DAPrivacyKit/releases",
          "issues": "https://github.com/DigitalArchon/DAPrivacyKit/issues"}
 
-# The app never looks for a newer version of itself (no network), so it says when its own copy is getting old:
-# checks are written for the versions of apps current when it was built, and bugs are fixed in later ones.
+# The app never looks for a newer version of itself by itself (Check for updates… asks only when clicked: update.py),
+# so it says when its own copy is getting old: checks are written for the versions of apps current when it was built,
+# and bugs are fixed in later ones.
 OLD_AFTER_DAYS = 90
 
 
@@ -63,7 +64,8 @@ def age(today: dt.date | None = None, built_on: dt.date | None = None) -> dict:
     if out["old"]:
         out["text"] = (f"This copy of DA Privacy Kit was built on {when}, about {days // 30} months ago. A newer one "
                        "probably fixes bugs and knows newer versions of your apps. The app never looks for updates by "
-                       f"itself: the latest is at {LINKS['releases']}")
+                       "itself: Check for updates… (in the window) asks when you click it, and the latest is at "
+                       f"{LINKS['releases']}")
     return out
 
 
@@ -196,4 +198,7 @@ NEVER = [
     "they send nothing anywhere and keep nothing afterwards. The one that downloads (Tor or Mullvad Browser in memory) "
     "names the project's servers it contacts before it starts, and keeps its download on the disk only when you tick "
     "it, in ~/.cache/daprivacyscanner/browsers, deleted from its panel.",
+    "The app never looks for a newer version of itself by itself. Check for updates… asks GitHub only when you click "
+    "it, names the hosts first, and replaces this copy only once the new one is verified with the release key this "
+    "copy carries and you have confirmed.",
 ]
