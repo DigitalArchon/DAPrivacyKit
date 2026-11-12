@@ -437,6 +437,32 @@ def test_the_version_inside_must_be_the_releases_and_newer(tmp_path, keys, says,
         U.verify(host, staged, current, projects=[keys.project(keys.primary)])
 
 
+@needs_gpg
+def test_a_file_that_changes_while_it_is_checked_is_refused(tmp_path, keys):
+    """What is verified, run for its version and put in place must be the same bytes: a file that changed itself as it
+    was run (or was changed meanwhile) is refused."""
+    host, f, staged = staged_copy(tmp_path, keys, f"#!/bin/sh\necho 'DA Privacy Kit {NEW}'\necho >> \"$0\"\n".encode())
+    with pytest.raises(U.UpdateError, match="changed while it was checked"):
+        U.verify(host, staged, "0.1.0b9", projects=[keys.project(keys.primary)])
+    assert not staged.sha256
+
+
+def test_a_copy_whose_appimage_another_window_replaced_doesnt_update_it_again(tmp_path):
+    host, f = appimage_host(tmp_path)
+    started = U.started_from(host.environ)
+    assert U.situation(host, "0.1.0b9", started=started)["problem"] == ""
+    f.unlink()
+    f.write_bytes(b"#!/bin/sh\necho 'DA Privacy Kit 9.1.0'\n#")
+    assert "has been replaced since this window started" in U.situation(host, "0.1.0b9", started=started)["problem"]
+    # without the identity, the record another window left says so too
+    from daprivacyscanner.history import write_json
+    write_json(U._record_path(host), {"path": str(f), "keep": str(f.with_name(".x.old")), "from": "0.1.0b9",
+                                      "to": NEW, "keep_id": [], "new_id": []})
+    s = U.situation(host, "0.1.0b9")
+    assert "replaced since this window started, by version 9.1.0" in s["problem"] and "start the app again" in s["problem"]
+    assert U.situation(host, NEW)["problem"] == ""                   # the new copy itself
+
+
 def test_the_version_is_read_by_running_the_file_with_the_hosts_environment(tmp_path):
     seen = []
 
@@ -651,7 +677,8 @@ def test_the_whole_way_through_the_api(cat, tmp_path, keys, monkeypatch):
         assert c.post("/api/update/download", headers=H).status_code == 409          # check first
         d = c.post("/api/update/check", headers=H).json()
         assert d["release"]["version"] == NEW and d["compare"] == "newer" and net.contacted == [U.LATEST]
-        assert c.post("/api/update/download", headers=H).json()["job"]["state"] == "running"
+        r = c.post("/api/update/download", headers=H)
+        assert r.status_code == 200 and r.json()["job"]["version"] == NEW            # a job; it may be done already
         d = wait_job(c)
         assert d["job"]["state"] == "done", d["job"]
         plan = d["plan"]
@@ -681,8 +708,9 @@ def test_a_download_that_fails_says_why_and_leaves_nothing(cat, tmp_path):
         d = wait_job(c)
         assert d["job"]["state"] == "failed" and "couldn't be downloaded (Connection reset by peer)" in d["job"]["error"]
         assert sorted(os.listdir(f.parent)) == [f.name] and d["plan"] is None
-        # the lock was let go: another try may start
-        assert c.post("/api/update/download", headers=H).json()["job"]["state"] == "running"
+        # the lock was let go: another try may start (a job of its own)
+        r = c.post("/api/update/download", headers=H)
+        assert r.status_code == 200 and r.json()["job"]["id"] != d["job"]["id"]
         wait_job(c)
 
 

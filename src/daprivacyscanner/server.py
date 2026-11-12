@@ -341,8 +341,9 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
     app.state.left_open = None             # why the last quit left ~/TempBrowser open, for the panel (memory only)
     # Check for updates…: the release last asked about, the download verified and waiting for the user's yes, what
     # replacing did, what this copy's start finished of an earlier update, and the lock that keeps it to one copy
+    from . import update as _update
     app.state.update = {"release": None, "staged": None, "replaced": None, "updated": None, "finished": False,
-                        "hold": None}
+                        "hold": None, "started": _update.started_from()}
     scan_lock = asyncio.Lock()
     plans: dict[str, tuple[FixPlan, Host]] = {}
     easy_ids: set[str] = set()             # plans built by Easy fixes: the only ones it applies
@@ -2983,7 +2984,7 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
                 plan = update.plan(staged)
             except OSError:
                 plan = None
-        return {**update.situation(host), "proxy_vars": online.proxy_vars(host.environ),
+        return {**update.situation(host, started=upd["started"]), "proxy_vars": online.proxy_vars(host.environ),
                 "release": rel.to_dict() if rel else None, "compare": update.compare(rel.version) if rel else None,
                 "job": job_view(app.state.update_job), "plan": plan, "replaced": upd["replaced"],
                 "updated": upd["updated"], "in_browser": on_quit is not None}
@@ -3018,7 +3019,7 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
         `compare` ("newer", "same" or "older" than this copy)."""
         from . import update
         host = make_host()
-        s = await asyncio.to_thread(update.situation, host)
+        s = await asyncio.to_thread(update.situation, host, started=app.state.update["started"])
         if s["mode"] != "appimage":
             return update_refused(" ".join(s["how"]) or "This copy isn't updated this way.")
         if update_busy():
@@ -3074,7 +3075,7 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
             return update_refused("An update is being downloaded.")
         if upd["replaced"]:
             return update_refused("This copy has been replaced already: restart it to use the new one.")
-        s = await asyncio.to_thread(update.situation, host)
+        s = await asyncio.to_thread(update.situation, host, started=upd["started"])
         if s["mode"] != "appimage" or s["problem"]:
             return update_refused(s["problem"] or " ".join(s["how"]))
         await asyncio.to_thread(update_discard)             # an earlier download not put in place

@@ -260,10 +260,21 @@ def replace_problem(host: Host, path: Path) -> str:
     return ""
 
 
-def situation(host: Host, current: str = __version__, repo: Path | None = None) -> dict:
+def started_from(environ=os.environ) -> tuple | None:
+    """The identity of the AppImage file this copy was started from, read as the app starts (the runtime opened it a
+    moment before): another window of the app may replace it later, and this copy is then no longer the file there."""
+    appimage = environ.get("APPIMAGE")
+    try:
+        return _identity(os.stat(appimage)) if appimage else None
+    except OSError:
+        return None
+
+
+def situation(host: Host, current: str = __version__, repo: Path | None = None, started: tuple | None = None) -> dict:
     """What this copy is and how it updates, before anything is contacted: "appimage" (this dialog downloads and
     replaces it; `problem` when it can't be replaced where it is), "dev" (a development build), "source" (a source
-    tree: git), or "package" (installed some other way: its package manager)."""
+    tree: git), or "package" (installed some other way: its package manager). `started`: started_from(), when known:
+    a file there that isn't it any more was put there since (another window updated it)."""
     appimage = host.environ.get("APPIMAGE") or ""
     out = {"version": current, "path": None, "problem": "", "how": [], "commands": [],
            "hosts": {"check": list(CHECK_HOSTS), "download": list(DOWNLOAD_HOSTS)},
@@ -278,6 +289,16 @@ def situation(host: Host, current: str = __version__, repo: Path | None = None) 
                 "the releases page."])
             return out
         out.update(mode="appimage", problem=replace_problem(host, path))
+        rec = load_pending(host)
+        mine = rec is not None and rec["path"] == str(path)
+        try:
+            moved = started is not None and _identity(os.stat(path)) != started
+        except OSError:
+            moved = False
+        if not out["problem"] and (moved or mine and rec["to"] != current):
+            out["problem"] = (f"{path} has been replaced since this window started"
+                              + (f", by version {rec['to']}" if mine else "")
+                              + " (another window of the app updated it?). Quit this window and start the app again.")
         return out
     repo = _repo() if repo is None else repo
     if (repo / "pyproject.toml").is_file() and (repo / "src" / "daprivacyscanner").is_dir():
@@ -394,6 +415,7 @@ def verify(host: Host, staged: Staged, current: str = __version__, projects=None
         raise UpdateError("The app's own release key isn't in its list of keys, so nothing can be verified.")
     if job is not None:
         job.update(phase=f"Checking its signature with {ours[0].name}'s release key", done=0, total=0)
+    before = _sha256(staged.file)                    # the same bytes are verified, run and put in place (below)
     v = V.verify(host, staged.file, [], "", use_keyring=False, projects=ours)
     good = [s for s in v.signatures if s.good and s.project is not None and s.project.id == PROJECT
             and s.over == staged.file and not s.inside]
@@ -415,7 +437,9 @@ def verify(host: Host, staged: Staged, current: str = __version__, projects=None
     if compare(inside, current) != "newer":
         raise UpdateError(f"The file is version {inside}, which isn't newer than this copy ({current}). It was "
                           "deleted, and nothing was replaced.")
-    staged.sha256, staged.inside = _sha256(staged.file), inside
+    if _sha256(staged.file) != before:
+        raise UpdateError("The download changed while it was checked. It was deleted, and nothing was replaced.")
+    staged.sha256, staged.inside = before, inside
     staged.verdict = {"title": v.title, "text": v.text, "signer": s.project.name, "key_name": s.key_name,
                       "fingerprint": s.fingerprint, "fingerprint_grouped": K.group(s.fingerprint)
                       if re.fullmatch(r"[0-9A-F]{40}", s.fingerprint) else s.fingerprint,
