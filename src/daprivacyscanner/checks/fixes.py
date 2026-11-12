@@ -260,6 +260,10 @@ def screen_lock(check, scan, outcome):
             a += gset(scan, "org.cinnamon.settings-daemon.plugins.power", "lock-on-suspend", "true")
         else:
             a += gset(scan, "org.gnome.desktop.screensaver", "ubuntu-lock-on-suspend", "true")
+    if family and not scan.context.desktop.is_kde:
+        # the lockdown setting the check reads first (auth.ScreenLock): with it on nothing locks, whatever else is set
+        a += gset(scan, {"mate": "org.mate.lockdown", "cinnamon": "org.cinnamon.desktop.lockdown"}.get(
+            family, "org.gnome.desktop.lockdown"), "disable-lock-screen", "false")
     if not a:
         # an empty plan isn't offered, and this is shown as the reason
         effects = [f"The settings Fix… changes already have its values here. Set the screen lock in "

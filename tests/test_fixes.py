@@ -61,6 +61,19 @@ def test_screen_lock_gnome(cat, tmp_path):
     assert gs.values[("org.gnome.desktop.screensaver", "lock-enabled")] == "false"
 
 
+def test_screen_lock_gnome_lockdown(cat, tmp_path):
+    """disable-lock-screen keeps GNOME Shell from ever locking: the check now reads it, so the fix turns it off too."""
+    host, gs = gnome(tmp_path, {("org.gnome.desktop.screensaver", "lock-enabled"): "true",
+                                ("org.gnome.desktop.session", "idle-delay"): "uint32 300",
+                                ("org.gnome.desktop.screensaver", "lock-delay"): "uint32 3600",
+                                ("org.gnome.desktop.lockdown", "disable-lock-screen"): "true"})
+    assert redetect(cat, host, "auth.screen_lock").status is Status.FAIL
+    plan, res, log = run_fix(cat, host, "auth.screen_lock")
+    assert res.ok and redetect(cat, host, "auth.screen_lock").status is Status.PASS
+    assert all(r.ok for r in revert(host, log, res))
+    assert gs.values[("org.gnome.desktop.lockdown", "disable-lock-screen")] == "true"
+
+
 def test_screen_lock_cinnamon(cat, tmp_path):
     host, gs = gnome(tmp_path, {("org.cinnamon.desktop.screensaver", "lock-enabled"): "true",
                                 ("org.cinnamon.desktop.session", "idle-delay"): "uint32 0",

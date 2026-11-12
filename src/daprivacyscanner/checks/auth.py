@@ -62,6 +62,9 @@ def _min(seconds: int) -> str:
 class ScreenLock(Check):
     id = "auth.screen_lock"
     LIMIT = 300                 # seconds idle before the screen blanks; it should lock within a minute of that
+    # idle and lock delay together past this: for that long after the screen blanks, a touch of the keyboard opens the
+    # session, which is no screen lock for most of the time the computer is left (a one-hour lock delay was a Risk)
+    LONG = 1800
 
     def detect(self, scan: Scan) -> Outcome:
         d = scan.context.desktop
@@ -70,12 +73,15 @@ class ScreenLock(Check):
         names = set(d.names)
         if names & {"x-cinnamon", "cinnamon"}:
             return self._gsettings(scan, "Cinnamon", "org.cinnamon.desktop.screensaver", "org.cinnamon.desktop.session",
-                                   ("org.cinnamon.settings-daemon.plugins.power", "lock-on-suspend"))
+                                   ("org.cinnamon.settings-daemon.plugins.power", "lock-on-suspend"),
+                                   lockdown="org.cinnamon.desktop.lockdown")
         if "mate" in names:
-            return self._gsettings(scan, "MATE", "org.mate.screensaver", "org.mate.screensaver", None, minutes=True)
+            return self._gsettings(scan, "MATE", "org.mate.screensaver", "org.mate.screensaver", None, minutes=True,
+                                   lockdown="org.mate.lockdown")
         if d.is_gnome or names & {"ubuntu", "budgie", "unity", "pop"}:
             return self._gsettings(scan, "GNOME", "org.gnome.desktop.screensaver", "org.gnome.desktop.session",
-                                   ("org.gnome.desktop.screensaver", "ubuntu-lock-on-suspend"))
+                                   ("org.gnome.desktop.screensaver", "ubuntu-lock-on-suspend"),
+                                   lockdown="org.gnome.desktop.lockdown")
         if "xfce" in names:
             return self._xfce(scan)
         if not d.session:
@@ -83,7 +89,11 @@ class ScreenLock(Check):
                            "screen lock you use can't be told. Scan from your desktop to check it.")
         return unknown(f"Screen lock settings for {d.label} aren't supported yet.")
 
-    def _judge(self, desktop: str, enabled, idle: int | None, delay: int, on_suspend, ev: list[Evidence]) -> Outcome:
+    def _judge(self, desktop: str, enabled, idle: int | None, delay: int, on_suspend, ev: list[Evidence],
+               disabled=None) -> Outcome:
+        if disabled is True:
+            return failed(f"{desktop}'s lock screen is turned off (a lockdown setting, disable-lock-screen): nothing "
+                          "locks the screen, whatever the other settings say.", *ev)
         if enabled is False:
             return failed(f"{desktop} never locks the screen.", *ev)
         if idle == 0:
@@ -93,11 +103,16 @@ class ScreenLock(Check):
         if idle is None or enabled is None:
             return unknown(f"Couldn't read all of {desktop}'s screen lock settings.", *ev)
         total = idle + delay
+        if total > self.LONG:
+            return failed(f"The screen locks only after {_min(total)} idle"
+                          + (f" (it blanks after {_min(idle)}, then stays open for {_min(delay)})" if delay > 60 else "")
+                          + ": until then, anyone at the computer gets your session.", *ev)
         if idle > self.LIMIT or delay > 60:
             return warned(f"The screen locks after {_min(total)} idle; 5 minutes or less is safer.", *ev)
         return passed(f"The screen locks after {_min(total)} idle.", *ev)
 
-    def _gsettings(self, scan: Scan, desktop: str, saver: str, session: str, suspend, minutes: bool = False) -> Outcome:
+    def _gsettings(self, scan: Scan, desktop: str, saver: str, session: str, suspend, minutes: bool = False,
+                   lockdown: str | None = None) -> Outcome:
         g = scan.gnome
         enabled = g.gsettings(saver, "lock-enabled")
         idle = g.gsettings(session, "idle-delay")
@@ -106,11 +121,15 @@ class ScreenLock(Check):
             idle = None if idle is None else idle * 60
             delay *= 60
         on_suspend = g.gsettings(*suspend) if suspend else None
+        # set by an administrator's lockdown (or a user): GNOME Shell then never locks, whatever lock-enabled says
+        disabled = g.gsettings(lockdown, "disable-lock-screen") if lockdown else None
         ev = [Evidence.val("Lock enabled", enabled), Evidence.val("Idle delay", None if idle is None else _min(idle)),
               Evidence.val("Lock delay after blanking", f"{delay} s")]
+        if disabled is not None:
+            ev.insert(0, Evidence.val("Lock screen turned off (disable-lock-screen)", disabled))
         if suspend and on_suspend is not None:
             ev.append(Evidence.val("Lock on suspend", on_suspend))
-        return self._judge(desktop, enabled, idle, delay, on_suspend, ev)
+        return self._judge(desktop, enabled, idle, delay, on_suspend, ev, disabled)
 
     def _kde(self, scan: Scan) -> Outcome:
         # KDE writes only changed values: a missing key is the default, not "off"

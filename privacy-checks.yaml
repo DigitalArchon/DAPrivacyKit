@@ -753,7 +753,8 @@ checks:
     scope: user
     tier: auto
     detect:
-      - 'GNOME: org.gnome.desktop.screensaver lock-enabled, lock-delay; org.gnome.desktop.session idle-delay (0 = never)'
+      - 'GNOME: org.gnome.desktop.screensaver lock-enabled, lock-delay; org.gnome.desktop.session idle-delay (0 = never); org.gnome.desktop.lockdown disable-lock-screen (Cinnamon: org.cinnamon.desktop.lockdown, MATE: org.mate.lockdown), with which nothing locks'
+      - 'Idle and lock delay together over 30 minutes is a problem (the session is open for that long after the screen blanks), over 5 minutes a risk'
       - 'Ubuntu GNOME: org.gnome.desktop.screensaver ubuntu-lock-on-suspend'
       - 'KDE: kreadconfig6 --file kscreenlockerrc --group Daemon --key Autolock / Timeout / LockOnResume (empty = default)'
       - 'Cinnamon: org.cinnamon.desktop.screensaver lock-enabled'

@@ -47,6 +47,11 @@ GNOME_OK = {gs("org.gnome.desktop.screensaver", "lock-enabled"): "true\n",
     ({gs("org.gnome.desktop.session", "idle-delay"): "uint32 900\n"}, Status.WARN),
     ({gs("org.gnome.desktop.screensaver", "lock-delay"): "uint32 120\n"}, Status.WARN),    # 5 + 2 minutes
     ({gs("org.gnome.desktop.screensaver", "ubuntu-lock-on-suspend"): "false\n"}, Status.FAIL),
+    # an hour after blanking before it locks: open to anyone for most of the time it is left (it was a Risk at 3)
+    ({gs("org.gnome.desktop.screensaver", "lock-delay"): "uint32 3600\n"}, Status.FAIL),
+    # the lockdown setting: GNOME Shell never locks, whatever lock-enabled says (it was never read)
+    ({gs("org.gnome.desktop.lockdown", "disable-lock-screen"): "true\n"}, Status.FAIL),
+    ({gs("org.gnome.desktop.lockdown", "disable-lock-screen"): "false\n"}, Status.PASS),
 ])
 def test_screen_lock_gnome(cat, tmp_path, changes, status):
     host = make_host(tmp_path, commands={**GNOME_OK, **changes})
@@ -65,7 +70,8 @@ def test_screen_lock_cinnamon(cat, tmp_path):
     ("[Daemon]\nTimeout=3\n", Status.PASS),
     ("[Daemon]\nAutolock=false\n", Status.FAIL),
     ("[Daemon]\nLockOnResume=false\n", Status.FAIL),
-    ("[Daemon]\nTimeout=30\n", Status.WARN),
+    ("[Daemon]\nTimeout=20\n", Status.WARN),
+    ("[Daemon]\nTimeout=60\n", Status.FAIL),                         # an hour: no lock for most of the time it's left
 ])
 def test_screen_lock_kde_defaults(cat, tmp_path, rc, status):
     host = make_host(tmp_path, home_files={".config/kscreenlockerrc": rc} if rc else {})
