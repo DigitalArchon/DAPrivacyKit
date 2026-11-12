@@ -15,6 +15,7 @@ import functools
 import hashlib
 import os
 import re
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from importlib import resources
 from pathlib import Path
@@ -60,7 +61,7 @@ def dearmor(data: bytes | str) -> bytes:
     return out
 
 
-def packets(data: bytes):
+def packets(data: bytes) -> Iterator[tuple[int, bytes]]:
     """(tag, body) for each packet. Old and new packet formats; partial lengths aren't used in keys
     or detached signatures, so they are refused."""
     i, n = 0, len(data)
@@ -156,7 +157,7 @@ def parse_keys(data: bytes | str) -> list[KeyInfo]:
                     tuple(s for s in k["subs"] if s not in k["bound"])) for k in keys]
 
 
-def _subpackets(body: bytes):
+def _subpackets(body: bytes) -> Iterator[tuple[int, bytes, bool]]:
     """(kind, data, hashed) for each subpacket of a v4, v5 or v6 signature packet's body."""
     pos, wide = 4, body[0] in (5, 6)                 # version, type, pubkey algo, hash algo; v5/v6 counts are 4 bytes
     for hashed in (True, False):
@@ -178,7 +179,7 @@ def _subpackets(body: bytes):
                 yield sub[0] & 0x7F, sub[1:], hashed
 
 
-def _signatures(data: bytes | str):
+def _signatures(data: bytes | str) -> Iterator[bytes]:
     for tag, body in packets(dearmor(data)):
         if tag == SIGNATURE and body and body[0] in (4, 5, 6):
             yield body
@@ -188,9 +189,9 @@ def signature_issuers(data: bytes | str) -> list[str]:
     """Who made each signature in signature data: the issuer fingerprint (subpacket 33) when it
     is there, else the issuer key id (subpacket 16, 16 hex digits). Read from the packets alone,
     so it works without gpgv and without the key."""
-    out = []
+    out: list[str] = []
     for body in _signatures(data):
-        fpr = keyid = None
+        fpr = keyid = ""
         for kind, sub, _ in _subpackets(body):
             if kind == 33 and len(sub) >= 1:
                 fpr = sub[1:].hex().upper()
@@ -232,7 +233,8 @@ def key_expiries(data: bytes | str) -> dict[str, int | None]:
     key hasn't run out (packaging/check-signing-keys.py)."""
     out: dict[str, int | None] = {}
     newest: dict[str, int] = {}
-    current = created = None
+    current: str | None = None
+    created = 0                                      # the current key's, set with it
     for tag, body in packets(dearmor(data)):
         if tag in (PUBLIC_KEY, PUBLIC_SUBKEY):
             current, created = fingerprint(body), int.from_bytes(body[1:5], "big")
@@ -270,7 +272,7 @@ def revoked_keys(data: bytes) -> set[str]:
     subs: list[str] = []
     gone = False
 
-    def done():
+    def done() -> None:
         if primary and gone:
             out.add(primary)
             out.update(subs)
@@ -301,7 +303,7 @@ def revoked_keys(data: bytes) -> set[str]:
     return out
 
 
-def keybox_blocks(data: bytes):
+def keybox_blocks(data: bytes) -> Iterator[bytes]:
     """The OpenPGP key blocks in a GnuPG keybox (pubring.kbx): each blob is its length (4 bytes), its type (1
     byte, 2 for OpenPGP), version and flags, then where its key block starts in it and how long it is."""
     i, n = 0, len(data)
@@ -334,7 +336,7 @@ def _subkeys_by_primary(key: bytes) -> dict[str, tuple[str, ...]]:
     return {k.fingerprint: k.subkeys for k in parse_keys(key)} if key else {}
 
 
-def pinned(projects, primary: str, signer: str = "") -> tuple[Project, str, bool] | None:
+def pinned(projects: Iterable[Project], primary: str, signer: str = "") -> tuple[Project, str, bool] | None:
     """(project, key name, the signing key is in the app's copy) when `primary`, the primary key gpgv says made a
     signature (VALIDSIG's last field), is one a project pins. Only a primary counts: a v4 fingerprint is the
     same whether its packet is a primary key or a subkey, so a project's signing subkey, stolen and wrapped as a
@@ -396,11 +398,11 @@ def default_path() -> Path:
     return Path(str(resources.files("daprivacyscanner") / DATA_NAME))
 
 
-def _text(v) -> str:
+def _text(v: object) -> str:
     return " ".join(str(v).split()) if v is not None else ""
 
 
-def parse(data) -> list[Project]:
+def parse(data: object) -> list[Project]:
     if not isinstance(data, dict) or data.get("schema_version") != SCHEMA_VERSION:
         raise DataError(f"{DATA_NAME}: unsupported schema_version")
     out, seen = [], set()
@@ -486,7 +488,7 @@ def load(path: Path | str | None = None) -> tuple[Project, ...]:
     return _load_cached(str(p), mtime)
 
 
-def owner(projects, fpr: str) -> tuple[Project, str] | None:
+def owner(projects: Iterable[Project], fpr: str) -> tuple[Project, str] | None:
     """The project whose key (primary or subkey) has this fingerprint or key id, and the key's name: for naming
     who a signature says made it (an issuer whose key is missing, a bad signature), never for deciding that a
     good one is a project's (pinned())."""
@@ -500,7 +502,7 @@ def owner(projects, fpr: str) -> tuple[Project, str] | None:
     return None
 
 
-def published(projects, sha256: str | None) -> tuple[Project, str, str] | None:
+def published(projects: Iterable[Project], sha256: str | None) -> tuple[Project, str, str] | None:
     """(project, file name, page) when a project publishes this SHA-256 on its own site."""
     if not sha256:
         return None
@@ -511,15 +513,15 @@ def published(projects, sha256: str | None) -> tuple[Project, str, str] | None:
     return None
 
 
-def for_file(projects, filename: str) -> Project | None:
+def for_file(projects: Iterable[Project], filename: str) -> Project | None:
     return next((p for p in projects if p.matches(filename)), None)
 
 
-def all_for_file(projects, filename: str) -> list[Project]:
+def all_for_file(projects: Iterable[Project], filename: str) -> list[Project]:
     """Every project whose files are named like this one (Tor Browser Developers sign Mullvad Browser too)."""
     return [p for p in projects if p.matches(filename)]
 
 
-def keyring(projects) -> bytes:
+def keyring(projects: Iterable[Project]) -> bytes:
     """Every project's keys as one binary keyring, as gpgv and sqv read it."""
     return b"".join(p.key for p in projects)

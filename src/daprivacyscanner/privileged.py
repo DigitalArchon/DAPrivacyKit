@@ -24,6 +24,7 @@ import tempfile
 import threading
 import uuid
 from pathlib import Path
+from typing import Any
 
 from . import helper
 
@@ -76,7 +77,7 @@ class Privileged:
     """What checks and fixes may ask of root. The named methods are read-only detection;
     call() sends one of the helper's change actions (see helper.py)."""
 
-    def call(self, action: str, args: dict, timeout: float | None = None):
+    def call(self, action: str, args: dict, timeout: float | None = None) -> Any:
         raise NotImplementedError
 
     def alive(self) -> bool:
@@ -94,7 +95,8 @@ class Privileged:
         return False
 
     def list_changes(self) -> list[dict]:
-        return self.call("list_changes", {})["changes"]
+        changes: list[dict] = self.call("list_changes", {})["changes"]
+        return changes
 
     def luks_dump(self, device: str) -> dict:
         raise NotImplementedError
@@ -234,7 +236,8 @@ def install_helper(uninstall: bool = False) -> dict:
         raise HelperUnavailable(f"The administrator helper couldn't be put where root can read it ({e.strerror or e}).") from None
     h = PkexecHelper.start(argv=argv, mode="install")
     try:
-        return h.call("uninstall_self" if uninstall else "install_self", {})
+        done: dict = h.call("uninstall_self" if uninstall else "install_self", {})
+        return done
     finally:
         h.close()
 
@@ -306,10 +309,10 @@ class PkexecHelper(Privileged):
             raise HelperUnavailable("The helper didn't start the way it was asked to.")
         return h
 
-    def _read(self):
+    def _read(self) -> None:
         try:
             if self.sock is None:                   # a helper given pipes (tests)
-                for line in self.proc.stdout:
+                for line in self.proc.stdout or ():
                     self._lines.put(line.decode("utf-8", "replace") if isinstance(line, bytes) else line)
             else:
                 buf = b""
@@ -326,12 +329,15 @@ class PkexecHelper(Privileged):
         self._eof = True
         self._lines.put(None)
 
-    def _drain(self):
+    def _drain(self) -> None:
         """What the helper and pkexec write to stderr, read so a full pipe never blocks them; the last part kept, for
         why it didn't start."""
+        err = self.proc.stderr
+        if err is None:                             # only started when there is one
+            return
         try:
             while True:
-                chunk = self.proc.stderr.read1(4096) if hasattr(self.proc.stderr, "read1") else self.proc.stderr.read(4096)
+                chunk = err.read1(4096) if hasattr(err, "read1") else err.read(4096)
                 if not chunk:
                     return
                 if isinstance(chunk, str):
@@ -346,10 +352,13 @@ class PkexecHelper(Privileged):
             if self.sock is not None:
                 self.sock.sendall(data)
             else:                                   # a helper given pipes (tests)
-                self.proc.stdin.write(data if "b" in getattr(self.proc.stdin, "mode", "") else data.decode())
-                self.proc.stdin.flush()
+                stdin = self.proc.stdin
+                if stdin is None:
+                    raise BrokenPipeError("the helper was given no input")
+                stdin.write(data if "b" in getattr(stdin, "mode", "") else data.decode())
+                stdin.flush()
 
-    def _call(self, action: str, args: dict, timeout: float = CALL_TIMEOUT, wait: bool = True):
+    def _call(self, action: str, args: dict, timeout: float = CALL_TIMEOUT, wait: bool = True) -> Any:
         if not self._lock.acquire(blocking=wait):
             return None
         try:
@@ -357,7 +366,7 @@ class PkexecHelper(Privileged):
         finally:
             self._lock.release()
 
-    def _exchange(self, action: str, args: dict, timeout: float):
+    def _exchange(self, action: str, args: dict, timeout: float) -> Any:
         self._next += 1
         rid = self._next
         unknown = {"change_id": args["change_id"]} if isinstance(args.get("change_id"), str) else {}
@@ -393,7 +402,7 @@ class PkexecHelper(Privileged):
                                                                              data)
         return reply.get("result")
 
-    def call(self, action: str, args: dict, timeout: float | None = None):
+    def call(self, action: str, args: dict, timeout: float | None = None) -> Any:
         # a change carries an id of the app's, so that if no answer comes, what became of it can be asked (list_changes)
         if action in helper.JOURNALLED and "change_id" not in args:
             args = {**args, "change_id": uuid.uuid4().hex}
@@ -412,7 +421,7 @@ class PkexecHelper(Privileged):
         except HelperError:
             pass
 
-    def cancel(self, actions) -> bool:
+    def cancel(self, actions: set[str] | frozenset[str]) -> bool:
         inflight = self._inflight
         if inflight is None or inflight[1] not in actions:
             return False
@@ -423,29 +432,37 @@ class PkexecHelper(Privileged):
         return True
 
     def luks_dump(self, device: str) -> dict:
-        return self._call("luks_dump", {"device": device})
+        dump: dict = self._call("luks_dump", {"device": device})
+        return dump
 
     def clevis_list(self, device: str) -> list[dict]:
-        return self._call("clevis_list", {"device": device})
+        bindings: list[dict] = self._call("clevis_list", {"device": device})
+        return bindings
 
     def read_file(self, path: str) -> str | None:
         r = self._call("read_file", {"path": path})
         return None if r.get("missing") else r["text"]
 
     def empty_password_accounts(self) -> list[str]:
-        return self._call("empty_password_accounts", {})
+        accounts: list[str] = self._call("empty_password_accounts", {})
+        return accounts
 
     def sshd_settings(self) -> dict[str, list[str]]:
-        return self._call("sshd_settings", {})
+        settings: dict[str, list[str]] = self._call("sshd_settings", {})
+        return settings
 
     def firewall_summary(self) -> dict:
-        return self._call("firewall_summary", {})
+        summary: dict = self._call("firewall_summary", {})
+        return summary
 
     def ufw_status(self) -> str:
-        return self._call("ufw_status", {})["text"]
+        text: str = self._call("ufw_status", {})["text"]
+        return text
 
     def observe_traffic(self, seconds: int) -> dict:
-        return self._call("observe_traffic", {"seconds": seconds}, call_timeout("observe_traffic", {"seconds": seconds}, None))
+        seen: dict = self._call("observe_traffic", {"seconds": seconds},
+                                call_timeout("observe_traffic", {"seconds": seconds}, None))
+        return seen
 
     def close(self) -> None:
         """The end of input: the helper finishes the request in hand, if any, and exits."""
@@ -504,7 +521,7 @@ class FakePrivileged(Privileged):
         self.calls: list[tuple[str, str]] = []
         self.asked: list[str] = []
 
-    def call(self, action: str, args: dict, timeout: float | None = None):
+    def call(self, action: str, args: dict, timeout: float | None = None) -> Any:
         if not helper.ROOT:
             raise AssertionError("tests must point helper.ROOT at a fixture tree before calling the helper")
         self.calls.append((action, json.dumps(args, sort_keys=True)))

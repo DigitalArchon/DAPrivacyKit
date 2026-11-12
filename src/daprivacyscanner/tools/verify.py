@@ -20,10 +20,12 @@ import re
 import struct
 import tempfile
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING, cast
 
-from ..host import Host
+from ..host import CommandResult, Host
 from . import keys as K
 from . import packages as P
 
@@ -279,7 +281,10 @@ def install_command(host: Host, program: str) -> str:
     from types import SimpleNamespace
 
     from ..checks.guides import install
-    return install(SimpleNamespace(host=host), **TOOL_PACKAGES[program]) or ""
+    if TYPE_CHECKING:
+        from ..checks import Scan
+    # install() reads only the scan's host
+    return install(cast("Scan", SimpleNamespace(host=host)), **TOOL_PACKAGES[program]) or ""
 
 
 def sig_kind(data: bytes) -> str | None:
@@ -344,7 +349,8 @@ class KeySet:
     chose, and (read only) the user's own GnuPG keyring. Written to a private temporary folder
     for gpgv/sqv while it is in use."""
 
-    def __init__(self, host: Host, projects, key_files: list[Path] = (), use_keyring: bool = True):
+    def __init__(self, host: Host, projects: Sequence[K.Project], key_files: Sequence[Path] = (),
+                 use_keyring: bool = True):
         self.host, self.projects = host, projects
         self.key_files: list[tuple[Path, list[K.KeyInfo]]] = []
         self.problems: list[str] = []
@@ -391,7 +397,7 @@ class KeySet:
                 pass
         return self
 
-    def __exit__(self, *exc) -> None:
+    def __exit__(self, *exc: object) -> None:
         if self._dir is not None:
             self._dir.cleanup()
             self._dir = None
@@ -450,7 +456,8 @@ def check_openpgp(host: Host, keyset: KeySet, sig: Path, data: Path | None, sign
     counts only when the two agree."""
     over = data or sig
     if host.runner.which("gpgv"):
-        runs, failed = [], None
+        runs: list[list[Signature]] = []
+        failed: CommandResult | None = None
         for run, rings in keyset.runs():
             argv = ["gpgv", "--homedir", str(keyset.dir / "home"), "--status-fd", "1"]
             for kr in rings:
@@ -472,13 +479,13 @@ def check_openpgp(host: Host, keyset: KeySet, sig: Path, data: Path | None, sign
             if not found:
                 failed = failed or r
                 continue
-            if out is not None and not _same_text(checked or "", signed):
+            if out is not None and signed is not None and not _same_text(checked or "", signed):
                 return Signature(sig, over, "openpgp", "bad", detail="what its signature covers isn't what the app read "
                                  "as signed in it")
             runs.append([_from_status(keyset, sig, over, s, run) for s in found])
         if not runs:
-            return Signature(sig, over, "openpgp", "error", detail=(failed.stderr or failed.stdout).strip()[:300]
-                             or "gpgv found no signature in it")
+            said = (failed.stderr or failed.stdout).strip()[:300] if failed is not None else ""
+            return Signature(sig, over, "openpgp", "error", detail=said or "gpgv found no signature in it")
         # every signature in the file must be good; report the first that isn't, else the first by a listed key
         results = combined(runs)
         bad = next((s for s in results if s.status in ("bad", "revoked")), None)
@@ -827,8 +834,8 @@ def _who(s: Signature) -> str:
     return s.key_name or "a key the app doesn't list"
 
 
-def verify(host: Host, path: Path, key_files: list[Path] = (), expected: str = "", use_keyring: bool = True,
-           projects=None, given: bool = False) -> Verdict:
+def verify(host: Host, path: Path, key_files: Sequence[Path] = (), expected: str = "", use_keyring: bool = True,
+           projects: Sequence[K.Project] | None = None, given: bool = False) -> Verdict:
     """Everything that can be checked about the file now. Reads the file and the companions next to
     it; changes nothing. `given`: the checksum came with the command (--checksum), not pasted into the page."""
     path = target_of(Path(path))
@@ -844,8 +851,8 @@ def verify(host: Host, path: Path, key_files: list[Path] = (), expected: str = "
             continue
         try:
             c, unclear = clearsigned(data), ""
-        except Unclear as e:
-            c, unclear = None, str(e)
+        except Unclear as err:
+            c, unclear = None, str(err)
         entries = for_file(parse_sums(c.text if c is not None else data.decode("utf-8", "replace"), lp.name),
                            path.name, lp.name)
         if entries:
@@ -862,10 +869,10 @@ def verify(host: Host, path: Path, key_files: list[Path] = (), expected: str = "
         package_notes: list[str] = []
         try:
             inner = P.embedded(path, ks.dir)
-        except (P.PackageError, OSError, struct.error, ValueError, TypeError, IndexError) as e:   # a package's to set
-            e = e if isinstance(e, (P.PackageError, OSError)) else P.PackageError("it is damaged")
+        except (P.PackageError, OSError, struct.error, ValueError, TypeError, IndexError) as err:  # a package's to set
+            why = err if isinstance(err, (P.PackageError, OSError)) else P.PackageError("it is damaged")
             inner = []
-            package_notes.append(f"The package's own signature couldn't be read ({e}).")
+            package_notes.append(f"The package's own signature couldn't be read ({why}).")
         for e in inner:
             with P.streamed(e):
                 s = check_openpgp(host, ks, e.sig, e.data, signed=e.signed)
@@ -884,6 +891,7 @@ def verify(host: Host, path: Path, key_files: list[Path] = (), expected: str = "
             if l.unclear:
                 l.signature = Signature(l.path, l.path, "openpgp", "bad", detail=l.unclear)
             elif l.clearsigned:
+                assert l.message is not None, "a clearsigned list keeps its message"
                 l.signature = check_clearsigned(host, ks, l.path, l.message)
             else:
                 sig = next((l.path.with_name(l.path.name + s) for s in SIG_SUFFIXES
@@ -908,10 +916,10 @@ def verify(host: Host, path: Path, key_files: list[Path] = (), expected: str = "
 
 
 def decide(path: Path, size: int, hashes: dict, signatures: list[Signature], lists: list[SumsList],
-           paste_info: dict | None, projects, given: bool = False) -> Verdict:
+           paste_info: dict | None, projects: Sequence[K.Project], given: bool = False) -> Verdict:
     hint = K.for_file(projects, path.name)
     v = Verdict(path, size, "unchecked", "", "", hashes, signatures, lists, paste_info, project_hint=hint)
-    all_sigs = signatures + [l.signature for l in lists if l.signature]
+    all_sigs = signatures + [l.signature for l in lists if l.signature is not None]
 
     # bad: a signature that doesn't match, a revoked key, or a checksum that doesn't
     bad_sig = next((s for s in all_sigs if s.status == "bad"), None)
@@ -943,6 +951,7 @@ def decide(path: Path, size: int, hashes: dict, signatures: list[Signature], lis
             v.text = (f"Its {ALGO_TITLE[e.algo]} checksum doesn't match the one in {l.path.name}: the download is "
                       "damaged or not the file that list describes.")
         else:
+            assert paste_info is not None           # nothing else is left that is bad
             v.text = (f"Its {paste_info['algo_title']} checksum doesn't match the one {paste_info.get('said', 'you pasted')}: "
                       "the download is "
                       "damaged, or not the file that checksum is for.")
@@ -951,30 +960,32 @@ def decide(path: Path, size: int, hashes: dict, signatures: list[Signature], lis
         return v
 
     good_direct = [s for s in signatures if s.good]
-    good_lists = [l for l in lists if l.signature and l.signature.good and any(ok for _, ok in l.matched)]
-    by_project = [s for s in good_direct if s.project] + [l.signature for l in good_lists if l.signature.project]
-    other = [s for s in good_direct if not s.project] + [l.signature for l in good_lists if not l.signature.project]
+    good_lists = [l.signature for l in lists if l.signature and l.signature.good and any(ok for _, ok in l.matched)]
+    by_project = [s for s in good_direct if s.project] + [s for s in good_lists if s.project]
+    other = [s for s in good_direct if not s.project] + [s for s in good_lists if not s.project]
     intact = any(ok for l in lists for _, ok in l.matched) or bool(paste_info and paste_info["matches"])
     # a file named as one project's is verified only by that project's key: otherwise the weakest of the listed
     # keys (some are one person's, some a build server's) would have made anything "Verified", Tails images too
     named = K.all_for_file(projects, path.name)
-    trusted = [s for s in by_project if not named or s.project.id in {p.id for p in named}]
+    trusted = [s for s in by_project if not named or s.project is not None and s.project.id in {p.id for p in named}]
     foreign = [s for s in by_project if all(s is not t for t in trusted)]
 
     if trusted:
         s = trusted[0]
+        made = s.project
+        assert made is not None                 # by_project's
         via = (" (the signature inside the package)" if s.inside else
                "" if s.over == path else f", through the checksum list {s.over.name},")
-        v.level, v.title = "verified", f"Verified: made by {s.project.name}"
-        v.text = (f"It is signed{via} by {s.project.name}'s release key ({s.key_name}), whose fingerprint the app "
-                  f"checked on {s.project.name}'s own site on {s.project.checked.isoformat()}. "
+        v.level, v.title = "verified", f"Verified: made by {made.name}"
+        v.text = (f"It is signed{via} by {made.name}'s release key ({s.key_name}), whose fingerprint the app "
+                  f"checked on {made.name}'s own site on {made.checked.isoformat()}. "
                   "It is the file they published, unchanged.")
         v.signed_at = s.signed_at
         v.notes += _weak_notes(s, lists, path)
         if s.newer_subkey:
             mine = "your GnuPG keyring" if s.source == "keyring" else f"the key file {s.source.split(':', 1)[-1]}"
-            v.notes.append(f"It was signed with a signing subkey the app's copy of {s.project.name}'s key doesn't have "
-                           f"yet. Your copy of the key, in {mine}, shows {s.project.name}'s key vouching for it.")
+            v.notes.append(f"It was signed with a signing subkey the app's copy of {made.name}'s key doesn't have "
+                           f"yet. Your copy of the key, in {mine}, shows {made.name}'s key vouching for it.")
         elif s.source == "keyring":
             v.notes.append("The key came from your own GnuPG keyring, and its fingerprint is the one the app lists.")
         return v
@@ -990,15 +1001,17 @@ def decide(path: Path, size: int, hashes: dict, signatures: list[Signature], lis
         return v
     if foreign:
         s, theirs = foreign[0], named[0]
+        made = s.project
+        assert made is not None                 # by_project's
         via = "" if s.over == path else f", through the checksum list {s.over.name},"
-        v.level, v.title = "other_project", f"Not verified: signed by {s.project.name}, but named as {theirs.name}'s file"
-        v.text = (f"It has a good signature{via} by {s.project.name}'s release key ({s.key_name}), but its name is "
-                  f"that of {theirs.signs}, and {s.project.name} doesn't sign those. A file renamed by mistake can look "
+        v.level, v.title = "other_project", f"Not verified: signed by {made.name}, but named as {theirs.name}'s file"
+        v.text = (f"It has a good signature{via} by {made.name}'s release key ({s.key_name}), but its name is "
+                  f"that of {theirs.signs}, and {made.name} doesn't sign those. A file renamed by mistake can look "
                   f"like this; so can a file made to pass for {theirs.name}'s by someone who got hold of "
-                  f"{s.project.name}'s key. The app only calls a file verified when the key is that of the project "
+                  f"{made.name}'s key. The app only calls a file verified when the key is that of the project "
                   "whose file it is.")
         v.signed_at = s.signed_at
-        v.steps = [f"If it is {s.project.name}'s file, give it back its own name and verify it again.",
+        v.steps = [f"If it is {made.name}'s file, give it back its own name and verify it again.",
                    f"If it should be {theirs.name}'s, don't use it: download it again from {theirs.name}'s own site. "
                    f"{theirs.how}"]
         return v

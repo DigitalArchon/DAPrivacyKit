@@ -200,12 +200,12 @@ class Flows:
             if kind == 0x0800:
                 ihl = (p[at] & 0x0F) * 4
                 total, ident, fl = struct.unpack_from(">HHH", p, at + 2)
-                proto, src, dst = p[at + 9], p[at + 12:at + 16], p[at + 16:at + 20]
+                proto, raw_src, raw_dst = p[at + 9], p[at + 12:at + 16], p[at + 16:at + 20]
                 body = p[at + ihl:at + total] if total >= ihl else b""
                 if fl & 0x3FFF:                             # more fragments, or not the first
                     frag = (ident, (fl & 0x1FFF) * 8, bool(fl & 0x2000))
             elif kind == 0x86DD:
-                proto, src, dst = p[at + 6], p[at + 8:at + 24], p[at + 24:at + 40]
+                proto, raw_src, raw_dst = p[at + 6], p[at + 8:at + 24], p[at + 24:at + 40]
                 body = p[at + 40:at + 40 + struct.unpack_from(">H", p, at + 4)[0]]
                 # the extension headers before the transport's: a Fragment header (any datagram larger than the link
                 # takes, which pasta reassembles and sends on) or a Routing header (anyone may add one) hid the
@@ -222,7 +222,7 @@ class Flows:
                         proto, body = body[0], body[size:]
             else:
                 return
-            src, dst = str(ipaddress.ip_address(src)), str(ipaddress.ip_address(dst))
+            src, dst = str(ipaddress.ip_address(raw_src)), str(ipaddress.ip_address(raw_dst))
             if frag is not None and frag[1]:                # a later piece: no ports in it
                 self._piece(src, dst, frag, proto, len(body))
                 return

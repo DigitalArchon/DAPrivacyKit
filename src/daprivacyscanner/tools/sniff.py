@@ -23,6 +23,7 @@ import re
 import zipfile
 import zlib
 from dataclasses import dataclass, field
+from typing import BinaryIO
 
 SCAN_LIMIT = 16 * 1024 * 1024          # bytes read looking for macros or a PDF's actions
 HEAD = 4096
@@ -89,7 +90,8 @@ def _read(fd: int, size: int, offset: int) -> bytes:
 
 def _scan(fd: int, size: int, *needles: bytes) -> set[bytes]:
     """Which of `needles` appear in the first SCAN_LIMIT bytes (read in pieces that overlap)."""
-    found, pos, tail = set(), 0, b""
+    found: set[bytes] = set()
+    pos, tail = 0, b""
     longest = max(len(n) for n in needles)
     while pos < min(size, SCAN_LIMIT) and len(found) < len(needles):
         chunk = _read(fd, 1 << 20, pos)
@@ -110,12 +112,15 @@ def _desktop_entry(head: bytes) -> bool:
     return False
 
 
-def _zip_index(f) -> tuple[int, int] | None:
+def _zip_index(f: BinaryIO) -> tuple[int, int] | None:
     """(how many entries, how many bytes) the ZIP's index says it has, from its end record (ZIP64's where it says
     so), read as zipfile reads it (its own _EndRecData: what it would then load); None when there is none."""
     try:
-        end = zipfile._EndRecData(f)
-        return (int(end[zipfile._ECD_ENTRIES_TOTAL]), int(end[zipfile._ECD_SIZE])) if end else None
+        # zipfile's own private reader and offsets, on purpose (typeshed doesn't declare them): a Python without them
+        # raises AttributeError, caught below
+        end = zipfile._EndRecData(f)  # type: ignore[attr-defined]
+        return (int(end[zipfile._ECD_ENTRIES_TOTAL]),  # type: ignore[attr-defined]
+                int(end[zipfile._ECD_SIZE])) if end else None  # type: ignore[attr-defined]
     except (AttributeError, IndexError, TypeError, ValueError, OSError, zipfile.BadZipFile):
         return None
 

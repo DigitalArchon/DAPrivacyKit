@@ -25,9 +25,11 @@ import re
 import struct
 import threading
 import time
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any, BinaryIO
 
 AR_MAGIC = b"!<arch>\n"
 RPM_LEAD = b"\xed\xab\xee\xdb"
@@ -78,7 +80,7 @@ MAX_MEMBERS = 1000                        # a .deb has three or four
 def ar_members(path: Path) -> list[tuple[str, int, int]]:
     """(name, offset of its data, size) of each member. A size that isn't a plain count of bytes ("-60" kept the
     reader on the same header for ever), or one past the end of the file, is a damaged package."""
-    out = []
+    out: list[tuple[str, int, int]] = []
     with open(path, "rb") as f:
         if f.read(8) != AR_MAGIC:
             raise PackageError("not an ar archive")
@@ -180,7 +182,7 @@ def deb(path: Path, work: Path) -> list[Embedded]:
 
 # ------------------------------------------------------------------ .rpm
 
-def _header(f, off: int) -> tuple[dict[int, tuple[int, int, int]], int, int]:
+def _header(f: BinaryIO, off: int) -> tuple[dict[int, tuple[int, int, int]], int, int]:
     """(tag -> (type, absolute offset of its data, count), where the header starts, where it ends)."""
     f.seek(off)
     h = f.read(16)
@@ -202,7 +204,7 @@ def _header(f, off: int) -> tuple[dict[int, tuple[int, int, int]], int, int]:
     return tags, off, store + size
 
 
-def _value(f, entry: tuple[int, int, int], limit: int = MAX_VALUE) -> bytes | int | list[str]:
+def _value(f: BinaryIO, entry: tuple[int, int, int], limit: int = MAX_VALUE) -> bytes | int | list[str]:
     typ, off, cnt = entry
     f.seek(off)
     if typ == 7:                                                   # BIN
@@ -210,14 +212,15 @@ def _value(f, entry: tuple[int, int, int], limit: int = MAX_VALUE) -> bytes | in
             raise PackageError("a value in its signature header is too large to be a signature")
         return f.read(cnt)
     if typ == 4:                                                   # INT32
-        return struct.unpack(">I", f.read(4))[0]
+        n: int = struct.unpack(">I", f.read(4))[0]
+        return n
     if typ in (6, 8, 9):                                           # STRING, STRING_ARRAY, I18NSTRING
         raw = f.read(65536)
         return [s.decode("utf-8", "replace") for s in raw.split(b"\0")[:max(cnt, 1)]]
     raise PackageError(f"an RPM value of type {typ}")
 
 
-def _typed(f, entry: tuple[int, int, int], *kinds: type):
+def _typed(f: BinaryIO, entry: tuple[int, int, int], *kinds: type) -> Any:
     """_value(), refused unless it is of a kind the tag has: a signature as bytes (or text, for rpm 6's), the digest's
     algorithm as a number, the digest as text. The type is the package's to set: an INT32 signature tag reached
     write_bytes(int), a STRING algorithm tag was looked up as a dict key (TypeError, uncaught)."""
@@ -282,27 +285,29 @@ def embedded(path: Path, work: Path) -> list[Embedded]:
 
 
 @contextmanager
-def streamed(e: Embedded, timeout: float = 600):
+def streamed(e: Embedded, timeout: float = 600) -> Iterator[None]:
     """While in use, `e.data` is a named pipe that the package's `ranges` are written into, for each
     reader (gpgv) that opens it in turn: the signature is checked against the app's keys and the user's
     apart (verify.KeySet.runs), so it is read once per check. Nothing to do for an Embedded without ranges."""
     if not e.ranges:
         yield
         return
-    os.mkfifo(e.data, 0o600)
+    data, source = e.data, e.source
+    assert data is not None and source is not None, "an Embedded with ranges has its pipe and package"
+    os.mkfifo(data, 0o600)
     stop = threading.Event()
 
-    def feed():
+    def feed() -> None:
         deadline = time.monotonic() + timeout
         while not stop.is_set() and time.monotonic() < deadline:
             try:
-                fd = os.open(e.data, os.O_WRONLY | os.O_NONBLOCK)       # ENXIO until a reader has it open
+                fd = os.open(data, os.O_WRONLY | os.O_NONBLOCK)         # ENXIO until a reader has it open
             except OSError:
                 time.sleep(0.02)
                 continue
             os.set_blocking(fd, True)
             try:
-                with open(e.source, "rb") as src:
+                with open(source, "rb") as src:
                     for off, size in e.ranges:
                         src.seek(off)
                         left = size
