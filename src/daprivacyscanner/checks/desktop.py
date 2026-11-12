@@ -35,7 +35,7 @@ def _boot_unlocked(scan: Scan) -> set[str] | None:
     return out
 
 
-def _crypt_name(d: blockdev.Device) -> str | None:
+def _crypt_name(d: blockdev.Device | None) -> str | None:
     while d is not None and d.type != "crypt":
         d = d.parent
     return d.name if d is not None else None
@@ -130,7 +130,7 @@ class MemoryMount:
     @property
     def options(self) -> dict[str, str]:
         """The mount's options now: {"size": "500M", "noexec": "", ...}."""
-        if not self.in_memory:
+        if not self.in_memory or self.mount is None:      # in memory: a tmpfs mounted there
             return {}
         return dict((o.split("=", 1) + [""])[:2] for o in self.mount.options.split(","))
 
@@ -453,13 +453,13 @@ class Indexers(Check):
                 left.append(name)
         recoll = recoll_index(scan)
         if recoll is not None:
-            conf, size = recoll
-            ev.append(Evidence.val("Recoll", f"file contents, index {human_size(size)}"))
+            recoll_conf, recoll_size = recoll
+            ev.append(Evidence.val("Recoll", f"file contents, index {human_size(recoll_size)}"))
             content.append("Recoll")
-            outside += _outside_home(scan, recoll_topdirs(scan, conf))
+            outside += _outside_home(scan, recoll_topdirs(scan, recoll_conf))
         if not ev:
             return absent("No file indexer is installed.")
-        findings = {self.FINDING: bool(content and outside)}
+        findings: dict[str, bool | None] = {self.FINDING: bool(content and outside)}
         if not content and not left:
             findings[self.UNENCRYPTED] = False
             return passed("File search indexes file names only, not their contents." if basic else
@@ -467,7 +467,8 @@ class Indexers(Check):
         from .encryption import storage_of
         fde = scan.context["fde"]
         # the index is in the home folder: is that encrypted? ('partial' depends on where home is)
-        protected = {"none": False, "home": True, "full": True}.get(fde) if fde != "partial" else None
+        protected: bool | None = {"none": False, "home": True, "full": True}.get(fde) \
+            if isinstance(fde, str) and fde != "partial" else None
         if protected is None:
             protected = storage_of(scan, str(host.home)).encrypted
         findings[self.UNENCRYPTED] = None if protected is None else not protected
@@ -1022,7 +1023,9 @@ class FileManagerActions(Check):
         managers = sorted({e.manager for e in entries if installed(scan.host, e.program)})
         if not managers:
             return absent("None of the file managers it can add to (Nemo, Dolphin, Nautilus) is installed.")
-        ev, missing, stale = [], [], []
+        ev: list[Evidence] = []
+        missing: list[str] = []
+        stale: list[str] = []
         for m in managers:
             mine = [e for e in entries if e.manager == m]
             have = [read_text(scan.host, e.path) for e in mine]

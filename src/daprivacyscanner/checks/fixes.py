@@ -28,14 +28,14 @@ from ._util import (children, chromium_in_use, files_under, holders, isdir, isfi
 @dataclass
 class FixEntry:
     plan: Callable[[Check, Scan, Outcome], FixPlan]
-    can: Callable[[Scan], bool] | None = None
+    can: Callable[[Scan], bool | No] | None = None
     needs_root: bool = False
 
 
 FIXES: dict[str, FixEntry] = {}
 
 
-def fix(check_id: str, can: Callable[[Scan], bool] | None = None, needs_root: bool = False):
+def fix(check_id: str, can: Callable[[Scan], bool | No] | None = None, needs_root: bool = False):
     def register(fn):
         FIXES[check_id] = FixEntry(fn, can, needs_root)
         return fn
@@ -654,7 +654,7 @@ def thumbnail_deletions(scan: Scan, everything: bool = False, only: Path | None 
         path = uri_path(uri)
         if path is None and not everything:
             continue
-        if everything or place_of(path) or not _exists(path):
+        if everything or (path is not None and (place_of(path) or not _exists(path))):
             folder = only if only is not None and png.is_relative_to(only) else png.parent.parent
             by_dir.setdefault(folder, []).append(png)
     label = "every cached thumbnail" if everything else "thumbnails of deleted files and of removable or encrypted drives"
@@ -776,15 +776,17 @@ def _klipper(scan: Scan, a: list, effects: list, blockers: list) -> None:
            if "plasmashell" not in processes(scan.host) else
            "Klipper is turned off over D-Bus, and neither qdbus6 nor dbus-send is installed."
            if clear is None or None in tray.values() else None)
-    if why:
-        effects.append(why)
+    if why or clear is None:                # `why` says why whenever clear or a tray script is None
+        if why:
+            effects.append(why)
         if not in_use(scan, k.folder, "klipper"):
             a += guarded(delete(scan, k.folder, "Klipper clipboard history"), klipper_use)
         return
+    scripts = {state: s for state, s in tray.items() if s is not None}      # both: `why` is None
     if files:
         a.append(ClearCommand(clear, "Klipper deletes its history, with what was copied, while it still runs"))
     a.append(PlasmaTraySet(KLIPPER_APPLET, "Clipboard (Klipper)", scan.paths.config_home / APPLETSRC,
-                           list(applet.trays), tray, "off", phase=3))
+                           list(applet.trays), scripts, "off", phase=3))
     effects.append("Klipper stops at once and stays off. What you copy still pastes, but it goes when the app you "
                    "copied it from closes, and Meta+V no longer shows a history.")
     if files:
@@ -806,7 +808,7 @@ def _copyq(scan: Scan, a: list, effects: list, blockers: list) -> None:
                             "changed while it is closed.")
             continue
         shown = scan.host.display(q.config / "copyq.conf")
-        if q.stores:
+        if q.stores and q.tab is not None:        # a tab is kept only when there is one
             a.append(CopyQTabSet(q.config / "copyq.conf", shown, q.tab, "store_items", "false",
                                  f'CopyQ keeps its tab "{q.tab}" in memory only (its "Save Items" off)'))
             commands = q.config / "copyq-commands.ini"

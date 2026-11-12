@@ -280,10 +280,10 @@ class Snap(Check):
         for line in r.stdout.splitlines()[1:]:
             f = line.split()
             if len(f) >= 6:
-                notes = f[-1]
-                if "disabled" in notes:
+                flags = f[-1]
+                if "disabled" in flags:
                     disabled.append(f"{f[0]} {f[2]}")
-                if "classic" in notes and "disabled" not in notes:
+                if "classic" in flags and "disabled" not in flags:
                     classic.append(f[0])
         old_data = Tally()
         for name in scan.paths.snaps():

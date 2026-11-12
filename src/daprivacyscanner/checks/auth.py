@@ -530,6 +530,7 @@ class SshKeyNoPassphrase(Check):
             # an empty passphrase opens it: no passphrase. -P never prompts.
             r = host.run("ssh-keygen", "-y", "-P", "", "-f", str(k))
             err = r.stderr + r.stdout
+            state: str | None                           # None: a key format the app doesn't know
             if r.ok:
                 state = "sk" if r.stdout.startswith("sk-") else "none"
             elif re.search(r"incorrect passphrase", err, re.I):
@@ -717,10 +718,10 @@ class GpgKeys(Check):
         conf = gpg_agent_conf(read_text(host, home / "gpg-agent.conf") or "")
         after_use, longest = gpg_cache(conf)
         long_ttl = after_use > GPG_LONG_TTL["default-cache-ttl"] or longest > GPG_LONG_TTL["max-cache-ttl"]
-        for k in ("default-cache-ttl", "max-cache-ttl"):
-            v = conf.get(k)
-            ev.append(Evidence.val(k, f"{_duration(v)} (gpg-agent.conf)" if v is not None else
-                                   f"{_duration(GPG_TTL_DEFAULTS[k])} (GnuPG's default)"))
+        for setting in ("default-cache-ttl", "max-cache-ttl"):
+            v = conf.get(setting)
+            ev.append(Evidence.val(setting, f"{_duration(v)} (gpg-agent.conf)" if v is not None else
+                                   f"{_duration(GPG_TTL_DEFAULTS[setting])} (GnuPG's default)"))
         r = host.run(*GPG_LIST, timeout=30)
         if r.missing:
             keys = None
@@ -834,7 +835,8 @@ def env_secrets(text: str) -> int:
 
 
 def find_env_files(home: Path, max_depth: int = 4, limit: int = 20_000) -> list[Path]:
-    out, seen, stack = [], 0, [(home, 0)]
+    out: list[Path] = []
+    seen, stack = 0, [(home, 0)]
     while stack:
         d, depth = stack.pop()
         for p in children(d):
@@ -1192,7 +1194,9 @@ class SudoNopasswd(Check):
 
     def detect(self, scan: Scan) -> Outcome:
         host = scan.host
-        ev, broad, narrow = [], [], []                 # (as shown, the command)
+        ev: list[Evidence] = []
+        broad: list[tuple[str, str]] = []              # (as shown, the command)
+        narrow: list[tuple[str, str]] = []
         if host.runner.which("sudo"):
             # -n never prompts. Like any sudo use it may leave a line in the auth log; it changes nothing.
             r = host.run("sudo", "-n", "-l")
@@ -1210,10 +1214,10 @@ class SudoNopasswd(Check):
             doas, unreadable = None, True          # there, root-only (0400 is usual): set up, its rules unknown
             ev.append(Evidence.path("Needs administrator access", "/etc/doas.conf"))
         if doas:
-            for line, cmd, target in doas_passwordless(doas, *_my_ids(host)):
+            for line, doas_cmd, target in doas_passwordless(doas, *_my_ids(host)):
                 # a command for another account than root isn't root, whatever it is
-                (broad if target == "root" and (cmd is None or _broad(cmd)) else narrow).append(
-                    ("doas: " + line, cmd or f"any command as {target}"))
+                (broad if target == "root" and (doas_cmd is None or _broad(doas_cmd)) else narrow).append(
+                    ("doas: " + line, doas_cmd or f"any command as {target}"))
         if not host.runner.which("sudo") and doas is None and not unreadable:
             return absent("Neither sudo nor doas is set up.")
         ev += [Evidence.val("Passwordless rule", shown[:150]) for shown, _ in broad[:5]]
@@ -1376,7 +1380,9 @@ class Writable:
 def _accounts(host) -> tuple[str | None, dict[int, set[str]], dict[int, str]]:
     """(this user's login name, each group's members, each group's name) from /etc/passwd and
     /etc/group: members listed in the group plus accounts whose primary group it is."""
-    login, members, names = None, {}, {}
+    login: str | None = None
+    members: dict[int, set[str]] = {}
+    names: dict[int, str] = {}
     for line in (host.read_sys("/etc/passwd") or "").splitlines():
         f = line.split(":")
         if len(f) >= 4 and f[2].isdigit() and f[3].isdigit():
@@ -1439,9 +1445,9 @@ def writable_startup_files(host) -> tuple[list[Writable], int]:
     paths += [host.home / f for f in STARTUP_FILES]
     for d in STARTUP_DIRS:
         paths += [host.home / d] + [f for f in children(host.home / d)]
-    for d in user_path_dirs(host):
-        paths.append(d)
-        paths += [f for f in children(d)][:MAX_PROGRAMS]
+    for folder in user_path_dirs(host):
+        paths.append(folder)
+        paths += [f for f in children(folder)][:MAX_PROGRAMS]
     out, seen, looked = [], set(), 0
     for p in paths:
         try:
@@ -1812,7 +1818,8 @@ class SshClientSettings(Check):
         if problems:
             return failed(problems[0][0].upper() + "; ".join(problems)[1:] + ".", *ev, findings=findings, notes=notes)
         if unlimited:
-            return warned(f"{agent.keys} key{'s stay' if agent.keys > 1 else ' stays'} unlocked in the SSH agent until "
+            n = agent.keys or 0                 # some: `unlimited` is true only then
+            return warned(f"{n} key{'s stay' if n > 1 else ' stays'} unlocked in the SSH agent until "
                           "you log out.", *ev, findings=findings, notes=notes)
         return passed("ssh checks every server and doesn't hand your keys to them.", *ev, findings=findings, notes=notes)
 

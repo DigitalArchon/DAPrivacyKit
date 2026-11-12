@@ -256,7 +256,7 @@ class ExposedServices(Check):
         if quiet:
             ev.append(Evidence.val("Answering only their peers", ", ".join(f"{s.label()}: {net.silent(s)}" for s in quiet)))
             notes.append(Note("info", "VPN ports that answer only their peers",
-                              f"{', '.join(dict.fromkeys(net.silent(s) for s in quiet))} listen{'s' if len(quiet) == 1 else ''} "
+                              f"{', '.join(dict.fromkeys(net.silent(s) or '' for s in quiet))} listen{'s' if len(quiet) == 1 else ''} "
                               "for other machines, but answer only a peer holding one of its keys and stay silent to "
                               "everyone else: not counted here."))
         findings: dict[str, bool | None] = {self.FINDING: False}
@@ -866,7 +866,7 @@ def networkd_sending(host: Host, virt: str | None = None) -> list[tuple[str, str
     for iface in sorted(p.name for p in children(host.sys_path("/sys/class/net")) if p.name != "lo"):
         name, folder, conf = next(((n, d, c) for n, d, c in confs if _networkd_matches(c, iface, virt)),
                                   (None, None, None))
-        if conf is None or (name, folder) in out:
+        if conf is None or name is None or folder is None or (name, folder) in out:
             continue
         dhcp = (ini.get(conf, "Network", "DHCP") or "no").strip().lower()
         if dhcp in ("yes", "true", "ipv4", "1", "on") and \
@@ -946,7 +946,8 @@ class HostnameBroadcast(Check):
                     "" if supported else " (this NetworkManager has no default for it: before 1.52)")))
             elif future is None:
                 ev.append(Evidence.val("Networks that take NetworkManager's default", NM_UNREAD))
-        other = dhcp_hostname_elsewhere(host, scan.context["virtualization"])
+        virt = scan.context["virtualization"]
+        other = dhcp_hostname_elsewhere(host, virt if isinstance(virt, str) else None)
         if other:
             channels.append(f"DHCP ({', '.join(other)})")
         if systemctl_state(host, "is-active", "avahi-daemon") == "active":
@@ -1029,7 +1030,8 @@ def resolved_links(host: Host) -> dict[str, dict]:
     r = host.run("resolvectl", "status")
     if not r.ok:
         return {}
-    out, name = {}, None
+    out: dict[str, dict] = {}
+    name: str | None = None
     for line in r.stdout.splitlines():
         m = re.match(r"^(Global|Link \d+ \((\S+)\))", line)
         if m:
@@ -1190,9 +1192,9 @@ class VpnLeaks(Check):
         if not full:
             return passed("The VPN only carries traffic for some networks (split tunnel), so DNS leaks don't apply.",
                           *ev, notes=notes)
-        mine = prov is not None and any(prov.matches_interface(t) for t in full)
+        mine = prov if prov is not None and any(prov.matches_interface(t) for t in full) else None
         if mine:
-            ev.append(Evidence.val("VPN app", prov.name))
+            ev.append(Evidence.val("VPN app", mine.name))
         around = ipv6_around(host, vpns)
         if around:
             ev.append(Evidence.val("IPv6 internet traffic leaves by", ", ".join(around)))
@@ -1208,21 +1210,21 @@ class VpnLeaks(Check):
             # a server it was set to on the local network (a custom DNS server) is asked outside the tunnel, as chosen
             chosen = outside + ([] if resolved_answers(host) is not False else leaking or [])
             if around:
-                notes.insert(1, Note("info", f"{prov.name} blocks IPv6 outside the tunnel",
+                notes.insert(1, Note("info", f"{mine.name} blocks IPv6 outside the tunnel",
                                      f"This computer's IPv6 route leaves by {', '.join(around)}, outside the tunnel: "
-                                     f"{prov.name}'s app blocks traffic outside it while it is connected. The online "
+                                     f"{mine.name}'s app blocks traffic outside it while it is connected. The online "
                                      "test of IPv6 confirms it."))
             if leaking and resolved_answers(host) is not False:
-                notes.insert(1, Note("info", f"{prov.name} rejects lookups that would leave outside it",
+                notes.insert(1, Note("info", f"{mine.name} rejects lookups that would leave outside it",
                                      f"Left to itself, this computer's resolver would also ask {', '.join(leaking)}: "
-                                     f"{prov.name}'s app rejects those lookups while it is connected, so they never "
+                                     f"{mine.name}'s app rejects those lookups while it is connected, so they never "
                                      "leave. The online DNS leak test confirms it."))
             if chosen:
-                return warned(f"{prov.name} is connected, but its DNS server is on your local network "
+                return warned(f"{mine.name} is connected, but its DNS server is on your local network "
                               f"({', '.join(chosen)}): lookups go there outside the tunnel, as its settings ask, and "
                               "whatever that server sends them on to sees them unless it uses a VPN or encryption of "
                               "its own.", *ev, notes=notes)
-            return passed(f"{prov.name} is connected, and its app keeps DNS lookups inside the tunnel.", *ev, notes=notes)
+            return passed(f"{mine.name} is connected, and its app keeps DNS lookups inside the tunnel.", *ev, notes=notes)
         problems = []
         if leaking or outside:
             problems.append(f"DNS queries can go out via {', '.join([*(leaking or []), *outside])} instead of the VPN")
@@ -1471,7 +1473,7 @@ def dns_in_tunnel(host: Host) -> list[str]:
         # (loopback) own lookups aren't followed
         servers = re.findall(r"^\s*nameserver\s+(\S+)", host.read_sys("/etc/resolv.conf") or "", re.M)
         through = [route_link(host, a.split("%")[0]) for a in servers]
-        return sorted(set(through)) if servers and all(t in vpns for t in through) else []
+        return sorted({t for t in through if t is not None}) if servers and all(t in vpns for t in through) else []
     links = resolved_links(host)
     if not links or VpnLeaks._leaking(host, vpns, full, []) != [] or tunnel_dns_outside(host, full, vpns):
         return []
@@ -1602,7 +1604,7 @@ def ip6_privacy_defaults(host: Host) -> dict[str, tuple[str | None, str, str | N
         return None
     cfg = nm_config_read(host)
     kernel = (host.read_sys("/proc/sys/net/ipv6/conf/default/use_tempaddr") or "").strip()
-    out = {}
+    out: dict[str, tuple[str | None, str, str | None]] = {}
     for kind in NM_TYPES:
         v, section = nm_default(cfg or {}, "ipv6.ip6-privacy", kind)
         if cfg is None:
@@ -1615,7 +1617,7 @@ def ip6_privacy_defaults(host: Host) -> dict[str, tuple[str | None, str, str | N
     return out
 
 
-def _defaults_text(defaults: dict[str, tuple[str, str, str | None]]) -> str:
+def _defaults_text(defaults: dict[str, tuple[str | None, str, str | None]]) -> str:
     values = {(v, w) for v, w, _ in defaults.values()}
     if len(values) == 1:
         v, w = values.pop()

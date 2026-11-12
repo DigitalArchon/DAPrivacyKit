@@ -669,7 +669,7 @@ def cups_spool(check, scan, outcome):
 
 @guide("app.kde_recent_files")
 def kde_recent_files(check, scan, outcome):
-    from ...fix import ClearInFile, KConfigLock, MakeDir
+    from ...fix import Action, ClearInFile, KConfigLock, MakeDir
     from ..apps import kde_recent_lists
     from ..fixes import clear_kconfig_group, running
     host = scan.host
@@ -681,6 +681,7 @@ def kde_recent_files(check, scan, outcome):
     def clear(x) -> list:
         if not x.entries:
             return []
+        acts: list[Action]
         if x.kind == "kconfig":
             acts = [ClearInFile(x.path, clear_kconfig_group(x.group), f"Clear {x.label}'s recent files ({x.entries})",
                                 host.display(x.path), settings=True)]
@@ -698,7 +699,7 @@ def kde_recent_files(check, scan, outcome):
             # the app dropped the marker as it rewrote the file, and the list came back (Gwenview, Okular 26.08)
             return clear(x) + [KConfigLock(x.lock, host.display(x.lock), x.group, f"Stop {x.label} listing what you open")
                                .unless(InUse(x.app, names=(x.program,)))]
-        acts = []
+        acts: list[Action] = []
         if x.kind == "folder" and x.path.is_dir():
             acts.append(DeleteFiles(x.path, [f for f in children(x.path) if f.is_file()], f"{x.label}'s recent folders",
                                     host.display(x.path), prune=False, remove_root=True))

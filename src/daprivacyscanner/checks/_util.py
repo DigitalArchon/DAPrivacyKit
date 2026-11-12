@@ -141,7 +141,7 @@ def tally(path: Path, limit: int = WALK_LIMIT, pattern: re.Pattern | None = None
     return t
 
 
-def human_size(n: int) -> str:
+def human_size(n: float) -> str:
     for unit in ("bytes", "KB", "MB", "GB"):
         if n < 1024 or unit == "GB":
             return f"{n} {unit}" if unit == "bytes" else f"{n:.1f} {unit}"
@@ -882,7 +882,8 @@ def thumbnail_uris(paths: PathResolver, limit: int = WALK_LIMIT) -> tuple[list[s
 
 def thumbnail_entries(paths: PathResolver, limit: int = WALK_LIMIT) -> tuple[list[tuple[Path, str]], int]:
     """(thumbnail file, original URI) for every cached thumbnail, and how many there are."""
-    uris, count = [], 0
+    uris: list[tuple[Path, str]] = []
+    count = 0
     for d in thumbnail_dirs(paths):
         stack = [d]
         while stack:

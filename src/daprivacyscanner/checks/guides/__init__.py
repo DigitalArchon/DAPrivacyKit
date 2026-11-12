@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 from ...context import read_swaps
 from ...fix import FIREFOX_PROCESSES, FirefoxPref, FixPlan, RootChange
@@ -21,18 +21,22 @@ from ...model import Outcome
 from .. import Check, No, Scan
 from .._util import chromium_dirs, mozilla_profiles, processes, read_text, systemctl_state
 
+if TYPE_CHECKING:
+    from ...blockdev import Device
+    from ...fix import Action
+
 
 @dataclass
 class GuideEntry:
     plan: Callable[[Check, Scan, Outcome], Guide]
-    can: Callable[[Scan], bool] | None = None
+    can: Callable[[Scan], bool | No] | None = None
     keys: frozenset[str] = frozenset()       # the option keys the guide gives (the catalogue's easy.option)
 
 
 GUIDES: dict[str, GuideEntry] = {}
 
 
-def guide(check_id: str, can: Callable[[Scan], bool] | None = None, keys: tuple[str, ...] = ()):
+def guide(check_id: str, can: Callable[[Scan], bool | No] | None = None, keys: tuple[str, ...] = ()):
     def register(fn):
         GUIDES[check_id] = GuideEntry(fn, can, frozenset(keys))
         return fn
@@ -84,7 +88,10 @@ def dropin(name: str, settings: dict[str, str], path: str) -> RootChange:
 
 def os_release(scan: Scan) -> tuple[str, set[str]]:
     text = scan.host.read_sys("/etc/os-release") or ""
-    get = lambda k: (re.search(rf'^{k}="?([^"\n]*)', text, re.M) or [None, ""])[1].lower()  # noqa: E731
+
+    def get(k: str) -> str:
+        m = re.search(rf'^{k}="?([^"\n]*)', text, re.M)
+        return m.group(1).lower() if m else ""
     return get("ID"), set(get("ID_LIKE").split())
 
 
@@ -227,7 +234,8 @@ def remote_access(scan: Scan) -> list[RemoteAccess]:
     procs, own = processes(scan.host), processes(scan.host, own=True)
     if env.get("XRDP_SESSION") or "xrdp" in procs:
         ports = sorted({f"{s.port}/{s.proto}" for s in reach if s.process == "xrdp"}) \
-            or ([f"{s.port}/tcp" for s in reach if s.proto == "tcp" and s.port == 3389][:1]) or [_xrdp_port(scan)]
+            or ([f"{s.port}/tcp" for s in reach if s.proto == "tcp" and s.port == 3389][:1]) \
+            or [p for p in (_xrdp_port(scan),) if p]
         known = [p for p in ports if p]
         out.append(RemoteAccess("xrdp", "xrdp (remote desktop)", tuple(known), unknown=not known,
                                 session=bool(env.get("XRDP_SESSION"))))
@@ -387,7 +395,7 @@ def expire_actions(scan: Scan, name: str, lines: list[str], text: str) -> list:
     from ...fix import UserUnitSet, WriteFile
     path = scan.paths.config_home / "user-tmpfiles.d" / f"60-daprivacyscanner-{name}.conf"
     content = TMPFILES_HEADER + "".join(ln + "\n" for ln in lines)
-    acts = []
+    acts: list[Action] = []
     if read_text(scan.host, path) != content:
         acts.append(WriteFile(path, lambda old: content, text, scan.host.display(path)))
     if systemctl_state(scan.host, "is-enabled", TMPFILES_TIMER, user=True) != "enabled":
@@ -455,7 +463,7 @@ class DiskSwap:
     encrypted one, never /dev/dm-N, whose number can change between boots) or its file."""
     shown: str                              # what swapoff and the user see
     kind: str                               # "file" or "partition" (as /proc/swaps says)
-    device: object = None                   # the lsblk device under it (blockdev.Device), when found
+    device: Device | None = None            # the lsblk device under it, when found
 
 
 def disk_swaps(scan: Scan) -> list[DiskSwap]:
@@ -527,6 +535,8 @@ def _swap_steps(check: Check, scan: Scan) -> list[Step]:
         debian = family(scan) == "debian" and scan.host.runner.which("update-initramfs")
         for s in random_key:
             d = s.device
+            if d is None:                       # never: those are the ones with a device
+                continue
             if d.type == "part":
                 r = scan.host.run("lsblk", "-no", "PARTUUID", s.shown)
                 if not (r.ok and r.stdout.strip()):

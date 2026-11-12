@@ -234,7 +234,7 @@ def _pending_lists(scan: Scan) -> Pending | None:
     if installed(host, "apt"):
         r = host.run("apt", "list", "--upgradable")
         lines = [ln for ln in r.stdout.splitlines() if "/" in ln and "[upgradable" in ln]
-        security = sum(1 for ln in lines if "-security" in ln)
+        security: int | None = sum(1 for ln in lines if "-security" in ln)
         ev = []
         # Mint's Update Manager installs them itself when its automation is on (Edit → Preferences → Automation)
         mint = systemctl_state(host, "is-enabled", "mintupdate-automation-upgrade.timer") == "enabled"
@@ -1453,7 +1453,8 @@ class PackageSignatures(Check):
         shared = apt_shared_keys(scan)
         ev += [Evidence.path("Key in /etc/apt/trusted.gpg.d, trusted for every repository", f"/etc/apt/trusted.gpg.d/{n}")
                for n in shared[:10]]
-        findings = {"signature_checks_off": bool(found), "unsigned_over_http": any(u.http for u in found)}
+        findings: dict[str, bool | None] = {"signature_checks_off": bool(found),
+                                            "unsigned_over_http": any(u.http for u in found)}
         if unreadable and not found:
             findings = {"signature_checks_off": None, "unsigned_over_http": None}
         if found:

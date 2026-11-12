@@ -554,7 +554,7 @@ def kde_recent_lists(scan: Scan) -> list[KdeList]:
     for folder, suffix, how in places:
         lasting = how == "native" and suffix == "rc" and lock_dir is not None
         names = {f.name for f in children(folder) if f.name.endswith(suffix) and f.name != "kdeglobals" and f.is_file()}
-        if lasting:                         # locked beneath, its own file holding no group (an app drops an empty one)
+        if lasting and lock_dir is not None:    # locked beneath, its own file holding no group (an app drops an empty one)
             names |= {f.name for f in children(lock_dir) if f.name.endswith(suffix) and f.name != "kdeglobals"}
         for fname in sorted(names):
             f = folder / fname
@@ -566,25 +566,26 @@ def kde_recent_lists(scan: Scan) -> list[KdeList]:
                     continue
                 program = fname[:-len(suffix)]
                 out.append(KdeList(KDE_APP_NAMES.get(program, program), program, f, "kconfig", group,
-                                   _kconfig_entries(text, group), locked, how, lock_dir / fname if lasting else None))
+                                   _kconfig_entries(text, group), locked, how,
+                                   lock_dir / fname if lasting and lock_dir is not None else None))
     for name, program, fid, rcname in ((n, p, f, f"{p}rc") for n, p, f in KDE_LIST_APPS):
         for how in _kde_app_installed(scan, program, fid):
             # one that can't be stopped for good isn't listed before it lists anything
             if not any(x.program == program and x.install == how for x in out) and how == "native" and lock_dir:
                 out.append(KdeList(name, program, paths.config_home / rcname, "kconfig", "Recent Files", 0, False, how,
                                    lock_dir / rcname))
-    for name, program, fid, rel, folder in KDE_OWN_LISTS:
+    for name, program, fid, rel, is_folder in KDE_OWN_LISTS:
         wheres = _kde_app_installed(scan, program, fid)
         for loc in paths.locate(Base.DATA, rel, flatpak=[fid], existing=False):
             how = loc.install
             p = loc.path
             if not (p.exists() or how in wheres):
                 continue
-            item = KdeList(name, program, p, "folder" if folder else "file", install=how)
-            if folder and p.is_dir():
+            item = KdeList(name, program, p, "folder" if is_folder else "file", install=how)
+            if is_folder and p.is_dir():
                 item.entries = sum(1 for f in children(p) if f.is_file())
                 item.stopped = not item.entries and not os.access(p, os.W_OK)
-            elif not folder and p.is_dir():
+            elif not is_folder and p.is_dir():
                 item.stopped = True                     # a folder where the file goes: nothing can write it
             elif p.is_file():
                 text = read_text(host, p) or ""
@@ -1036,8 +1037,8 @@ def path_shadows(scan: Scan) -> tuple[list[Path], list[LoginItem]]:
     for d in SYSTEM_BIN:
         system |= {f.name for f in children(host.sys_path(d))}
     out = []
-    for d in early:
-        for f in children(d)[:2000]:
+    for folder in early:
+        for f in children(folder)[:2000]:
             if f.name in system and not f.name.startswith("."):
                 out.append(LoginItem(f"{f.name} on PATH ({host.display(f)})", "takes the place of the system's", True))
     return early, out
@@ -1108,7 +1109,8 @@ class NewerThanChecked(Check):
             if unread:
                 return unknown(f"Couldn't read the version of {', '.join(unread[:6])}"
                                f"{' and others' if len(unread) > 6 else ''}: their files are here, but no package, "
-                               "Flatpak or Snap, nor their own files, says which version they are.", notes=[unread_note])
+                               "Flatpak or Snap, nor their own files, says which version they are.",
+                               notes=[unread_note] if unread_note else [])
             return absent("None of the apps the checks read was found by its package, Flatpak or Snap, or its own "
                           "files.")
         ev, newer = [], []

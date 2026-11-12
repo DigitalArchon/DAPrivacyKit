@@ -11,6 +11,7 @@ import stat
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from .. import blockdev, ini
 from ..context import NATIVE_FS, read_swaps
@@ -49,7 +50,8 @@ class FdeMissing(Check):
         if fde.value == "home":
             from ..context import home_encryption
             method, _ = home_encryption(scan.host, _devices(scan))
-            return failed(HOME_ONLY_SUMMARY.get(method, "Only the home folder is encrypted; the rest of the disk isn't."),
+            return failed(HOME_ONLY_SUMMARY.get(method or "", "Only the home folder is encrypted; the rest of the disk "
+                                                "isn't."),
                           *fde.evidence, notes=home_only_notes(method), findings={"home_ecryptfs": method == "ecryptfs"})
         return passed("The root filesystem is encrypted.", *fde.evidence, findings={"home_ecryptfs": False})
 
@@ -168,7 +170,7 @@ class UnmountedUnencrypted(Check):
         ev += [Evidence.val(d.path, f"encrypted ({partition_text(d)})") for d in locked]
         if not plain:
             return passed("No unencrypted partition was found beside the ones this system uses.", *ev)
-        other = sorted({UNUSED_FSTYPES[d.fstype.lower()].split(" (")[0].split(",")[0] for d in plain})
+        other = sorted({UNUSED_FSTYPES[(d.fstype or "").lower()].split(" (")[0].split(",")[0] for d in plain})
         n = len(plain)
         return failed(f"{n} partition{'s' if n > 1 else ''} this system doesn't use {'are' if n > 1 else 'is'}n't "
                       f"encrypted ({', '.join(other)}): anyone with the computer or the drive can read "
@@ -279,7 +281,7 @@ def hibernation_encrypted(scan: Scan) -> bool | None:
     targets = hibernation_targets(scan)
     if not targets or any(d is None for _, d in targets):
         return None
-    return all(d.encrypted for _, d in targets)
+    return all(d is not None and d.encrypted for _, d in targets)
 
 
 @register
@@ -524,8 +526,8 @@ def other_backups(scan: Scan) -> list[tuple[str, str, str]]:
                 state, words = _destination(scan, path)
                 out.append(("Back In Time", state, f"profile {n}: not encrypted by Back In Time, {words}"))
     for loc in scan.paths.config("kuprc"):
-        conf = ini.parse(read_text(host, loc.path) or "", kde=True)
-        for group, keys in conf.items():
+        kup = ini.parse(read_text(host, loc.path) or "", kde=True)
+        for group, keys in kup.items():
             if not group or not re.fullmatch(r"Plan/\d+", group[0]):
                 continue
             n = group[0].split("/")[1]
@@ -842,14 +844,15 @@ class SnapshotsRetainDeleted(Check):
             notes.append(Note("limitation", "Whether your home folder is in them couldn't be told",
                               "The mount table didn't say which subvolume or dataset holds it. If it is in them, every "
                               "personal file you delete stays in each snapshot taken before."))
+        kept = [k for k in kept_on if k is not None]          # None: where one is kept couldn't be told
         if home_in:
-            encrypted = None if None in kept_on else on_encrypted_disk(scan, *kept_on, str(host.home))
+            encrypted = None if len(kept) < len(kept_on) else on_encrypted_disk(scan, *kept, str(host.home))
             how_long = "for a long time" if long_kept else "until they expire"
             return failed(f"Filesystem snapshots include your home folder: every personal file you delete stays in them "
                           f"{how_long} ({', '.join(home_in)}).", *ev, partial=partial, notes=notes,
                           findings={ON_ENCRYPTED_DISK: encrypted})
         if long_kept:
-            encrypted = None if None in kept_on else on_encrypted_disk(scan, *kept_on)
+            encrypted = None if len(kept) < len(kept_on) else on_encrypted_disk(scan, *kept)
             out = "" if home_unknown or unread else " Your home folder isn't in them."
             return failed(f"Filesystem snapshots keep deleted files for a long time: {', '.join(long_kept)}.{out}", *ev,
                           partial=partial, notes=notes, findings={ON_ENCRYPTED_DISK: encrypted})
@@ -885,7 +888,7 @@ def _btrfs_place(ms: list, path: str) -> tuple[str, str] | None:
     return m.source, posixpath.normpath(posixpath.join(sv, rel) if rel else sv)
 
 
-def home_subvolume(host: Host, ms: list) -> tuple[str, str] | None | bool:
+def home_subvolume(host: Host, ms: list) -> tuple[str, str] | None | Literal[False]:
     """The btrfs subvolume holding the home folder, as _btrfs_place names it; False when the home folder isn't on
     btrfs, None when that can't be told. A subvolume nested inside another (the home folder made one, or /home inside
     @ without a mount of its own) isn't in the outer one's snapshots: each subvolume has a device number of its own, so
@@ -1292,7 +1295,9 @@ class Trash(Check):
 
     def detect(self, scan: Scan) -> Outcome:
         host = scan.host
-        ev, total, linked = [], 0, []
+        ev: list[Evidence] = []
+        total = 0
+        linked: list[Path] = []
         for d in trash_dirs(scan, linked):
             files = d / "files"
             if not isdir(files):
@@ -1682,7 +1687,7 @@ class TrimOff(Check):
                 untrimmed.append(st)
         if not ev:
             return unknown("Couldn't tell where / and the home folder are stored.")
-        if not stopped and not untrimmed and all("hard disk" in e.value for e in ev):
+        if not stopped and not untrimmed and all("hard disk" in str(e.value) for e in ev):
             return absent("Only hard disks here: they have no TRIM.", *ev)
         never_runs = bool(untrimmed) and timer == "disabled"
         # every layer that takes no TRIM, deepest first, counts: a logical volume over LUKS without discards says 0

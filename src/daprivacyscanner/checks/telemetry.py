@@ -127,7 +127,9 @@ class Location(Check):
 
     def detect(self, scan: Scan) -> Outcome:
         host = scan.host
-        ev, online, unsure = [], [], False
+        ev: list[Evidence] = []
+        online: list[str] = []
+        unsure = False
         conf_text = host.read_sys("/etc/geoclue/geoclue.conf")
         if conf_text is not None:
             # GeoClue 2.7+ reads conf.d after it, in name order, later files winning
@@ -318,7 +320,7 @@ def opted_out(env: dict[str, str], var: str, value: str) -> bool:
 def jetbrains_stats(scan: Scan) -> list[tuple[str, bool | None]]:
     """(product directory, usage statistics allowed) for each JetBrains IDE configuration.
     VERIFY: the layout of options/usage.statistics.xml."""
-    out = []
+    out: list[tuple[str, bool | None]] = []
     for loc in scan.paths.config(JETBRAINS_DIR, all_flatpaks=True):
         for product in children(loc.path):
             f = product / "options" / "usage.statistics.xml"
@@ -406,20 +408,20 @@ def _repo_files(scan: Scan) -> list[tuple[str, str]]:
             if f.suffix in suffixes:
                 out.append((f"{d}/{f.name}", read_text(host, f) or ""))
     # pacman.conf too: a repository can name its Server = there, without a mirrorlist
-    for f in ("/etc/apt/sources.list", "/etc/pacman.d/mirrorlist", "/etc/pacman.conf"):
+    for name in ("/etc/apt/sources.list", "/etc/pacman.d/mirrorlist", "/etc/pacman.conf"):
         try:
-            text = host.read_sys(f)
+            text = host.read_sys(name)
         except Unreadable:
             text = None
         if text is not None:
-            out.append((f, text))
+            out.append((name, text))
     # and the other mirror lists its sections include: CachyOS's cachyos-*-mirrorlist, chaotic-mirrorlist,
     # EndeavourOS's endeavouros-mirrorlist (a commented-out section's Include is commented out with it)
-    pacman = next((text for f, text in out if f == "/etc/pacman.conf"), "")
-    for f in _pacman_includes(host, pacman):
-        text = read_text(host, host.sys_path(f)) if all(f != p for p, _ in out) else None
+    pacman = next((text for name, text in out if name == "/etc/pacman.conf"), "")
+    for name in _pacman_includes(host, pacman):
+        text = read_text(host, host.sys_path(name)) if all(name != p for p, _ in out) else None
         if text is not None:
-            out.append((f, text))
+            out.append((name, text))
     return out
 
 
@@ -643,7 +645,7 @@ class CloudSync(Check):
             found.append("KDE online accounts")
             ev.append(Evidence.count("KDE online accounts", kde))
         for label, base, rel, fp in SYNC_CLIENTS:
-            if base is None:
+            if base is None or rel is None:     # one with no folder of its own (both None)
                 continue
             kind = {"config": Base.CONFIG, "data": Base.DATA, "home": Base.HOME}[base]
             for loc in scan.paths.locate(kind, rel, flatpak=[fp] if fp else []):

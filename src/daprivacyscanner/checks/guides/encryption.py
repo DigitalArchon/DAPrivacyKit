@@ -6,7 +6,7 @@ import shlex
 
 from ... import blockdev
 from ...context import read_swaps
-from ...fix import RootChange, RootClear
+from ...fix import Action, RootChange, RootClear
 from ...guide import Guide, Step
 from .._util import isfile
 from . import guide, option, unit_exists, service_off, dropin, _swap_steps, _hibernate_off, append_line
@@ -236,7 +236,7 @@ def journal(check, scan, outcome):
             # (live on Mint: 42 files, 218 MB, went to 19, 116 MB). Said, and deleted as a step of its own, which
             # can't be undone and is confirmed apart, never as a side effect of a setting that looks reversible
             old, size = journal_usage(host.sys_path("/var/log/journal"), older_than=days * 86400)
-            acts = [dropin("journald", {"MaxRetentionSec": value}, path)]
+            acts: list[Action] = [dropin("journald", {"MaxRetentionSec": value}, path)]
             if old:
                 acts.append(RootClear("vacuum_journal", {"time": f"{days // 7}weeks"},
                                       f"Delete the journal files older than {plain_span(days * 86400)} now "
@@ -812,7 +812,7 @@ def _luks2_step(name: str, device: str | None, version, flags: list[str] | None,
             "the disk's passphrases (a recovery key works too).")
     unknown = [f for f in flags or [] if f not in LUKS_FLAG_OPTIONS]
     if keep:
-        text += (" The header keeps other settings too (" + ", ".join(f for f in flags if f in LUKS_FLAG_OPTIONS and
+        text += (" The header keeps other settings too (" + ", ".join(f for f in flags or [] if f in LUKS_FLAG_OPTIONS and
                                                                        f != "allow-discards")
                  + "): the command gives them again, since --persistent stores exactly the options it is given.")
     if unknown:
