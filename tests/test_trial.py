@@ -335,6 +335,10 @@ def test_the_watch_sees_what_is_written_and_which_decoys_are_looked_at(tmp_path)
         time.sleep(0.2)
         assert w.counts() == {"files": 0, "written": 0, "decoys": 0, "overflow": 0}, "its own look through isn't the program's"
         (tmp_path / ".config/Foo/deep").mkdir(parents=True)
+        # inotify watches a new folder only once the watch has seen it made: what happens in it before then is found
+        # by looking, as created, never as moved. Wait for that here, or a loaded machine fails the test (it did)
+        assert wait_for(lambda: any(r[0].endswith("/.config/Foo/deep") for r in w.records()))
+        time.sleep(0.2)
         (tmp_path / ".config/Foo/a.conf").write_text("x")
         (tmp_path / ".config/Foo/deep/b").write_text("y")
         (tmp_path / ".ssh/id_ed25519").read_bytes()
