@@ -74,7 +74,8 @@ carried out.
    is the least that does the job ([section 14](#14-what-the-app-stores)), and "Export everything" hands all of
    it over. An export is a file readable by the user alone (0600), whether `--export` writes it or the window's
    Save… does (the app writes it itself: a download the window's WebKitGTK writes has the umask's mode, 0664 on
-   Mint and Ubuntu, tested), never over a file there.
+   Mint and Ubuntu, tested), never over a file there (the next free name, "NAME (2).txt", instead) nor through
+   a link.
 10. **No network in a scan.** The app never phones home and a scan works offline. Online tests run only when the
     user starts them, after naming every host each one contacts; the same for the one tool that downloads
     ([section 6](#6-network-access)).

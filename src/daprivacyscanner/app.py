@@ -417,24 +417,39 @@ def install_helper_cli(uninstall: bool) -> int:
 
 
 def export_cli(cat, path: str, redact: bool) -> int:
-    """Everything the app keeps, to a file (0600: it describes this machine)."""
+    """Everything the app keeps, to a new file readable by the user alone, as Save… writes it from the window
+    (report.save): never over a file that is there (the next free name, "FILE (2)", instead), nor through a link, 0600
+    whatever the umask. Before, it truncated whatever FILE was, followed a link there and kept an existing file's
+    wider mode."""
     from . import report
     from .history import Accepted, LastReport
     from .host import Host
     from .paths import PathResolver
     from .undo import UndoLog
 
+    full = os.path.abspath(os.path.expanduser(path))
+    folder, name = os.path.realpath(os.path.dirname(full)), os.path.basename(full)
+    if not name or path.endswith("/"):
+        print(f"{path} is a folder: give the name of the file to write, in it.", file=sys.stderr)
+        return 2
+    if not os.path.isdir(folder):
+        print(f"{os.path.dirname(full)} isn't a folder.", file=sys.stderr)
+        return 2
     host = Host.local()
     paths = PathResolver(host.home, host.environ)
     last = LastReport(paths).load(set(cat.checks))
     text = report.export_all(last, cat, UndoLog.for_user(paths).entries(), Accepted(paths).all(),
-                             "json" if path.endswith(".json") else "text", host, redact)
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    # a file name that isn't UTF-8 (a lone surrogate in Python) goes in as the bytes it has: strictly, the write
-    # failed and left the file empty
-    with os.fdopen(fd, "w", errors="surrogateescape") as f:
-        f.write(text + "\n")
-    print(f"Written to {path}" + (" (redacted)" if redact else "") + ".")
+                             "json" if name.endswith(".json") else "text", host, redact)
+    try:
+        written, mode = report.save(Path(folder), name, text + "\n")
+    except OSError as e:
+        print(f"It couldn't be written in {os.path.dirname(full)}: {e.strerror or e}.", file=sys.stderr)
+        return 2
+    shown = os.path.join(os.path.dirname(full), written)
+    note = "" if written == name else f" ({name} is there already, so it went into a new file)"
+    private = "" if not mode & 0o077 else (" That disk doesn't keep permissions, so other accounts on this computer "
+                                           "can read the file.")
+    print(f"Written to {shown}{note}" + (" (redacted)" if redact else "") + "." + private)
     return 0
 
 
@@ -710,7 +725,9 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--capture", metavar="DIR", help="write sanitised samples of the commands the parsers read into DIR, "
                     "to contribute as test fixtures")
     ap.add_argument("--export", metavar="FILE", help="write everything the app keeps (the last report, accepted findings "
-                    "and every change made, with how to undo it) to FILE, as JSON if it ends in .json; --redact applies")
+                    "and every change made, with how to undo it) to FILE, as JSON if it ends in .json; --redact applies. "
+                    "FILE is made new, readable by you alone: never written over a file that is there (it goes into "
+                    "\"NAME (2).txt\" and so on instead) nor through a link")
     ap.add_argument("--install-helper", action="store_true", help="install this version's administrator helper "
                     "root-owned, with its polkit action (asks for your password)")
     ap.add_argument("--uninstall-helper", action="store_true", help="remove the installed administrator helper")

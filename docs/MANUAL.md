@@ -640,7 +640,7 @@ in the window, where each one is shown before it is made.
 | `daprivacyscanner --online` | Runs the online tests (after listing who they contact). |
 | `daprivacyscanner --verify FILE` | Verify a download. `--key KEYFILE`, `--checksum HEX` add a key or a checksum. Exit status 0 when verified. |
 | `daprivacyscanner --tool verify\|metadata FILE…` | Opens the window on that tool. |
-| `daprivacyscanner --export FILE` | Writes everything the app keeps, for your backups. |
+| `daprivacyscanner --export FILE` | Writes everything the app keeps, for your backups, into a new file only you can read (never over a file that is there: "FILE (2)" instead). |
 | `daprivacyscanner --probe ADDRESS` | From another computer: which ports of ADDRESS answer. |
 | `daprivacyscanner --install-helper` / `--uninstall-helper` | Installs or removes the administrator helper. |
 

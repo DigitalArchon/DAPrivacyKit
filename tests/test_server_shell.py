@@ -102,3 +102,38 @@ def test_state_files_reach_the_disk_before_they_replace_the_old_ones(tmp_path, m
     history.write_json(tmp_path / "state" / "x.json", {"a": 1})
     assert synced == [False, True]
     assert (tmp_path / "state" / "x.json").read_text().startswith("{")
+
+
+# ------------------------------------------------------------------ app.py: --export as Save… writes
+
+def test_export_never_writes_over_a_file_nor_through_a_link(cat, tmp_path, monkeypatch, capsys):
+    """--export truncated whatever FILE was, followed a link there (a planted one, into another file of the user's)
+    and kept an existing file's wider mode. It writes as Save… does: a new file, 0600, the next free name."""
+    import json
+
+    from daprivacyscanner import app
+    from daprivacyscanner.host import Host
+    host = make_host(tmp_path)
+    monkeypatch.setattr(Host, "local", staticmethod(lambda: host))
+    old = os.umask(0o022)
+    try:
+        out = tmp_path / "everything.json"
+        out.write_text("my own notes")
+        out.chmod(0o644)
+        victim = tmp_path / "victim.txt"
+        victim.write_text("precious")
+        link = tmp_path / "linked.txt"
+        link.symlink_to(victim)
+        assert app.export_cli(cat, str(out), False) == 0
+        assert out.read_text() == "my own notes" and stat.S_IMODE(out.stat().st_mode) == 0o644
+        new = tmp_path / "everything (2).json"
+        assert stat.S_IMODE(new.stat().st_mode) == 0o600 and json.loads(new.read_text())["changes"] == []
+        said = capsys.readouterr().out
+        assert "everything (2).json" in said and "is there already" in said
+        assert app.export_cli(cat, str(link), False) == 0
+        assert victim.read_text() == "precious" and link.is_symlink()
+        assert (tmp_path / "linked (2).txt").read_text().startswith("DA Privacy Kit: everything it keeps")
+        assert app.export_cli(cat, str(tmp_path / "nowhere" / "x.txt"), False) == 2
+        assert app.export_cli(cat, str(tmp_path) + "/", False) == 2
+    finally:
+        os.umask(old)
