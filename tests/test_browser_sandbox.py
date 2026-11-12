@@ -1212,13 +1212,16 @@ def test_the_keyring_wrapper_joins_a_new_session_keyring_then_runs_the_program(t
     if not hasattr(libc, "syscall") or os.uname().machine not in ("x86_64", "i686"):
         pytest.skip("keyctl numbers checked on x86 only")
     nr_add, nr_ctl = (248, 250) if os.uname().machine == "x86_64" else (286, 288)
-    kid = libc.syscall(nr_add, b"user", b"dap-wrapper-test", b"secret", 6, -3)
+    # a name of this run's own: two suites at once (make check) share the session keyring, and one's clean-up
+    # removed the key the other was looking for
+    name = f"dap-wrapper-test-{os.getpid()}-{os.urandom(4).hex()}".encode()
+    kid = libc.syscall(nr_add, b"user", name, b"secret", 6, -3)
     if kid < 0:
         pytest.skip("no kernel keyring here")
     try:
         probe = tmp_path / "probe.py"
         probe.write_text("import ctypes, sys\nlibc = ctypes.CDLL(None, use_errno=True)\n"
-                         f"print(libc.syscall({nr_ctl - 1}, b'user', b'dap-wrapper-test', None, 0) > 0)\n")
+                         f"print(libc.syscall({nr_ctl - 1}, b'user', {name!r}, None, 0) > 0)\n")
         before = subprocess.run([sys.executable, "-I", str(probe)], capture_output=True, text=True).stdout.strip()
         after = subprocess.run([sys.executable, "-I", "-c", S.KEYRING, sys.executable, "-I", str(probe)],
                                capture_output=True, text=True)
