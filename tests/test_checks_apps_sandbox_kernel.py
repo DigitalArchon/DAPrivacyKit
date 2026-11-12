@@ -206,7 +206,8 @@ def _severity(cat, check_id, o):
 
 def _kernels(running, *installed, arch=False):
     """/proc and /usr/lib/modules (+ /boot on Debian-likes) with these kernels installed."""
-    files = {"/proc/sys/kernel/osrelease": running + "\n"}
+    # with package lists refreshed just now (Ubuntu's stamp): a pass needs fresh lists
+    files = {"/proc/sys/kernel/osrelease": running + "\n", "/var/lib/apt/periodic/update-success-stamp": ""}
     for k in installed:
         files[f"/usr/lib/modules/{k}/modules.dep"] = ""
         files[f"/usr/lib/modules/{k}/vmlinuz" if arch else f"/boot/vmlinuz-{k}"] = ""

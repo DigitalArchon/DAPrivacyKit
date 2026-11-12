@@ -3413,7 +3413,9 @@ checks:
       kernel installed but not yet running counts the same). Updates the distribution marks as
       security fixes come next (a browser's can be as urgent). Other updates are worth installing,
       and can carry fixes nobody labelled, but are rarely urgent. pacman marks no update as a
-      security fix, so on Arch the severity says it could be higher.
+      security fix, so on Arch the severity is a range, rated as if one could be. Nothing waiting
+      is a pass only when the package lists were refreshed in the last week: older lists don't
+      know what was published since.
     detect:
       - 'Debian/Ubuntu: apt list --upgradable (security: the -security suite); /etc/apt/apt.conf.d/20auto-upgrades;
         Mint: mintupdate-automation-upgrade.timer enabled (Update Manager''s automation)'
@@ -3428,11 +3430,18 @@ checks:
       - 'Kernel: kernel and microcode package names; a newer kernel in /usr/lib/modules (same build) than /proc/sys/kernel/osrelease, or the running one''s modules gone'
       - 'flatpak remote-ls --updates; snap refresh --list'
       - 'Firmware: fwupdmgr get-updates --json --no-metadata-check --no-unreported-check --no-reboot-check (the metadata already on the machine; not in a VM or container)'
+      - 'A pass only on package lists refreshed in the last 7 days (FRESH_DAYS), else couldn''t tell, pointing at
+        kern.updates_refreshed: apt by /var/lib/apt/periodic/update-success-stamp (Ubuntu''s 15update-stamp; Mint has
+        none) or the newest file in /var/lib/apt/lists, whose date is the server''s (a lower bound: tested on Mint 22.3
+        and Ubuntu 26.04); pacman by the sync databases'' dates (libalpm sets the server''s; offline.db left out); dnf by
+        repodata/repomd.xml in /var/cache/dnf or /var/cache/libdnf5; zypper by /var/cache/zypp/raw/*/repodata/repomd.xml.
+        pkgcache.bin is rebuilt by an install too, so it proves nothing. Stale lists with updates waiting: the finding
+        stays, with a note that more may be'
     fix: Prompt to update (and restart for a new kernel); offer automatic security updates where the distro supports them; fwupdmgr update for firmware.
     remedy: >
       Guide… shows how to install the waiting updates and turns on automatic security updates. Restart
       afterwards if the kernel was updated.
-    verify: Kernel and microcode package names on each distro; dnf -C updateinfo output (dnf4 and dnf5); zypper list-patches table; fwupdmgr's JSON with updates waiting on real hardware (Devices[].Releases[], Urgency).
+    verify: Kernel and microcode package names on each distro; dnf -C updateinfo output (dnf4 and dnf5); zypper list-patches table; fwupdmgr's JSON with updates waiting on real hardware (Devices[].Releases[], Urgency); zypper's raw cache times as the date of its last refresh.
 
   - id: kern.release_unsupported
     title: This release of the operating system no longer gets security updates

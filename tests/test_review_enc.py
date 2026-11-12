@@ -833,6 +833,8 @@ def test_dnf4_beside_an_installed_dnf5_keeps_its_own_cache(cat, tmp_path):
     os.symlink("dnf-3", host.sys_path("/usr/bin/dnf"))
     host.runner.outputs[("dnf", "-C", "-q", "check-update")] = CommandResult((), 0, "")
     host.runner.installed.add("dnf")
+    (host.sys_path("/var/cache/dnf/fedora-1/repodata")).mkdir(parents=True)
+    host.sys_path("/var/cache/dnf/fedora-1/repodata/repomd.xml").write_text("")     # lists refreshed now
     o = detect(cat, "kern.updates", make_scan(host))
     assert not calls and ("dnf", "-C", "-q", "check-update") in host.runner.calls and o.status is not Status.UNKNOWN
     assert ("dnf", "--version") not in host.runner.calls
@@ -855,7 +857,7 @@ def test_pacman_without_its_lists_couldnt_check(cat, tmp_path):
     host = make_host(tmp_path / "b", installed=["pacman"], commands={"pacman -Qu": CommandResult((), 1, "", "")},
                      files={"/etc/pacman.conf": "[options]\n[core]\n", "/var/lib/pacman/sync/core.db": "x"})
     o = detect(cat, "kern.updates", make_scan(host))
-    assert o.status is Status.PASS and ev(o)["Package lists last refreshed"] == "0 days ago"
+    assert o.status is Status.PASS and ev(o)["Package lists last refreshed"] == "within the last day"
 
 
 def test_install_on_arch_refreshes_and_upgrades(tmp_path):

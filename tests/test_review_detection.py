@@ -139,6 +139,66 @@ def test_a_risk_with_a_range_is_lowered_at_both_ends(cat, tmp_path):
     assert (r.severity_low, r.effective_severity) == (6 - lower, 10 - lower) and r.as_warning
 
 
+# ------------------------------------------------------------------ updates against stale package lists
+
+def _aged(host, path, days):
+    import os
+    import time
+    p = host.sys_path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    if not p.exists():
+        p.write_text("")
+    t = time.time() - days * 86400
+    os.utime(p, (t, t))
+
+
+KERNEL = {"/proc/sys/kernel/osrelease": "6.8.0-45-generic\n", "/usr/lib/modules/6.8.0-45-generic/modules.dep": "",
+          "/boot/vmlinuz-6.8.0-45-generic": ""}
+
+
+def test_nothing_waiting_in_lists_months_old_is_no_pass(cat, tmp_path):
+    """pacman -Qu compares with sync databases only pacman -Sy refreshes: an Arch machine not updated for months said
+    "Everything is up to date"."""
+    from conftest import detect, ev
+    from daprivacyscanner.host import CommandResult
+    from daprivacyscanner.model import Status
+    files = {"/etc/pacman.conf": "[options]\n[core]\n", **KERNEL}
+    host = make_host(tmp_path, installed=["pacman"], commands={"pacman -Qu": CommandResult((), 1, "", "")}, files=files)
+    _aged(host, "/var/lib/pacman/sync/core.db", 60)
+    o = detect(cat, "kern.updates", make_scan(host))
+    assert o.status is Status.UNKNOWN and "kern.updates_refreshed" in o.summary and "sudo pacman -Syu" in o.summary
+    assert ev(o)["Package lists last refreshed"].startswith("when, couldn't be told: the newest list is 60 days old")
+    _aged(host, "/var/lib/pacman/sync/core.db", 2)                  # refreshed two days ago (the server's date)
+    o = detect(cat, "kern.updates", make_scan(host))
+    assert o.status is Status.PASS and o.summary == "Nothing is waiting in the package lists, refreshed within the last 3 days."
+
+
+def test_apt_lists_dated_by_the_server_or_ubuntus_stamp(cat, tmp_path):
+    from conftest import detect, ev
+    from daprivacyscanner.model import Status
+    host = make_host(tmp_path, commands={"apt list --upgradable": "Listing...\n"}, files=KERNEL)
+    o = detect(cat, "kern.updates", make_scan(host))
+    assert o.status is Status.UNKNOWN and "couldn't be told" in o.summary and "sudo apt update" in o.summary
+    _aged(host, "/var/lib/apt/lists/archive.ubuntu.com_ubuntu_dists_noble-security_InRelease", 20)
+    assert detect(cat, "kern.updates", make_scan(host)).status is Status.UNKNOWN          # Mint: no stamp, old lists
+    _aged(host, "/var/lib/apt/periodic/update-success-stamp", 1)       # Ubuntu's stamp: refreshed yesterday
+    o = detect(cat, "kern.updates", make_scan(host))
+    assert o.status is Status.PASS and ev(o)["Package lists last refreshed"] == "1 day ago"
+    _aged(host, "/var/lib/apt/periodic/update-success-stamp", 30)
+    o = detect(cat, "kern.updates", make_scan(host))
+    assert o.status is Status.UNKNOWN and "(the newest is 20 days old)" in o.summary     # the list, newer than it
+
+
+def test_what_is_waiting_stays_a_finding_with_stale_lists(cat, tmp_path):
+    from conftest import detect
+    from daprivacyscanner.model import Status
+    out = "Listing...\nfirefox/noble-updates 130.0 amd64 [upgradable from: 129.0]\n"
+    host = make_host(tmp_path, commands={"apt list --upgradable": out}, files=KERNEL)
+    _aged(host, "/var/lib/apt/periodic/update-success-stamp", 40)
+    o = detect(cat, "kern.updates", make_scan(host))
+    assert o.status is Status.WARN and any(n.title == "More may be waiting" for n in o.notes)
+
+
 # ------------------------------------------------------------------ what unlocks the disk with nothing typed
 
 ROOT_LUKS = "luks-0f2c4e5a-1b2c-4d3e-8f90-123456789abc"      # the Fedora sample's root; its /boot is plain ext4

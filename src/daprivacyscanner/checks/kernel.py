@@ -129,11 +129,79 @@ def updates_outcome(pm: str, names: list[str] | None, security: int | None, ev: 
     return warned(summary, *ev, findings=findings, notes=notes)
 
 
-def _age(mtimes: list[float]) -> Evidence | None:
-    if not mtimes:
-        return None
-    days = int((time.time() - max(mtimes)) / 86400)
-    return Evidence.val("Package lists last refreshed", f"{days} day{'s' if days != 1 else ''} ago")
+# kern.updates passes only on package lists refreshed this recently: "nothing waiting" in lists months old says
+# nothing (pacman -Qu compares with sync databases only pacman -Sy refreshes; an Arch machine not updated since the
+# spring said "Everything is up to date")
+FRESH_DAYS = 7
+
+
+@dataclass(frozen=True)
+class Refreshed:
+    """When the package lists were last refreshed, as far as can be shown: `at` exactly (`exact`, a stamp written
+    after a successful refresh) or at the latest (the newest list's own date, which is the server's: apt and pacman
+    give a downloaded file the server's Last-Modified time, so it was downloaded after that)."""
+    at: float
+    exact: bool
+
+    @property
+    def days(self) -> float:
+        return max(0.0, (time.time() - self.at) / 86400)
+
+    @property
+    def fresh(self) -> bool:
+        return self.days <= FRESH_DAYS
+
+    def words(self) -> str:
+        d = int(self.days)
+        if self.exact:
+            return "today" if d == 0 else f"{d} day{'s' if d != 1 else ''} ago"
+        n = d + 1
+        return f"within the last {'day' if n == 1 else f'{n} days'}" if self.fresh else \
+            f"when, couldn't be told: the newest list is {d} days old"
+
+    def evidence(self) -> Evidence:
+        return Evidence.val("Package lists last refreshed", self.words())
+
+
+def _newest(paths) -> float | None:
+    times = []
+    for p in paths:
+        try:
+            times.append(p.stat().st_mtime)
+        except OSError:
+            continue
+    return max(times) if times else None
+
+
+def lists_refreshed(host, pm: str) -> Refreshed | None:
+    """When `pm`'s package lists were last refreshed (Refreshed), or None when nothing says. apt: Ubuntu's
+    update-success-stamp (APT::Update::Post-Invoke-Success in 15update-stamp, update-notifier-common; Mint has none),
+    else the newest list file's date (tested on Mint 22.3 and Ubuntu 26.04: whole seconds, the server's); pkgcache.bin
+    is rebuilt by an install too, so it proves nothing. pacman: the sync databases' dates (libalpm sets the server's),
+    offline.db left out. dnf: each repository's repodata/repomd.xml (DNF4's /var/cache/dnf, DNF5's /var/cache/libdnf5;
+    local times of the last download or check, seen on Fedora 44). zypper: its raw cache's repomd.xml. VERIFY: zypper's
+    cache times."""
+    if pm == "apt":
+        stamp = _newest([host.sys_path("/var/lib/apt/periodic/update-success-stamp")])
+        lists = _newest([p for p in sys_children(host, "/var/lib/apt/lists") if p.name != "lock" and p.is_file()])
+        if stamp is not None and (lists is None or stamp >= lists):
+            return Refreshed(stamp, True)
+        return Refreshed(lists, False) if lists is not None else None
+    if pm == "pacman":
+        t = _newest([p for p in sys_children(host, "/var/lib/pacman/sync") if p.suffix == ".db" and p.stem != "offline"])
+        return Refreshed(t, False) if t is not None else None
+    if pm == "dnf":
+        folder = "/var/cache/libdnf5" if is_dnf5(host) else "/var/cache/dnf"
+        t = _newest(host.sys_path(folder).glob("*/repodata/repomd.xml"))
+        return Refreshed(t, False) if t is not None else None
+    if pm == "zypper":
+        t = _newest(host.sys_path("/var/cache/zypp/raw").glob("*/repodata/repomd.xml"))
+        return Refreshed(t, False) if t is not None else None
+    return None
+
+
+REFRESH_COMMAND = {"apt": "sudo apt update", "pacman": "sudo pacman -Syu", "dnf": "sudo dnf check-update --refresh",
+                   "zypper": "sudo zypper refresh"}
 
 
 @dataclass
@@ -144,9 +212,21 @@ class Pending:
     security: int | None                    # how many are security fixes; None: the package manager doesn't say
     evidence: list[Evidence]
     why: str = ""                           # why they couldn't be listed
+    refreshed: Refreshed | None = None      # when the lists were last refreshed, as far as can be shown
 
 
 def _pending(scan: Scan) -> Pending | None:
+    """The pending updates from the package lists already on disk, with when those were last refreshed (first in the
+    evidence)."""
+    p = _pending_lists(scan)
+    if p is not None:
+        p.refreshed = lists_refreshed(scan.host, p.pm)
+        if p.refreshed is not None:
+            p.evidence.insert(0, p.refreshed.evidence())
+    return p
+
+
+def _pending_lists(scan: Scan) -> Pending | None:
     """The pending updates from the package lists already on disk: nothing is downloaded (the app never goes online),
     and nothing is written (rule 4: dnf5 gets a cache of its own in memory)."""
     from ._util import systemctl_state
@@ -155,8 +235,7 @@ def _pending(scan: Scan) -> Pending | None:
         r = host.run("apt", "list", "--upgradable")
         lines = [ln for ln in r.stdout.splitlines() if "/" in ln and "[upgradable" in ln]
         security = sum(1 for ln in lines if "-security" in ln)
-        age = _age([p.stat().st_mtime for p in sys_children(host, "/var/lib/apt/lists") if p.is_file()])
-        ev = [age] if age else []
+        ev = []
         # Mint's Update Manager installs them itself when its automation is on (Edit → Preferences → Automation)
         mint = systemctl_state(host, "is-enabled", "mintupdate-automation-upgrade.timer") == "enabled"
         ev.append(Evidence.val("Automatic security updates", "on" if apt_unattended(scan) or mint else "off"))
@@ -230,18 +309,15 @@ def _dnf_pending(scan: Scan) -> Pending:
     host = scan.host
     ev = [Evidence.val("Automatic updates", "on" if dnf_automatic(host) else "off")]
     if is_dnf5(host):
-        age = _age([p.stat().st_mtime for p in host.sys_path("/var/cache/libdnf5").glob("*/repodata/repomd.xml")])
         with dnf5_away_from_home(host) as opts:
             if opts is None:
                 return Pending("dnf", None, None, ev, DNF5_NO_RUNTIME)
             r = host.run("dnf5", *opts, "-q", "check-update", timeout=300)
             security = dnf_security(scan, *opts, program="dnf5")
     else:
-        age = _age([p.stat().st_mtime for p in host.sys_path("/var/cache/dnf").glob("*/repodata/repomd.xml")])
         r = host.run("dnf", "-C", "-q", "check-update")
         security = dnf_security(scan, "-C")
-    return Pending("dnf", package_names("dnf", r.stdout) if r.returncode in (0, 100) else None, security,
-                   ([age] if age else []) + ev)
+    return Pending("dnf", package_names("dnf", r.stdout) if r.returncode in (0, 100) else None, security, ev)
 
 
 def pacman_repositories(host) -> list[str]:
@@ -259,11 +335,9 @@ def _pacman_pending(scan: Scan) -> Pending:
     waited. Without the repositories' lists it couldn't check. pacman marks nothing as a security fix (arch-audit
     would, but it goes online)."""
     host = scan.host
-    sync = host.sys_path("/var/lib/pacman/sync")
-    have = {p.stem for p in children(sync) if p.suffix == ".db"}
+    have = {p.stem for p in sys_children(host, "/var/lib/pacman/sync") if p.suffix == ".db"}
     missing = [repo for repo in pacman_repositories(host) if repo not in have]
-    age = _age([p.stat().st_mtime for p in children(sync) if p.suffix == ".db" and p.stem not in ("offline",)])
-    ev = [age] if age else []
+    ev: list[Evidence] = []
     r = host.run("pacman", "-Qu")
     gone = re.findall(r"database file for '([^']+)' does not exist", r.stderr)
     if missing or gone:
@@ -377,7 +451,34 @@ class Updates(Check):
         if firmware and o.status in (Status.FAIL, Status.WARN):
             n = len(firmware)
             o.summary += f" {n} of them {'are' if n > 1 else 'is'} firmware, which the system's updater may not install."
+        o = stale_lists(o, pm, result.refreshed)
         return no_pass_when_unsupported(scan, o)
+
+
+def stale_lists(o: Outcome, pm: str, refreshed: Refreshed | None) -> Outcome:
+    """A pass may only claim what was read (the review of 2026-11-12): "nothing waiting" in package lists that weren't
+    refreshed in the last FRESH_DAYS, or of an age nothing shows, says nothing (pacman -Qu compares with sync databases
+    only pacman -Sy refreshes: an Arch machine not updated for months said "Everything is up to date"), so it is
+    couldn't tell, pointing at the online test, which downloads fresh lists. What is waiting is still waiting: the
+    finding stays, with a note that more may be."""
+    if refreshed is not None and refreshed.fresh:
+        if o.status is Status.PASS:
+            o.summary = f"Nothing is waiting in the package lists, refreshed {refreshed.words()}."
+        return o
+    when = ("when they were last refreshed couldn't be told" if refreshed is None
+            else f"they were last refreshed {refreshed.words()}" if refreshed.exact
+            else f"nothing shows they were refreshed in the last {FRESH_DAYS} days (the newest is {int(refreshed.days)} "
+                 "days old)")
+    how = f"refresh them ({REFRESH_COMMAND[pm]})" if pm in REFRESH_COMMAND else "refresh them"
+    if o.status is Status.PASS:
+        return unknown(f"Nothing is waiting in the package lists on this computer, but {when}, so updates published "
+                       f"since aren't known. The online test kern.updates_refreshed downloads fresh lists and counts "
+                       f"again; or {how}.", *o.evidence, notes=o.notes)
+    o.notes.append(Note("limitation", "More may be waiting",
+                        f"The package lists are what this count is made from, and {when}: updates published since "
+                        f"aren't in them. The online test kern.updates_refreshed counts against fresh lists; or {how}.",
+                        related=("kern.updates_refreshed",)))
+    return o
 
 
 # ------------------------------------------------------------------ the release's end of support
