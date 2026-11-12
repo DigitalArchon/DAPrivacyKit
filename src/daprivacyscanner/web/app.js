@@ -926,7 +926,8 @@ function checkRow(spec, v) {
       h("span", { class: `status st-${v.status}`, title: STATUS_LABEL[v.status] || v.status }, STATUS_SHORT[v.status] || v.status),
       rowPill(v, (changed ? `Severity ${sevText(v)} on this machine (base ${spec.severity})` : `Severity ${sevText(v)}`)
         + (v.result?.as_warning ? `: a risk, rated ${spec.warn_lower} below the problem it could become` : "")),
-      changed ? h("span", { class: "base" }, `base ${spec.severity}`) : null),
+      // the catalogue's base severity is a developer's notion: shown in developer mode, said in words in the details
+      changed && S.state.dev ? h("span", { class: "base" }, `base ${spec.severity}`) : null),
     // a pass leads with what was found ("/boot is on encrypted storage."), not the problem's name
     v.status === "pass" && v.summary ? h("div", titles,
       h("div", { class: "t" }, v.summary),
@@ -5888,7 +5889,7 @@ function renderTop() {
   }
   const priv = $("#priv-badge");
   const idle = S.state?.admin_idle_minutes || 5;
-  priv.textContent = S.adminActive ? "Administrator" : "Unprivileged";
+  priv.textContent = S.adminActive ? "Administrator" : "No admin access";
   priv.className = `badge ${S.adminActive ? "privileged" : "unprivileged"}`;
   priv.title = S.adminActive ? `Administrator access is held for this session: a root helper is running. It ends after ${idle} idle minutes, or now with Drop.`
     : "Checks that need administrator access report that they couldn't check; fixes that need it ask when applied";

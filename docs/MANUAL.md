@@ -137,7 +137,7 @@ Across the top:
 |---|---|
 | **Scan** | Runs a scan. Read-only. |
 | **with administrator access** | Tick it before scanning to let checks that need root read what they need. You are asked for your password. |
-| **Unprivileged / Administrator** badge | Whether administrator access is active now. **Drop** ends it at once. |
+| **No admin access / Administrator** badge | Whether administrator access is active now. **Drop** ends it at once. |
 | **What a scan reads…** | Exactly what a scan looks at, and what it never does. |
 | **Tools…** | The tools (section 9) and set-ups that last (section 10). A tool opened from it takes its place; **‹ Tools** goes back. |
 | **Online tests…** | Tests that need the network (section 8). |

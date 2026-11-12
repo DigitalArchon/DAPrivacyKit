@@ -2711,7 +2711,7 @@ while ($$(".modal").length) { $$(".modal .buttons button").at(-1).click(); await
   check(S.adminActive && $("#priv-badge").textContent === "Administrator", "an answer saying access is held shows it");
   held = "0";
   await window.eval("api")("GET", "/api/online/status"); await tick();
-  check(!S.adminActive && $("#priv-badge").textContent === "Unprivileged", "an answer saying it ended (idle) puts the badge back");
+  check(!S.adminActive && $("#priv-badge").textContent === "No admin access", "an answer saying it ended (idle) puts the badge back");
   held = "1";
   await window.eval("api")("GET", "/api/online/status"); await tick();
   routes["POST /api/admin/drop"] = () => ({ __status: 500, data: { error: "The helper didn't answer." } });
