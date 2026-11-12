@@ -97,6 +97,12 @@ it showed goes into the code and its comments, and its line goes.
     swap, a file deleted in that moment may come back (the note keeps no per-file list); mat2 and exiftool still
     running after quitting's 10 s wait ended by process group; Snap browsers can't open the --browser launcher file
     (the terminal prints the link); the server's peer check through netlink sock_diag rather than /proc/net/tcp.
+  - Updates: uninstall.sh doesn't yet know the copy Check for updates… keeps (`.<name>.<version>.old`) or a staging
+    folder a crash left (it could read update.json); the dialog shows the release page's address as text only
+    (/api/open opens its fixed links); releases/latest skips pre-releases, so betas stay normal releases.
+  - The browser in memory: Mullvad Browser 16 is out and the Mullvad VPN preset is tested for 15.x only
+    (`VPN_TESTED`), so it is skipped on 16 until it is tried with the VPN connected; a Tor gate that crashes leaves
+    status.json saying "connected".
   - Tests and CI: tests whose fixture hosts name /run/user/1000 now keep their locks in their own tree, so check.sh's
     bubblewrap isolation of each suite could go; a coverage floor once the suite is stable at a level.
 
@@ -148,6 +154,13 @@ Built and unit-tested, some live on the lab VMs; what still needs a real system:
   `sync.selected_types_per_account`; NetworkManager with iwd; Mullvad VPN with a LAN DNS server; an IPv4-only
   WireGuard tunnel on a dual-stack network; strongSwan; the metalink sed and `dnf makecache` on Fedora 44; GeoClue's
   address source on KDE; Ubuntu Insights' consent; the Omarchy clipboard check on its VM; Docker with ufw.
+- Tor Browser's three sandboxes side by side: Mullvad Browser live on Ubuntu 26.04 and CachyOS after the change; X11
+  without Xephyr; sound and the graphics card with Tor Browser; Firefox's own content sandbox under Ubuntu's AppArmor
+  profile (the panel now says it has no namespaces there).
+- Check for updates… (needs two releases with it, 0.1.0b9 then a later one): the real redirect host; --version through
+  FUSE and with APPIMAGE_EXTRACT_AND_RUN; APPIMAGELAUNCHER_DISABLE honoured; the kept old copy by hard link on ext4 and
+  btrfs, by two renames on FAT/exFAT; Restart now in the window and with --browser; copies Gear Lever or
+  AppImageLauncher integrated.
 - Release: a release made the new way (signed tag, release build, second build, signing with the subkey), and the
   update check downloading it on a lab VM.
 
