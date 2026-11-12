@@ -146,6 +146,17 @@ class CheckResult:
     no_fix: str = ""
     fix_root: bool = False         # its auto fix, as planned at the scan, goes through the helper
     as_warning: bool = False       # a warning: rated below what the check failing would be (catalogue.as_warning)
+    # the lowest the severity could be, where it depends on what couldn't be told (uncertain_on): effective_severity
+    # is then the highest, what it is ranked and counted by; None when it is certain
+    severity_low: int | None = None
+
+    @property
+    def lowest(self) -> int:
+        return self.effective_severity if self.severity_low is None else self.severity_low
+
+    def severity_text(self) -> str:
+        """The severity as the user reads it: "7", or the range "6–10" where it depends on what couldn't be told."""
+        return severity_text(self.effective_severity, self.severity_low)
 
     @property
     def found(self) -> bool:
@@ -176,4 +187,10 @@ class CheckResult:
             **({"no_fix": self.no_fix} if self.no_fix else {}),
             **({"fix_root": True} if self.fix_root else {}),
             **({"as_warning": True} if self.as_warning else {}),
+            **({"severity_low": self.severity_low} if self.severity_low is not None else {}),
         }
+
+
+def severity_text(high: int, low: int | None = None) -> str:
+    """"7", or "6–10" for a severity that depends on what couldn't be told (ranked by its highest)."""
+    return f"{low}–{high}" if low is not None and low != high else str(high)

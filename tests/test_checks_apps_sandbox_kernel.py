@@ -397,8 +397,8 @@ def test_updates_arch_kernel_replaced_in_place(cat, tmp_path):
                      files=_kernels("6.10.2-arch1-1", "6.10.2-arch1-1", arch=True))
     o = detect(cat, "kern.updates", make_scan(host))
     assert o.status is Status.WARN and "pacman doesn't say" in o.summary
-    sev = _severity(cat, "kern.updates", o)
-    assert sev.value == 2 and sev.uncertain_on == ("security_updates_pending",)
+    sev = _severity(cat, "kern.updates", o)           # 2 if none is a security fix, 6 if one is: ranked at 6
+    assert (sev.lowest, sev.value) == (2, 6) and sev.uncertain_on == ("security_updates_pending",)
 
 
 def test_updates_in_a_container_ignore_the_kernel(cat, tmp_path):

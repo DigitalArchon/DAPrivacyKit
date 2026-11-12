@@ -135,21 +135,40 @@ def test_effective_severity(cat, check_id, values, expected):
     assert not sev.uncertain_on
 
 
-def test_unknown_context_keeps_known_severity_and_says_so(cat):
+def test_unknown_context_is_ranked_by_the_highest_it_could_be(cat):
+    """The owner's decision (2026-11-12): an unknown key is never the benign branch. Without administrator access a
+    laptop that unlocks from the TPM showed automatic login at 6, not 10."""
     sev = effective_severity(cat["auth.autologin"], {"tpm_unlock_no_pin": None})
-    assert sev.value == 6 and sev.uncertain_on == ("tpm_unlock_no_pin",)
-    assert not sev.not_applicable
+    assert (sev.lowest, sev.value) == (6, 10) and sev.uncertain_on == ("tpm_unlock_no_pin",) and sev.uncertain
+    assert not sev.not_applicable and sev.modifier is None          # nothing known decided it
+    sev = effective_severity(cat["auth.autologin"], {"tpm_unlock_no_pin": False})
+    assert (sev.lowest, sev.value, sev.uncertain_on, sev.uncertain) == (6, 6, (), False)
 
 
 def test_unknown_before_a_match_does_not_make_it_uncertain(cat):
     # device unknown, but fde == 'none' comes later and decides it
     sev = effective_severity(cat["kern.suspend_keys_in_ram"], {"device": None, "fde": "none"})
-    assert sev.value == 0 and sev.not_applicable and sev.modifier == "fde == 'none'"
+    assert sev.value == 0 and sev.not_applicable and sev.modifier == "fde == 'none'" and not sev.uncertain_on
 
 
 def test_unknown_after_a_match_is_uncertain(cat):
+    # fde unknown: 'none' makes it 0, any other value leaves the desktop's 1; it could be 0, so it is applicable
     sev = effective_severity(cat["kern.suspend_keys_in_ram"], {"device": "desktop", "fde": None})
-    assert sev.value == 1 and sev.uncertain_on == ("fde",)
+    assert (sev.lowest, sev.value, sev.uncertain_on) == (0, 1, ("fde",)) and not sev.not_applicable
+    assert sev.modifier == "device == 'desktop'"
+
+
+def test_a_name_that_changes_nothing_is_not_uncertain(cat):
+    sev = effective_severity(cat["kern.suspend_keys_in_ram"], {"device": None, "fde": None})
+    # a laptop or one of unknown kind: 3; a desktop: 1; no disk encryption: 0 whatever the device
+    assert (sev.lowest, sev.value, sev.uncertain_on) == (0, 3, ("device", "fde"))
+
+
+def test_a_risk_lowers_both_ends_of_a_range(cat):
+    from daprivacyscanner.catalogue import as_warning
+    spec = cat["auth.autologin"]
+    w = as_warning(spec, effective_severity(spec, {}))
+    assert (w.lowest, w.value) == (6 - spec.warn_lower, 10 - spec.warn_lower) and w.as_warning
 
 
 def test_modifier_states(cat):

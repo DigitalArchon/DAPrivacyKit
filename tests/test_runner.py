@@ -99,7 +99,8 @@ def test_unknown_context_is_reported_as_uncertainty(cat, tmp_path):
     autologin = check("auth.autologin", lambda self, scan: Outcome(Status.FAIL))
     host = laptop_host(tmp_path, lsblk="fedora-40-btrfs-luks.json")      # encrypted: TPM state needs root
     r = run(cat, host, autologin).results[autologin.id]
-    assert r.effective_severity == 6 and r.uncertain_on == ("tpm_unlock_no_pin",)
+    assert (r.severity_low, r.effective_severity) == (6, 10) and r.uncertain_on == ("tpm_unlock_no_pin",)
+    assert r.to_dict()["severity_low"] == 6
 
 
 def test_a_crashing_check_is_an_error_and_the_scan_goes_on(cat, tmp_path):

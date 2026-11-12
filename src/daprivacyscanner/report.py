@@ -18,7 +18,7 @@ from typing import Any, Iterable
 
 from .catalogue import Catalogue
 from .host import Host
-from .model import STATUS_WORD
+from .model import STATUS_WORD, severity_text
 
 # evidence labels whose values name networks, accounts or devices: replaced whole when redacting
 NAMED_LABELS = re.compile(r"^(Hidden network|Accounts|Empty password|Open network that reconnects by itself|Name|"
@@ -368,15 +368,20 @@ def render_text(report: dict, catalogue: Catalogue, accepted: dict) -> str:
             if feature(r["id"]):
                 sev = "[set up] " if r["status"] == "pass" else "[not set up] "
             elif r["status"] in ("fail", "warn"):
-                sev = f"[{r['effective_severity']}] {STATUS_WORD[r['status']]}: "
+                sev = f"[{severity_text(r['effective_severity'], r.get('severity_low'))}] {STATUS_WORD[r['status']]}: "
             elif r["status"] in ("unknown", "error"):
-                sev = (f"[would be {r['effective_severity']}] " if r["effective_severity"] else "") + \
+                sev = (f"[would be {severity_text(r['effective_severity'], r.get('severity_low'))}] "
+                       if r["effective_severity"] else "") + \
                     ("[admin] " if r.get("needs_admin") else "[failed to run] " if r["status"] == "error" else "")
             else:
                 sev = ""
             lines.append(f"{sev}{spec.title + ' (' + r['id'] + ')' if spec else r['id']}")
             if r.get("summary"):
                 lines.append(f"    {r['summary']}")
+            if r["status"] in ("fail", "warn", "unknown", "error") and not feature(r["id"]):
+                said = uncertain_text(r, ctx)
+                if said:
+                    lines.append(f"    {said}")
             if r["id"] in was and r["status"] in ("unknown", "error"):
                 u = was[r["id"]]
                 lines.append(f"    {STATUS_WORD.get(u['status'], 'Problem')}, severity {u['severity']}, when it was last "
@@ -399,6 +404,31 @@ def render_text(report: dict, catalogue: Catalogue, accepted: dict) -> str:
                 lines.append(f"    - {e['label']}" + (f": {e['value']}" if e.get("value") not in (None, "") else ""))
         lines.append("")
     return "\n".join(lines)
+
+
+def uncertain_text(result: dict, context: dict) -> str:
+    """Why a severity is a range, in words, with what would settle it ("" when it is certain): "Severity 6–10: it
+    depends on TPM unlock without a PIN, which needs administrator access (a scan with administrator access, --admin,
+    settles it). Ranked at 10, the highest it could be." `context`: the report's context values ({key: {"value",
+    "needs_admin", ...}}). The page says the same (app.js, uncertainText)."""
+    from .catalogue import CONTEXT_LABEL
+    low, high = result.get("severity_low"), result.get("effective_severity", 0)
+    names = result.get("uncertain_on") or []
+    if low is None or low == high or not names:
+        return ""
+    parts, admin = [], False
+    for n in names:
+        label = CONTEXT_LABEL.get(n, n.replace("_", " "))
+        if n in context:
+            needs = bool((context.get(n) or {}).get("needs_admin"))
+            admin |= needs
+            parts.append(f"{label}, which " + ("needs administrator access" if needs else "couldn't be determined"))
+        else:
+            parts.append(f"whether {label}, which couldn't be checked")
+    zero = " (0: not applicable)" if low == 0 else ""
+    return (f"Severity {severity_text(high, low)}{zero}: it depends on {'; and on '.join(parts)}"
+            + (" (a scan with administrator access, --admin, settles it)" if admin else "")
+            + f". Ranked at {high}, the highest it could be.")
 
 
 def undone_text(report: dict, catalogue: Catalogue) -> list[str]:

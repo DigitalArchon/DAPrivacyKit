@@ -440,7 +440,7 @@ def online_cli(cat, ids: str, yes: bool) -> int:
     print("\nRunning (without administrator access; the app can use it for the traffic test)...\n")
     report = Runner(cat, host, net=online.RealNet(), online=settings).scan_online([s.id for s in wanted])
     for cid, r in report.results.items():
-        print(f"{cat[cid].title} ({cid}): {STATUS_WORD[r.status.value]} (severity {r.effective_severity}). {r.summary}")
+        print(f"{cat[cid].title} ({cid}): {STATUS_WORD[r.status.value]} (severity {r.severity_text()}). {r.summary}")
         for e in r.evidence:
             print(f"    {e.label}: {e.value}" if e.value not in (None, "") else f"    {e.label}")
         for n in r.notes:

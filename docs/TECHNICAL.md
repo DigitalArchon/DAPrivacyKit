@@ -44,8 +44,9 @@ carried out.
    accounts, the session, hibernation, automatic login, services reachable from outside, a VPN, a public IPv6
    address) is worked out before any other check runs. A check's severity here is its base severity as the last
    matching modifier changes it, and a risk is always rated below the problem it could become. Severity 0 means
-   it doesn't apply. What can't be determined is unknown, never guessed, and the result says so ([section
-   3](#3-the-scan-engine)).
+   it doesn't apply. What can't be determined is unknown, never guessed and never taken for the benign case: the
+   severity is then the range of what every value it could have would give, ranked at its highest, and the result
+   says what would settle it ([section 3](#3-the-scan-engine)).
 2. **One result model.** Every check answers with a status (pass, fail, warn, unknown, not applicable, error), its
    severity on this machine, its evidence (paths, values and counts, never secrets, account addresses or file
    contents), its kind and whether it can be fixed here. A finding is a failure or a warning, above severity 0,
@@ -228,8 +229,15 @@ Before any check runs, `context.py` computes the context keys: `fde`, `virtualiz
 `multi_user`, `session`, `hibernation`, `tpm_unlock_no_pin`, `autologin`, `exposed_services`, `vpn_active`,
 `ipv6_global`. A check's **effective severity** is its base severity, overridden by the last modifier
 whose `when` expression (`expr.py`) matches. Severity 0 means not applicable. A key that can't be
-determined is *unknown*, never guessed; modifiers that depend on it aren't applied, and the result says
-so.
+determined is *unknown*, never guessed, and never read as the benign branch (the owner's decision of
+2026-11-12: without administrator access a laptop that unlocks from the TPM, with automatic login on, showed
+automatic login at 6, not 10). `catalogue.effective_severity` evaluates the modifiers for every value the unknown
+names could take (a context key's values, or true and false for a check's own finding): the severity is the
+highest of them, by which it is ranked, counted and notified about (scheduled scans too), `severity_low` the
+lowest, and `uncertain_on` the names whose value changes it (an unknown before a modifier that decides it anyway
+changes nothing). The page's row and summary, the text and JSON reports and the terminal show the range
+("6–10") with what would settle it: a context key unknown only for want of administrator access says so
+(`ContextValue.needs_admin`). A risk lowers both ends. Not applicable means 0 whatever the unknowns turn out to be.
 
 A check's modifiers may also use names the check itself sets. One is shared: `data_on_encrypted_disk`, which
 the runner sets for the findings about data kept on the disk (`Check.stored_at` says where: the user's folders

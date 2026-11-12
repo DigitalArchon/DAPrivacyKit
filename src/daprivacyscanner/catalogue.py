@@ -195,41 +195,86 @@ class Catalogue:
 
 @dataclass(frozen=True)
 class Severity:
-    """A check's effective severity. `uncertain_on` lists the names whose unknown value could
-    have changed it (a modifier after the deciding one couldn't be evaluated)."""
+    """A check's effective severity. Where it depends on names whose value is unknown (a context key that needs
+    administrator access, a check's own finding it couldn't make), it is a range: `value` is the highest it could be
+    here, what it is ranked and counted by (the owner's decision of 2026-11-12: an unprivileged scan of a laptop that
+    unlocks from the TPM with automatic login on showed 6, not 10), `low` the lowest, and `uncertain_on` the names
+    whose value would settle it. Certain: low == value and uncertain_on is empty."""
     value: int
     base: int
-    modifier: str | None = None              # the `when` that decided it, None for the base
+    modifier: str | None = None              # the `when` that decided it from the known values, None for the base
     uncertain_on: tuple[str, ...] = ()
     as_warning: bool = False                 # lowered because the check warned rather than failed
+    low: int | None = None                   # the lowest it could be; None: the same as value
+
+    @property
+    def lowest(self) -> int:
+        return self.value if self.low is None else self.low
+
+    @property
+    def uncertain(self) -> bool:
+        return self.lowest != self.value
 
     @property
     def not_applicable(self) -> bool:
-        return self.value == 0 and not self.uncertain_on
+        """0 whatever the unknown names turn out to be. One that could be 0 or more is applicable: it is ranked by its
+        highest."""
+        return self.value == 0
+
+
+def name_values(name: str) -> tuple:
+    """Every value a name in a `when` expression can take: a context key's (CONTEXT_KEYS), else a check's own finding,
+    true or false."""
+    allowed = CONTEXT_KEYS.get(name)
+    return tuple(sorted(allowed)) if allowed else (True, False)
+
+
+# more unknown names than this in one check's modifiers are taken as they come (known values only): 4^6 evaluations
+MAX_UNKNOWN = 6
+
+
+def _last_match(spec: CheckSpec, values: Mapping[str, Any]) -> tuple[int, str | None]:
+    """Base severity, overridden by the LAST modifier whose condition holds (unknown conditions skipped)."""
+    value, decided = spec.severity, None
+    for m in spec.modifiers:
+        if m.when.evaluate(values) is True:
+            value, decided = m.severity, m.when.source
+    return value, decided
 
 
 def effective_severity(spec: CheckSpec, values: Mapping[str, Any]) -> Severity:
-    """Base severity, overridden by the LAST matching modifier. A modifier whose condition is
-    unknown is not applied: severity then stays what the known values give, and the result
-    says which names it was uncertain on."""
-    value, decided_by, unknown_after = spec.severity, None, set()
-    for m in spec.modifiers:
-        hit = m.when.evaluate(values)
-        if hit is True:
-            value, decided_by, unknown_after = m.severity, m.when.source, set()
-        elif hit is None:
-            unknown_after |= {n for n in m.when.names if values.get(n) is None}
-    return Severity(value, spec.severity, decided_by, tuple(sorted(unknown_after)))
+    """Base severity, overridden by the LAST matching modifier. A modifier whose condition is unknown (a name in it is
+    None or missing) is evaluated for every value those names could take: the severity is then the highest of what they
+    give, `low` the lowest, and `uncertain_on` the names whose value changes it (one unknown before a modifier that
+    decides it anyway changes nothing). `modifier` is what decided it from the known values alone."""
+    known, decided = _last_match(spec, values)
+    unknown = sorted({n for m in spec.modifiers for n in m.when.names if values.get(n) is None})
+    if not unknown or len(unknown) > MAX_UNKNOWN:
+        return Severity(known, spec.severity, decided)
+    import itertools
+    results: dict[tuple, int] = {}
+    for combo in itertools.product(*(name_values(n) for n in unknown)):
+        results[combo] = _last_match(spec, {**values, **dict(zip(unknown, combo))})[0]
+    hi, lo = max(results.values()), min(results.values())
+    if hi == lo:
+        return Severity(hi, spec.severity, decided if hi == known else _last_match(
+            spec, {**values, **dict(zip(unknown, next(iter(results))))})[1])
+    # a name matters when changing it alone, the others held, changes the severity
+    matters = [n for i, n in enumerate(unknown)
+               if any(results[c] != results[c[:i] + (v,) + c[i + 1:]] for c in results for v in name_values(n))]
+    return Severity(hi, spec.severity, decided, tuple(matters), low=lo)
 
 
 def as_warning(spec: CheckSpec, sev: Severity) -> Severity:
     """The severity of a warning: what the same check failing would have here, lowered by its
     `warn_lower` (at least 2), never below 1. Not applicable stays not applicable. A warning is
     a risk (possible, partial, or not yet happened); a failure is the problem itself, so a risk is
-    always rated below the problem it could become, and the one number ranks both."""
+    always rated below the problem it could become, and the one number ranks both. A range is
+    lowered at both ends."""
     if sev.value <= 0:
         return sev
-    return replace(sev, value=max(1, sev.value - spec.warn_lower), as_warning=True)
+    low = None if sev.low is None else (0 if sev.low <= 0 else max(1, sev.low - spec.warn_lower))
+    return replace(sev, value=max(1, sev.value - spec.warn_lower), as_warning=True, low=low)
 
 
 # the values a context key takes, in words (the page's ENUM_LABEL says the same)

@@ -184,13 +184,14 @@ function band(sev) {
 // passed, however high; outlined when it couldn't be checked or hasn't run (what is at stake)
 function rowPill(v, title) {
   if (v.status === "not_applicable" || v.sev <= 0) return h("span", { class: "sev sev-na", title }, "–");
-  if (v.found) return sevPill(v.sev, title);
-  if (v.status === "pass") return h("span", { class: "sev sev-off", title: `${title}: passed` }, v.sev);
-  return h("span", { class: `sev sev-${band(v.sev)} sev-stake`, title: `${title} if there is a problem` }, v.sev);
+  if (v.found) return sevPill(v.sev, title, sevText(v));
+  if (v.status === "pass") return h("span", { class: "sev sev-off", title: `${title}: passed` }, sevText(v));
+  return h("span", { class: `sev sev-${band(v.sev)} sev-stake`, title: `${title} if there is a problem` }, sevText(v));
 }
 
-function sevPill(sev, title) {
-  return h("span", { class: `sev sev-${band(sev)}`, title }, sev > 0 ? sev : "–");
+// a range ("6–10") is coloured by its highest, what it is ranked and counted by
+function sevPill(sev, title, text) {
+  return h("span", { class: `sev sev-${band(sev)}`, title }, sev > 0 ? (text ?? sev) : "–");
 }
 
 function contextValue(v) {
@@ -304,7 +305,7 @@ function view(spec) {
   const result = r?.results?.[spec.id];
   if (result) {
     return { status: result.status, sev: result.effective_severity, uncertain: result.uncertain_on,
-             summary: result.summary, evidence: result.evidence, partial: result.partial, error: result.error,
+             lo: result.severity_low ?? result.effective_severity, summary: result.summary, evidence: result.evidence, partial: result.partial, error: result.error,
              notes: result.notes, fixable: result.fixable, modifiers: r.modifiers?.[spec.id], kind: spec.kind,
              found: (result.status === "fail" || result.status === "warn") && result.effective_severity > 0,
              ms: result.duration_ms, accepted: !!acceptedRecord(spec.id),
@@ -316,8 +317,9 @@ function view(spec) {
   }
   const pending = r?.not_implemented?.[spec.id];
   if (pending) {
-    const na = pending.effective_severity === 0 && !pending.uncertain_on.length;
+    const na = pending.effective_severity === 0;      // 0 whatever the unknown keys turn out to be
     return { status: na ? "not_applicable" : "pending", sev: pending.effective_severity,
+             lo: pending.severity_low ?? pending.effective_severity,
              uncertain: pending.uncertain_on, modifiers: r.modifiers?.[spec.id], kind: spec.kind };
   }
   return { status: "unscanned", sev: spec.severity, uncertain: [], modifiers: null, kind: spec.kind };
@@ -342,22 +344,24 @@ const isEasy = (v) => !!v.result?.easy && !!v.found && !isAccepted(v);
 // labels (the catalogue's, one per name), else the name in words
 const findingLabel = (n) => S.state?.labels?.[n] || n.replace(/_/g, " ");
 
+// a severity as the user reads it: "7", or "6–10" where it depends on what couldn't be told (model.severity_text)
+const sevText = (v) => v.lo !== undefined && v.lo !== v.sev ? `${v.lo}–${v.sev}` : `${v.sev}`;
+// a context key this scan couldn't tell only for want of administrator access (ContextValue.needs_admin)
+const ctxNeedsAdmin = (n) => !!S.report?.context?.values?.[n]?.needs_admin;
+
+// why a severity is a range, and what would settle it: the server computes the range over every value the unknown
+// names could take (catalogue.effective_severity), ranked by the highest; the text report says the same (report.py)
 function uncertainText(spec, v) {
   const names = v.uncertain || [];
-  const ctx = names.filter(n => S.state.context_keys.includes(n));
-  const own = names.filter(n => !S.state.context_keys.includes(n));
-  const parts = [];
-  if (ctx.length) parts.push(`depends on ${ctx.map(n => CONTEXT_LABEL[n] || n).join(", ").toLowerCase()}, which couldn't be determined`);
-  if (own.length) parts.push(`depends on ${own.map(n => `whether ${findingLabel(n)}`).join(", ")}, which couldn't be checked`);
-  if (!parts.length) return null;
-  // the severities the unknown modifiers would give, had they matched
-  const states = v.modifiers || [];
-  // a risk is lowered the same way whichever modifier would decide it (catalogue.as_warning)
-  const asRisk = (n) => v.result?.as_warning && n > 0 ? Math.max(1, n - spec.warn_lower) : n;
-  const could = spec.modifiers.filter((m, i) => states[i] === null || states[i] === undefined).map(m => asRisk(m.severity));
-  const hi = Math.max(v.sev, ...could), lo = Math.min(v.sev, ...could);
-  const range = hi > v.sev && lo < v.sev ? `anywhere from ${lo} to ${hi}` : hi > v.sev ? `as high as ${hi}` : `as low as ${lo}`;
-  return `Severity ${parts.join("; ")}: it could be ${range}${lo === 0 ? " (0: not applicable)" : ""}.`;
+  if (!names.length || v.lo === undefined || v.lo === v.sev) return null;
+  // "Disk encryption" reads "disk encryption" mid-sentence; "TPM unlock without a PIN" stays as it is
+  const lowerFirst = (s) => /^[A-Z][a-z]/.test(s) ? s[0].toLowerCase() + s.slice(1) : s;
+  const parts = names.map(n => S.state.context_keys.includes(n)
+    ? `${lowerFirst(CONTEXT_LABEL[n] || n)}, which ${ctxNeedsAdmin(n) ? "needs administrator access" : "couldn't be determined"}`
+    : `whether ${findingLabel(n)}, which couldn't be checked`);
+  const admin = names.some(ctxNeedsAdmin);
+  return `Severity ${sevText(v)}${v.lo === 0 ? " (0: not applicable)" : ""}: it depends on ${parts.join("; and on ")}`
+    + `${admin ? " (a scan with administrator access settles it)" : ""}. Ranked at ${v.sev}, the highest it could be.`;
 }
 
 function matches(spec, q) {
@@ -438,6 +442,9 @@ function summaryBar(views) {
   }
   const total = Object.values(bands).reduce((a, b) => a + b, 0);
   const easy = views.filter(isEasy).length;
+  // findings whose severity is a range: counted by its highest; a scan with administrator access settles some
+  const ranged = views.filter(v => isFinding(v) && v.lo !== undefined && v.lo !== v.sev);
+  const rangedAdmin = ranged.filter(v => (v.uncertain || []).some(ctxNeedsAdmin)).length;
   const counter = (n, label, show, title) => n ? h("button", { class: `band${S.show === show ? " on" : ""}`, title,
     onclick: () => setShow(S.show === show ? "all" : show) }, `${n} ${label}`) : null;
   const ch = S.report.changes;
@@ -460,6 +467,10 @@ function summaryBar(views) {
     counter(hygiene, "hygiene", "hygiene", KIND_TITLE.hygiene),
     counter(info, "to know about", "info", KIND_TITLE.info),
     counter(acc, "accepted (hidden)", "accepted", "Findings you've accepted: hidden and not counted unless their severity rises"),
+    ranged.length ? h("span", { class: "band ranged-count", title: "Their severity depends on something this scan couldn't "
+        + "tell, so each is shown as a range (6–10) and counted at the highest it could be"
+        + (rangedAdmin ? `. A scan with administrator access settles ${rangedAdmin === ranged.length ? "them" : rangedAdmin}.` : ".") },
+      `${ranged.length} counted at the highest they could be` + (rangedAdmin ? " · scan with administrator access to settle" : "")) : null,
     easy ? h("button", { class: "small primary easy-btn", title: "Fixes that cost you nothing, or next to nothing: "
         + "see them all, choose, and apply them together", onclick: () => openEasy() }, `Easy fixes (${easy})…`) : null,
     unknown ? h("button", { class: "band unchecked-count", title: "A problem in these wouldn't show as a finding: see the list at the top",
@@ -640,7 +651,7 @@ function checkRow(spec, v) {
   el.append(h("div", { class: "row", onclick: () => toggle(spec.id) },
     h("div", { class: "sevcol", id: `sev-${spec.id}` },
       h("span", { class: `status st-${v.status}`, title: STATUS_LABEL[v.status] || v.status }, STATUS_SHORT[v.status] || v.status),
-      rowPill(v, (changed ? `Severity ${v.sev} on this machine (base ${spec.severity})` : `Severity ${v.sev}`)
+      rowPill(v, (changed ? `Severity ${sevText(v)} on this machine (base ${spec.severity})` : `Severity ${sevText(v)}`)
         + (v.result?.as_warning ? `: a risk, rated ${spec.warn_lower} below the problem it could become` : "")),
       changed ? h("span", { class: "base" }, `base ${spec.severity}`) : null),
     // a pass leads with what was found ("/boot is on encrypted storage."), not the problem's name

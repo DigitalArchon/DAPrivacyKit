@@ -1,8 +1,9 @@
 """The context keys, computed once per scan before any check runs (docs/TECHNICAL.md, design rule 1).
 
 Each key is a value plus the evidence it came from. A key that can't be determined (a
-command is missing, a file needs root) is None, never a guess: severity modifiers that
-depend on it are then not applied, and results say they are uncertain."""
+command is missing, a file needs root) is None, never a guess: a severity that depends on it
+is the range of what its values could give, ranked at the highest (catalogue.effective_severity),
+and the result says what would settle it (ContextValue.needs_admin)."""
 
 from __future__ import annotations
 
@@ -28,10 +29,21 @@ class ContextValue:
     note: str = ""            # how it was determined, or why it is unknown
     partial: bool = False     # some sources couldn't be read without root
     notes: list[Note] = field(default_factory=list)   # information for the user beyond the value
+    # unknown only because this scan has no administrator access: a scan with it would tell (what would settle a
+    # severity that depends on it, catalogue.Severity)
+    needs_admin: bool = False
 
     def to_dict(self) -> dict:
         return {"key": self.key, "value": self.value, "evidence": [e.to_dict() for e in self.evidence],
-                "note": self.note, "partial": self.partial, "notes": [n.to_dict() for n in self.notes]}
+                "note": self.note, "partial": self.partial, "notes": [n.to_dict() for n in self.notes],
+                **({"needs_admin": True} if self.needs_admin else {})}
+
+    def settle(self) -> str:
+        """What would tell this key, when it is unknown, in words for the severity line ("needs administrator
+        access"); "" when it is known."""
+        if self.value is not None:
+            return ""
+        return "needs administrator access" if self.needs_admin else "couldn't be determined"
 
 
 @dataclass
@@ -608,7 +620,7 @@ def detect_tpm_unlock_no_pin(host: Host, devices: list[blockdev.Device] | None, 
 
     if host.privileged is None:
         return ContextValue(key, None, ev, "Needs administrator access to read the LUKS headers, where TPM unlock "
-                            "and PINs are recorded", partial, notes=[Note(
+                            "and PINs are recorded", partial, needs_admin=True, notes=[Note(
                                 "limitation", "Scan with administrator access to check TPM unlock",
                                 "Whether this disk unlocks from the TPM alone, with no PIN, is recorded in the LUKS "
                                 "header, which only an administrator can read. Until then, findings that depend on it "
@@ -810,7 +822,8 @@ def detect_autologin(host: Host) -> ContextValue:
     if found:
         return ContextValue("autologin", True, ev, note, bool(r.unreadable))
     if r.unreadable:
-        return ContextValue("autologin", None, ev, "Some display manager files need administrator access", True)
+        return ContextValue("autologin", None, ev, "Some display manager files need administrator access", True,
+                            needs_admin=host.privileged is None)
     return ContextValue("autologin", False, ev, note)
 
 

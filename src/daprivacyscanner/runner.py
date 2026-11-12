@@ -80,7 +80,8 @@ class ScanReport:
             "context": self.context.to_dict(),
             "results": {k: r.to_dict() for k, r in self.results.items()},
             "not_implemented": {k: {"effective_severity": s.value, "base_severity": s.base,
-                                    "modifier": s.modifier, "uncertain_on": list(s.uncertain_on)}
+                                    "modifier": s.modifier, "uncertain_on": list(s.uncertain_on),
+                                    **({"severity_low": s.lowest} if s.uncertain else {})}
                                 for k, s in self.not_implemented.items()},
             "modifiers": self.modifiers, "online_pending": self.online_pending,
             "extra_notes": {k: [n.to_dict() for n in v] for k, v in self.extra_notes.items()},
@@ -458,7 +459,7 @@ class Runner:
             findings=dict(outcome.findings), notes=notes, error=error, duration_ms=ms, kind=spec.kind,
             severity_reason=_severity_reason(spec, sev), needs_admin=outcome.needs_admin and status is Status.UNKNOWN,
             how_to=how_to, items=list(outcome.items), easy=easy, as_warning=sev.as_warning,
-            no_fix=no_fix, fix_root=fix_root,
+            no_fix=no_fix, fix_root=fix_root, severity_low=sev.low if sev.uncertain else None,
         )
 
     def _unreadable(self, spec: CheckSpec, scan: Scan, e: Unreadable) -> Outcome:

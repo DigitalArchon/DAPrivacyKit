@@ -539,6 +539,24 @@ await window.scan(); await tick();
           "one whose severity rose above the one it was accepted at is shown again there too");
     S.state.accepted = acc0;
   }
+  { // a severity that depends on what couldn't be told is a range, ranked and counted by its highest, with what
+    // would settle it (the owner's decision of 2026-11-12; catalogue.effective_severity)
+    const r0 = S.report.results[id], ctx0 = S.report.context.values.tpm_unlock_no_pin;
+    S.report.results[id] = { ...r0, status: "fail", effective_severity: 10, severity_low: 6, is_finding: true,
+                             uncertain_on: ["tpm_unlock_no_pin"] };
+    S.report.context.values.tpm_unlock_no_pin = { ...(ctx0 || {}), value: null, needs_admin: true };
+    S.report.changes = null;
+    window.renderChecks(); await tick();
+    const row = `#c-${id.replace(".", "\\.")}`;
+    check(text(`${row} .sevcol .sev`) === "6–10" && $(`${row} .sevcol .sev`).className.includes("sev-critical"),
+          "the row shows the range, coloured by its highest: " + text(`${row} .sevcol .sev`));
+    check(text(`${row} .uncertain`).includes("needs administrator access") && text(`${row} .uncertain`).includes("Ranked at 10"),
+          "and says what would settle it: " + text(`${row} .uncertain`));
+    check(text(".report").includes("counted at the highest they could be"), "the summary says some are counted at their highest");
+    S.report.results[id] = r0;
+    if (ctx0) S.report.context.values.tpm_unlock_no_pin = ctx0; else delete S.report.context.values.tpm_unlock_no_pin;
+    window.renderChecks(); await tick();
+  }
   { // the footer counts the whole report, as the headline does, whichever source is listed; a chip shows its row
     const footer = () => text("#checks-count");
     window.setSource("all"); await tick();

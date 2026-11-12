@@ -99,3 +99,41 @@ def test_checks_list_system_folders_with_sys_children():
              for n, line in enumerate(p.read_text().splitlines(), 1)
              if bad.search(line) and "as the user sees it" not in line]
     assert not found, found
+
+
+# ------------------------------------------------------------------ a severity over what couldn't be told
+
+def test_an_unprivileged_scan_ranks_autologin_by_what_tpm_unlock_could_make_it(cat, tmp_path):
+    """Without administrator access a laptop with TPM unlock and automatic login showed 6, not 10: the unknown key
+    was read as the benign branch. Now it is 6–10, ranked, counted and reported at 10, with what settles it."""
+    import json
+    from daprivacyscanner import report as report_mod
+    from daprivacyscanner.model import Outcome, Status
+    from test_runner import check, laptop_host, run
+    autologin = check("auth.autologin", lambda self, scan: Outcome(Status.FAIL, "Logs in by itself."))
+    host = laptop_host(tmp_path, lsblk="fedora-40-btrfs-luks.json")
+    report = run(cat, host, autologin)
+    r = report.results["auth.autologin"]
+    assert (r.lowest, r.effective_severity, r.severity_text()) == (6, 10, "6–10") and report.findings == [r]
+    assert report.context.values["tpm_unlock_no_pin"].needs_admin
+    d = report.to_dict()
+    assert d["results"]["auth.autologin"]["severity_low"] == 6
+    assert d["context"]["values"]["tpm_unlock_no_pin"]["needs_admin"] is True
+    text = report_mod.export(d, cat, "text", None, False, {})
+    assert "[6–10] Problem: Automatic login enabled" in text
+    assert ("Severity 6–10: it depends on TPM unlock without a PIN, which needs administrator access (a scan with "
+            "administrator access, --admin, settles it). Ranked at 10, the highest it could be.") in text
+    exported = json.loads(report_mod.export(d, cat, "json", None, False, {}))
+    assert exported["report"]["results"]["auth.autologin"]["severity_low"] == 6
+    # known: no range, and nothing said
+    r.severity_low = None
+    assert r.severity_text() == "10" and "severity_low" not in r.to_dict()
+
+
+def test_a_risk_with_a_range_is_lowered_at_both_ends(cat, tmp_path):
+    from daprivacyscanner.model import Outcome, Status
+    from test_runner import check, laptop_host, run
+    autologin = check("auth.autologin", lambda self, scan: Outcome(Status.WARN, "Logs in by itself, sometimes."))
+    r = run(cat, laptop_host(tmp_path, lsblk="fedora-40-btrfs-luks.json"), autologin).results["auth.autologin"]
+    lower = cat["auth.autologin"].warn_lower
+    assert (r.severity_low, r.effective_severity) == (6 - lower, 10 - lower) and r.as_warning
