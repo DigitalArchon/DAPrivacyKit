@@ -67,7 +67,8 @@ HELPER_COPY='APPDIR=$A $A/usr/python/bin/python3 -I -c "from daprivacyscanner im
 P=$(cat /tmp/helper-path.txt)
 case "$P" in "$XDG_RUNTIME_DIR"/daprivacyscanner/helper.py) echo "PASS the helper is copied out of the FUSE mount into the runtime folder";;
   *) echo "FAIL the helper copy is $P, not in $XDG_RUNTIME_DIR/daprivacyscanner"; exit 1;; esac
-cmp -s "$P" "$A/usr/python/lib/python3.12/site-packages/daprivacyscanner/helper.py" && echo "PASS the copy is the mount'"'"'s helper.py" || { echo "FAIL the copy differs"; exit 1; }'
+ours=$(sha256sum < "$P"); theirs=$(sha256sum < "$A/usr/python/lib/python3.12/site-packages/daprivacyscanner/helper.py")
+if [ "$ours" = "$theirs" ]; then echo "PASS the copy is the mount'"'"'s helper.py"; else echo "FAIL the copy differs"; exit 1; fi'
 
 status=0
 for d in "${@:-ubuntu debian fedora arch cachyos}"; do
