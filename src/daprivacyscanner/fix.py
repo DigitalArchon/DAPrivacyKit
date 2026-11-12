@@ -123,7 +123,8 @@ def remove_made_dirs(dirs: list[str]) -> list[str]:
     """The folders a fix made, removed again deepest first, each only while it is empty: one that holds
     anything added since stays, with everything in it, and the note says what (a folder that has become a
     link or a file is left alone too). Returns the notes, for the revert's message."""
-    notes, kept = [], []
+    notes: list[str] = []
+    kept: list[str] = []
     for d in sorted(dict.fromkeys(dirs), key=lambda x: x.count("/"), reverse=True):
         if any(k.startswith(d + "/") for k in kept):
             kept.append(d)                                  # holds a folder that stays: said once, for that one
@@ -503,7 +504,7 @@ class XfconfSet(Action):
         return shell(base + ["-r"]) if record["before"] is None else shell(base + ["-s", record['before']])
 
     def __init__(self, channel: str, prop: str, type_: str, value: str):
-        self.channel, self.prop, self.type, self.value = channel, prop, type_, value       # type: bool, int
+        self.channel, self.prop, self.type, self.value = channel, prop, type_, value       # xfconf's: bool, int
 
     def describe(self) -> str:
         return shell(["xfconf-query", "-c", self.channel, "-p", self.prop, "-n", "-t", self.type, "-s", self.value])
@@ -951,7 +952,7 @@ class QSettingsSet(Action):
     @staticmethod
     def undo_hint(record: dict) -> str:
         back = record["before"] if record["before"] is not None else "(remove the line)"
-        return ((record.get("by_hand") + "; or " if record.get("by_hand") else "")
+        return ((f"{record['by_hand']}; or " if record.get("by_hand") else "")
                 + f"in {record['display']}, under [{record['group']}]: {record['key']}={back}, with the program closed")
 
     @staticmethod
@@ -1055,7 +1056,7 @@ class SettingLines(Action):
     def undo_hint(record: dict) -> str:
         parts = [f"put back {e['before']}" if e["before"] is not None else f"delete the line {e['line']}"
                  for e in record["entries"]]
-        return ((record.get("by_hand") + "; or " if record.get("by_hand") else "")
+        return ((f"{record['by_hand']}; or " if record.get("by_hand") else "")
                 + f"in {record['display']}, with the program closed: " + "; ".join(parts))
 
     @staticmethod
@@ -1162,7 +1163,7 @@ class KConfigLock(Action):
     def revert(record: dict, ctx: FixContext, force: bool = False) -> RevertResult:
         p, group = Path(record["path"]), record["group"]
         old = Host.read_file(p)
-        if KConfigLock.state(old, group) != "locked":
+        if old is None or KConfigLock.state(old, group) != "locked":
             return RevertResult(True, f"{record['display']}: [{group}] isn't marked any more")
         if record["before"] == "locked":
             return RevertResult(True, "Nothing to undo")
@@ -1681,7 +1682,7 @@ class WriteFile(Action):
                 return RevertResult(False, f"{record['display']} was deleted since", True, force_does=does)
             return RevertResult(False, f"{record['display']} has been edited since, where this fix changed it too", True,
                                 force_does=does)
-        if record["backup"]:
+        if data is not None:                    # the backup, read above (a missing one has returned)
             # the file's own mode, also when it was removed since (a backup is 0600 and a new file gets the umask's)
             _write_atomic(p, data, None if p.exists() or record.get("mode") is None else record["mode"])
             did(shell(["cp", record["backup"], record["path"]]))

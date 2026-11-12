@@ -14,7 +14,7 @@ import re
 import stat
 import time
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 from .catalogue import Catalogue
 from .host import Host
@@ -353,7 +353,9 @@ def render_text(report: dict, catalogue: Catalogue, accepted: dict) -> str:
               ("Passed", lambda r: r["status"] == "pass")]
     # set-ups that last (tier feature) are listed apart, as the app's Tools panel lists them
     feature = lambda cid: cid in catalogue.checks and catalogue[cid].tier.value == "feature"  # noqa: E731
-    groups = [(t, lambda r, k=k: k(r) and not feature(r["id"])) for t, k in groups]
+    def not_feature(keep: Callable[[dict], Any]) -> Callable[[dict], Any]:
+        return lambda r: keep(r) and not feature(r["id"])
+    groups = [(t, not_feature(k)) for t, k in groups]
     groups.append(("Set-ups in the Tools panel", lambda r: feature(r["id"]) and r["status"] in ("pass", "warn", "fail")))
     for title, keep in groups:
         rows = [dict(r, id=cid) for cid, r in results.items() if keep(dict(r, id=cid))]
@@ -508,6 +510,7 @@ def export_all(report: dict | None, catalogue: Catalogue, entries: list[dict], a
         raise ValueError("redaction needs the host")
     changes = changes_of(entries, catalogue, None if redact else host)
     if redact:
+        assert host is not None                     # refused above
         red = Redactor(host)
         red.add_names(report)
         red.add_paths(report)

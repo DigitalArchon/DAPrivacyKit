@@ -98,7 +98,7 @@ class Jobs:
         told = []
         for kind in KINDS:
             job = self.get(kind)
-            if running(job):
+            if job is not None and running(job):
                 job["cancel"] = True
                 told.append(kind)
         return told

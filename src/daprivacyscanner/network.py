@@ -140,7 +140,9 @@ def _bound_to_others(s: Listener, addresses: dict[str, str] | None) -> bool:
     if addresses is None:
         return False
     iface = s.interface or addresses.get(s.ip.lower())
-    return bool(iface) and iface != "lo" and not HOST_ONLY_IFACES.match(iface)
+    if not iface:
+        return False
+    return iface != "lo" and not HOST_ONLY_IFACES.match(iface)
 
 
 def exposed(listeners: list[Listener], ephemeral: tuple[int, int] = DEFAULT_EPHEMERAL,

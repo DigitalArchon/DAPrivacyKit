@@ -310,9 +310,9 @@ def installed(host: "Host", apps: Apps, paths: "PathResolver | None" = None) -> 
         found += own_files_version(app, paths, shared)
         best = None
         for text, source in found:
-            v = parse_version(text)
-            if v is not None and (best is None or v > best.version):
-                best = Installed(v, text, source)
+            ver = parse_version(text)
+            if ver is not None and (best is None or ver > best.version):
+                best = Installed(ver, text, source)
         if best is not None:
             out[app.id] = best
     return out

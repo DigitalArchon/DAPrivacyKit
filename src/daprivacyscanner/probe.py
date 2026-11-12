@@ -19,7 +19,7 @@ COMMON = (21, 22, 23, 25, 53, 80, 110, 111, 139, 143, 443, 445, 631, 993, 995, 1
 
 
 def parse_ports(spec: str) -> list[int]:
-    out = []
+    out: list[int] = []
     for part in spec.split(","):
         lo, _, hi = part.strip().partition("-")
         lo_i, hi_i = int(lo), int(hi or lo)
@@ -31,7 +31,7 @@ def parse_ports(spec: str) -> list[int]:
 
 def probe(address: str, ports, timeout: float = 2.0, connect=socket.create_connection) -> list[tuple[int, str]]:
     """(port, "open" | "closed" | "no answer") for each port."""
-    out = []
+    out: list[tuple[int, str]] = []
     for port in ports:
         try:
             with connect((address, port), timeout=timeout):

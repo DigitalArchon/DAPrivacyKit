@@ -74,7 +74,10 @@ def detect_context(host: Host) -> Context:
 
     add("fde", lambda: detect_fde(devices, lsblk_error, host))
     add("virtualization", lambda: detect_virtualization(host))
-    add("device", lambda: detect_device(host, values["virtualization"].value))
+    def device() -> ContextValue:
+        virt = values["virtualization"].value
+        return detect_device(host, virt if isinstance(virt, str) else None)
+    add("device", device)
     add("multi_user", lambda: detect_multi_user(host))
     add("session", lambda: detect_session(host))
     add("hibernation", lambda: detect_hibernation(host))
@@ -498,7 +501,8 @@ def sleep_modes(host: Host) -> tuple[list[str], list[str]]:
     both = get("AllowHibernation") is not False and get("AllowSuspend") is not False
     allowed = {"AllowHibernation": get("AllowHibernation") is not False}
     for key in ("AllowSuspendThenHibernate", "AllowHybridSleep"):
-        allowed[key] = get(key) if get(key) is not None else both
+        value = get(key)
+        allowed[key] = value if value is not None else both
     return [method for key, method, _ in HIBERNATING_MODES if allowed[key]], used
 
 
@@ -847,7 +851,9 @@ def _unlocks_unattended(host: Host, device: str) -> list[tuple[str, str]]:
     """How `device` opens with nothing typed, from its header: (TPM_NO_PIN or SECURITY_KEY_ALONE, how), or (NOT_TOLD,
     what) where the header doesn't say. Empty when nothing does."""
     from .privileged import HelperError
-    dump = host.privileged.luks_dump(device)
+    helper = host.privileged
+    assert helper is not None, "asked only with administrator access"
+    dump = helper.luks_dump(device)
     out = []
     for token in dump["tokens"]:
         t, auth = token["type"], token.get("auth") or {}
@@ -877,7 +883,7 @@ def _unlocks_unattended(host: Host, device: str) -> list[tuple[str, str]]:
     # Clevis binds through a LUKS2 token, or through luksmeta on LUKS1, which has no tokens
     if dump.get("version") == 1 or any(t["type"] == "clevis" for t in dump["tokens"]):
         try:
-            bindings = host.privileged.clevis_list(device)
+            bindings = helper.clevis_list(device)
         except HelperError:
             bindings = None
             if dump.get("version") != 1:          # LUKS1 without Clevis installed has no bindings to list

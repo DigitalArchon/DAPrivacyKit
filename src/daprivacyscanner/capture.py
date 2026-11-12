@@ -50,8 +50,11 @@ class Sanitiser:
         # the distribution's own names (os-release's ID, ID_LIKE and NAME): Fedora's default host name is "fedora", and
         # a live or cloud image's login "ubuntu", which name nobody; replaced, os-release said ID=user
         release = host.read_sys("/etc/os-release") or ""
-        self.distro = {w.lower() for k in ("ID", "ID_LIKE", "NAME")
-                       for w in (re.search(rf'^{k}="?([^"\n]*)', release, re.M) or [None, ""])[1].split()}
+
+        def field(k: str) -> str:
+            m = re.search(rf'^{k}="?([^"\n]*)', release, re.M)
+            return m.group(1) if m else ""
+        self.distro = {w.lower() for k in ("ID", "ID_LIKE", "NAME") for w in field(k).split()}
 
     def __call__(self, text: str) -> str:
         text = text.replace(self.home, "/home/user")

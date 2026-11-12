@@ -145,10 +145,11 @@ class Guide:
                 lines.append(f"    {s.text}")
             for head, text in s.parts:
                 lines.append(f"    {head}: {text}")
-            for i in s.inputs:
-                shown = ("yes" if i.value else "no") if i.kind == "bool" else \
-                    dict(i.choices).get(i.value, i.value) if i.kind == "choice" else i.value
-                lines.append(f"    Choice: {i.label}: {shown}{(' ' + i.unit) if i.unit else ''}")
+            for inp in s.inputs:
+                labels: dict[object, str] = dict(inp.choices)
+                shown = ("yes" if inp.value else "no") if inp.kind == "bool" else \
+                    labels.get(inp.value, inp.value) if inp.kind == "choice" else inp.value
+                lines.append(f"    Choice: {inp.label}: {shown}{(' ' + inp.unit) if inp.unit else ''}")
             for o in s.options:
                 lines.append(f"    Option: {o.label}" + (" (recommended)" if o.recommended else ""))
                 lines += ["    " + ln for ln in o.plan.dry_run("    ").splitlines()[1:]]

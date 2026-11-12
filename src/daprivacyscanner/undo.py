@@ -345,7 +345,8 @@ class UndoLog:
             rec["kind"] in IRREVERSIBLE_KINDS for rec in e["records"])
         # read without the lock, since reading what was changed back runs programs (gsettings): only the marks found
         # are saved, into the log as it is by then (another copy of the app may have added a fix meanwhile)
-        entries, out, seen, marks = self.entries(), [], set(), {}
+        entries, out, seen = self.entries(), [], set()
+        marks: dict[str, float | None] = {}
         # when each check last had one of its fixes reverted from History, even in part
         reverted_at: dict[str, float] = {}
         for e in entries:

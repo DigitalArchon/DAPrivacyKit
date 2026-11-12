@@ -12,7 +12,7 @@ import subprocess
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Collection, Mapping, Sequence
 
 if TYPE_CHECKING:
     from .privileged import Privileged
@@ -63,11 +63,12 @@ _RUNNING: set[subprocess.Popen] = set()       # the commands SystemRunner is run
 _RUNNING_LOCK = threading.Lock()
 
 
-def end_commands(programs: set[str]) -> int:
+def end_commands(programs: Collection[str]) -> int:
     """Ends the commands running now whose program is one of `programs` (by name: a file chooser, zenity or kdialog,
     left open when the app quits, which waited up to an hour otherwise). How many were told to end."""
     with _RUNNING_LOCK:
-        procs = [p for p in _RUNNING if os.path.basename(str(p.args[0])) in programs]
+        procs = [p for p in _RUNNING
+                 if isinstance(p.args, (list, tuple)) and os.path.basename(str(p.args[0])) in programs]
     for p in procs:
         try:
             p.terminate()
@@ -129,7 +130,8 @@ class FakeRunner(CommandRunner):
     their program is in `installed` (then they fail with exit status 1)."""
 
     def __init__(self, outputs: Mapping[Sequence[str] | str, str | CommandResult] | None = None,
-                 installed: Sequence[str] = (), handlers: Mapping[str, object] | None = None):
+                 installed: Sequence[str] = (),
+                 handlers: Mapping[str, Callable[[tuple[str, ...]], CommandResult | None]] | None = None):
         self.outputs: dict[tuple[str, ...], CommandResult] = {}
         for argv, out in (outputs or {}).items():
             key = tuple(argv.split(" ")) if isinstance(argv, str) else tuple(argv)
@@ -257,7 +259,8 @@ class Host:
 
     def run(self, *argv: str, timeout: float = DEFAULT_TIMEOUT, stdin: Path | None = None,
             env: Mapping[str, str] | None = None) -> CommandResult:
-        extra = {**({"stdin": stdin} if stdin is not None else {}), **({"env": env} if env else {})}
+        # only what is given: a runner tests put in place may take neither
+        extra: dict[str, Any] = {**({"stdin": stdin} if stdin is not None else {}), **({"env": env} if env else {})}
         return self.runner.run(argv, timeout=timeout, **extra)
 
     def run_flatpak(self, *args: str, timeout: float = DEFAULT_TIMEOUT) -> CommandResult:

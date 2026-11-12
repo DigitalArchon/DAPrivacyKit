@@ -122,26 +122,30 @@ class Runner:
         scan.params = dict(params or {})
         given = Outcome.from_dict(stored) if stored and check.spec.scope is Scope.ONLINE else None
         result = self.run_check(check, scan, given)
+        outcome = check.last_outcome
+        if outcome is None:                     # not applicable here: nothing was detected, nothing to plan
+            return result, None
         if result.how_to:
             # an advice check's guide explains and gives commands; the app changes nothing (rule 5)
-            plan = check.plan_guide(scan, check.last_outcome)
-            if plan.plans:
+            advice = check.plan_guide(scan, outcome)
+            if advice.plans:
                 raise ValueError(f"{check_id} is advice: its guide can't offer changes")
-            plan.advice = True
-            plan.name_checks(self._title)
-            return result, plan
+            advice.advice = True
+            advice.name_checks(self._title)
+            return result, advice
         # a guide stays open once its check passes: the page reloads it after each step it applies,
         # its later steps (a lasting default, a folder in memory) still apply, and a feature set up
         # is reviewed through it. Its steps say what is done.
         guide_open = (result.status is Status.PASS and check.spec.tier in (Tier.GUIDED, Tier.FEATURE)
-                      and check.supports_fix and _safe_can_fix(check, scan, check.last_outcome))
+                      and check.supports_fix and _safe_can_fix(check, scan, outcome))
         if not (result.fixable or guide_open):
             return result, None
+        plan: FixPlan | Guide
         if check.spec.tier in (Tier.GUIDED, Tier.FEATURE):
-            plan = check.plan_guide(scan, check.last_outcome)
+            plan = check.plan_guide(scan, outcome)
             plans = plan.plans
         else:
-            plan = check.plan_fix(scan, check.last_outcome)
+            plan = check.plan_fix(scan, outcome)
             plans = [plan]
         self._explain(scan, plans, check_id)
         if isinstance(plan, Guide):
@@ -157,7 +161,7 @@ class Runner:
         app newer than its check was made for says so first (appversions.plan_note)."""
         newer = appversions.plan_note(check_id, scan) if check_id else None
         for p in plans if newer else ():
-            if newer not in p.side_effects:
+            if newer and newer not in p.side_effects:
                 p.side_effects.insert(0, newer)
         if any(p.irreversible for p in plans):
             from .checks.encryption import deleted_data_note
@@ -182,12 +186,13 @@ class Runner:
                 continue
             check = self.registry[spec.id](spec)
             result = self.run_check(check, scan)
-            if not (result.easy and result.found):
+            outcome = check.last_outcome
+            if not (result.easy and result.found) or outcome is None:
                 continue
             if spec.tier is Tier.AUTO:
-                plans = [check.plan_fix(scan, check.last_outcome)]
+                plans = [check.plan_fix(scan, outcome)]
             else:
-                guide = check.plan_guide(scan, check.last_outcome)
+                guide = check.plan_guide(scan, outcome)
                 from .checks.guides import GUIDES
                 stray = {o.key for s in guide.steps for o in s.options if o.key} - GUIDES[spec.id].keys
                 if stray:
@@ -312,7 +317,9 @@ class Runner:
         scan = self._scan(context)
         scan.stop = stop
         specs = [s for s in self.catalogue if s.id in set(ids) and s.scope is Scope.ONLINE]
-        results, states, extra = {}, {}, {}
+        results: dict[str, CheckResult] = {}
+        states: dict[str, Any] = {}
+        extra: dict[str, list] = {}
         for i, spec in enumerate(specs):
             impl = self.registry.get(spec.id)
             if impl is None:
@@ -350,8 +357,10 @@ class Runner:
             return out
         specs = {spec.id: spec for spec, _ in todo}
         pool = _Workers(min(self.workers, len(todo)))
+        def job(spec: CheckSpec, impl: type[Check]) -> Callable[[], CheckResult]:
+            return lambda: self.run_check(impl(spec), scan)
         for spec, impl in todo:
-            pool.put(spec.id, lambda spec=spec, impl=impl: self.run_check(impl(spec), scan))
+            pool.put(spec.id, job(spec, impl))
         try:
             while len(out) < len(todo):
                 got = pool.next(0.2)
@@ -608,8 +617,11 @@ def _easy_left(check: Check, scan: Scan, outcome: Outcome) -> bool:
     "Close X first"). The check can go on failing with it in place (a list that still has entries once
     its lasting setting is set, a change that waits for a restart): it is then no longer an Easy fix.
     A guide that can't be built is still offered: opening it shows the error."""
+    easy = check.spec.easy
+    if easy is None:                            # asked only of checks with an Easy fix
+        return False
     try:
-        plans = check.plan_guide(scan, outcome).keyed(check.spec.easy.option)
+        plans = check.plan_guide(scan, outcome).keyed(easy.option)
     except Exception:  # noqa: BLE001
         return True
     return any(not p.empty or p.blockers for p in plans)

@@ -384,7 +384,8 @@ def rate(p: Provider) -> Rating:
     gives one that passes them all."""
     harm, closed = p.supporting("harm"), p.supporting("closed_client")
     capped = p.supporting("ownership") if p.group_cap == "ownership" else []
-    flags = dict(closed=bool(closed), capped=bool(capped), harm=bool(harm), owner=p.group_name if capped else None)
+    flags: dict[str, Any] = dict(closed=bool(closed), capped=bool(capped), harm=bool(harm),
+                                 owner=p.group_name if capped else None)
     if harm:
         return Rating("avoid", tuple(harm + closed + capped), **flags)
     if closed:

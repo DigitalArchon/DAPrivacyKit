@@ -80,8 +80,9 @@ class _Parser:
 
     def parse(self) -> Node:
         node = self.or_()
-        if self.peek() is not None:
-            raise ExprError(f"unexpected {self.peek()[1]!r} in {self.src!r}")
+        left = self.peek()
+        if left is not None:
+            raise ExprError(f"unexpected {left[1]!r} in {self.src!r}")
         return node
 
     def or_(self) -> Node:

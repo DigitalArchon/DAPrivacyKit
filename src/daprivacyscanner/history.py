@@ -342,7 +342,9 @@ class Accepted:
 
 def resurfaced(record: dict | None, severity: int) -> bool:
     """An accepted finding whose severity rose above the one it was accepted at."""
-    return bool(record) and isinstance(record.get("severity"), int) and severity > record["severity"]
+    if not record:
+        return False
+    return isinstance(record.get("severity"), int) and severity > record["severity"]
 
 
 def hidden(accepted: dict, check_id: str, result: dict) -> bool:
