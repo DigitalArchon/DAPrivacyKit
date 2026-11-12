@@ -2340,7 +2340,12 @@ let toolsPanel = null;
 const fromTools = (open) => async () => {
   toolsPanel?.close();
   S.toolsReturn = true;
-  try { await open(); } finally { S.toolsReturn = false; }
+  try { await open(); } finally {
+    // the tool didn't open (its first request refused, say: a toast said why): the Tools panel comes back
+    const opened = !S.toolsReturn;
+    S.toolsReturn = false;
+    if (!opened) void openTools();
+  }
 };
 
 async function openTools() {

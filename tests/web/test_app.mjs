@@ -2961,6 +2961,13 @@ while ($$(".modal").length) { $$(".modal .buttons button").at(-1).click(); await
         && $(".modal .buttons button.back-to-tools")?.textContent === "‹ Tools", "a tool opens in the Tools panel's place, with ‹ Tools");
   $(".modal .buttons button.back-to-tools").click(); await tick(); await tick();
   check($$(".modal").length === 1 && $(".modal h2").textContent === "Tools", "‹ Tools goes back to the panel");
+  const trim0 = routes["GET /api/tools/trim"];
+  routes["GET /api/tools/trim"] = () => ({ __status: 500, data: { error: "The helper didn't answer." } });
+  $$(".modal .toolcard button").find(b => b.textContent === "Test…").click(); await tick(); await tick(); await tick();
+  check($$(".modal").length === 1 && $(".modal h2").textContent === "Tools" && !$(".modal .back-to-tools")
+        && $$("#toasts .toast").some(t => t.textContent === "The helper didn't answer."),
+        "a tool that couldn't open says why, and the Tools panel comes back");
+  routes["GET /api/tools/trim"] = trim0;
   $(".modal .buttons button:last-child").click(); await tick();
   await window.openTravel(); await tick();
   check(!$(".modal .back-to-tools"), "a tool opened any other way has no ‹ Tools");
