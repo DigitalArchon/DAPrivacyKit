@@ -215,7 +215,8 @@ provider that is hard to trust; phone-home traffic, whose list names the check t
 connection).
 
 **If a program has to be closed first,** the fix says so ("Close Firefox first"). The app never closes
-your programs for you.
+your programs for you. It asks again when you click Apply: a program you started after opening the fix
+stops it, with nothing changed, and Apply works once you have closed it.
 
 **After a fix is applied**, a dialog shows exactly what it did: each step, the commands it ran, the lines
 it wrote, and the command that undoes it by hand. The same is kept in History (section 6). A fix that
@@ -251,10 +252,22 @@ it back ran. You can copy any of them.
 An attempt that failed after changing something is listed too, marked **failed**, with what went wrong and
 what was put back. If a step couldn't be put back, its Revert button is there.
 
+A fix is written into History before it changes anything, and each step as it is done. If the app stops
+while a fix is being applied (it was killed, the computer lost power), History lists it as
+**interrupted**: the steps it lists were made and can be reverted, and a step marked **not known** may or
+may not have been. A system change whose answer never came back is settled the next time you give
+administrator access with History open, from the administrator helper's own record; a system change it
+made that History had no entry for appears as **Recovered**, and can be reverted too.
+
 - **Revert** puts back what was there before, and removes any file or folder the fix created. If the
-  setting has been changed again since, the app won't overwrite that without asking (**Revert anyway**).
-  A folder the fix created that now holds something else (yours, or another program's) is kept, and
-  the message says what is in it. Root changes are reverted as administrator.
+  setting has been changed again since, the app won't overwrite that without asking: **Revert anyway…**
+  first says what it will do (for a file, put back the whole file as it was, losing what was changed in it
+  since) and asks again. A file you or a program edited since gets only the fix's own lines put back, and
+  keeps the rest. A folder the fix created that now holds something else (yours, or another program's) is
+  kept, and the message says what is in it. Root changes are reverted as administrator.
+- **Newest first.** When a later fix changed the same setting or file, the earlier one can't be reverted
+  until the later one is: reverting out of order would put an old value back over the later change. The
+  message names the later fix, and **Revert that one first, then this** does both, in order.
 - Deletions (caches, history) can't be reverted. They are listed as such.
 - **Forget reverted and old entries** or **Forget everything** clears History and its backups.
 - History also offers to remove the administrator helper.

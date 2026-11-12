@@ -66,9 +66,11 @@ carried out.
    machine where that helps; the app never makes the change. `feature`: an optional set-up, not a finding
    ([section 4](#4-fixes-guides-and-the-undo-log)).
 6. **The value before is kept.** Before a setting or a file is changed, what was there goes into the undo log, so
-   every applied fix can be reverted from History. Deleting caches and histories is the exception: it can't be
-   undone, so it is confirmed on its own. The log is a record too: it never holds deleted paths or the names of
-   Wi-Fi networks.
+   every applied fix can be reverted from History. The entry is written, and on the disk, before the first step and
+   added to as each step completes, so a fix cut short (a crash, a power cut) is still in History. Reverts go newest
+   first where two changes touch the same thing, and a file edited since gets only the fix's lines back. Deleting
+   caches and histories is the exception: it can't be undone, so it is confirmed on its own. The log is a record too:
+   it never holds deleted paths or the names of Wi-Fi networks.
 7. **Dry run.** Every fix can show exactly what it would do, and what is shown is what is done.
 8. **No secure-delete claims.** No `shred`, no overwriting of files on a disk: on SSDs and copy-on-write
    filesystems it promises what it can't keep. Encryption is what protects deleted data. Two exceptions, where
@@ -313,17 +315,65 @@ checks read them. The dry run lists a folder's `mkdir` once, at the first step t
 a plan holding one needs a separate confirmation (`apply_plan` refuses without it), and deleted paths are
 never written to the log.
 
+"Close X first" is asked again when a plan is applied, not only when it is shown (a plan is applied up to 15
+minutes later, and a program started meanwhile would have its files deleted under it, or its settings written and
+then overwritten as it quits). Every step that needs a program closed carries what the plan's builder checked
+(`InUse`: the program's processes, the folders none of the user's processes may hold a file in, a lock link, a
+Flatpak id; `Action.unless`, `guarded`); CopyQ's settings steps carry it themselves, and `FirefoxPref` asks whether
+its profile is open. `apply_plan` runs every step's `precheck` before the first one (`Precheck` reads the processes,
+what they hold open and the Flatpak apps running once for the plan), and refuses with the same plain reason the plan
+would give, changing nothing; the server keeps the plan, so it can be applied once the program is closed.
+
+`DeleteFiles` deletes from descriptors: the root folder is opened one name at a time without following a link (from
+the home's real path, or from /), each folder below it opened the same way and checked to be on the root's
+filesystem, each file unlinked by its name in its folder's descriptor, folders deleted whole and the emptied ones
+pruned the same way. Checking a path and then deleting by the same path left a gap a Flatpak app started after the
+plan was made could use: it can swap a folder of its own cache for a link to `~/.ssh` between the two. `files_under`
+stays on the root's filesystem too, so a plan never lists what is in another filesystem mounted inside.
+
+Writes reach the disk before they count: `_write_atomic` writes a temporary file, fsyncs it, renames it over the old
+one and fsyncs the folder (on XFS or f2fs a file could otherwise be empty after a power cut), keeping an existing
+file's mode, owner and SELinux label (and ACLs); `make_writable` changes a folder's mode through a descriptor opened
+without following a link.
+
 ### The undo log
 
 `undo.py` keeps `$XDG_STATE_HOME/daprivacyscanner/undo.json` (directory 0700, written atomically through a
-temporary file of each write's own). Every change to it, as to the other files there, is a read-modify-write under
-the folder's lock (`history.locked`, an flock on `.lock`): the window, scheduled scans and other copies of the
-app write it too, and one saving what it had read before another's change lost that change. A log that can't be
-read is kept aside (`undo.json.unreadable-<time>`), never written over, and History says so until "Forget
-everything" deletes it. Revert
-refuses to overwrite a value changed since the fix, unless forced; a value already back where it was before
-(put back by hand) is no conflict. A root change that fails part way is journalled by the helper before its error
-goes back, and kept as the failed step's record, so it can be put back. systemctl's exit status never decides a
+temporary file of each write's own, fsynced, then the folder). Every change to it, as to the other files there, is a
+read-modify-write under the folder's lock (`history.locked`, an flock on `.lock`): the window, scheduled scans and
+other copies of the app write it too, and one saving what it had read before another's change lost that change. A log
+that can't be read (not JSON, not an undo log, not text, or an error reading it) is kept aside
+(`undo.json.unreadable-<time>`), never written over, and History says so until "Forget everything" deletes it.
+
+A fix is recorded before it is made (write-ahead): `apply_plan` writes the entry, `applying` and naming its process
+(pid, start time, boot id), before the first step; before each step, the step as under way (`Action.under_way`); after
+it, its record; then `applied` or `failed`. When the entry can't be written first, nothing is changed; when it can't
+be written part way, the plan stops there and is put back. An entry still `applying` whose process is gone shows as
+`interrupted` (`UndoLog.state_of`), revertible for the steps it records, a step under way marked "not known". A root
+step's change id is made by the app (`RootChange.under_way`), recorded, and sent to the helper as `change_id`; a step
+whose answer never came (the app gives up after 120 s while the helper may finish) is kept as `outcome: unknown` with
+that id, left out of the rollback, and settled from the helper's own record (`list_changes`, `UndoLog.reconcile`):
+made, it can be reverted; never made, there is nothing to undo; begun and not finished, its revert asks the helper.
+Reconciling also takes up a change the helper made that no entry knows of (the app stopped before recording it,
+History's file lost), as an entry of its own. It runs when History opens with administrator access and nothing else
+uses the helper, and when access is given for a fix or a revert; an older helper without `list_changes` is left
+alone. The ids of forgotten entries' root changes are kept (only the ids), so forgetting isn't undone by taking them
+up again. "Forget" waits for a fix or revert of this window, never drops an entry another copy is applying, and with
+everything deletes only the backup folders no entry left names.
+
+Reverts go in order. Every record names what it changed (`Action.resources`: a file, a setting, a key, a unit), and
+an entry can't be reverted while an entry applied after it that changed one of the same things is still in place
+(`UndoLog.blocking`): reverting out of order put back an old value or a whole old file over that change (an
+authorized key trusted again while the entry that removed it still read applied; A true → false then B false → true
+ended on false). The answer's `blocked_by` names them, and the page offers to revert them first (`later_first`, newest
+first, then this one); Revert anyway doesn't lift this. A file the app doesn't wholly own is put back by lines when it
+was edited since (`WriteFile` keeps a copy of what it wrote; `merge_back` takes back only the fix's lines while they
+are still as the fix left them, lines it removed going back between the same two lines), so changes made since stay;
+when they overlap, it is a conflict. Revert refuses to overwrite a value changed since the fix, unless forced, and
+every conflict says what reverting anyway does (`force_does`: the whole file put back, a setting set over its new
+value), which the page shows before it does it. A value already back where it was before (put back by hand) is no
+conflict. A root change that fails part way is journalled by the helper before its error goes back, and kept as the
+failed step's record, so it can be put back. systemctl's exit status never decides a
 unit's or a mount's state (`disable --now` answers 0 when the stop job failed): the unit's state and the mount
 table do. Every revert says what it put back, and a value already put back by hand (a file, a unit's state, a kernel
 setting) is no conflict. A root change the helper found already so leaves no History entry. `set_service` can mask
@@ -351,7 +401,7 @@ are) and, when any step had run, keeps the attempt as a `failed` entry with its 
 at (`failed_step`), each step marked reverted with `revert_ran`, and a step that couldn't be put back left
 revertible from History. An attempt that changed nothing leaves no entry. A copy the failing step had taken
 into the backups, which no record names, is deleted (a plain copy of known_hosts when ssh-keygen failed:
-nothing would ever have forgotten or expired it); "Forget everything" empties the backups folder whole. `/api/fix/apply` and
+nothing would ever have forgotten or expired it); "Forget everything" deletes every backup folder no entry left names. `/api/fix/apply` and
 `/api/easy/apply` answer with each entry as made (`UndoLog.summary`), which the page shows at once
 (`doneDialog`). "Export everything" (`report.changes_of`) carries all of it: commands, lines, files,
 folders, what reverting ran, `via`, failures.
