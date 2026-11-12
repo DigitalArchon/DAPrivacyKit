@@ -752,7 +752,7 @@ def test_a_trial_runs_in_a_group_with_a_limit_on_memory_and_processes(host, tmp_
     spawned = []
     spawn = lambda argv, **kw: spawned.append(argv) or SimpleNamespace(pid=1 << 22, stdout=None)     # noqa: E731
     t = a_trial(tmp_path, argv=["/app/tool"])
-    how = trial.start(host, t, {}, spawn)
+    how = trial.start(host, t, {"real_display": True}, spawn)
     trial.stop(host, t)
     cmd = spawned[-1]
     assert cmd[:5] == ["systemd-run", "--user", "--scope", "--collect", "--quiet"]
@@ -776,7 +776,7 @@ def test_without_a_working_scope_the_trial_runs_uncapped_and_says_so(host, tmp_p
     spawned = []
     spawn = lambda argv, **kw: spawned.append(argv) or SimpleNamespace(pid=1 << 22, stdout=None)     # noqa: E731
     t = a_trial(tmp_path, argv=["/app/tool"])
-    how = trial.start(host, t, {}, spawn)
+    how = trial.start(host, t, {"real_display": True}, spawn)
     trial.stop(host, t)
     assert spawned[-1][0] != "systemd-run" and how["capped"] is None
     assert "MemoryMax" in how["capped_why"] and "MemoryMax" in trial.status(host)["capped_why"]
@@ -788,7 +788,7 @@ def test_a_flatpak_trial_is_not_capped_by_the_app(host, tmp_path):
     _systemd(host)
     spawn = lambda argv, **kw: SimpleNamespace(pid=1 << 22, stdout=None)     # noqa: E731
     f = a_trial(tmp_path / "f", kind="flatpak", argv=["org.x.App"], flatpak="org.x.App")
-    how = trial.start(host, f, {"network": "on"}, spawn)
+    how = trial.start(host, f, {"network": "on", "real_display": True}, spawn)
     trial.stop(host, f)
     assert how["capped"] is None and "Flatpak" in how["capped_why"]
 
@@ -807,7 +807,7 @@ def test_an_autostart_entry_or_permission_a_flatpak_trial_left_is_in_the_result(
     (dbs / "background").write_bytes(b"old")
     spawn = lambda argv, **kw: SimpleNamespace(pid=1 << 22, stdout=None)     # noqa: E731
     f = a_trial(tmp_path / "f", kind="flatpak", argv=["org.x.App"], flatpak="org.x.App")
-    trial.start(host, f, {"network": "on"}, spawn)
+    trial.start(host, f, {"network": "on", "real_display": True}, spawn)
     (auto / "org.x.App.desktop").write_text("[Desktop Entry]\nExec=flatpak run org.x.App\n")
     (dbs / "background").write_bytes(b"new and longer")
     trial.stop(host, f)
@@ -821,7 +821,7 @@ def test_an_autostart_entry_or_permission_a_flatpak_trial_left_is_in_the_result(
 def test_a_trial_without_flatpak_has_nothing_of_the_portals_in_its_result(host, tmp_path):
     spawn = lambda argv, **kw: SimpleNamespace(pid=1 << 22, stdout=None)     # noqa: E731
     t = a_trial(tmp_path, argv=["/app/tool"])
-    trial.start(host, t, {}, spawn)
+    trial.start(host, t, {"real_display": True}, spawn)
     trial.stop(host, t)
     assert t.result["portal"] is None, "a trial in bubblewrap has no session bus, so no portals"
 
