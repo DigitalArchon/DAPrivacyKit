@@ -75,7 +75,7 @@ class UndoLog:
     def entries(self) -> list[dict]:
         """The entries as saved; none from a log that can't be read (`damaged` says so)."""
         try:
-            return self._parse(self.file.read_text())[0]
+            return self._parse(self.file.read_text(encoding="utf-8"))[0]
         except FileNotFoundError:
             return []
         except (OSError, ValueError, RecursionError):
@@ -101,7 +101,7 @@ class UndoLog:
         still in place), and the log starts again: before, the next fix saved itself over it, alone, and History was
         empty without a word."""
         try:
-            entries, self._kept = self._parse(self.file.read_text())
+            entries, self._kept = self._parse(self.file.read_text(encoding="utf-8"))
             return entries
         except FileNotFoundError:
             self._kept = {}
@@ -140,7 +140,7 @@ class UndoLog:
         """What History says when its log couldn't be read: the log itself, or the copies kept aside; "" otherwise."""
         shown = host.display if host is not None else str
         try:
-            self._parse(self.file.read_text())
+            self._parse(self.file.read_text(encoding="utf-8"))
             unreadable = False
         except FileNotFoundError:
             unreadable = False

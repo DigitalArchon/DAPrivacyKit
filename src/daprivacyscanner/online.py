@@ -111,7 +111,7 @@ def load_settings(config_home: Path) -> dict:
     out = json.loads(json.dumps(DEFAULTS))
     p = settings_path(config_home)
     try:
-        user = json.loads(p.read_text())
+        user = json.loads(p.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return out
     except (OSError, ValueError) as e:

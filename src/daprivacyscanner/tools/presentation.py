@@ -275,7 +275,7 @@ def state_file(host: Host) -> Path:
 
 def _load(host: Host) -> dict | None:
     try:
-        data = json.loads(state_file(host).read_text())
+        data = json.loads(state_file(host).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
     return data if isinstance(data, dict) and isinstance(data.get("records"), list) else None

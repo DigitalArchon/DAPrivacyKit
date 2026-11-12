@@ -309,7 +309,7 @@ class Accepted:
     def damaged(self, display=str) -> str:
         """What the page says when the file couldn't be read: it is unreadable now, or copies were kept aside; ""."""
         try:
-            data = json.loads(self.file.read_text())
+            data = json.loads(self.file.read_text(encoding="utf-8"))
             unreadable = not isinstance(data, dict)
         except FileNotFoundError:
             unreadable = False

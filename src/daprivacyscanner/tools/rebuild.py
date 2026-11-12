@@ -789,7 +789,7 @@ def _read_note(host: Host) -> tuple[dict | None, int | None]:
         os.close(lock)
         return None, None                            # running in a copy of the app now
     try:
-        note = json.loads(path.read_text())
+        note = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(note, dict) or note.get("kind") not in ("rebuild", "fillers") or \
                 not isinstance(note.get("rel"), str) or note.get("scope") not in ("home", "mount"):
             raise ValueError

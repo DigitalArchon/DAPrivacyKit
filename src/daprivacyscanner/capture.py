@@ -125,7 +125,7 @@ def capture(host: Host, directory: Path, out=None) -> list[Path]:
                 pass
         p = target / rel
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(text)
+        p.write_text(text, encoding="utf-8")
         written.append(p)
         print(f"  wrote {p} ({len(text.splitlines())} lines)", file=out)
     readme = target / "README.md"

@@ -1250,8 +1250,8 @@ def flatpak_copies(host: Host, t: Trial) -> list[int]:
         return []
     for d in instances:
         try:
-            info = (d / "info").read_text(errors="replace")
-            bw = json.loads((d / "bwrapinfo.json").read_text())
+            info = (d / "info").read_text(encoding="utf-8", errors="replace")
+            bw = json.loads((d / "bwrapinfo.json").read_text(encoding="utf-8"))
             pid, ns = int(bw["child-pid"]), int(bw["pid-namespace"])
         except (OSError, ValueError, KeyError, TypeError):
             continue

@@ -288,7 +288,7 @@ def _runs_file(host: Host, slug: str) -> Path:
 
 def runs(host: Host, slug: str) -> dict:
     try:
-        d = json.loads(_runs_file(host, slug).read_text())
+        d = json.loads(_runs_file(host, slug).read_text(encoding="utf-8"))
     except (OSError, ValueError, trial.TrialError):
         d = None
     if not isinstance(d, dict) or not isinstance(d.get("runs"), list) or not isinstance(d.get("hosts"), list):
