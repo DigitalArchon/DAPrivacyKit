@@ -149,11 +149,13 @@ class RemoteProgram:
 
 VNC = ("5900-5909/tcp",)
 # remote access programs by process name (comm, at most 15 characters: gnome-remote-desktop-daemon is
-# "gnome-remote-de", as is its configuration daemon; RealVNC's vncserver-x11-core is "vncserver-x11-c")
+# "gnome-remote-de", as is its configuration daemon; RealVNC's vncserver-x11-core is "vncserver-x11-c"). TigerVNC's
+# are Xvnc, x0vncserver and w0vncserver on Fedora and Arch, Xtigervnc, X0tigervnc and x0tigervncserver
+# ("x0tigervncserve") on Debian and Ubuntu (their package file lists)
 REMOTE_PROGRAMS = {
     **{comm: RemoteProgram("vnc", f"VNC ({comm})", VNC, "any")
-       for comm in ("x11vnc", "wayvnc", "krfb", "x0vncserver", "w0vncserver", "Xvnc", "Xtigervnc", "Xtightvnc",
-                    "vncserver-x11", "vncserver-x11-c")},
+       for comm in ("x11vnc", "wayvnc", "krfb", "x0vncserver", "w0vncserver", "Xvnc", "Xtigervnc", "X0tigervnc",
+                    "x0tigervncserve", "Xtightvnc", "vncserver-x11", "vncserver-x11-c")},
     "gnome-remote-de": RemoteProgram("gnome-remote-desktop", "GNOME Remote Desktop", ("3389/tcp",), "fixed"),
     "nxd": RemoteProgram("nomachine", "NoMachine", ("4000/tcp", "4000/udp"), "any"),
     "nxserver.bin": RemoteProgram("nomachine", "NoMachine", ("4000/tcp", "4000/udp"), "any"),
