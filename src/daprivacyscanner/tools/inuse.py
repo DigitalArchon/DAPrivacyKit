@@ -244,7 +244,7 @@ def parse_pw_dump(text: str) -> list[Stream]:
         if not cls.startswith("Stream/Input/"):
             continue
         client = _props(clients.get(p.get("client.id"), {}))
-        get = lambda k: _s(p.get(k)) or _s(client.get(k))  # noqa: E731
+        get = lambda k, p=p, client=client: _s(p.get(k)) or _s(client.get(k))  # noqa: E731
         binary = get("application.process.binary")
         app = get("application.name") or binary or _s(p.get("node.name")) or f"stream {nid}"
         sources = [nodes[s] for s in feeds.get(nid, []) if s in nodes]

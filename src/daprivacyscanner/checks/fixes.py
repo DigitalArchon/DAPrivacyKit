@@ -21,7 +21,7 @@ from ..fix import (COPYQ_IN_USE, ClearCommand, ClearInFile, Command, CopyQComman
                    guarded)
 from ..model import Outcome
 from . import Check, No, Scan
-from ._util import (children, chromium_dirs, chromium_in_use, files_under, holders, isdir, isfile, own_dir, processes,
+from ._util import (children, chromium_in_use, files_under, holders, isdir, isfile, own_dir, processes,
                     read_jsonc, read_text, skipped_link, through_link, thumbnail_entries, uri_path)
 
 
@@ -558,7 +558,7 @@ def shader_cache(check, scan, outcome):
         if busy and olds:
             skipped.append(f"Close {c.name} first.")
             continue
-        for root, t in olds.items():
+        for root in olds:
             files, _ = files_under(root)
             a.append(DeleteFiles(root, files, f"{c.name}'s shader cache", host.display(root), remove_root=True)
                      .unless(InUse(c.name, held=(c.own,))))

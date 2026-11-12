@@ -207,7 +207,8 @@ def chromium_basic_store(check, scan, outcome):
             # an installed launcher: a copy of the user's own, without the flag, takes its place in the menu
             local = paths.data_home / "applications" / f.name
             if not isfile(local):
-                actions.append(WriteFile(local, lambda old, t=read_text(host, f) or "": strip(t),
+                installed_text = read_text(host, f) or ""
+                actions.append(WriteFile(local, lambda old, t=installed_text: strip(t),
                                          f"Override the installed launcher {f.name} without --password-store=basic",
                                          host.display(local)))
     steps = [Step("Stop forcing the built-in key",
@@ -395,7 +396,7 @@ def plaintext_credentials(check, scan, outcome):
     from ..auth import CREDENTIAL_FILES
     host = scan.host
     chmods, found = [], []
-    for rel, label, holds_secret in CREDENTIAL_FILES:
+    for rel, _label, holds_secret in CREDENTIAL_FILES:
         p = host.home / rel
         text = read_text(host, p)
         if not text or not holds_secret(text):

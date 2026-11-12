@@ -583,7 +583,7 @@ def prepare_file(host: Host, path: Path, where: str, run: Callable = subprocess.
         raise TrialError(f"There isn't room for it {place['words'].lower()} ({place['free'] >> 20} MB free, about "
                          f"{need >> 20} MB needed)." + (" Choose the disk instead." if where == "memory" else ""))
     if place["noexec"]:
-        raise TrialError(f"Programs can't be run from that place here (it is mounted noexec)."
+        raise TrialError("Programs can't be run from that place here (it is mounted noexec)."
                          + (" Choose the disk instead." if where == "memory" else ""))
     tid, folder = _make(host, where)
     t = Trial(tid, folder, where, sub.kind, path.name, sub.what)
@@ -1539,9 +1539,9 @@ def start(host: Host, t: Trial, options: dict, spawn: Callable = subprocess.Pope
         from .browser import _install_command
         if eng.id == "flatpak":
             if not t.options["real_display"]:       # Flatpak gives it the X server's own socket: no Xephyr for it
-                raise TrialError(f"On X11, a Flatpak app is given this display, where it could read what every other "
-                                 f"window shows and what you type into them, and type into them itself, a terminal "
-                                 f"included. Tick that it may use this display, knowing that, to start it.")
+                raise TrialError("On X11, a Flatpak app is given this display, where it could read what every other "
+                                 "window shows and what you type into them, and type into them itself, a terminal "
+                                 "included. Tick that it may use this display, knowing that, to start it.")
         else:
             try:
                 t.options["nested"] = sandbox.own_display(host, disp, options.get("nested"), t.options["real_display"],

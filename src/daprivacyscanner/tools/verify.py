@@ -437,7 +437,7 @@ class KeySet:
         hit = K.pinned(self.projects, fpr, signer or fpr)
         if hit:
             return hit[0], hit[1], where, not hit[2]
-        for p, infos in self.key_files:
+        for _p, infos in self.key_files:
             for k in infos:
                 if k.fingerprint == fpr:
                     return None, (k.uids[0] if k.uids else ""), where, False
@@ -655,7 +655,7 @@ def check_minisign(host: Host, keyset: KeySet, sig: Path, data: Path) -> Signatu
 def _minisign_keyid(sig: Path) -> str:
     import base64
     try:
-        lines = sig.read_text(errors="replace").splitlines()
+        lines = sig.read_text(encoding="utf-8", errors="replace").splitlines()
         raw = base64.b64decode(lines[1].strip())
         return raw[2:10][::-1].hex().upper()
     except (OSError, IndexError, ValueError):

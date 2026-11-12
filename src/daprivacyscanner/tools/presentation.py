@@ -284,7 +284,7 @@ def _save(host: Host, data: dict) -> None:
     f = state_file(host)
     f.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     tmp = f.with_suffix(".tmp")
-    with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as out:
+    with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w", encoding="utf-8") as out:
         json.dump(data, out, indent=1)
     os.replace(tmp, f)
 

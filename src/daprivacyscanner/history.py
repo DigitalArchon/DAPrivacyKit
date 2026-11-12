@@ -40,7 +40,7 @@ def state_dir(paths: PathResolver) -> Path:
 
 def _load(path: Path) -> dict:
     try:
-        data = json.loads(path.read_text())
+        data = json.loads(path.read_text(encoding="utf-8"))
     except (FileNotFoundError, ValueError, OSError):
         return {}
     return data if isinstance(data, dict) else {}
@@ -55,7 +55,7 @@ def _load_to_change(path: Path) -> dict:
     log does: before, the next change saved itself over it, and every other accepted finding was gone without a word.
     One that can't be read at all (its permissions) raises: it isn't replaced either."""
     try:
-        data = json.loads(path.read_text())
+        data = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return {}
     except ValueError:
@@ -105,7 +105,7 @@ def write_json(path: Path, data: dict) -> None:
     # the file renamed into place could be cut short or hold both
     fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
     try:
-        with open(fd, "w") as f:
+        with open(fd, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=1)
             # on the disk before it replaces the old one: after a crash or a power cut the file is the old one or the
             # new one, never an empty one (a rename can reach the disk before the data it names)

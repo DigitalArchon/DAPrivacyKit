@@ -540,8 +540,9 @@ def boxes(check, scan, outcome):
         newer = True
         acts.append(CopyTree(cur.app, f / "app", f"{shown}/app", f"{cur.name}, as prepared for its trial, in place of "
                              "the copy in the Box now", replace=True))
-    if read_text(host, f / "box.json") != B.config_text(box):
-        acts.append(WriteFile(f / "box.json", lambda old, t=B.config_text(box): t, "Write the Box's settings (box.json)",
+    config = B.config_text(box)
+    if read_text(host, f / "box.json") != config:
+        acts.append(WriteFile(f / "box.json", lambda old, t=config: t, "Write the Box's settings (box.json)",
                               f"{shown}/box.json", 0o600))
     launcher = B.launcher_path(scan.paths.data_home, box.slug)
     text = B.launcher_text(box, command)

@@ -1422,7 +1422,8 @@ def _backup(ctx: "FixContext", name: str, data: bytes) -> Path:
 def _umask() -> int:
     """The process's umask, read without changing it (os.umask would, for every thread at once)."""
     try:
-        m = re.search(r"^Umask:\s*([0-7]+)", Path("/proc/self/status").read_text(), re.M)
+        m = re.search(r"^Umask:\s*([0-7]+)", Path("/proc/self/status").read_text(encoding="utf-8", errors="replace"),
+                      re.M)
     except OSError:
         m = None
     return int(m.group(1), 8) if m else 0o022
@@ -1831,7 +1832,7 @@ class DeleteFiles(Action):
             try:
                 total += f.lstat().st_size
                 if self.whole and f.is_dir() and not f.is_symlink():
-                    for d, dirs, names in os.walk(f, followlinks=False):
+                    for d, _dirs, names in os.walk(f, followlinks=False):
                         total += sum(os.lstat(os.path.join(d, n)).st_size for n in names)
             except OSError:
                 pass
@@ -2259,7 +2260,7 @@ def apply_plan(plan: FixPlan, host: Host, log: "UndoLog", confirmed_irreversible
         for a in plan.actions:
             failed_at = a
             record(records + [a.under_way()])
-            rec, ran = _doing(lambda: a.apply(ctx))
+            rec, ran = _doing(lambda a=a: a.apply(ctx))
             if ran and not rec.get("ran"):
                 rec["ran"] = ran
             records.append(rec)
@@ -2307,7 +2308,7 @@ def _roll_back(records: list[dict], ctx: FixContext) -> list[str]:
                           "access is given, from the helper's own record of its changes.")
             continue
         try:
-            res, ran = _doing(lambda: ACTION_KINDS[rec["kind"]].revert(rec, ctx, force=True))
+            res, ran = _doing(lambda rec=rec: ACTION_KINDS[rec["kind"]].revert(rec, ctx, force=True))
         except Exception as e2:  # noqa: BLE001 - one step that can't be put back doesn't stop the others
             res, ran = RevertResult(False, str(e2) if isinstance(e2, FixError) else f"{type(e2).__name__}: {e2}"), []
         if rec["kind"] in IRREVERSIBLE_KINDS:
@@ -2386,7 +2387,7 @@ def revert_entry(entry: dict, host: Host, log: "UndoLog", force: bool = False) -
                                                "in it"))
             continue
         try:
-            res, ran = _doing(lambda: ACTION_KINDS[rec["kind"]].revert(rec, ctx, force))
+            res, ran = _doing(lambda rec=rec: ACTION_KINDS[rec["kind"]].revert(rec, ctx, force))
         except Exception as e:  # noqa: BLE001 - one step failing doesn't stop the others
             res, ran = RevertResult(False, str(e) if isinstance(e, FixError) else f"{type(e).__name__}: {e}"), []
         rec["reverted"] = res.ok

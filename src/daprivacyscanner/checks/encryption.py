@@ -220,7 +220,7 @@ class SwapUnencrypted(Check):
             return unknown("Couldn't list block devices (lsblk) to check where swap lives.")
         ev, bad, unsure = [], [], []
         devices = _devices(scan) or []
-        for name, kind, size in swaps:
+        for name, kind, _size in swaps:
             if name.startswith("/dev/zram"):
                 backing = zram_backing(scan.host, name)
                 if backing is None:

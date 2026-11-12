@@ -235,11 +235,11 @@ def alive(host: Host, wanted: list[str]) -> int:
     try:
         for folder, dirs, files in os.walk(base):
             if any(fnmatch.fnmatchcase(os.path.basename(folder), u) for u in wanted) and "cgroup.procs" in files:
-                with open(os.path.join(folder, "cgroup.procs")) as f:
+                with open(os.path.join(folder, "cgroup.procs"), encoding="ascii") as f:
                     count += len(f.read().split())
                 for sub, _d, subfiles in os.walk(folder):
                     if sub != folder and "cgroup.procs" in subfiles:
-                        with open(os.path.join(sub, "cgroup.procs")) as f:
+                        with open(os.path.join(sub, "cgroup.procs"), encoding="ascii") as f:
                             count += len(f.read().split())
                 dirs[:] = []
     except OSError:

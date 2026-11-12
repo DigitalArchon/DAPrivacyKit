@@ -1152,7 +1152,7 @@ def tunnel_dns_outside(host: Host, tunnels: list[str], vpns: list[str]) -> list[
     is asked by the LAN, not through the tunnel."""
     from ..vpn import tunnel_resolvers
     out = []
-    for link, servers in tunnel_resolvers(host, tunnels).items():
+    for servers in tunnel_resolvers(host, tunnels).values():
         for a in servers:
             via = route_link(host, a.split("%")[0])
             if via is not None and via not in vpns and via != "lo":

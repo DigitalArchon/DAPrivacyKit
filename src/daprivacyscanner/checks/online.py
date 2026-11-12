@@ -24,7 +24,7 @@ from . import Check, Scan, register
 from .network import local_roots  # noqa: F401 (the guide imports it from here too)
 from .kernel import (DNF5_NO_RUNTIME, dnf5_away_from_home, dnf_security, is_dnf5, kernel_restart,
                      no_pass_when_unsupported, package_names, updates_outcome)
-from ._util import absent, children, failed, installed, passed, unknown, warned
+from ._util import absent, failed, installed, passed, unknown, warned
 
 
 class OnlineCheck(Check):

@@ -529,7 +529,7 @@ class HistoryRetention(ProfileCheck):
             kept = f"kept for {days} days" if isinstance(days, int) else "kept (for how long, the browser decides)"
             for prof in profiles:
                 prefs = read_json(scan.host, prof / "Preferences") or {}
-                brave = (lambda what: dig(prefs, *BRAVE_ON_EXIT.format(what).split(".")) is True) \
+                brave = (lambda what, prefs=prefs: dig(prefs, *BRAVE_ON_EXIT.format(what).split(".")) is True) \
                     if d.browser.startswith("Brave") else (lambda what: False)  # noqa: E731
                 if policy.get("ClearBrowsingDataOnExitList"):
                     state = "cleared when it closes (policy)"

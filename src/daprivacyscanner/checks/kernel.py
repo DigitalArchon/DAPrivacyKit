@@ -17,7 +17,7 @@ from .. import ini
 from ..host import Unreadable
 from ..model import Evidence, Note, Outcome, Status
 from . import Check, Scan, register
-from ._util import absent, children, failed, installed, mounts, passed, read_text, sys_children, unknown, warned
+from ._util import absent, failed, installed, mounts, passed, read_text, sys_children, unknown, warned
 
 
 # The packages the running system's core is made of: the kernel (on Debian and Ubuntu a meta package

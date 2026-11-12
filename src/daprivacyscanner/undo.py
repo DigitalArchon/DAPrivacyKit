@@ -26,7 +26,7 @@ APPLYING, INTERRUPTED = "applying", "interrupted"
 
 def _boot_id() -> str:
     try:
-        return Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+        return Path("/proc/sys/kernel/random/boot_id").read_text(encoding="utf-8").strip()
     except OSError:
         return ""
 
@@ -123,7 +123,7 @@ class UndoLog:
         os.chmod(self.dir, 0o700)
         fd, tmp = tempfile.mkstemp(prefix=".undo.json.", suffix=".tmp", dir=self.dir)
         try:
-            with open(fd, "w") as f:
+            with open(fd, "w", encoding="utf-8") as f:
                 json.dump({"version": 1, "entries": entries, **self._kept}, f, indent=1)
                 f.flush()
                 os.fsync(f.fileno())

@@ -324,7 +324,8 @@ def record_run(host: Host, box: Box, t: trial.Trial) -> dict:
     d["hosts"] = (d["hosts"] + [h for h in dict.fromkeys(hashes) if h not in seen])[-HOSTS_KEPT:]
     path = _runs_file(host, box.slug)
     tmp = path.with_suffix(".tmp")
-    with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600), "w") as fh:
+    with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600), "w",
+              encoding="utf-8") as fh:
         json.dump(d, fh)
     os.replace(tmp, path)
     return run

@@ -17,6 +17,7 @@ for. Nothing here is kept: the caller holds the result in memory for as long as 
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import os
 import re
@@ -433,7 +434,7 @@ def find_records(records: list[list], w: Where, skip: Callable[[str], bool] = la
             if os.path.basename(os.path.dirname(path)) == GVFS_FOLDER:
                 hits = keys.hits(fd, os.path.basename(path))
             else:
-                hits = _scan(iter(lambda: os.read(fd, CHUNK), b""), forms, markers, lengths, longest)
+                hits = _scan(iter(functools.partial(os.read, fd, CHUNK), b""), forms, markers, lengths, longest)
                 if os.pread(fd, 8, 0) == b"\x89PNG\r\n\x1a\n":
                     for text in _png_texts(fd, st.st_size):
                         hits |= _scan((text,), forms, markers, lengths, longest)
@@ -532,7 +533,7 @@ class _GvfsKeys:
             self.keys[tree] = {key.encode("utf-8", "surrogateescape"): i for i, path in enumerate(self.wanted)
                                if (key := self._key(tree, path))}
         keys = self.keys[tree]
-        data = b"".join(iter(lambda: os.read(fd, CHUNK), b""))
+        data = b"".join(iter(functools.partial(os.read, fd, CHUNK), b""))
         return {keys[p] for p in (_gvfs_journal(data) if journal else _gvfs_tree(data)) if p in keys
                 and (self.fresh is None or _gvfs_key(self.salt, tree, p) in self.fresh)}
 
@@ -563,7 +564,7 @@ def gvfs_snapshot(folder: str, salt: bytes) -> dict:
             st = os.fstat(fd)
             if not stat.S_ISREG(st.st_mode) or st.st_size > SEARCH_FILE_MAX:
                 continue
-            data = b"".join(iter(lambda: os.read(fd, CHUNK), b""))
+            data = b"".join(iter(functools.partial(os.read, fd, CHUNK), b""))
         except OSError:
             continue
         finally:

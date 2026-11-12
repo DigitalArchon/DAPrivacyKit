@@ -229,7 +229,7 @@ def _block_device(device) -> str:
 def _system(argv: list[str]) -> tuple[int, str, str]:
     try:
         p = subprocess.run(argv, capture_output=True, text=True, errors="replace", timeout=COMMAND_TIMEOUT,
-                           stdin=subprocess.DEVNULL, env=_ENV)
+                           stdin=subprocess.DEVNULL, env=_ENV, check=False)
     except FileNotFoundError:
         return 127, "", f"{argv[0]} is not installed"
     except subprocess.TimeoutExpired:
@@ -1560,14 +1560,14 @@ def set_sysctl(args: dict) -> dict:
     if key not in SYSCTLS or not isinstance(value, str) or not SYSCTLS[key].fullmatch(value):
         raise Refused("that kernel setting isn't allowed")
     path = _check_path(_sysctl_path(key))
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         before = f.read().strip()
     if before == value:
         return {"changed": False}
     change = {"sysctl": {"key": key, "before": before, "after": value}}
     change_id = _journal_begin(change)
     try:
-        with open(path, "w") as f:
+        with open(path, "w", encoding="utf-8") as f:
             f.write(value)
     except OSError as e:
         _journal_close(change, "failed", failed=_why(e))
@@ -1916,7 +1916,7 @@ def _opensnitch_config(lines: list[str], values: dict) -> list[str]:
         pattern = re.compile(rf'^(\s*"{k}"\s*:\s*)("[^"]*"|-?[0-9]+)(\s*,?\s*)$')
         hits = [i for i, line in enumerate(out) if pattern.match(line)]
         if len(hits) == 1:
-            out[hits[0]] = pattern.sub(lambda m: m.group(1) + json.dumps(v) + m.group(3), out[hits[0]])
+            out[hits[0]] = pattern.sub(lambda m, v=v: m.group(1) + json.dumps(v) + m.group(3), out[hits[0]])
     try:
         edited = json.loads("\n".join(out))
     except ValueError:
@@ -2011,7 +2011,7 @@ def revert(args: dict) -> dict:
             conflicts.append(f"{svc['unit']} has been changed since")
     sc = change.get("sysctl")
     if sc:
-        with open(_check_path(_sysctl_path(sc["key"]))) as fh:
+        with open(_check_path(_sysctl_path(sc["key"])), encoding="utf-8") as fh:
             if fh.read().strip() not in (sc["after"], sc["before"]):
                 conflicts.append(f"{sc['key']} has been changed since")
     mount_unit, linked = change.get("mount_unit"), change.get("linked_unit")
@@ -2054,7 +2054,7 @@ def revert(args: dict) -> dict:
                                 s["before"][1] == "active") for s in services}, now)
         said += _units_said(services)
     if sc:
-        with open(_check_path(_sysctl_path(sc["key"])), "w") as fh:
+        with open(_check_path(_sysctl_path(sc["key"])), "w", encoding="utf-8") as fh:
             fh.write(sc["before"])
         _did(["sysctl", "-w", f"{sc['key']}={sc['before']}"])
         said.append(f"the kernel setting {sc['key']} back to {sc['before']}")
@@ -3545,7 +3545,7 @@ def _trim_command(argv: list[str]) -> tuple[int, str, str]:
     """fstrim can take minutes on a large filesystem."""
     try:
         p = subprocess.run(argv, capture_output=True, text=True, errors="replace", timeout=900,
-                           stdin=subprocess.DEVNULL, env=_ENV)
+                           stdin=subprocess.DEVNULL, env=_ENV, check=False)
     except FileNotFoundError:
         return 127, "", f"{argv[0]} is not installed"
     except subprocess.TimeoutExpired:
@@ -5493,7 +5493,7 @@ def _journald_writes_to(prefix: str) -> bool:
         if not pid.isdigit():
             continue
         try:
-            with open(_p(f"/proc/{pid}/comm"), errors="replace") as f:     # any account can name its process anything
+            with open(_p(f"/proc/{pid}/comm"), encoding="utf-8", errors="replace") as f:     # any account can name its process anything
                 if f.read().strip() != "systemd-journal":
                     continue
             fds = os.listdir(_p(f"/proc/{pid}/fd"))
@@ -6693,7 +6693,7 @@ def _pkcheck(what: str) -> bool:
     try:
         p = subprocess.run(["pkcheck", "--action-id", SENSITIVE_ACTION, "--process", f"{pid},{start},{uid}",
                             "--allow-user-interaction", "--detail", "what", what], capture_output=True, text=True,
-                           errors="replace", timeout=CONSENT_WAIT, stdin=subprocess.DEVNULL, env=_ENV)
+                           errors="replace", timeout=CONSENT_WAIT, stdin=subprocess.DEVNULL, env=_ENV, check=False)
     except FileNotFoundError:
         raise Refused("pkcheck (polkit) isn't installed, so the helper can't ask for the password again") from None
     except subprocess.TimeoutExpired:
@@ -6950,7 +6950,7 @@ def _no_dumps() -> None:
     # what it holds (deleted files' names, a drive's identify data) never reaches a crash dump or the journal's record
     # of one: at a core size limit of 1 the kernel skips the dump altogether (the app's no_core_dumps, tested)
     try:
-        with open("/proc/self/coredump_filter", "w") as f:
+        with open("/proc/self/coredump_filter", "w", encoding="ascii") as f:
             f.write("0")
     except OSError:
         pass

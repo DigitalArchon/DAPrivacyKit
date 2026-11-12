@@ -286,7 +286,7 @@ class Redactor:
         out = json.loads(json.dumps(report))
         out["results"] = {k: self.result(v) for k, v in report.get("results", {}).items()}
         ctx = out.get("context", {})
-        for key, c in ctx.get("values", {}).items():
+        for c in ctx.get("values", {}).values():
             c["evidence"] = [self.evidence(e) for e in c.get("evidence", [])]
             c["note"] = self.text(c.get("note", ""))
             c["notes"] = [{**n, "text": self.text(n["text"])} for n in c.get("notes", [])]
