@@ -315,18 +315,19 @@ def test_both_browsers_innermost_sandboxes_get_them(host):
     lay, private = layout(host, B.BROWSERS["tor"])
     (private / "tor").mkdir(exist_ok=True)
     argv = S.tor_argv(host, lay, private / "tor", disp, False, False, etc, "GATE")
-    inner = json.loads(argv[-1])["inner"]
-    assert ("/run/identity/swaps", "/proc/swaps") in pairs(inner, "--ro-bind") and "/proc/bus" in inner
-    assert "/proc/bus" not in argv[:argv.index("--")]                # never the outer one: its /proc stays whole
+    cfg = json.loads(argv[-1])
+    for part in ("browser", "tor"):                 # tor's too: nothing in it mounts a /proc, and it is on the network
+        assert (str(etc["swaps"]), "/proc/swaps") in pairs(cfg[part], "--ro-bind") and "/proc/bus" in cfg[part]
+    assert "/proc/driver" in cfg["tor"]             # tor never gets the card
 
 
 # ------------------------------------------------------------------ Tor Browser's outer sandbox held the X cookie
 
 def test_tor_and_its_bridges_run_in_a_sandbox_of_their_own(host):
-    """The outer sandbox holds what the inner one binds from it: the X server's socket and cookie (seen live: tor's
+    """The outer sandbox held what the inner one bound from it: the X server's socket and cookie (seen live: tor's
     /tmp held .X11-unix and .Xauthority), sound's socket, the browser's profile and Downloads. A pluggable transport
     parses what the network sends it (Snowflake: WebRTC from volunteers' proxies), and tor started its transports
-    there. tor now has a sandbox of its own: none of that, a PID namespace of its own."""
+    there. tor has a sandbox of its own: none of that, a PID namespace of its own, beside the browser's now."""
     installed(host, "tor")
     bwrap_ok(host)
     (host.root / "tmp/.X11-unix").mkdir(parents=True)
@@ -340,25 +341,35 @@ def test_tor_and_its_bridges_run_in_a_sandbox_of_their_own(host):
     (private / "tor").mkdir(exist_ok=True)
     disp = S.display(host, private, landlock=True)
     argv = S.tor_argv(host, lay, private / "tor", disp, True, True, S.identity_files(private / "etc", None), "GATE")
-    outer = argv[:argv.index("--")]
-    assert any(d == "/tmp/.Xauthority" for _, d in pairs(outer, "--ro-bind"))        # the outer one has them, for the inner
-    tor = json.loads(argv[-1])["tor"]
+    cfg = json.loads(argv[-1])
+    assert any(d == "/tmp/.Xauthority" for _, d in pairs(cfg["browser"], "--ro-bind"))      # the browser's has them
+    for part in ("tor", "gate"):
+        box = cfg[part][:cfg[part].index("--")]
+        assert box[:2] == ["bwrap", "--die-with-parent"] and "--unshare-all" in box and "--clearenv" in box
+        assert box[box.index("--cap-drop") + 1] == "ALL"
+        mounts = [x for flag in ("--bind", "--ro-bind") for pair in pairs(box, flag) for x in pair]
+        inside = [d for flag in ("--bind", "--ro-bind") for _, d in pairs(box, flag)]
+        assert not any(m.startswith(("/tmp/", "/run/user/1000/wayland", "/run/user/1000/pulse", "/home/user/.session"))
+                       for m in inside), inside
+        assert not any("Data/Browser" in m or "Downloads" in m or "Xauthority" in m or "wayland" in m
+                       or ".session" in m for m in mounts), mounts
+        assert {"/tmp", "/etc"} <= {box[i + 1] for i, a in enumerate(box) if a == "--tmpfs"}     # empty, its own
+    tor = cfg["tor"]
     box, command = tor[:tor.index("--")], tor[tor.index("--") + 1:]
-    assert box[:2] == ["bwrap", "--die-with-parent"] and "--unshare-pid" in box and "--unshare-user" in box
-    assert box[box.index("--cap-drop") + 1] == "ALL" and "--share-net" not in box and "--unshare-net" not in box
-    mounts = [x for flag in ("--bind", "--ro-bind") for pair in pairs(box, flag) for x in pair]
-    assert not any(m.startswith(("/tmp/", "/run/user/1000/wayland", "/run/user/1000/pulse", "/home/user/.session"))
-                   or "Data/Browser" in m or "Downloads" in m for m in mounts), mounts
-    assert ("/home/user/tor-browser/Browser/TorBrowser/Tor",) * 2 in pairs(box, "--ro-bind")
-    assert ("/home/user/tor-browser/Browser/TorBrowser/Data/Tor",) * 2 in pairs(box, "--bind")
-    assert ("/run/user/1000/tor",) * 2 in pairs(box, "--bind") and ("/etc", "/etc") in pairs(box, "--ro-bind")
-    assert box[box.index("--tmpfs") + 1] == "/tmp" and box[box.index("--chdir") + 1] == "/home/user/tor-browser/Browser"
-    assert command[0].endswith("/TorBrowser/Tor/tor") and "__OwningControllerProcess" not in command
+    assert "--share-net" in box and "--share-net" not in cfg["gate"]             # tor's on the network, the gate's not
+    real = str(lay.folder)
+    assert (f"{real}/Browser/TorBrowser/Tor", "/home/user/tor-browser/Browser/TorBrowser/Tor") in pairs(box, "--ro-bind")
+    assert (f"{real}/Browser/TorBrowser/Data/Tor", "/home/user/tor-browser/Browser/TorBrowser/Data/Tor") in pairs(box, "--bind")
+    assert (str(private / "tor"), "/run/user/1000/tor") in pairs(box, "--bind") and ("/etc", "/etc") not in pairs(box, "--ro-bind")
+    assert box[box.index("--chdir") + 1] == "/home/user/tor-browser/Browser"
+    # Landlock's scopes for tor (it shares the computer's network), applied in its sandbox just before it runs
+    assert command[:4] == [S.PYTHON, "-I", "-c", S.LANDLOCK]
+    assert command[4].endswith("/TorBrowser/Tor/tor") and "__OwningControllerProcess" not in command
 
 
 def test_the_gate_stops_tor_over_its_control_port_so_it_saves_its_state(tmp_path):
     """In its own sandbox a signal to tor's bubblewrap would end tor at once (SIGKILL), unsaved: the gate asks tor
-    to halt over its control port, waits, and only then stops what is left."""
+    to halt over its control port and waits for it (its log's end); only then does the keeper stop what is left."""
     import socket
     import threading
     from daprivacyscanner.tools import torgate as G
@@ -366,33 +377,21 @@ def test_the_gate_stops_tor_over_its_control_port_so_it_saves_its_state(tmp_path
     srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     srv.bind(str(tmp_path / "tor-control"))
     srv.listen(1)
-
-    class Tor:
-        rc = None
-
-        def wait(self, timeout=None):
-            for _ in range(int((timeout or 1) * 20)):
-                if self.rc is not None:
-                    return self.rc
-                import time
-                time.sleep(0.05)
-            raise G.subprocess.TimeoutExpired("tor", timeout)
-
-        def poll(self):
-            return self.rc
-
-    tor = Tor()
+    halted = threading.Event()
 
     def control():
         c, _ = srv.accept()
         for line in G.lines(c):
             got.append(line.decode().strip())
             if got[-1] == "SIGNAL HALT":
-                tor.rc = 0
+                halted.set()
                 break
         c.close()
     threading.Thread(target=control, daemon=True).start()
-    G.halt(str(tmp_path / "tor-control"), b"\x01" * 32, tor, wait=5)
-    assert got == ["AUTHENTICATE " + "01" * 32, "SIGNAL HALT"] and tor.rc == 0
+    assert G.halt(str(tmp_path / "tor-control"), b"\x01" * 32, halted.wait, wait=5)
+    assert got == ["AUTHENTICATE " + "01" * 32, "SIGNAL HALT"]
     source = Path(G.__file__).read_text()
-    assert 'halt(cfg["upstream"], cookie, tor)' in source.split("rc = inner.wait()")[1]
+    gate, keeper = source.split("\ndef gate(")[1], source.split("\ndef keep(")[1].split("\ndef gate(")[0]
+    assert gate.index("halt(cfg[\"upstream\"], cookie") > gate.index("os.read(halt_fd")      # once the browser has ended
+    done = keeper.split("def done():")[1]
+    assert done.index("os.close(halt_w)") < done.index("p.wait(wait)") < done.index("stop(p, 5)")

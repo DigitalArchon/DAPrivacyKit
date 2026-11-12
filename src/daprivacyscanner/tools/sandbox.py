@@ -48,12 +48,13 @@ what no browser needs; the browser profile lets it make namespaces and chroot, s
 working (its content processes, tested, still have user namespaces of their own), never mount or setns.
 
 The network:
-- Tor Browser has none of its own. Two sandboxes, one inside the other: the outer one shares the
-  computer's network and runs tor (Tor Browser's own, from its folder, with its pluggable transports in
-  a sandbox of their own, without the display, sound or the browser's profile the outer one holds) and
-  a filter on tor's control port (tools/torgate.py, run by the host's python3); the inner one, with
-  only a loopback interface, runs the browser, which reaches tor through two Unix sockets: SOCKS, and
-  the filtered control port.
+- Tor Browser has none of its own. Three sandboxes side by side, each started by a keeper on the computer
+  (tools/torgate.py, run by the host's python3), never one inside another (Ubuntu's AppArmor profile for
+  bubblewrap refuses that: tor_argv): tor's shares the computer's network and runs tor (Tor Browser's own,
+  from its folder, with its pluggable transports), without the browser's display, sound or profile; the
+  gate's, with no network, runs a filter on tor's control port; the browser's, with only a loopback
+  interface, runs the browser, which reaches tor through two Unix sockets: SOCKS, and the filtered control
+  port.
   So a browser that was taken over can't connect around Tor (revealing the address), nor to services
   on this computer or the local network, nor to the session's abstract sockets (they belong to the
   network namespace), and the filter refuses anything that would change tor's settings (a proxy or a
@@ -242,7 +243,6 @@ ETC_APPS = ("dbus-1", "at-spi2", "xml", "magic", "magic.mime", "inputrc", "termi
             "arch-release", "SuSE-release", "kde4rc", "kderc", "ImageMagick-6", "ImageMagick-7", "libva.conf",
             "sensors3.conf", "libreoffice")
 UTC = ("/usr/share/zoneinfo/Etc/UTC", "/usr/share/zoneinfo/UTC")
-IDENTITY_IN = "/run/identity"           # in Tor Browser's outer sandbox: the sandbox's own files, for the inner one
 # /proc's files that say whose computer it is, covered in the innermost sandbox (proc_masks): the kernel command line
 # (the disks' UUIDs) and the boot id (the same for every session until a restart) by files of the sandbox's own; the
 # disks' names, sizes and models (/proc/partitions, /proc/scsi), and swap's file or device and its size (/proc/swaps)
@@ -281,10 +281,10 @@ os.execv(sys.argv[1], sys.argv[1:])
 # the browser's folder is left (by /proc/PID/exe: what else lingers, from /usr, isn't waited for), then ends
 # with the script's status.
 # STAY is the sandbox's PID 1 (--as-pid-1) and sets its own parent-death signal (prctl 1, SIGKILL) as it starts: Tor
-# Browser's inner sandbox must die with the gate (--die-with-parent), and under Ubuntu's AppArmor profile for bubblewrap
-# the exec into its unpriv_bwrap domain clears the signal bubblewrap set before it, so the browser ran on with tor gone
-# (found on Ubuntu 26.04 by the trial's fixes, 2026-10-17; trial.STAY does the same). For Mullvad Browser's sandbox,
-# whose bubblewrap only ends after STAY, it changes nothing.
+# Browser's sandbox must die with the keeper that holds tor's (--die-with-parent), and under Ubuntu's AppArmor profile for
+# bubblewrap the exec into its unpriv_bwrap domain clears the signal bubblewrap set before it, so the browser ran on with
+# tor gone (found on Ubuntu 26.04 by the trial's fixes, 2026-10-17; trial.STAY does the same). For Mullvad Browser's
+# sandbox, whose bubblewrap only ends after STAY, it changes nothing.
 # It also makes itself undumpable (prctl 4, 0) before it starts anything: it holds the start log as its stderr, which
 # bubblewrap gave it, and a dumpable process's /proc/PID/fd can be opened by anything of the same user in its PID
 # namespace, so a browser a website took over could have written into the log (through /proc/1/fd/2) what the app
@@ -420,6 +420,7 @@ def read_log(fd: int, limit: int = 4000) -> str:
 # writes (START_REASONS); the program's lines, where they help, are shown as its own output: quoted, one line, cut
 # short, with control characters and those that reorder or hide text shown as their codes (visible).
 START_REASONS = (("bwrap: ", "its sandbox couldn't be set up"),
+                 ("The browser's sandbox couldn't be started", "its sandbox couldn't be set up"),
                  ("pasta: ", "its network of its own (pasta) couldn't be set up"),
                  ("The local network could not be fenced off", "the local network couldn't be fenced off"),
                  ("The lookups' filter could not be set up", "the filter in front of its lookups couldn't be set up"),
@@ -593,7 +594,7 @@ def resolver(host: Host) -> str | None:
     return "\n".join(kept) + "\n" if any(k.startswith("nameserver") for k in kept) else None
 
 
-def _kept_argv(host: Host, kept: tuple[str, ...], inner: bool = False) -> list[str]:
+def _kept_argv(host: Host, kept: tuple[str, ...]) -> list[str]:
     """The entries of `kept` as the computer has them, for an /etc that is a tmpfs (etc_argv, app_etc): a missing one
     is left out; a link is kept as a link when what it points to is in the sandbox (/usr, /proc, or another kept
     entry), else the file it points to is bound in its place."""
@@ -605,7 +606,7 @@ def _kept_argv(host: Host, kept: tuple[str, ...], inner: bool = False) -> list[s
             if real.startswith(("/usr/", "/proc/")) or (real.startswith("/etc/") and real.split("/")[2] in kept):
                 argv += ["--symlink", os.readlink(p), f"/etc/{name}"]
             elif host.sys_path(real).exists():
-                argv += ["--ro-bind", f"/etc/{name}" if inner else real, f"/etc/{name}"]
+                argv += ["--ro-bind", real, f"/etc/{name}"]
         elif p.exists():
             argv += ["--ro-bind", f"/etc/{name}", f"/etc/{name}"]
     return argv
@@ -639,15 +640,14 @@ def app_etc(host: Host, files: dict[str, Path], resolv: bool, local_time: bool =
     return argv + ["--remount-ro", "/etc"]
 
 
-def etc_argv(host: Host, files: dict[str, Path], resolv: str | None, inner: bool = False) -> list[str]:
+def etc_argv(host: Host, files: dict[str, Path], resolv: str | None) -> list[str]:
     """The browser's /etc: a tmpfs with ETC_KEPT as the computer has them and ETC_OWN from `files`
     (identity_files), the clock on UTC, then made read-only. `resolv`: "own" (files["resolv.conf"]:
-    pasta's forwarder), "host" (the computer's resolver) or None (none: Tor Browser's inner sandbox,
-    which has no network to use one). `inner`: for the sandbox inside Tor Browser's outer one, every
-    file taken from the outer one's /etc."""
-    argv = ["--tmpfs", "/etc", *_kept_argv(host, ETC_KEPT, inner)]
+    pasta's forwarder), "host" (the computer's resolver: tor's sandbox) or None (none: Tor Browser's
+    sandbox and the gate's, which have no network to use one)."""
+    argv = ["--tmpfs", "/etc", *_kept_argv(host, ETC_KEPT)]
     for name in ETC_OWN:
-        argv += ["--ro-bind", f"/etc/{name}" if inner else str(files[name]), f"/etc/{name}"]
+        argv += ["--ro-bind", str(files[name]), f"/etc/{name}"]
     utc = next((z for z in UTC if host.sys_path(z).exists()), None)
     if utc:
         argv += ["--symlink", utc, "/etc/localtime"]
@@ -1440,24 +1440,22 @@ def _env(host: Host, disp: Display, with_sound: bool, extra: dict[str, str] | No
     return out
 
 
-def _desktop(disp: Display, snd: tuple[str, str] | None, inside: bool) -> list[str]:
-    """The display's and sound's sockets: from the computer, or (`inside`, for the inner sandbox)
-    from where the outer one put them."""
+def _desktop(disp: Display, snd: tuple[str, str] | None, inside: bool = False) -> list[str]:
+    """The display's and sound's sockets: from the computer, or (`inside`) from where they are already inside."""
     argv: list[str] = []
     for src, dst in disp.binds + ([snd] if snd else []):
         argv += ["--ro-bind", dst if inside else src, dst]
     return argv
 
 
-def _folder(lay: Layout, outer: bool, inside: bool) -> list[str]:
-    """The browser's folder read-only, its profile and Downloads writable; tor's data hidden from
-    the browser, writable for tor (`outer`). `inside`: binding from where the outer sandbox put it."""
-    src = lambda rel: f"{lay.inside}/{rel}" if inside else str(lay.folder / rel)   # noqa: E731
-    argv = ["--ro-bind", lay.inside if inside else str(lay.folder), lay.inside]
+def _folder(lay: Layout) -> list[str]:
+    """The browser's folder read-only, its profile and Downloads writable (each checked by browser.prepare: a folder
+    of the user's, reached without a link); tor's data hidden from the browser (tor's sandbox has it: tor_argv)."""
+    argv = ["--ro-bind", str(lay.folder), lay.inside]
     for rel in lay.writable:
-        argv += ["--bind", src(rel), f"{lay.inside}/{rel}"]
+        argv += ["--bind", str(lay.folder / rel), f"{lay.inside}/{rel}"]
     for rel in lay.hidden:
-        argv += ["--bind", str(lay.folder / rel), f"{lay.inside}/{rel}"] if outer else ["--tmpfs", f"{lay.inside}/{rel}"]
+        argv += ["--tmpfs", f"{lay.inside}/{rel}"]
     return argv
 
 
@@ -1488,9 +1486,9 @@ def browser_argv(host: Host, lay: Layout, disp: Display, with_sound: bool, landl
     a = [bwrap, *namespaces(True), *(filt.argv() if filt else []), *system(host, etc=False),
          *etc_argv(host, etc, "own" if "resolv.conf" in etc else "host"),
          *proc_masks(str(etc["cmdline"].parent), bool(gpu), host), *_gpu_argv(gpu)]
-    a += _folder(lay, outer=False, inside=False)
+    a += _folder(lay)
     a += ["--bind", str(lay.session), SESSION_IN, "--perms", "0700", "--dir", RUNTIME_IN]
-    a += _desktop(disp, sound(host) if with_sound else None, inside=False)
+    a += _desktop(disp, sound(host) if with_sound else None)
     a += _env(host, disp, with_sound, dict(lay.env), gpu=bool(gpu))
     a += ["--sync-fd", str(sync_fd)] if sync_fd is not None else []
     a += ["--as-pid-1"] if stay else []                 # STAY reaps: bubblewrap's own process stays out of sight
@@ -1514,67 +1512,91 @@ def gate_filter(profile: str) -> list[str]:
     return ["--seccomp", f"@SECCOMP:{profile}@"] if seccomp.supported() else []
 
 
+# Tor Browser's three sandboxes, side by side (tor_argv): what each is started from, and the names of its
+# folders inside. The tor folder (the app's, in the private folder) holds tor's sockets, its control cookie, the
+# torrc with the bridges, and status.json.
+TOR_DATA = "Browser/TorBrowser/Data/Tor"             # in the browser's folder: tor's state, hidden from the browser
+TOR_PROGRAMS = "Browser/TorBrowser/Tor"              # tor and its pluggable transports
+TOR_UPSTREAM = f"{TOR_DIR_IN}/tor-control"            # tor's own control port; the browser gets the gate's (CONTROL_IN)
+TOR_COOKIE = f"{TOR_DIR_IN}/control_auth_cookie"
+TOR_STALE = ("control", "socks", "tor-control", "control_auth_cookie")   # in the tor folder: left by an earlier run
+TOR_SOCKETS = ("socks", "control")                    # what the browser's sandbox gets of the tor folder
+
+
 def tor_argv(host: Host, lay: Layout, tor_dir: Path, disp: Display, with_sound: bool, landlock: bool,
              etc: dict[str, Path], gate: str, sync_fd: int | None = None, gpu: tuple[str, ...] = (),
-             filt: Filter | None = None) -> list[str]:
-    """Tor Browser's two sandboxes: the outer one, on the computer's network, runs `gate`
-    (tools/torgate.py's source) in the host's python3, which starts tor (in a sandbox of its own, inside the
-    outer one) and the control-port filter, then the inner sandbox, with no network, around the browser. `tor_dir` (in the app's private
-    folder) holds tor's sockets, its control cookie, the torrc with the bridges and the status. `etc`:
-    identity_files' files: the outer sandbox has the computer's resolver (tor and its pluggable transports
-    need it), the inner one none; the inner one, the innermost, has /proc's own files (proc_masks). `gpu`: the
-    graphics card's device files when the user allowed it, in both (the inner one binds them from the outer's /dev).
-    The inner sandbox's command is STAY, so the gate keeps tor for as long as a browser process runs, and it
-    dies with the gate (--die-with-parent: its init too, once its command is over): a browser is never left
-    running with tor gone. The system-call filters: `filt` the outer one's (nesting: the gate starts bubblewraps),
-    tor's strict, the browser's the browser profile, each stacked on the outer one's; the gate makes the inner
-    ones' descriptors from the programs in its configuration ("filters")."""
+             stage: Path | None = None) -> list[str]:
+    """Tor Browser's sandboxes, three side by side, and the keeper that starts them (`gate`, tools/torgate.py's
+    source, run by the computer's python3 outside any sandbox): tor's, on the computer's network; the gate's, the
+    control-port filter, with no network; and the browser's, with no network. They meet only through the Unix sockets
+    in `tor_dir` (the app's tor folder): tor's SOCKS and control ports, and the gate's filtered control port, which is
+    all the browser gets of them. Each is a bubblewrap the keeper starts itself, never one inside another: under
+    Ubuntu's AppArmor profile for bubblewrap (bwrap-userns-restrict) a bubblewrap started inside another runs without
+    capabilities, even in its own namespaces, and can't make them (Tor Browser didn't start at all on Ubuntu 26.04,
+    the kernel's log saying apparmor="DENIED" operation="capable" profile="unpriv_bwrap" capname="sys_admin"; found
+    on 2026-11-12). `etc`: identity_files' files: tor's sandbox has the computer's resolver (tor and its pluggable
+    transports need it), the other two none. `gpu`: the graphics card's device files, in the browser's sandbox only.
+    The browser's sandbox's command is STAY, so the keeper keeps tor for as long as a browser process runs; each
+    sandbox dies with the keeper (--die-with-parent), and the keeper ends the browser's when the gate's ends: a
+    browser is never left running with tor or its filter gone. The system-call filters: tor's and the gate's strict
+    (with --disable-userns), the browser's the browser profile; placeholders in the configuration, which the keeper
+    makes descriptors of from the programs in it ("filters"), with each bubblewrap's options sealed (--args) where its
+    own init is its sandbox's PID 1.
+    The browser's sandbox binds the two sockets from `stage` (a folder of the app's that no sandbox is given, beside
+    the tor folder: tor-sockets by default), where the keeper hard-links them once the gate says they are there, checks
+    that each is a socket of the user's (torgate.link_sockets): tor's sandbox can write in the tor folder, and a link
+    it put there in a socket's place would have had bubblewrap, which resolves a bind's source on the computer, bind
+    whatever it points to (a file in the home) into the browser's sandbox. Returns the keeper's command."""
     import json
     bwrap = _need(host, BWRAP)
     snd = sound(host) if with_sound else None
-    data = f"{lay.inside}/Browser/TorBrowser/Data/Tor"
-    programs = f"{lay.inside}/Browser/TorBrowser/Tor"
-    # tor and its pluggable transports in a sandbox of their own, inside the outer one (the review of 2026-10-17): the
-    # outer one holds what the inner one binds from it, the display's socket and X cookie, sound's socket, the
-    # browser's profile and Downloads, and sees the browser's processes, none of which tor needs; and a bridge's
-    # program parses what the network sends it (Snowflake's: WebRTC from volunteers' proxies). In tor's own: the
-    # system, the outer sandbox's /etc (the resolver, certificates), tor's programs read-only, its data and its
-    # sockets' folder; a PID namespace of its own, so it no longer watches the gate by its PID
-    # (__OwningControllerProcess): it dies with the gate (--die-with-parent), which stops it over its control port
-    # first (torgate.halt), so that it saves its state.
-    box = [bwrap, "--die-with-parent", "--unshare-user", "--unshare-pid", "--unshare-ipc", "--unshare-uts",
-           "--unshare-cgroup-try", "--new-session", "--cap-drop", "ALL", *gate_filter(seccomp.STRICT),
-           *system(host, etc=False),
-           "--ro-bind", "/etc", "/etc", "--ro-bind", programs, programs, "--bind", data, data,
-           "--bind", TOR_DIR_IN, TOR_DIR_IN, "--chdir", f"{lay.inside}/Browser", "--"]
-    tor = [*box, f"{programs}/tor", "--defaults-torrc", f"{data}/torrc-defaults",
-           "-f", f"{TOR_DIR_IN}/torrc", "DataDirectory", data, "ClientOnionAuthDir", f"{data}/onion-auth",
-           "GeoIPFile", f"{data}/geoip", "GeoIPv6File", f"{data}/geoip6",
-           "+__ControlPort", f"unix:{TOR_DIR_IN}/tor-control",
-           "+__SocksPort", f"unix:{SOCKS_IN} IPv6Traffic PreferIPv6 KeepAliveIsolateSOCKSAuth",
-           "CookieAuthentication", "1", "CookieAuthFile", f"{TOR_DIR_IN}/control_auth_cookie"]
-    inner = [bwrap, "--die-with-parent", *namespaces(False), *gate_filter(seccomp.BROWSER), *system(host, etc=False),
-             *etc_argv(host, etc, None, inner=True), *proc_masks(IDENTITY_IN, bool(gpu), host), *_gpu_argv(gpu)]
-    inner += _folder(lay, outer=False, inside=True)
-    inner += ["--bind", SESSION_IN, SESSION_IN, "--perms", "0700", "--dir", RUNTIME_IN,
-              "--ro-bind", SOCKS_IN, SOCKS_IN, "--ro-bind", CONTROL_IN, CONTROL_IN]
-    inner += _desktop(disp, snd, inside=True)
-    inner += _env(host, disp, with_sound, TOR_ENV, gpu=bool(gpu))
-    inner += ["--as-pid-1", "--chdir", f"{lay.inside}/{Path(lay.script).parent}", "--", *_program(lay, False)]
-    config = {"landlock": landlock, "tor": tor, "cwd": f"{lay.inside}/Browser",
-              "tor_env": {"HOME": HOME_IN, "PATH": "/usr/bin:/bin",
-                          "LD_LIBRARY_PATH": f"{lay.inside}/Browser/TorBrowser/Tor"},
-              "dir": TOR_DIR_IN, "upstream": f"{TOR_DIR_IN}/tor-control", "control": CONTROL_IN, "socks": SOCKS_IN,
-              "cookie": f"{TOR_DIR_IN}/control_auth_cookie", "status": f"{TOR_DIR_IN}/status.json", "inner": inner,
+    data, programs = f"{lay.inside}/{TOR_DATA}", f"{lay.inside}/{TOR_PROGRAMS}"
+    ids = str(etc["cmdline"].parent)
+    stage = stage or tor_dir.with_name(tor_dir.name + "-sockets")
+    # every part of the way opened without following a link (bind_source): the browser, run without the sandbox
+    # before, could have left one where tor's programs are
+    tor_programs, tor_data = bind_source(lay.folder, TOR_PROGRAMS), bind_source(lay.folder, TOR_DATA)
+    if tor_programs is None or tor_data is None:
+        raise SandboxError("Tor Browser's own tor isn't in its folder: set Tor Browser up again.")
+    # tor and its pluggable transports (the review of 2026-10-17): nothing of the browser's, its display's socket and X
+    # cookie, sound's socket, profile or Downloads, nor its processes, since a bridge's program parses what the network
+    # sends it (Snowflake's: WebRTC from volunteers' proxies). The system, an /etc of the sandbox's own with the
+    # computer's resolver, /proc's identifying files covered (the disks' UUIDs, the boot id), tor's programs read-only,
+    # its data and the tor folder; Landlock's scopes where the kernel has them (abstract Unix sockets, signals: it
+    # shares the computer's network). It dies with the keeper (--die-with-parent), which has the gate stop it over its
+    # control port first (torgate.halt), so that it saves its state.
+    tor_cmd = [f"{programs}/tor", "--defaults-torrc", f"{data}/torrc-defaults",
+               "-f", f"{TOR_DIR_IN}/torrc", "DataDirectory", data, "ClientOnionAuthDir", f"{data}/onion-auth",
+               "GeoIPFile", f"{data}/geoip", "GeoIPv6File", f"{data}/geoip6",
+               "+__ControlPort", f"unix:{TOR_UPSTREAM}",
+               "+__SocksPort", f"unix:{SOCKS_IN} IPv6Traffic PreferIPv6 KeepAliveIsolateSOCKSAuth",
+               "CookieAuthentication", "1", "CookieAuthFile", TOR_COOKIE]
+    tor = [bwrap, "--die-with-parent", *namespaces(True), *no_new_userns(host), *gate_filter(seccomp.STRICT),
+           *system(host, etc=False), *etc_argv(host, etc, "host"), *proc_masks(ids, False, host),
+           "--ro-bind", tor_programs, programs, "--bind", tor_data, data, "--bind", str(tor_dir), TOR_DIR_IN,
+           "--setenv", "HOME", HOME_IN, "--setenv", "PATH", "/usr/bin:/bin", "--setenv", "LD_LIBRARY_PATH", programs,
+           "--chdir", f"{lay.inside}/Browser", "--",
+           *([PYTHON, "-I", "-c", LANDLOCK] if landlock else []), *tor_cmd]
+    # the control-port filter: no network of its own (the sockets are reached by their paths), nothing but the tor
+    # folder; it reads tor's log from its stdin and says it is ready on its stdout (torgate.gate)
+    gate_cfg = {"role": "gate", "upstream": TOR_UPSTREAM, "control": CONTROL_IN, "socks": SOCKS_IN,
+                "cookie": TOR_COOKIE, "status": f"{TOR_DIR_IN}/status.json"}
+    gate_box = [bwrap, "--die-with-parent", *namespaces(False), *no_new_userns(host), *gate_filter(seccomp.STRICT),
+                *system(host, etc=False), *etc_argv(host, etc, None), "--bind", str(tor_dir), TOR_DIR_IN,
+                "--chdir", "/", "--", PYTHON, "-I", "-c", gate, json.dumps(gate_cfg)]
+    # the browser: no network (a loopback interface only), the two sockets bound read-only from where the keeper
+    # linked them
+    browser = [bwrap, "--die-with-parent", *namespaces(False), *gate_filter(seccomp.BROWSER), *system(host, etc=False),
+               *etc_argv(host, etc, None), *proc_masks(ids, bool(gpu), host), *_gpu_argv(gpu)]
+    browser += _folder(lay)
+    browser += ["--bind", str(lay.session), SESSION_IN, "--perms", "0700", "--dir", RUNTIME_IN,
+                "--ro-bind", str(stage / "socks"), SOCKS_IN, "--ro-bind", str(stage / "control"), CONTROL_IN]
+    browser += _desktop(disp, snd)
+    browser += _env(host, disp, with_sound, TOR_ENV, gpu=bool(gpu))
+    browser += ["--sync-fd", str(sync_fd)] if sync_fd is not None else []
+    browser += ["--as-pid-1", "--chdir", f"{lay.inside}/{Path(lay.script).parent}", "--", *_program(lay, False)]
+    config = {"role": "keeper", "tor": tor, "gate": gate_box, "browser": browser, "env": SPAWN_ENV, "sync": sync_fd,
+              "sockets": {"from": str(tor_dir), "to": str(stage), "names": list(TOR_SOCKETS)},
               "filters": {p: seccomp.program(p).hex() for p in (seccomp.STRICT, seccomp.BROWSER)}
               if seccomp.supported() else {}}
-    a = [bwrap, *namespaces(True), *(filt.argv() if filt else []), *system(host, etc=False), *etc_argv(host, etc, "host"),
-         *_gpu_argv(gpu)]
-    a += _folder(lay, outer=True, inside=False)
-    a += ["--bind", str(lay.session), SESSION_IN, "--perms", "0700", "--dir", RUNTIME_IN,
-          "--bind", str(tor_dir), TOR_DIR_IN, "--ro-bind", str(etc["cmdline"].parent), IDENTITY_IN]
-    a += _desktop(disp, snd, inside=False)
-    a += _env(host, disp, with_sound)
-    a += ["--sync-fd", str(sync_fd)] if sync_fd is not None else []
-    a += ["--chdir", f"{lay.inside}/Browser", "--", PYTHON, "-I", "-c", gate, json.dumps(config)]
-    return a
+    return [PYTHON, "-I", "-c", gate, json.dumps(config)]

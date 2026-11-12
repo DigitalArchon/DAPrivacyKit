@@ -53,7 +53,7 @@ def test_tor_browsers_inner_sandbox_too(host):  # noqa: F811
     etc = S.identity_files(private / "etc", None)
     lay = S.Layout(b.folder, folder, session, private, b.start, b.writable, b.hidden)
     argv = S.tor_argv(host, lay, private / "tor", disp, False, True, etc, "gate")
-    inner = json.loads(argv[-1])["inner"]
+    inner = json.loads(argv[-1])["browser"]
     assert "--as-pid-1" in inner[:inner.index("--")] and inner[inner.index("--") + 4] == S.STAY
 
 

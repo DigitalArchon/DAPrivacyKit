@@ -23,15 +23,17 @@ sandboxed program needs is refused:
 
 And by profile (PROFILES), what makes namespaces and mounts:
 - strict: no new namespaces of any kind (clone and unshare with a CLONE_NEW* flag), no mount, umount, pivot_root,
-  chroot or setns. For Xephyr's sandbox, the viewer's, tor's, the unpacking sandboxes and trials, which also get
-  bubblewrap's --disable-userns;
+  chroot or setns. For Xephyr's sandbox, the viewer's, tor's and Tor Browser's gate's, the unpacking sandboxes and
+  trials, which also get bubblewrap's --disable-userns;
 - browser: namespaces and chroot allowed, which Firefox's own sandbox (Tor and Mullvad Browser's, and Chromium's,
   in Electron apps) needs for its content processes; mount, pivot_root and setns still refused;
 - nesting: namespaces, mounts and pivot_root allowed as well, the new mount API too (bubblewrap 0.13 makes its binds
   read-only with mount_setattr and doesn't fall back: "Can't bind mount /usr on /usr: mount_setattr() failed",
-  tested on CachyOS), for a bubblewrap started inside the sandbox: Tor Browser's outer sandbox (the gate, which starts
-  tor's and the browser's sandboxes), and programs that start sandboxes of their own with bubblewrap (WebKitGTK's web
-  processes, glycin's image loaders, GNOME's thumbnailer).
+  tested on CachyOS), for a bubblewrap started inside the sandbox: programs that start sandboxes of their own with
+  bubblewrap (WebKitGTK's web processes, glycin's image loaders, GNOME's thumbnailer). Tor Browser's sandboxes no
+  longer need it: they are started side by side (sandbox.tor_argv), since under Ubuntu's AppArmor profile for
+  bubblewrap (bwrap-userns-restrict) a bubblewrap inside another gets no capabilities, whatever the filter allows,
+  and can't make its namespaces (tested on Ubuntu 26.04).
 Filters stack: what runs in a sandbox inside another is held to both.
 
 A namespace of its own still reaches some of what a user namespace opens up (traffic control through routing

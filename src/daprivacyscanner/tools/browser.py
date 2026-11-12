@@ -1391,7 +1391,8 @@ _LOCK = threading.Lock()
 # (STAY, which holds it, is undumpable: sandbox.STAY), so one of these says no website ever reached this copy. Without
 # STAY (no python3) bubblewrap's own init holds it, within the browser's reach: the log is then no proof (_start).
 NEVER_RAN = ("bwrap: ", "Landlock could not be applied", "A keyring of its own could not be made",
-             "tor couldn't be started", "tor didn't start", "pasta: ", "system-call filter couldn't be made",
+             "tor couldn't be started", "tor didn't start", "The browser's sandbox couldn't be started", "pasta: ",
+             "system-call filter couldn't be made",
              "The local network could not be fenced off", "The lookups' filter could not be set up")
 
 
@@ -1588,12 +1589,26 @@ def _start(host: Host, b: Browser, spawn: Callable, sandboxed: bool, with_sound:
                 except BaseException:
                     new.unlink(missing_ok=True)
                     raise
-                (tor_dir / "status.json").unlink(missing_ok=True)
+                # what an earlier run left: the gate waits for tor's sockets and cookie to appear, and tor starts
+                # beside it (sandbox.tor_argv), so these go first
+                for name in ("status.json", *sandbox.TOR_STALE):
+                    try:
+                        (tor_dir / name).unlink(missing_ok=True)
+                    except OSError:
+                        raise BrowserError(f"~/{DISK}'s folder for tor holds something the app didn't put there "
+                                           f"({name}). Close ~/{DISK} and set {b.name} up again.") from None
+                _dir(host, f"{b.folder}/{sandbox.TOR_DATA}/onion-auth")      # tor's keys for onion sites, if any
+                stage = _dir(host, f"{private.name}/tor-sockets")             # no sandbox is given it
                 etc = sandbox.identity_files(private / "etc", None)
                 gate = (Path(__file__).with_name("torgate.py")).read_text()
-                # the outer sandbox starts tor's and the browser's sandboxes: the nesting profile; theirs stack on it
-                filt = sandbox.make_filter(seccomp.NESTING)
-                argv = sandbox.tor_argv(host, lay, tor_dir, disp, with_sound, landlock, etc, gate, sync, devices, filt)
+                # three sandboxes side by side, each started by the keeper (outside any sandbox), so that none is a
+                # bubblewrap inside another, which Ubuntu's AppArmor profile for bubblewrap refuses; it makes their
+                # system-call filters itself, from the programs in its configuration
+                try:
+                    argv = sandbox.tor_argv(host, lay, tor_dir, disp, with_sound, landlock, etc, gate, sync, devices,
+                                            stage)
+                except sandbox.SandboxError as e:
+                    raise BrowserError(str(e)) from None
                 network = "tor"
             else:
                 pasta = sandbox.program(host, sandbox.PASTA) if sb["pasta"]["available"] and not disp.network else None
@@ -1614,7 +1629,8 @@ def _start(host: Host, b: Browser, spawn: Callable, sandboxed: bool, with_sound:
             how = {"sandboxed": True, "display": disp.kind, "landlock": landlock, "network": network,
                    "lan_blocked": network == "tor" or (network == "private" and sb["pasta"]["lan_blocked"]),
                    "lookups_filtered": network == "private" and sandbox.lookups_filtered(host, sb["pasta"]["lan_blocked"]),
-                   "filter": filt is not None and (filt.fd is not None or filt.file is not None),
+                   "filter": seccomp.supported() if network == "tor"     # the keeper makes Tor Browser's filters
+                   else filt is not None and (filt.fd is not None or filt.file is not None),
                    "wayland_context": context, "nested": xephyr is not None, "gpu": bool(devices)}
             short = _weaker(how, expect)
             if short:

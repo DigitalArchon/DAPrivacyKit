@@ -56,6 +56,7 @@ def installed(host, which):
     b = B.BROWSERS[which]
     (disk / b.folder / "Browser/TorBrowser/Data/Browser").mkdir(parents=True)
     (disk / b.folder / "Browser/TorBrowser/Data/Tor").mkdir(parents=True)
+    (disk / b.folder / "Browser/TorBrowser/Tor").mkdir(parents=True)
     (disk / b.folder / b.start).write_text("#!/bin/sh\n")
     B.record_release(host, b, disk / f"{b.folder}-linux-x86_64-15.0.24.tar.xz", "download")   # as set up today
     return disk
@@ -298,7 +299,7 @@ def test_opengl_draws_with_mesa_s_software_renderer(host):
 
 def test_the_graphics_drivers_keep_no_shader_cache_for_the_browser(host):
     """A cache a site can time links its visits (tor-browser#40054): both drivers' caches are off in every start,
-    with the graphics card or without it, in Tor Browser's inner sandbox, and without the sandbox, where a place the
+    with the graphics card or without it, in Tor Browser's sandbox, and without the sandbox, where a place the
     user chose for them (outside the RAM disk) isn't passed on."""
     off = {"__GL_SHADER_DISK_CACHE": "0", "MESA_SHADER_CACHE_DISABLE": "true"}
     assert S.NO_SHADER_CACHE == off
@@ -315,7 +316,7 @@ def test_the_graphics_drivers_keep_no_shader_cache_for_the_browser(host):
     installed(host, "tor")
     lay, private = layout(host, B.BROWSERS["tor"])
     (private / "tor").mkdir(exist_ok=True)
-    inner = json.loads(S.tor_argv(host, lay, private / "tor", disp, False, False, etc, "GATE", gpu=("/dev/nvidia0",))[-1])["inner"]
+    inner = json.loads(S.tor_argv(host, lay, private / "tor", disp, False, False, etc, "GATE", gpu=("/dev/nvidia0",))[-1])["browser"]
     assert {k: env_of(inner)[k] for k in off} == off
     host.environ.update({"__GL_SHADER_DISK_CACHE": "1", "__GL_SHADER_DISK_CACHE_PATH": "/home/alice/.nvcache",
                          "MESA_SHADER_CACHE_DIR": "/home/alice/.mesa", "MESA_GLSL_CACHE_DIR": "/home/alice/.glsl"})
@@ -349,15 +350,15 @@ def test_the_graphics_card_only_when_the_user_allows_it(host, monkeypatch):
     assert pairs(allowed, "--dev-bind") == [(d, d) for d in S.gpu(host)]
     assert allowed.index("--dev-bind") > allowed.index("--dev")                       # after the sandbox's own /dev
     assert not any(k in env_of(allowed) for k in S.software_gl(host))
-    # Tor Browser: in both sandboxes, the inner one binding them from the outer one's /dev
+    # Tor Browser: in the browser's sandbox only, never tor's or the gate's
     tor = B.BROWSERS["tor"]
     installed(host, "tor")
     lay, private = layout(host, tor)
     (private / "tor").mkdir(exist_ok=True)
-    argv = S.tor_argv(host, lay, private / "tor", disp, False, False, etc, "GATE", gpu=("/dev/nvidia0",))
-    inner = json.loads(argv[-1])["inner"]
-    assert ("/dev/nvidia0", "/dev/nvidia0") in pairs(argv, "--dev-bind") and pairs(inner, "--dev-bind") == [("/dev/nvidia0",) * 2]
-    assert "__GLX_VENDOR_LIBRARY_NAME" not in env_of(inner)
+    cfg = json.loads(S.tor_argv(host, lay, private / "tor", disp, False, False, etc, "GATE", gpu=("/dev/nvidia0",))[-1])
+    assert pairs(cfg["browser"], "--dev-bind") == [("/dev/nvidia0",) * 2]
+    assert "--dev-bind" not in cfg["tor"] and "--dev-bind" not in cfg["gate"]
+    assert "__GLX_VENDOR_LIBRARY_NAME" not in env_of(cfg["browser"])
     # the start: only when asked
     monkeypatch.setattr(B, "START_WAIT", 0.05)
     calls = []
@@ -368,12 +369,15 @@ def test_the_graphics_card_only_when_the_user_allows_it(host, monkeypatch):
 
 
 def test_tor_browser_s_three_sandboxes_get_their_system_call_filters(host):
-    """The outer one, the gate's, the nesting profile (it starts bubblewraps), given by the app; tor's strict and the
-    browser's the browser profile, stacked on it, from programs in the gate's configuration (the review of 2026-11-12)."""
+    """tor's and the gate's the strict profile, with bubblewrap's own --disable-userns, the browser's the browser
+    profile (Firefox's own sandbox makes namespaces), from programs in the keeper's configuration (the review of
+    2026-11-12). None is the nesting profile: no sandbox starts another now."""
     if not seccomp.supported():
         pytest.skip("x86-64")
     installed(host, "tor")
     bwrap_ok(host)
+    host.runner.handlers["bwrap"] = lambda argv: CommandResult(tuple(argv), 0, "--disable-userns" if "--help" in argv else "")
+    S._BWRAP_HELP.clear()
     wayland(host)
     identity_etc(host)
     b = B.BROWSERS["tor"]
@@ -381,16 +385,15 @@ def test_tor_browser_s_three_sandboxes_get_their_system_call_filters(host):
     disp = S.display(host, private, landlock=False)
     (private / "tor").mkdir()
     etc = S.identity_files(private / "etc", None)
-    f = S.make_filter(seccomp.NESTING)
-    try:
-        argv = S.tor_argv(host, lay, private / "tor", disp, False, False, etc, "GATE", filt=f)
-        assert argv[argv.index("--seccomp") + 1] == str(f.fd) and argv.index("--seccomp") < argv.index("--")
-    finally:
-        f.close()
+    argv = S.tor_argv(host, lay, private / "tor", disp, False, False, etc, "GATE")
+    assert argv[:4] == [S.PYTHON, "-I", "-c", "GATE"] and "--seccomp" not in argv      # the keeper: no sandbox
     cfg = json.loads(argv[-1])
-    assert cfg["tor"][cfg["tor"].index("--seccomp") + 1] == "@SECCOMP:strict@"
-    assert cfg["inner"][cfg["inner"].index("--seccomp") + 1] == "@SECCOMP:browser@"
+    for part, profile in (("tor", "strict"), ("gate", "strict"), ("browser", "browser")):
+        box = cfg[part][:cfg[part].index("--")]
+        assert box[box.index("--seccomp") + 1] == f"@SECCOMP:{profile}@"
+        assert ("--disable-userns" in box) is (profile == "strict")
     assert cfg["filters"] == {p: seccomp.program(p).hex() for p in (seccomp.STRICT, seccomp.BROWSER)}
+    S._BWRAP_HELP.clear()
 
 
 def test_tor_browser_has_no_network_but_tors(host):
@@ -406,45 +409,64 @@ def test_tor_browser_has_no_network_but_tors(host):
     etc = S.identity_files(private / "etc", None)
     argv = S.tor_argv(host, lay, tor_dir, disp, False, False, etc, "GATE")
     real = str(disk / "tor-browser")
-    # the outer sandbox: the computer's network, tor's data writable, the gate in the host's python3
-    assert argv[0] == "bwrap" and "--share-net" in argv
-    assert (f"{real}/Browser/TorBrowser/Data/Tor", "/home/user/tor-browser/Browser/TorBrowser/Data/Tor") in pairs(argv, "--bind")
-    assert (str(tor_dir), "/run/user/1000/tor") in pairs(argv, "--bind")
-    # its /etc: the computer's resolver (tor's pluggable transports look names up), the sandbox's identity
-    outer_ro = pairs(argv, "--ro-bind")
-    assert ("/run/systemd/resolve/stub-resolv.conf", "/etc/resolv.conf") in outer_ro and ("/etc", "/etc") not in outer_ro
-    assert (str(etc["passwd"]), "/etc/passwd") in outer_ro and (str(private / "etc"), "/run/identity") in outer_ro
-    assert "/proc/cmdline" not in argv[:argv.index("--")]      # the inner one masks it: masking here would stop its /proc
-    i = argv.index("--")
-    assert argv[i + 1:i + 5] == [S.PYTHON, "-I", "-c", "GATE"]
+    # the keeper, on the computer: the host's python3 with torgate's source, no sandbox of its own; it starts the
+    # three below itself, each the first bubblewrap (Ubuntu's AppArmor profile refuses one inside another)
+    assert argv[:4] == [S.PYTHON, "-I", "-c", "GATE"] and len(argv) == 5
     cfg = json.loads(argv[-1])
-    tor = cfg["tor"]
-    assert tor[0] == "bwrap" and tor[tor.index("--") + 1] == "/home/user/tor-browser/Browser/TorBrowser/Tor/tor"
-    assert "@PID@" not in tor and "__OwningControllerProcess" not in tor       # its own PID namespace: it dies with the gate
-    assert tor[tor.index("+__SocksPort") + 1].startswith("unix:/run/user/1000/tor/socks ")
-    assert tor[tor.index("+__ControlPort") + 1] == "unix:/run/user/1000/tor/tor-control"     # the filter's is "control"
-    assert cfg["control"] == "/run/user/1000/tor/control" and cfg["upstream"] == "/run/user/1000/tor/tor-control"
-    # the inner sandbox: no network at all, tor's data hidden, the two sockets only
-    inner = cfg["inner"]
-    assert inner[0] == "bwrap" and "--unshare-all" in inner and "--share-net" not in inner
-    assert ("/run/user/1000/tor/socks", "/run/user/1000/tor/socks") in pairs(inner, "--ro-bind")
-    assert ("/run/user/1000/tor/control", "/run/user/1000/tor/control") in pairs(inner, "--ro-bind")
+    assert cfg["role"] == "keeper" and cfg["env"] == S.SPAWN_ENV and cfg["sync"] is None
+    tor, gate, inner = cfg["tor"], cfg["gate"], cfg["browser"]
+    assert {box[0] for box in (tor, gate, inner)} == {"bwrap"}
+    # tor's: the computer's network, its data writable, its programs read-only, the tor folder; nothing of the browser's
+    assert "--share-net" in tor and tor[1] == "--die-with-parent"
+    assert (f"{real}/Browser/TorBrowser/Data/Tor", "/home/user/tor-browser/Browser/TorBrowser/Data/Tor") in pairs(tor, "--bind")
+    assert (f"{real}/Browser/TorBrowser/Tor", "/home/user/tor-browser/Browser/TorBrowser/Tor") in pairs(tor, "--ro-bind")
+    assert (str(tor_dir), "/run/user/1000/tor") in pairs(tor, "--bind")
+    assert not any(x in tor for x in ("/home/user/.session", "/run/user/1000/wayland-0", "--dev-bind"))
+    assert not any(d.startswith("/home/user/tor-browser/Browser/TorBrowser/Data/Browser") for _, d in pairs(tor, "--bind"))
+    # its /etc: the computer's resolver (tor's pluggable transports look names up), the sandbox's identity; /proc's
+    # identifying files covered too (it is on the network, and nothing in it mounts a /proc)
+    tor_ro = pairs(tor, "--ro-bind")
+    assert ("/run/systemd/resolve/stub-resolv.conf", "/etc/resolv.conf") in tor_ro and ("/etc", "/etc") not in tor_ro
+    assert (str(etc["passwd"]), "/etc/passwd") in tor_ro and (str(etc["cmdline"]), "/proc/cmdline") in tor_ro
+    e = env_of(tor)
+    assert e["LD_LIBRARY_PATH"] == "/home/user/tor-browser/Browser/TorBrowser/Tor" and "--clearenv" in tor
+    t = tor[tor.index("--") + 1:]
+    assert t[0] == "/home/user/tor-browser/Browser/TorBrowser/Tor/tor"
+    assert "@PID@" not in t and "__OwningControllerProcess" not in t       # its own PID namespace: it dies with the keeper
+    assert t[t.index("+__SocksPort") + 1].startswith("unix:/run/user/1000/tor/socks ")
+    assert t[t.index("+__ControlPort") + 1] == "unix:/run/user/1000/tor/tor-control"     # the filter's is "control"
+    # the gate's: no network, only the tor folder; the filter's configuration names the sockets inside
+    assert "--unshare-all" in gate and "--share-net" not in gate and gate[1] == "--die-with-parent"
+    assert pairs(gate, "--bind") == [(str(tor_dir), "/run/user/1000/tor")]
+    assert not any(x.startswith(real) for x in gate) and not cfg["sockets"]["to"].startswith(real)
+    g = gate[gate.index("--") + 1:]
+    assert g[:4] == [S.PYTHON, "-I", "-c", "GATE"]
+    gcfg = json.loads(g[4])
+    assert gcfg["role"] == "gate" and gcfg["control"] == "/run/user/1000/tor/control"
+    assert gcfg["upstream"] == "/run/user/1000/tor/tor-control" and gcfg["cookie"] == "/run/user/1000/tor/control_auth_cookie"
+    # the browser's: no network at all, tor's data hidden, the two sockets only, from the folder no sandbox is given
+    stage = private / "tor-sockets"
+    assert cfg["sockets"] == {"from": str(tor_dir), "to": str(stage), "names": ["socks", "control"]}
+    assert "--unshare-all" in inner and "--share-net" not in inner
+    assert (str(stage / "socks"), "/run/user/1000/tor/socks") in pairs(inner, "--ro-bind")
+    assert (str(stage / "control"), "/run/user/1000/tor/control") in pairs(inner, "--ro-bind")
+    assert not any(str(tor_dir) == x or str(tor_dir) + "/" in x for x in inner)
     assert not any("tor-control" in x or "cookie" in x for x in inner)
-    assert inner[inner.index("--tmpfs", inner.index("/home/user/.session") - 3) + 1:].count(
-        "/home/user/tor-browser/Browser/TorBrowser/Data/Tor") == 1
-    assert ("/home/user/tor-browser", "/home/user/tor-browser") in pairs(inner, "--ro-bind")
+    hidden = "/home/user/tor-browser/Browser/TorBrowser/Data/Tor"
+    assert inner.count(hidden) == 1 and inner[inner.index(hidden) - 1] == "--tmpfs"     # tor's data covered
+    assert (real, "/home/user/tor-browser") in pairs(inner, "--ro-bind")
     assert [d for _, d in pairs(inner, "--bind")] == ["/home/user/tor-browser/Browser/TorBrowser/Data/Browser",
                                                       "/home/user/tor-browser/Browser/Downloads", "/home/user/.session"]
-    assert ("/run/user/1000/wayland-0", "/run/user/1000/wayland-0") in pairs(inner, "--ro-bind")
-    # its /etc from the outer one's, with no resolver at all (it has no network); /proc's own files
+    assert ("/run/user/1000/wayland-0" in [d for _, d in pairs(inner, "--ro-bind")])
+    # its /etc of its own, with no resolver at all (it has no network); /proc's own files
     inner_ro = pairs(inner, "--ro-bind")
-    assert ("/etc/passwd", "/etc/passwd") in inner_ro and ("/etc/ld.so.cache", "/etc/ld.so.cache") in inner_ro
+    assert (str(etc["passwd"]), "/etc/passwd") in inner_ro and ("/etc/ld.so.cache", "/etc/ld.so.cache") in inner_ro
     assert not any("resolv" in x for x in inner) and ("/etc", "/etc") not in inner_ro
-    assert ("/run/identity/cmdline", "/proc/cmdline") in inner_ro and ("/run/identity/boot_id", "/proc/sys/kernel/random/boot_id") in inner_ro
-    # its command lasts as long as the browser (the gate stops tor when it ends), and it dies with the gate
+    assert (str(etc["cmdline"]), "/proc/cmdline") in inner_ro and (str(etc["boot_id"]), "/proc/sys/kernel/random/boot_id") in inner_ro
+    # its command lasts as long as the browser (the keeper has the gate stop tor when it ends); it dies with the keeper
     n = inner.index("--")
     assert inner[n + 1:n + 6] == [S.PYTHON, "-I", "-c", S.STAY, "/home/user/tor-browser"] and inner[n + 6:n + 9] == S.QUIET
-    assert inner[1] == "--die-with-parent" and "--die-with-parent" not in argv[:argv.index("--")]
+    assert inner[1] == "--die-with-parent" and "--as-pid-1" in inner
     e = env_of(inner)
     assert e["TOR_SKIP_LAUNCH"] == "1" and e["TOR_SOCKS_IPC_PATH"] == "/run/user/1000/tor/socks"
     assert e["TOR_CONTROL_IPC_PATH"] == "/run/user/1000/tor/control" and "TOR_CONTROL_PASSWD" not in e
@@ -581,12 +603,14 @@ def test_tor_browser_starts_its_gate(host, monkeypatch):
     calls = []
     how = B.start(host, B.BROWSERS["tor"], spawn=spawner(calls))
     [(argv, kw)] = calls
-    # first a new, empty session keyring (on the computer), then the outer sandbox and its gate
-    assert argv[:4] == [S.PYTHON, "-I", "-c", S.KEYRING] and argv[4] == "bwrap"
-    sandboxed = argv[4:]
-    assert how["network"] == "tor" and sandboxed[sandboxed.index("-c") + 1] == (Path(B.__file__).with_name("torgate.py")).read_text()
+    # first a new, empty session keyring (on the computer), then the keeper, which starts the three sandboxes
+    assert argv[:4] == [S.PYTHON, "-I", "-c", S.KEYRING]
+    assert how["network"] == "tor" and argv[4:8] == [S.PYTHON, "-I", "-c", (Path(B.__file__).with_name("torgate.py")).read_text()]
+    assert json.loads(argv[8])["role"] == "keeper" and how["filter"] is seccomp.supported()
     assert (disk / ".tor-browser-app/tor/torrc").read_text().startswith("# Written by DA Privacy Kit")
     assert oct(os.stat(disk / ".tor-browser-app/tor").st_mode & 0o777) == "0o700"
+    assert (disk / ".tor-browser-app/tor-sockets").is_dir()                   # where the keeper links the sockets
+    assert (disk / "tor-browser/Browser/TorBrowser/Data/Tor/onion-auth").is_dir()
 
 
 def test_nothing_tors_sandbox_puts_in_its_folder_holds_the_app(host, monkeypatch):

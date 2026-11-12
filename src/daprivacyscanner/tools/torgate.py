@@ -1,29 +1,44 @@
-"""Tor Browser's gate (docs/TECHNICAL.md, Tools; tools/sandbox.py): runs inside the outer sandbox, the one on
-the computer's network, as the host's `python3 -I -c <this file's source> <config>`. Standard library
-only, and nothing of the app's imported: the AppImage that started it may be gone by the time the
-browser closes. It:
+"""Tor Browser's keeper and gate (docs/TECHNICAL.md, Tools; tools/sandbox.py), run by the host's
+`python3 -I -c <this file's source> <config>`. Standard library only, and nothing of the app's imported: the
+AppImage that started it may be gone by the time the browser closes. One file, two parts (the config's "role"):
 
-1. applies Landlock's scopes (abstract Unix sockets, signals) when the kernel has them;
-2. starts tor, Tor Browser's own, in a sandbox of its own (sandbox.tor_argv: none of the display, sound or
-   the browser's profile the outer one holds), with its SOCKS and control ports as Unix sockets in the outer
-   sandbox's tor folder, and follows its log for the bootstrap status (written to status.json, which
-   the app shows: Tor Browser's own Connect page is off when it doesn't start tor);
-3. listens on the browser's control socket and filters what goes to tor's: what Tor Browser needs to
+The keeper runs on the computer, outside any sandbox, and starts three sandboxes side by side (sandbox.tor_argv):
+tor's, on the computer's network; the gate's, with no network; the browser's, with no network. They meet only
+through the Unix sockets in the app's tor folder: tor's SOCKS and control ports, and the gate's filtered control
+port, which is all the browser's sandbox gets of them. Side by side, not one inside another, because each must be
+the first bubblewrap: under Ubuntu's AppArmor profile for bubblewrap (bwrap-userns-restrict, on in 24.10 and later)
+whatever a bubblewrap starts runs in its unpriv_bwrap profile, without capabilities even in a namespace of its own,
+so a bubblewrap started inside one can't make its namespaces ("No permissions to create a new namespace", the
+kernel's apparmor="DENIED" operation="capable" profile="unpriv_bwrap" capname="sys_admin": Tor Browser's sandbox
+couldn't start there at all, found on Ubuntu 26.04 on 2026-11-12). The keeper:
+
+1. starts the gate's sandbox, then tor's, tor's log going to the gate (a pipe: the keeper reads none of it);
+2. waits until the gate says tor is up and its filter listening (a line on another pipe), then starts the
+   browser's sandbox; it reads nothing else of any of them, only their exit statuses;
+3. waits for the browser's sandbox, whose command (sandbox.STAY) lasts until no browser process is left, also when
+   the browser restarts itself as a new process; then tells the gate to stop tor (by closing a pipe), and ends
+   whatever is left. Each sandbox dies with the keeper (--die-with-parent), and the browser's with the gate: a
+   browser is never left running with tor or its filter gone.
+
+The gate runs in its sandbox, with no network and nothing of the browser's (its display, sound, profile or
+processes), only the tor folder:
+
+1. follows tor's log (its stdin) for the bootstrap status (written to status.json, which the app shows: Tor
+   Browser's own Connect page is off when it doesn't start tor);
+2. listens on the browser's control socket and filters what goes to tor's: what Tor Browser needs to
    show circuits, ask for a new identity and keep onion-site keys passes; anything that would change
    tor's settings (a proxy or a bridge of the browser's choosing would make tor reveal the address) is
    refused with 510. The browser authenticates to the filter with anything; the filter authenticates
    to tor with the cookie, which the browser never sees;
-4. runs the inner sandbox (the browser, with no network) and waits for it; then stops tor (halt: over
-   its control port, so that it saves its state). The inner
-   sandbox's command (sandbox.STAY) lasts until no browser process is left, also when the browser restarts
-   itself as a new process, and the sandbox dies with this gate (--die-with-parent).
+3. once told the browser has ended, stops tor (halt: over its control port, so that it saves its state).
 
-Messages for the user (why it couldn't start) go to stderr, which is the start log in the app's
-private folder; tor's own log is kept in memory, its last lines only."""
+Messages for the user (why it couldn't start) go to stderr, which is the start log, a memory file of the app's;
+tor's own log is kept in memory, its last lines only."""
 
 import json
 import os
 import re
+import select
 import signal
 import socket
 import subprocess
@@ -33,6 +48,7 @@ import time
 
 NO_FILTER = "The sandbox's system-call filter couldn't be made"     # browser.NEVER_RAN knows it: before the browser ran
 WAIT_FOR_TOR = 60                   # seconds for tor to open its sockets
+READY_MARK = b"ready\n"             # the gate to the keeper: tor's sockets are there and the filter listens
 MAX_LINE = 65536
 MAX_CONNECTIONS = 16                # the browser opens one or two control connections; a flood is refused
 
@@ -290,9 +306,10 @@ class Status:
             pass
 
 
-def follow(tor, status, tail):
-    """tor's log: the bootstrap progress into the status, warnings kept as the last problem."""
-    for raw in tor.stdout:
+def follow(log, status, tail):
+    """tor's log (its output, as lines of bytes): the bootstrap progress into the status, warnings kept as the last
+    problem; "stopped" once it ends, as tor's output closes when tor has."""
+    for raw in log:
         line = raw.decode("utf-8", "replace").strip()
         tail.append(line)
         del tail[:-6]
@@ -305,33 +322,20 @@ def follow(tor, status, tail):
     status.update(state="stopped")
 
 
-def apply_landlock():
-    import ctypes
-    libc = ctypes.CDLL(None, use_errno=True)
-
-    class Attr(ctypes.Structure):
-        _fields_ = [("fs", ctypes.c_uint64), ("net", ctypes.c_uint64), ("scoped", ctypes.c_uint64)]
-    a = Attr(0, 0, 3)
-    fd = libc.syscall(444, ctypes.byref(a), ctypes.sizeof(a), 0)
-    if fd < 0 or libc.prctl(38, 1, 0, 0, 0) or libc.syscall(446, fd, 0):
-        sys.exit("Landlock could not be applied (%d)" % ctypes.get_errno())
-
-
-def halt(upstream, cookie, tor, wait=10):
-    """tor asked to exit cleanly over its control port (SIGNAL HALT: as SIGTERM, it saves its state first) and
-    waited for, then stopped if it hasn't: it runs in a sandbox of its own (sandbox.tor_argv), whose bubblewrap a
-    signal ends at once, taking tor with it unsaved."""
+def halt(upstream, cookie, ended, wait=10):
+    """tor asked to exit cleanly over its control port (SIGNAL HALT: as SIGTERM, it saves its state first), and
+    waited for: `ended(timeout)` says whether it has (the gate: its log's end). Only then does the keeper end what is
+    left of tor's sandbox, since a signal to its bubblewrap ends tor at once, unsaved. Whether it ended."""
     up = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
         up.settimeout(5)
         up.connect(upstream)
         up.sendall(b"AUTHENTICATE " + cookie.hex().encode() + b"\r\nSIGNAL HALT\r\n")
-        tor.wait(wait)
-    except (OSError, subprocess.TimeoutExpired):
-        pass
+        return ended(wait)
+    except OSError:
+        return ended(0)
     finally:
         up.close()
-    stop(tor)
 
 
 def stop(proc, wait=10):
@@ -345,9 +349,9 @@ def stop(proc, wait=10):
 
 
 def ender(proc, wait=5):
-    """The gate's SIGTERM handler: the inner sandbox is told to stop, and killed `wait` seconds later if it hasn't.
-    Signals only: the main thread is in proc.wait(), and a second wait here, on the lock that one holds, waited for
-    ever (the gate hung on SIGTERM, found in the review of 2026-10-17 on Mint); that wait returns once it has ended."""
+    """The keeper's SIGTERM handler: the browser's sandbox is told to stop, and killed `wait` seconds later if it
+    hasn't. Signals only: a wait here, on the lock a wait in the main thread holds, waited for ever (the gate hung on
+    SIGTERM, found in the review of 2026-10-17 on Mint)."""
     def end(signum, frame):
         try:
             proc.send_signal(signal.SIGTERM)
@@ -392,6 +396,24 @@ def with_filters(argv, programs):
     return out, fds
 
 
+def seal(argv):
+    """`argv` (a bubblewrap's command) with its options, everything before "--", read from a memory file (--args N):
+    without --as-pid-1 bubblewrap's own init is the sandbox's PID 1, whose command line anything inside can read, and
+    these options name the folders bound in from the user's home (sandbox.sealed does the same). bubblewrap closes the
+    descriptor once it has read it. Returns (the command, the descriptor to pass, which the caller closes)."""
+    end = argv.index("--", 1)
+    fd = os.memfd_create("bwrap-args")
+    try:
+        data = b"".join(a.encode() + b"\0" for a in argv[1:end])
+        while data:
+            data = data[os.write(fd, data):]
+        os.lseek(fd, 0, os.SEEK_SET)
+    except OSError:
+        os.close(fd)
+        raise
+    return [argv[0], "--args", str(fd), *argv[end:]], fd
+
+
 def _close(fds):
     for fd in fds:
         try:
@@ -400,71 +422,227 @@ def _close(fds):
             pass
 
 
-def main(cfg):
-    if cfg.get("landlock"):
-        apply_landlock()
-    for p in (cfg["control"], cfg["socks"], cfg["upstream"], cfg["cookie"]):
-        try:
-            os.unlink(p)
-        except FileNotFoundError:
-            pass
-    status = Status(cfg["status"])
-    argv = [a.replace("@PID@", str(os.getpid())) for a in cfg["tor"]]
-    os.makedirs(argv[argv.index("ClientOnionAuthDir") + 1], mode=0o700, exist_ok=True)
-    tail = []
-    filters = cfg.get("filters") or {}
+# ------------------------------------------------------------------ the keeper, on the computer
+
+class Start(Exception):
+    """A sandbox couldn't be started: why, for the start log (browser.NEVER_RAN knows these: before the browser ran)."""
+
+
+def spawn(argv, filters, sealed, what, keep=(), **kw):
+    """One of the three sandboxes, started by the keeper itself, so that it is the first bubblewrap: its filter's
+    placeholder made a descriptor (with_filters), its options sealed where its init is its PID 1 (`sealed`), `keep`'s
+    descriptors passed on as well, and nothing else of the keeper's."""
+    fds = []
     try:
         argv, fds = with_filters(argv, filters)
+        if sealed:
+            argv, args = seal(argv)
+            fds.append(args)
     except (KeyError, ValueError, OSError):
-        status.update(state="failed", problem="")
-        sys.exit(NO_FILTER)
-    try:
-        tor = subprocess.Popen(argv, cwd=cfg["cwd"], env=cfg["tor_env"], stdin=subprocess.DEVNULL,
-                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, pass_fds=fds)
-    except OSError as e:
-        status.update(state="failed", problem="")
-        sys.exit(f"tor couldn't be started: {e.strerror or e}")
-    finally:
         _close(fds)
-    threading.Thread(target=follow, args=(tor, status, tail), daemon=True).start()
-    deadline = time.monotonic() + WAIT_FOR_TOR
-    while not all(os.path.exists(p) for p in (cfg["upstream"], cfg["socks"], cfg["cookie"])):
-        if tor.poll() is not None or time.monotonic() > deadline:
-            stop(tor)
-            time.sleep(0.2)
-            status.update(state="failed", problem=" / ".join(tail[-2:])[:300])
-            sys.exit("tor didn't start: " + (" / ".join(tail[-3:]) or f"exit status {tor.returncode}"))
-        time.sleep(0.1)
-    time.sleep(0.1)
-    with open(cfg["cookie"], "rb") as f:
-        cookie = f.read()
-    TOR_VERSION[0] = tor_version(cfg["upstream"], cookie) or TOR_VERSION[0]
-    srv = listen(cfg["control"], cfg["upstream"], cookie)
+        raise Start(NO_FILTER) from None
     try:
-        inner_argv, fds = with_filters(cfg["inner"], filters)
-    except (KeyError, ValueError, OSError):
-        halt(cfg["upstream"], cookie, tor)
-        status.update(state="stopped")
-        sys.exit(NO_FILTER)
-    try:
-        inner = subprocess.Popen(inner_argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, pass_fds=fds)
+        return subprocess.Popen(argv, cwd="/", pass_fds=(*fds, *keep), **kw)
+    except OSError as e:
+        raise Start(f"{what} couldn't be started: {e.strerror or e}") from None
     finally:
         _close(fds)
 
-    end = ender(inner, 5)
+
+def ready(fd, timeout):
+    """The gate's word that tor is up and its filter listens (READY_MARK), within `timeout` seconds: whether it came.
+    Nothing else of what the gate writes is read, and at most that line."""
+    deadline, got = time.monotonic() + timeout, b""
+    while len(got) < len(READY_MARK):
+        left = deadline - time.monotonic()
+        if left <= 0 or not select.select([fd], [], [], left)[0]:
+            return False
+        chunk = os.read(fd, len(READY_MARK) - len(got))
+        if not chunk:
+            return False
+        got += chunk
+    return got == READY_MARK
+
+
+def link_sockets(spec):
+    """tor's SOCKS socket and the gate's control socket, hard-linked from the tor folder into a folder of the app's
+    that no sandbox is given (`spec`: {"from", "to", "names"}), each checked there to be a socket of the user's; the
+    browser's sandbox binds them from there. tor's sandbox can write in the tor folder: a link it left in a socket's
+    place would have had bubblewrap, which resolves a bind's source on the computer, bind what it points to (a file
+    in the home) into the browser's sandbox. A hard link of a link is a link (linkat without AT_SYMLINK_FOLLOW), and in
+    the app's folder nothing can swap it between the check and the bind. Raises Start."""
+    import stat
+    flags = os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    src = dst = None
+    try:
+        src, dst = os.open(spec["from"], flags), os.open(spec["to"], flags)
+        for name in spec["names"]:
+            try:
+                os.unlink(name, dir_fd=dst)
+            except FileNotFoundError:
+                pass
+            os.link(name, name, src_dir_fd=src, dst_dir_fd=dst, follow_symlinks=False)
+            st = os.stat(name, dir_fd=dst, follow_symlinks=False)
+            if not stat.S_ISSOCK(st.st_mode) or st.st_uid != os.getuid():
+                os.unlink(name, dir_fd=dst)
+                raise Start(f"tor didn't start: its {name} socket isn't a socket of yours")
+    except OSError as e:
+        raise Start(f"tor didn't start: its sockets couldn't be passed on ({e.strerror or e})") from None
+    finally:
+        _close(fd for fd in (src, dst) if fd is not None)
+
+
+def unlink_sockets(spec):
+    """The links link_sockets made, once the browser has ended."""
+    try:
+        dst = os.open(spec["to"], os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except OSError:
+        return
+    try:
+        for name in spec["names"]:
+            try:
+                os.unlink(name, dir_fd=dst)
+            except OSError:
+                pass
+    finally:
+        os.close(dst)
+
+
+def watch(browser, gate):
+    """Waits for the browser's sandbox to end, and returns its exit status. The gate ending first (the filter gone)
+    ends the browser too, as when the browser's sandbox was inside the gate's and died with it. By pidfds where the
+    kernel has them, else every half second."""
+    fds = {}
+    try:
+        for p in (browser, gate):
+            fds[os.pidfd_open(p.pid)] = p
+    except (AttributeError, OSError):
+        _close(fds)
+        fds = {}
+    told = False
+    try:
+        while browser.poll() is None:
+            if not told and gate.poll() is not None:
+                told = True
+                ender(browser, 5)(None, None)
+                for fd in [fd for fd, p in fds.items() if p is gate]:
+                    os.close(fd)
+                    del fds[fd]
+            if fds:
+                select.select(list(fds), [], [])
+            else:
+                time.sleep(0.5)
+    finally:
+        _close(fds)
+    return browser.returncode
+
+
+def keep(cfg):
+    filters, env, sync = cfg.get("filters") or {}, cfg.get("env") or {}, cfg.get("sync")
+    log_r, log_w = os.pipe()                # tor's output, to the gate
+    ready_r, ready_w = os.pipe()            # the gate's word that tor is up
+    halt_r, halt_w = os.pipe()              # closed by the keeper once the browser has ended: the gate stops tor
+    gate = tor = None
+    try:
+        gate = spawn([*cfg["gate"], str(halt_r)], filters, True, "tor", keep=(halt_r,), env=env, stdin=log_r,
+                     stdout=ready_w)
+        tor = spawn(cfg["tor"], filters, True, "tor", env=env, stdin=subprocess.DEVNULL, stdout=log_w,
+                    stderr=subprocess.STDOUT)
+    except Start as e:
+        for p in (tor, gate):
+            if p is not None:
+                stop(p, 5)
+        sys.exit(str(e))
+    finally:
+        _close((log_r, log_w, ready_w, halt_r))
+    if not ready(ready_r, cfg.get("wait", WAIT_FOR_TOR + 30)):
+        timed_out = gate.poll() is None
+        stop(tor, 5)
+        stop(gate, 5)
+        if timed_out:
+            sys.exit("tor didn't start in time")
+        sys.exit(gate.returncode if gate.returncode > 0 else 1)     # the gate said why, in the start log
+    os.close(ready_r)
+
+    def done():                             # the gate stops tor (over its control port) and waits for it
+        os.close(halt_w)
+        for p, wait in ((gate, 15), (tor, 5)):
+            try:
+                p.wait(wait)
+            except subprocess.TimeoutExpired:
+                pass
+            stop(p, 5)
+        unlink_sockets(cfg["sockets"])
+    try:
+        link_sockets(cfg["sockets"])
+        browser = spawn(cfg["browser"], filters, False, "The browser's sandbox", keep=() if sync is None else (sync,),
+                        env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
+    except Start as e:
+        done()
+        sys.exit(str(e))
+    finally:
+        if sync is not None:
+            _close((sync,))                 # bubblewrap holds it now, for as long as the browser's sandbox runs
+    end = ender(browser, 5)
     signal.signal(signal.SIGTERM, end)
     signal.signal(signal.SIGINT, end)
-    rc = inner.wait()
+    rc = watch(browser, gate)
+    done()
+    sys.exit(rc if rc >= 0 else 128 - rc)
+
+
+# ------------------------------------------------------------------ the gate, in its sandbox
+
+def gate(cfg, halt_fd):
+    status = Status(cfg["status"])
+    tail = []
+    follower = threading.Thread(target=follow, args=(sys.stdin.buffer, status, tail), daemon=True)
+    follower.start()
+    deadline = time.monotonic() + cfg.get("wait", WAIT_FOR_TOR)
+    while not all(os.path.exists(p) for p in (cfg["upstream"], cfg["socks"], cfg["cookie"])):
+        if not follower.is_alive() or time.monotonic() > deadline:
+            follower.join(0.5)
+            status.update(state="failed", problem=" / ".join(tail[-2:])[:300])
+            sys.exit("tor didn't start: " + (" / ".join(tail[-3:]) or "it ended"))
+        time.sleep(0.1)
+    time.sleep(0.1)
+    with open(cfg["cookie"], "rb") as f:
+        cookie = f.read(1024)
+    TOR_VERSION[0] = tor_version(cfg["upstream"], cookie) or TOR_VERSION[0]
+    srv = listen(cfg["control"], cfg["upstream"], cookie)
+    os.write(1, READY_MARK)
+    null = os.open(os.devnull, os.O_WRONLY)           # nothing more goes to the keeper
+    os.dup2(null, 1)
+    os.close(null)
+    while True:                                       # until the keeper closes it: the browser has ended
+        try:
+            if not os.read(halt_fd, 64):
+                break
+        except InterruptedError:
+            continue
+        except OSError:
+            break
     srv.close()
-    halt(cfg["upstream"], cookie, tor)
+    halt(cfg["upstream"], cookie, lambda t: (follower.join(t), not follower.is_alive())[1])
     for p in (cfg["control"], cfg["socks"], cfg["upstream"]):
         try:
             os.unlink(p)
         except OSError:
             pass
     status.update(state="stopped")
-    sys.exit(rc)
+
+
+def main(argv):
+    cfg = json.loads(argv[1])
+    if cfg.get("role") == "keeper":
+        keep(cfg)
+    elif cfg.get("role") == "gate":
+        gate(cfg, int(argv[2]))
+    else:
+        sys.exit("tor couldn't be started: the configuration names no role")
 
 
 if __name__ == "__main__":
-    main(json.loads(sys.argv[1]))
+    main(sys.argv)
+
+
