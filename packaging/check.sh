@@ -100,6 +100,8 @@ web_deps() {
 # hosts name their runtime folder as the machine would, and some of the code (tools/owner.py's locks) takes it as a
 # real path, so the suite wrote lock files into this computer's runtime folder and two suites at once refused each
 # other's starts. Without bubblewrap (or where AppArmor keeps it from making a namespace) the suites run one at a time.
+# The dev venv's suite runs as it would by hand, outside: in a user namespace other accounts' files belong to nobody,
+# and the one test that sets a POSIX ACL skips there.
 ISOLATE=()
 if command -v bwrap >/dev/null && bwrap --dev-bind / / --tmpfs "/run/user/$(id -u)" -- true 2>/dev/null; then
     ISOLATE=(bwrap --dev-bind / / --tmpfs "/run/user/$(id -u)" --)
@@ -107,6 +109,8 @@ fi
 
 suite() {  # step python [coverage]: the whole suite, the front-end test required, in a temporary folder of its own
     local step=$1 py=$2 cover=${3:-} tmp rc=0
+    local ISOLATE=("${ISOLATE[@]}")
+    [ "$step" != dev ] || ISOLATE=()
     tmp="$(mktemp -d)"
     local env=(PYTHONPATH="$ROOT/src" DAPRIVACYSCANNER_REQUIRE_NODE=1
                DAPRIVACYSCANNER_NODE_PATH="$ROOT/tests/web/node_modules" PYTHONDONTWRITEBYTECODE=1)
