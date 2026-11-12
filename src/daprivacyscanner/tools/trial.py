@@ -591,6 +591,9 @@ def prepare_file(host: Host, path: Path, where: str, run: Callable = subprocess.
             if r.returncode:
                 err = (r.stderr or b"").decode(errors="replace").strip().splitlines()
                 raise TrialError(f"{path.name} couldn't be unpacked: " + (err[-1][:300] if err else f"exit status {r.returncode}"))
+            if sub.kind == "deb":                       # said now, not only when it is started (package_part)
+                package_part(t, "usr")
+                package_part(t, "opt")
             t.candidates = candidates(t.app, sub.kind == "deb")
             if not t.candidates:
                 raise TrialError(f"Nothing in {path.name} looks like a program to start.")
@@ -865,6 +868,35 @@ OVERLAY = (r"""lower=$(printf %s "$2" | sed -e 's/\\/\\\\/g' -e 's/,/\\,/g' -e '
            '/usr" >&2; exit 1; }; shift 2; exec "$@"')
 
 
+LINKED_PART = ("This package's {name} folder is a link to somewhere outside the package, which no real package has: "
+               "given to the sandbox, it would have reached this computer's own files. It isn't started.")
+
+
+def package_part(t: "Trial", name: str) -> str | None:
+    """A .deb's usr or opt folder as a bind source (sandbox.bind_source), or None when the package has none. Where it
+    is a link that leads to a folder inside the package (in_tree), that folder; one that leads out of it, or to
+    something else, refuses the start (LINKED_PART)."""
+    if not os.path.lexists(t.app / name):
+        return None
+    real = in_tree(os.path.realpath(t.app), name)
+    try:
+        found = sandbox.bind_source(t.app, real) if real else None
+    except sandbox.SandboxError:
+        found = None
+    if found is None:
+        raise TrialError(LINKED_PART.format(name=name))
+    return found
+
+
+def own_part(base: Path, rel: str, what: str) -> str | None:
+    """One of the trial's or Box's own folders (its home, its program, a Box's Exchange) as a bind source: never through
+    a link (sandbox.bind_source). None when it isn't there."""
+    try:
+        return sandbox.bind_source(base, rel)
+    except sandbox.SandboxError:
+        raise TrialError(f"{what} isn't a plain folder (a link, perhaps), so it isn't given to the sandbox.") from None
+
+
 class Engine:
     """How a trial is run. `probe`: why it can't be here, or None. `command`: the whole command line."""
     id = ""
@@ -897,8 +929,13 @@ class Bubblewrap(Engine):
 
     def command(self, host: Host, t: Trial, parts: Parts) -> list[str]:
         bwrap = sandbox._need(host, sandbox.BWRAP)
-        deb_usr = t.kind == "deb" and (t.app / "usr").is_dir()
-        native = deb_usr and native_overlay(host)
+        # what the computer resolves (bind sources, the overlay's lower folder) never through a link in the tree
+        # (package_part, own_part): bubblewrap and the kernel follow it outside the sandbox
+        deb_usr = package_part(t, "usr") if t.kind == "deb" else None
+        native = bool(deb_usr) and native_overlay(host)
+        home = own_part(t.folder, "home", "The trial's home folder")
+        if home is None:
+            raise TrialError("The trial's home folder is missing.")
         # No /proc masks (sandbox.proc_masks), as the browser's innermost sandbox has: with a file of /proc covered the
         # kernel refuses a new /proc inside, and WebKitGTK's web processes and GNOME's thumbnailer mount one for their
         # own sandbox (tested on Fedora 44, GNOME 50: a WebKit page failed with "Can't mount proc"). The page says the
@@ -909,19 +946,24 @@ class Bubblewrap(Engine):
         a = [bwrap, "--die-with-parent", *sandbox.namespaces(bool(parts.pasta)), *sandbox.system(host),
              # bubblewrap 0.10 and later lay the package's /usr over the computer's themselves (the first source at
              # the bottom), before AppArmor's bwrap-userns-restrict profile takes the capabilities from what they start
-             *(["--overlay-src", "/usr", "--overlay-src", str(t.app / "usr"), "--ro-overlay", "/usr"] if native else []),
+             *(["--overlay-src", "/usr", "--overlay-src", deb_usr, "--ro-overlay", "/usr"] if native else []),
              *sandbox.identity(host, parts.etc, own_dns=bool(parts.pasta)), *sandbox._gpu_argv(parts.devices)]
-        a += ["--bind", str(t.home), sandbox.HOME_IN, "--perms", "0700", "--dir", sandbox.RUNTIME_IN]
+        a += ["--bind", home, sandbox.HOME_IN, "--perms", "0700", "--dir", sandbox.RUNTIME_IN]
         if t.kind == "deb":
-            if (t.app / "opt").is_dir():
-                a += ["--ro-bind", str(t.app / "opt"), "/opt"]
+            opt = package_part(t, "opt")
+            if opt:
+                a += ["--ro-bind", opt, "/opt"]
         else:
-            if t.app.is_dir():
-                a += ["--ro-bind", str(t.app), APP_IN]
+            app = own_part(t.folder, "app", "The program's folder")
+            if app:
+                a += ["--ro-bind", app, APP_IN]
             if t.host_opt:
                 a += ["--ro-bind", "/opt", "/opt"]
         for outside, inside in t.binds:
-            a += ["--bind", outside, inside]
+            src = own_part(Path(outside).parent, Path(outside).name, f"{Path(outside).name}")
+            if src is None:
+                raise TrialError(f"{Path(outside).name} is missing.")
+            a += ["--bind", src, inside]
         snd = sandbox.sound(host) if parts.sound else None
         a += sandbox._desktop(parts.disp, snd, inside=False)
         env = {"HOME": sandbox.HOME_IN, "USER": sandbox.USER_IN, "LOGNAME": sandbox.USER_IN,
@@ -943,7 +985,7 @@ class Bubblewrap(Engine):
             # namespace, lays the package's /usr over the computer's; the sandbox proper then starts inside that view
             a = [bwrap, "--die-with-parent", "--unshare-user", "--uid", "0", "--gid", "0", "--cap-add", "ALL",
                  "--dev-bind", "/", "/", "--", "/bin/sh", "-c", OVERLAY, "sh", sandbox._need(host, "mount"),
-                 str(t.app / "usr"), *a]
+                 deb_usr, *a]
         if not parts.pasta:
             return a
         fence = sandbox.fence(host, proxies=False)
@@ -987,6 +1029,9 @@ class Flatpak(Engine):
             a.append("--device=dri")
         if o.get("sound"):
             a.append("--socket=pulseaudio")
+        own_part(t.folder, "home", "The home folder")                   # Flatpak follows a link in --filesystem too
+        for outside, _inside in t.binds:
+            own_part(Path(outside).parent, Path(outside).name, Path(outside).name)
         a += [f"--filesystem={outside}" for outside, _inside in t.binds]
         return a + t.argv
 
@@ -1346,7 +1391,7 @@ def start(host: Host, t: Trial, options: dict, spawn: Callable = subprocess.Pope
     t.shared = [homewatch.HomeWatch(Path(outside)) for outside, _inside in t.binds]
     try:
         if eng.id == "bubblewrap":
-            if t.kind == "deb" and (t.app / "usr").is_dir():
+            if t.kind == "deb" and package_part(t, "usr"):
                 problem = probe_overlay(host)
                 if problem:
                     raise TrialError(f"This package can't be tried here: {problem}")

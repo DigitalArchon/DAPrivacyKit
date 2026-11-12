@@ -260,3 +260,23 @@ def test_a_copy_a_viewer_has_mapped_is_held(host):
                                f"{st.st_ino}                    /home/user/copy.pdf\n"
                                "7f02-7f03 r-xp 00000000 00:00 0 \n")
     assert (st.st_dev, st.st_ino) in V._held(host)
+
+
+def test_a_copy_replaced_by_a_link_isnt_given_to_the_viewer(host, tmp_path):
+    """The copy is bound by itself, never through a link in its place (sandbox.bind_source), as trials' and Boxes'
+    folders are (the review of 2026-11-12)."""
+    set_up(host)
+    own = tmp_path / "own"
+    own.mkdir()
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    (tmp_path / "elsewhere.pdf").write_bytes(PDF)
+    os.symlink(str(tmp_path / "elsewhere.pdf"), stage / "report.pdf")
+    v = V.Viewer("Document Viewer", "xreader.desktop", ["/usr/bin/xreader", "/home/user/report.pdf"])
+    disp = V.sandbox.Display("x11", [], {})
+    with pytest.raises(V.ViewError, match="isn't a plain file"):
+        V.argv(host, v, stage / "report.pdf", "report.pdf", own, disp)
+    os.unlink(stage / "report.pdf")
+    (stage / "report.pdf").write_bytes(PDF)
+    a = V.argv(host, v, stage / "report.pdf", "report.pdf", own, disp)
+    assert (str(stage / "report.pdf"), "/home/user/report.pdf") in pairs(a, "--ro-bind")

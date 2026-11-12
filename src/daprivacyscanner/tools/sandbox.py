@@ -96,6 +96,7 @@ from __future__ import annotations
 import ctypes
 import os
 import re
+import stat
 import struct
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -561,6 +562,47 @@ def identity(host: Host, files: dict[str, Path] | None, own_dns: bool) -> list[s
     elif t and t[0].startswith("/run/"):
         argv += ["--ro-bind-try", t[0], t[0]]
     return argv
+
+
+def bind_source(base: Path | str, rel: str = "", kind: str = "dir") -> str | None:
+    """A bind source taken from a tree the app didn't write itself (a package it unpacked, a Box's program, a folder a
+    sandbox can write to): `base` (the app's own folder) and `rel` inside it, each part opened in turn without
+    following a link (O_PATH | O_NOFOLLOW from the part before), so that every part is a real folder and the last a
+    folder, or a regular file for `kind` "file". bubblewrap, and the kernel for an overlay's lower folder, resolve a
+    bind source on the computer, outside any sandbox: a package's ./opt -> / gave the program the computer's own
+    files at /opt (the review of 2026-11-12). Links further inside the tree are left alone: they resolve inside the
+    sandbox. Returns the path; None when it isn't there; SandboxError when a part is a link or isn't a folder."""
+    base = Path(base)
+    parts = [p for p in rel.split("/") if p not in ("", ".")]
+    if ".." in parts:
+        raise SandboxError(f"{rel} leaves {base}.")
+    try:
+        fd = os.open(base, os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except FileNotFoundError:
+        return None
+    except OSError as e:
+        raise SandboxError(f"{base} isn't a folder of its own ({e.strerror}).") from None
+    try:
+        for i, part in enumerate(parts):
+            last = i == len(parts) - 1
+            try:
+                st = os.stat(part, dir_fd=fd, follow_symlinks=False)
+            except FileNotFoundError:
+                return None
+            if stat.S_ISLNK(st.st_mode):
+                raise SandboxError(f"{'/'.join(parts[:i + 1])} is a link.")
+            want = stat.S_ISREG if last and kind == "file" else stat.S_ISDIR
+            if not want(st.st_mode):
+                raise SandboxError(f"{'/'.join(parts[:i + 1])} isn't a {'file' if want is stat.S_ISREG else 'folder'}.")
+            if not last:
+                nfd = os.open(part, os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=fd)
+                os.close(fd)
+                fd = nfd
+        if not parts and kind == "file":
+            raise SandboxError(f"{base} isn't a file.")
+    finally:
+        os.close(fd)
+    return str(base.joinpath(*parts)) if parts else str(base)
 
 
 def namespaces(share_net: bool) -> list[str]:

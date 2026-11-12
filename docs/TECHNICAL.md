@@ -1804,6 +1804,21 @@ drive they came from (its model, serial, size and WWN, `retire.identity`): anoth
     overlay of the package's `usr` over `/usr`, then starts the sandbox proper inside that view; the package's
     `opt` is bound at `/opt`. Bubblewrap 0.9 (Mint 22.3) has no overlay option of its own; this needs none
     (`probe_overlay` tries it first). Tested with Ubuntu's `hello` and `galculator` packages.
+  - **Bind sources** (`sandbox.bind_source`, through `trial.package_part` and `trial.own_part`): bubblewrap, and the
+    kernel for an overlay's lower folder, resolve a bind source on the computer, outside any sandbox, and tarfile's
+    "tar" filter keeps members inside the folder but not where a link points. So a crafted .deb whose `./opt` was a
+    link to `/` (or `../../..`) had the computer's own files bound at `/opt`, the session bus's socket among them,
+    and one whose `./usr` was a link to the home laid the home over `/usr` (found in the review of 2026-11-12, both
+    ways of laying it over); a Box kept from such a trial copied the link and did the same at every run. Every bind
+    source from a tree the app didn't write itself (the package's `usr` and `opt`, the trial's or Box's `home`,
+    `app` and `Exchange`, View offline…'s copy) is opened part by part without following a link
+    (`O_PATH | O_NOFOLLOW`), each part a real folder and the last a folder (or, for the viewer's copy, a regular
+    file). A package's top-level folder linked to another folder inside the package is bound where it leads
+    (`in_tree`); one linked out of it is refused, once unpacked and again at every start (`LINKED_PART`). Links
+    further inside the tree are left as they are: they resolve inside the sandbox, which is what real packages
+    need (a package's `/usr/bin/x -> /opt/X/x`). Not `--ro-bind-fd`: under pasta, bubblewrap gets no descriptors
+    but its first three, and nothing but the app writes these trees while a trial runs, so a check as the command
+    is built is enough.
   - **A Flatpak app** (the `flatpak` engine) runs in Flatpak's own sandbox: `flatpak run --sandbox` drops what the
     app declares for itself, and the trial grants back the display, `--filesystem=home`, the filtered session
     bus (`--session-bus`: without it GTK 4 apps, which start their image loaders through a portal, stop at once:

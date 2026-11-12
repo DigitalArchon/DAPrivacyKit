@@ -634,3 +634,93 @@ def test_the_overlays_lower_folder_is_escaped_for_mount(tmp_path):
                        capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
     assert got.read_text().splitlines() == ["-t", "overlay", "overlay", "-o", "lowerdir=/x/a\\:b\\,c\\\\d:/usr", "/usr"]
+
+
+# ------------------------------------------------------------------ bind sources from an unpacked tree
+
+def test_a_bind_source_is_a_real_folder_at_every_part(tmp_path):
+    """sandbox.bind_source: what bubblewrap (and the kernel, for an overlay) resolve on the computer is never reached
+    through a link in a tree the app didn't write itself (the review of 2026-11-12)."""
+    (tmp_path / "base/a/b").mkdir(parents=True)
+    (tmp_path / "base/a/f").write_text("x")
+    (tmp_path / "elsewhere").mkdir()
+    os.symlink(str(tmp_path / "elsewhere"), tmp_path / "base/link")
+    os.symlink("a", tmp_path / "base/rel")
+    base = tmp_path / "base"
+    assert sandbox.bind_source(base, "a/b") == str(base / "a/b")
+    assert sandbox.bind_source(base, "a/f", kind="file") == str(base / "a/f")
+    assert sandbox.bind_source(base, "missing") is None and sandbox.bind_source(base) == str(base)
+    for rel, kind in (("link", "dir"), ("rel/b", "dir"), ("a/f", "dir"), ("a/b", "file"), ("a/../a", "dir")):
+        with pytest.raises(sandbox.SandboxError):
+            sandbox.bind_source(base, rel, kind=kind)
+    with pytest.raises(sandbox.SandboxError):
+        sandbox.bind_source(tmp_path / "base/link", "")             # the base itself is never a link
+
+
+@pytest.mark.parametrize("part, target", [("opt", "abs"), ("opt", "rel"), ("usr", "abs"), ("usr", "rel")])
+@pytest.mark.parametrize("native", [False, True])
+def test_a_packages_usr_or_opt_that_links_out_of_it_is_refused(host, tmp_path, monkeypatch, part, target, native):
+    """A .deb's top-level ./opt or ./usr linked out of the package (to /, to the home): bubblewrap bound what the link
+    led to on the computer at /opt, or the kernel laid it over /usr. Neither command is built now, in either way of
+    laying the package over /usr (bubblewrap's own overlay, or the first bubblewrap's mount)."""
+    monkeypatch.setattr(trial, "native_overlay", lambda h: native)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    t = a_trial(tmp_path, kind="deb", argv=["/usr/bin/foo"])
+    other = "usr" if part == "opt" else "opt"
+    (t.app / other / "bin").mkdir(parents=True)
+    os.symlink(str(outside) if target == "abs" else os.path.relpath(outside, t.app), t.app / part)
+    with pytest.raises(trial.TrialError, match="link to somewhere outside the package"):
+        trial.ENGINES["bubblewrap"].command(host, t, parts(host, tmp_path))
+    if part == "usr":
+        with pytest.raises(trial.TrialError):
+            trial.package_part(t, "usr")
+
+
+def test_a_real_package_keeps_its_links_inside_and_runs(host, tmp_path, monkeypatch):
+    """Links inside a package resolve inside the sandbox and are left as they are; a top-level folder linked to another
+    folder of the package is bound where it really is."""
+    monkeypatch.setattr(trial, "native_overlay", lambda h: True)
+    t = a_trial(tmp_path, kind="deb", argv=["/usr/bin/foo"])
+    for d in ("usr/bin", "usr/share/foo"):
+        (t.app / d).mkdir(parents=True)
+    os.symlink("/opt/Foo/foo", t.app / "usr/bin/foo")
+    os.symlink("usr/share/foo", t.app / "opt")
+    a = trial.ENGINES["bubblewrap"].command(host, t, parts(host, tmp_path))
+    assert (str(t.app / "usr/share/foo"), "/opt") in pairs(a, "--ro-bind")
+    assert a[a.index("--overlay-src") + 3] == str(t.app / "usr")
+
+
+def test_a_boxs_exchange_or_home_that_became_a_link_isnt_bound(host, tmp_path):
+    t = a_trial(tmp_path, argv=["/app/tool"])
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    os.symlink(str(elsewhere), tmp_path / "Exchange")
+    t.binds = [(str(tmp_path / "Exchange"), "/home/user/Exchange")]
+    with pytest.raises(trial.TrialError, match="isn't a plain folder"):
+        trial.ENGINES["bubblewrap"].command(host, t, parts(host, tmp_path))
+    t.binds = []
+    (t.folder / "home").rmdir()
+    os.symlink(str(elsewhere), t.folder / "home")
+    with pytest.raises(trial.TrialError, match="isn't a plain folder"):
+        trial.ENGINES["bubblewrap"].command(host, t, parts(host, tmp_path))
+
+
+def test_a_package_linked_out_of_itself_is_refused_once_unpacked(host, tmp_path):
+    """prepare_file says it before a program is chosen: the stand-in unpacker leaves ./opt linked out of the package,
+    as the real one did for a crafted .deb (tarfile's "tar" filter doesn't look at where links lead)."""
+    src = host.home / "Downloads/pkg.deb"
+    src.write_bytes(b"!<arch>\ndebian-binary   1700000000  0     0     100644  4         `\n2.0\n")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+
+    def unpacked(argv, **kw):
+        dest = Path(argv[argv.index("/out") - 1])
+        (dest / "usr/bin").mkdir(parents=True)
+        (dest / "usr/bin/foo").write_text("#!/bin/sh\n")
+        os.symlink(str(outside), dest / "opt")
+        return SimpleNamespace(returncode=0, stderr=b"")
+    (host.root / "usr/bin/bwrap").write_text("")
+    with pytest.raises(trial.TrialError, match="opt folder is a link"):
+        trial.prepare_file(host, src, "memory", run=unpacked)
+    assert not list((host.root / "run/user/1000").glob("daprivacyscanner-trial/*")), "nothing of it is left"

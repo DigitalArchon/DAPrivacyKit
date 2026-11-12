@@ -453,7 +453,13 @@ def argv(host: Host, v: Viewer, copy: Path, name_in: str, own: Path, disp: sandb
         a += ["--sync-fd", str(sync)]
     if v.opt:
         a += ["--ro-bind", "/opt", "/opt"]
-    a += ["--perms", "0700", "--dir", sandbox.RUNTIME_IN, "--ro-bind", str(copy), f"{sandbox.HOME_IN}/{name_in}"]
+    try:                                                # the copy itself, never a link in its place (sandbox.bind_source)
+        src = sandbox.bind_source(copy.parent, copy.name, kind="file")
+    except sandbox.SandboxError:
+        src = None
+    if src is None:
+        raise ViewError("The copy to open isn't a plain file any more, so it isn't opened.")
+    a += ["--perms", "0700", "--dir", sandbox.RUNTIME_IN, "--ro-bind", src, f"{sandbox.HOME_IN}/{name_in}"]
     for src, dst in disp.binds:
         a += ["--ro-bind", src, dst]
     env = {"HOME": sandbox.HOME_IN, "USER": sandbox.USER_IN, "LOGNAME": sandbox.USER_IN,
