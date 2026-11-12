@@ -1,0 +1,14 @@
+Global
+           Protocols: -LLMNR -mDNS -DNSOverTLS DNSSEC=no/unsupported
+    resolv.conf mode: stub
+Fallback DNS Servers: 192.0.2.10#dns.quad9.net 2001:db8::10#dns.quad9.net
+                      192.0.2.10#cloudflare-dns.com
+                      2001:db8::10#cloudflare-dns.com 192.0.2.10#dns.google
+                      2001:db8::10#dns.google
+
+Link 2 (enp1s0)
+    Current Scopes: DNS
+         Protocols: +DefaultRoute -LLMNR -mDNS -DNSOverTLS DNSSEC=no/unsupported
+Current DNS Server: 192.0.2.10
+       DNS Servers: 192.0.2.10
+     Default Route: yes

@@ -1,0 +1,2 @@
+FedoraWorkstation (default)
+  interfaces: enp1s0

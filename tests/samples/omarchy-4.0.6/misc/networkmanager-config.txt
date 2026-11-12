@@ -1,0 +1,25 @@
+# NetworkManager configuration: /etc/NetworkManager/NetworkManager.conf, /usr/lib/NetworkManager/conf.d/20-connectivity.conf, /etc/NetworkManager/conf.d/omarchy-wifi-powersave.conf
+
+[main]
+# plugins=keyfile
+# rc-manager=symlink
+# migrate-ifcfg-rh=false
+# auth-polkit=true
+# dhcp=internal
+# iwd-config-path=
+configure-and-quit=no
+
+[connectivity]
+uri=http://ping.archlinux.org/nm-check.txt
+
+[logging]
+# backend=journal
+# audit=true
+
+[device]
+# wifi.backend=wpa_supplicant
+
+[connection]
+wifi.powersave=2
+
+# no-auto-default file "/var/lib/NetworkManager/no-auto-default.state"

@@ -1,0 +1,309 @@
+{
+   "filesystems": [
+      {
+         "target": "/",
+         "source": "/dev/vda2",
+         "fstype": "ext4",
+         "options": "rw,relatime",
+         "children": [
+            {
+               "target": "/run",
+               "source": "tmpfs",
+               "fstype": "tmpfs",
+               "options": "rw,nosuid,nodev,size=1106644k,nr_inodes=819200,mode=755,inode64",
+               "children": [
+                  {
+                     "target": "/run/credentials/systemd-journald.service",
+                     "source": "none",
+                     "fstype": "tmpfs",
+                     "options": "ro,nosuid,nodev,noexec,relatime,nosymfollow,size=1024k,nr_inodes=1024,mode=700,inode64,noswap"
+                  },{
+                     "target": "/run/credentials/systemd-resolved.service",
+                     "source": "none",
+                     "fstype": "tmpfs",
+                     "options": "ro,nosuid,nodev,noexec,relatime,nosymfollow,size=1024k,nr_inodes=1024,mode=700,inode64,noswap"
+                  },{
+                     "target": "/run/snapd/ns",
+                     "source": "tmpfs[/snapd/ns]",
+                     "fstype": "tmpfs",
+                     "options": "rw,nosuid,nodev,size=1106644k,nr_inodes=819200,mode=755,inode64",
+                     "children": [
+                        {
+                           "target": "/run/snapd/ns/snapd-desktop-integration.mnt",
+                           "source": "nsfs[mnt:[4026532766]]",
+                           "fstype": "nsfs",
+                           "options": "rw"
+                        },{
+                           "target": "/run/snapd/ns/prompting-client.mnt",
+                           "source": "nsfs[mnt:[4026532767]]",
+                           "fstype": "nsfs",
+                           "options": "rw"
+                        },{
+                           "target": "/run/snapd/ns/firmware-updater.mnt",
+                           "source": "nsfs[mnt:[4026532658]]",
+                           "fstype": "nsfs",
+                           "options": "rw"
+                        },{
+                           "target": "/run/snapd/ns/firefox.mnt",
+                           "source": "nsfs[mnt:[4026532659]]",
+                           "fstype": "nsfs",
+                           "options": "rw"
+                        }
+                     ]
+                  },{
+                     "target": "/run/user/1000",
+                     "source": "tmpfs",
+                     "fstype": "tmpfs",
+                     "options": "rw,nosuid,nodev,relatime,size=553320k,nr_inodes=138330,mode=700,uid=1000,gid=1000,inode64",
+                     "children": [
+                        {
+                           "target": "/run/user/1000/doc",
+                           "source": "portal",
+                           "fstype": "fuse.portal",
+                           "options": "rw,nosuid,nodev,relatime,user_id=1000,group_id=1000"
+                        },{
+                           "target": "/run/user/1000/gvfs",
+                           "source": "gvfsd-fuse",
+                           "fstype": "fuse.gvfsd-fuse",
+                           "options": "rw,nosuid,nodev,relatime,user_id=1000,group_id=1000"
+                        }
+                     ]
+                  },{
+                     "target": "/run/firejail/dbus",
+                     "source": "tmpfs[/firejail/dbus]",
+                     "fstype": "tmpfs",
+                     "options": "rw,nosuid,nodev,noexec,size=1106644k,nr_inodes=819200,mode=755,inode64"
+                  },{
+                     "target": "/run/firejail/firejail.ro.dir",
+                     "source": "tmpfs[/firejail/firejail.ro.dir]",
+                     "fstype": "tmpfs",
+                     "options": "ro,nosuid,nodev,size=1106644k,nr_inodes=819200,mode=755,inode64"
+                  },{
+                     "target": "/run/firejail/firejail.ro.file",
+                     "source": "tmpfs[/firejail/firejail.ro.file]",
+                     "fstype": "tmpfs",
+                     "options": "ro,nosuid,nodev,size=1106644k,nr_inodes=819200,mode=755,inode64"
+                  }
+               ]
+            },{
+               "target": "/dev",
+               "source": "devtmpfs",
+               "fstype": "devtmpfs",
+               "options": "rw,nosuid,size=1723772k,nr_inodes=430943,mode=755,inode64",
+               "children": [
+                  {
+                     "target": "/dev/hugepages",
+                     "source": "hugetlbfs",
+                     "fstype": "hugetlbfs",
+                     "options": "rw,nosuid,nodev,relatime,pagesize=2M"
+                  },{
+                     "target": "/dev/mqueue",
+                     "source": "mqueue",
+                     "fstype": "mqueue",
+                     "options": "rw,nosuid,nodev,noexec,relatime"
+                  },{
+                     "target": "/dev/shm",
+                     "source": "tmpfs",
+                     "fstype": "tmpfs",
+                     "options": "rw,nosuid,nodev,inode64,usrquota"
+                  },{
+                     "target": "/dev/pts",
+                     "source": "devpts",
+                     "fstype": "devpts",
+                     "options": "rw,nosuid,noexec,relatime,gid=5,mode=600,ptmxmode=000"
+                  }
+               ]
+            },{
+               "target": "/snap/bare/5",
+               "source": "/dev/loop0",
+               "fstype": "squashfs",
+               "options": "ro,nodev,relatime,errors=continue,threads=single"
+            },{
+               "target": "/sys",
+               "source": "sysfs",
+               "fstype": "sysfs",
+               "options": "rw,nosuid,nodev,noexec,relatime",
+               "children": [
+                  {
+                     "target": "/sys/kernel/tracing",
+                     "source": "tracefs",
+                     "fstype": "tracefs",
+                     "options": "rw,nosuid,nodev,noexec,relatime"
+                  },{
+                     "target": "/sys/fs/fuse/connections",
+                     "source": "fusectl",
+                     "fstype": "fusectl",
+                     "options": "rw,nosuid,nodev,noexec,relatime"
+                  },{
+                     "target": "/sys/kernel/debug",
+                     "source": "debugfs",
+                     "fstype": "debugfs",
+                     "options": "rw,nosuid,nodev,noexec,relatime"
+                  },{
+                     "target": "/sys/kernel/security",
+                     "source": "securityfs",
+                     "fstype": "securityfs",
+                     "options": "rw,nosuid,nodev,noexec,relatime"
+                  },{
+                     "target": "/sys/fs/cgroup",
+                     "source": "cgroup2",
+                     "fstype": "cgroup2",
+                     "options": "rw,nosuid,nodev,noexec,relatime,nsdelegate,memory_recursiveprot,memory_hugetlb_accounting"
+                  },{
+                     "target": "/sys/fs/pstore",
+                     "source": "none",
+                     "fstype": "pstore",
+                     "options": "rw,nosuid,nodev,noexec,relatime"
+                  },{
+                     "target": "/sys/firmware/efi/efivars",
+                     "source": "efivarfs",
+                     "fstype": "efivarfs",
+                     "options": "rw,nosuid,nodev,noexec,relatime"
+                  },{
+                     "target": "/sys/fs/bpf",
+                     "source": "bpf",
+                     "fstype": "bpf",
+                     "options": "rw,nosuid,nodev,noexec,relatime,mode=700"
+                  },{
+                     "target": "/sys/kernel/config",
+                     "source": "configfs",
+                     "fstype": "configfs",
+                     "options": "rw,nosuid,nodev,noexec,relatime"
+                  }
+               ]
+            },{
+               "target": "/proc",
+               "source": "proc",
+               "fstype": "proc",
+               "options": "rw,nosuid,nodev,noexec,relatime",
+               "children": [
+                  {
+                     "target": "/proc/sys/fs/binfmt_misc",
+                     "source": "systemd-1",
+                     "fstype": "autofs",
+                     "options": "rw,relatime,fd=41,pgrp=1,timeout=0,minproto=5,maxproto=5,direct,pipe_ino=5884",
+                     "children": [
+                        {
+                           "target": "/proc/sys/fs/binfmt_misc",
+                           "source": "binfmt_misc",
+                           "fstype": "binfmt_misc",
+                           "options": "rw,nosuid,nodev,noexec,relatime"
+                        }
+                     ]
+                  }
+               ]
+            },{
+               "target": "/boot/efi",
+               "source": "/dev/vda1",
+               "fstype": "vfat",
+               "options": "rw,relatime,fmask=0022,dmask=0022,codepage=437,iocharset=iso8859-1,shortname=mixed,errors=remount-ro"
+            },{
+               "target": "/snap/core24/2124",
+               "source": "/dev/loop2",
+               "fstype": "squashfs",
+               "options": "ro,nodev,relatime,errors=continue,threads=single"
+            },{
+               "target": "/snap/desktop-security-center/151",
+               "source": "/dev/loop3",
+               "fstype": "squashfs",
+               "options": "ro,nodev,relatime,errors=continue,threads=single"
+            },{
+               "target": "/snap/desktop-security-center/206",
+               "source": "/dev/loop4",
+               "fstype": "squashfs",
+               "options": "ro,nodev,relatime,errors=continue,threads=single"
+            },{
+               "target": "/snap/firefox/8763",
+               "source": "/dev/loop6",
+               "fstype": "squashfs",
+               "options": "ro,nodev,relatime,errors=continue,threads=single"
+            },{
+               "target": "/snap/firefox/9113",
+               "source": "/dev/loop5",
+               "fstype": "squashfs",
+               "options": "ro,nodev,relatime,errors=continue,threads=single"
+            },{
+               "target": "/snap/firmware-updater/226",
+               "source": "/dev/loop7",
+               "fstype": "squashfs",
+               "options": "ro,nodev,relatime,errors=continue,threads=single"
+            },{
+               "target": "/snap/firmware-updater/262",
+               "source": "/dev/loop8",
+               "fstype": "squashfs",
+               "options": "ro,nodev,relatime,errors=continue,threads=single"
+            },{
+               "target": "/snap/gtk-common-themes/1535",
+               "source": "/dev/loop9",
+               "fstype": "squashfs",
+               "options": "ro,nodev,relatime,errors=continue,threads=single"
+            },{
+               "target": "/snap/hwctl/123",
+               "source": "/dev/loop11",
+               "fstype": "squashfs",
+               "options": "ro,nodev,relatime,errors=continue,threads=single"
+            },{
+               "target": "/snap/hwctl/131",
+               "source": "/dev/loop10",
+               "fstype": "squashfs",
+               "options": "ro,nodev,relatime,errors=continue,threads=single"
+            },{
+               "target": "/snap/prompting-client/222",
+               "source": "/dev/loop12",
+               "fstype": "squashfs",
+               "options": "ro,nodev,relatime,errors=continue,threads=single"
+            },{
+               "target": "/snap/snap-store/1447",
+               "source": "/dev/loop14",
+               "fstype": "squashfs",
+               "options": "ro,nodev,relatime,errors=continue,threads=single"
+            },{
+               "target": "/snap/gnome-46-2404/164",
+               "source": "/dev/loop13",
+               "fstype": "squashfs",
+               "options": "ro,nodev,relatime,errors=continue,threads=single"
+            },{
+               "target": "/snap/mesa-2404/1839",
+               "source": "/dev/loop15",
+               "fstype": "squashfs",
+               "options": "ro,nodev,relatime,errors=continue,threads=single"
+            },{
+               "target": "/snap/prompting-client/228",
+               "source": "/dev/loop16",
+               "fstype": "squashfs",
+               "options": "ro,nodev,relatime,errors=continue,threads=single"
+            },{
+               "target": "/snap/snapd/28254",
+               "source": "/dev/loop17",
+               "fstype": "squashfs",
+               "options": "ro,nodev,relatime,errors=continue,threads=single"
+            },{
+               "target": "/snap/snapd/28332",
+               "source": "/dev/loop18",
+               "fstype": "squashfs",
+               "options": "ro,nodev,relatime,errors=continue,threads=single"
+            },{
+               "target": "/tmp",
+               "source": "tmpfs",
+               "fstype": "tmpfs",
+               "options": "rw,nosuid,nodev,size=2766608k,nr_inodes=1048576,inode64,usrquota"
+            },{
+               "target": "/snap/snapd-desktop-integration/391",
+               "source": "/dev/loop20",
+               "fstype": "squashfs",
+               "options": "ro,nodev,relatime,errors=continue,threads=single"
+            },{
+               "target": "/snap/snap-store/1468",
+               "source": "/dev/loop19",
+               "fstype": "squashfs",
+               "options": "ro,nodev,relatime,errors=continue,threads=single"
+            },{
+               "target": "/snap/core24/2307",
+               "source": "/dev/loop21",
+               "fstype": "squashfs",
+               "options": "ro,nodev,relatime,errors=continue,threads=single"
+            }
+         ]
+      }
+   ]
+}

@@ -1,0 +1,16 @@
+udp UNCONN 0      0         127.0.0.54:53   0.0.0.0:*
+udp UNCONN 0      0      127.0.0.53%lo:53   0.0.0.0:*
+udp UNCONN 0      0            0.0.0.0:5353 0.0.0.0:*
+udp UNCONN 0      0            0.0.0.0:5353 0.0.0.0:*
+udp UNCONN 0      0            0.0.0.0:5355 0.0.0.0:*
+udp UNCONN 0      0               [::]:5353    [::]:*
+udp UNCONN 0      0               [::]:5353    [::]:*
+udp UNCONN 0      0               [::]:5355    [::]:*
+udp UNCONN 0      0                  *:1716       *:* users:(("kdeconnectd",pid=1000,fd=14))
+tcp LISTEN 0      128          0.0.0.0:22   0.0.0.0:*
+tcp LISTEN 0      4096   127.0.0.53%lo:53   0.0.0.0:*
+tcp LISTEN 0      4096         0.0.0.0:5355 0.0.0.0:*
+tcp LISTEN 0      4096      127.0.0.54:53   0.0.0.0:*
+tcp LISTEN 0      128             [::]:22      [::]:*
+tcp LISTEN 0      4096            [::]:5355    [::]:*
+tcp LISTEN 0      50                 *:1716       *:* users:(("kdeconnectd",pid=1000,fd=15))

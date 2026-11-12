@@ -1,0 +1,22 @@
+# Static information about the filesystems.
+# See fstab(5) for details.
+
+# <file system> <dir> <type> <options> <dump> <pass>
+# /dev/vda2
+UUID=12345678-1234-4321-8765-123456789abc	/         	btrfs     	rw,relatime,compress=zstd:3,discard=async,space_cache=v2,subvol=/@	0 0
+
+# /dev/vda2
+UUID=12345678-1234-4321-8765-123456789abc	/home     	btrfs     	rw,relatime,compress=zstd:3,discard=async,space_cache=v2,subvol=/@home	0 0
+
+# /dev/vda2
+UUID=12345678-1234-4321-8765-123456789abc	/var/cache/pacman/pkg	btrfs     	rw,relatime,compress=zstd:3,discard=async,space_cache=v2,subvol=/@pkg	0 0
+
+# /dev/vda2
+UUID=12345678-1234-4321-8765-123456789abc	/var/log  	btrfs     	rw,relatime,compress=zstd:3,discard=async,space_cache=v2,subvol=/@log	0 0
+
+# /dev/vda1
+UUID=ABCD-1234      	/boot     	vfat      	rw,relatime,fmask=0077,dmask=0077,codepage=437,iocharset=ascii,shortname=mixed,utf8,errors=remount-ro	0 2
+
+
+# Btrfs swapfile for system hibernation
+/swap/swapfile none swap defaults,pri=0 0 0

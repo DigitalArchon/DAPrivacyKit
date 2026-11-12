@@ -1,0 +1,2 @@
+netplan-enp1s0:802-3-ethernet:enp1s0
+lo:loopback:lo

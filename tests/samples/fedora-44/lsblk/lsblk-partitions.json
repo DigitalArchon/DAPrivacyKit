@@ -1,0 +1,93 @@
+{
+ "blockdevices": [
+  {
+   "name": "sr0",
+   "type": "rom",
+   "fstype": null,
+   "mountpoints": [],
+   "rm": true,
+   "hotplug": false,
+   "tran": "sata",
+   "label": null,
+   "size": 1073741312,
+   "parttype": null,
+   "uuid": null
+  },
+  {
+   "name": "zram0",
+   "type": "disk",
+   "fstype": "swap",
+   "mountpoints": [
+    "[SWAP]"
+   ],
+   "rm": false,
+   "hotplug": false,
+   "tran": null,
+   "label": "LABEL",
+   "size": 6192889856,
+   "parttype": null,
+   "uuid": "12345678-1234-4321-8765-123456789abc"
+  },
+  {
+   "name": "vda",
+   "type": "disk",
+   "fstype": null,
+   "mountpoints": [],
+   "rm": false,
+   "hotplug": false,
+   "tran": "virtio",
+   "label": null,
+   "size": 85899345920,
+   "parttype": null,
+   "uuid": null,
+   "children": [
+    {
+     "name": "vda1",
+     "type": "part",
+     "fstype": "vfat",
+     "mountpoints": [
+      "/boot/efi"
+     ],
+     "rm": false,
+     "hotplug": false,
+     "tran": "virtio",
+     "label": null,
+     "size": 629145600,
+     "parttype": "c12a7328-f81f-11d2-ba4b-00a0c93ec93b",
+     "uuid": "ABCD-1234"
+    },
+    {
+     "name": "vda2",
+     "type": "part",
+     "fstype": "ext4",
+     "mountpoints": [
+      "/boot"
+     ],
+     "rm": false,
+     "hotplug": false,
+     "tran": "virtio",
+     "label": null,
+     "size": 2147483648,
+     "parttype": "0fc63daf-8483-4772-8e79-3d69d8477de4",
+     "uuid": "12345678-1234-4321-8765-123456789abc"
+    },
+    {
+     "name": "vda3",
+     "type": "part",
+     "fstype": "btrfs",
+     "mountpoints": [
+      "/home",
+      "/"
+     ],
+     "rm": false,
+     "hotplug": false,
+     "tran": "virtio",
+     "label": "LABEL",
+     "size": 83120619520,
+     "parttype": "0fc63daf-8483-4772-8e79-3d69d8477de4",
+     "uuid": "12345678-1234-4321-8765-123456789abc"
+    }
+   ]
+  }
+ ]
+}

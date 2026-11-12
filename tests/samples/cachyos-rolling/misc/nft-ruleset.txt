@@ -1,0 +1,390 @@
+table ip filter {
+	chain ufw-before-logging-input {
+	}
+
+	chain ufw-before-logging-output {
+	}
+
+	chain ufw-before-logging-forward {
+	}
+
+	chain ufw-before-input {
+		iifname "lo" counter packets 232421 bytes 254007417 accept
+		xt match "conntrack" counter packets 1859504 bytes 10696907119 accept
+		xt match "conntrack" counter packets 65 bytes 3065 jump ufw-logging-deny
+		xt match "conntrack" counter packets 65 bytes 3065 drop
+		ip protocol icmp xt match "icmp" counter packets 0 bytes 0 accept
+		ip protocol icmp xt match "icmp" counter packets 0 bytes 0 accept
+		ip protocol icmp xt match "icmp" counter packets 0 bytes 0 accept
+		ip protocol icmp xt match "icmp" counter packets 3 bytes 180 accept
+		udp sport 67 udp dport 68 counter packets 0 bytes 0 accept
+		counter packets 41018 bytes 10852116 jump ufw-not-local
+		ip daddr 192.0.2.10 udp dport 5353 counter packets 438 bytes 74267 accept
+		ip daddr 192.0.2.10 udp dport 1900 counter packets 0 bytes 0 accept
+		counter packets 40580 bytes 10777849 jump ufw-user-input
+	}
+
+	chain ufw-before-output {
+		oifname "lo" counter packets 231321 bytes 253950193 accept
+		xt match "conntrack" counter packets 1269697 bytes 3466786610 accept
+		counter packets 8203 bytes 898567 jump ufw-user-output
+	}
+
+	chain ufw-before-forward {
+		xt match "conntrack" counter packets 0 bytes 0 accept
+		ip protocol icmp xt match "icmp" counter packets 0 bytes 0 accept
+		ip protocol icmp xt match "icmp" counter packets 0 bytes 0 accept
+		ip protocol icmp xt match "icmp" counter packets 0 bytes 0 accept
+		ip protocol icmp xt match "icmp" counter packets 0 bytes 0 accept
+		counter packets 0 bytes 0 jump ufw-user-forward
+	}
+
+	chain ufw-after-input {
+		udp dport 137 counter packets 3109 bytes 246066 jump ufw-skip-to-policy-input
+		udp dport 138 counter packets 3321 bytes 806945 jump ufw-skip-to-policy-input
+		tcp dport 139 counter packets 0 bytes 0 jump ufw-skip-to-policy-input
+		tcp dport 445 counter packets 0 bytes 0 jump ufw-skip-to-policy-input
+		udp dport 67 counter packets 76 bytes 24610 jump ufw-skip-to-policy-input
+		udp dport 68 counter packets 0 bytes 0 jump ufw-skip-to-policy-input
+		xt match "addrtype" counter packets 27989 bytes 9361154 jump ufw-skip-to-policy-input
+	}
+
+	chain ufw-after-output {
+	}
+
+	chain ufw-after-forward {
+	}
+
+	chain ufw-after-logging-input {
+		limit rate 3/minute burst 10 packets counter packets 5994 bytes 271565 xt target "LOG"
+	}
+
+	chain ufw-after-logging-output {
+	}
+
+	chain ufw-after-logging-forward {
+		limit rate 3/minute burst 10 packets counter packets 0 bytes 0 xt target "LOG"
+	}
+
+	chain ufw-reject-input {
+	}
+
+	chain ufw-reject-output {
+	}
+
+	chain ufw-reject-forward {
+	}
+
+	chain ufw-track-input {
+	}
+
+	chain ufw-track-output {
+		ip protocol tcp xt match "conntrack" counter packets 4637 bytes 278220 accept
+		ip protocol udp xt match "conntrack" counter packets 3454 bytes 615731 accept
+	}
+
+	chain ufw-track-forward {
+	}
+
+	chain INPUT {
+		type filter hook input priority filter; policy drop;
+		counter packets 2133011 bytes 10961769897 jump ufw-before-logging-input
+		counter packets 2133011 bytes 10961769897 jump ufw-before-input
+		counter packets 40533 bytes 10772752 jump ufw-after-input
+		counter packets 6038 bytes 333977 jump ufw-after-logging-input
+		counter packets 6038 bytes 333977 jump ufw-reject-input
+		counter packets 6038 bytes 333977 jump ufw-track-input
+	}
+
+	chain OUTPUT {
+		type filter hook output priority filter; policy accept;
+		counter packets 1509221 bytes 3721635370 jump ufw-before-logging-output
+		counter packets 1509221 bytes 3721635370 jump ufw-before-output
+		counter packets 8203 bytes 898567 jump ufw-after-output
+		counter packets 8203 bytes 898567 jump ufw-after-logging-output
+		counter packets 8203 bytes 898567 jump ufw-reject-output
+		counter packets 8203 bytes 898567 jump ufw-track-output
+	}
+
+	chain FORWARD {
+		type filter hook forward priority filter; policy drop;
+		counter packets 0 bytes 0 jump ufw-before-logging-forward
+		counter packets 0 bytes 0 jump ufw-before-forward
+		counter packets 0 bytes 0 jump ufw-after-forward
+		counter packets 0 bytes 0 jump ufw-after-logging-forward
+		counter packets 0 bytes 0 jump ufw-reject-forward
+		counter packets 0 bytes 0 jump ufw-track-forward
+	}
+
+	chain ufw-logging-deny {
+		xt match "conntrack" limit rate 3/minute burst 10 packets counter packets 47 bytes 2345 return
+		limit rate 3/minute burst 10 packets counter packets 10 bytes 400 xt target "LOG"
+	}
+
+	chain ufw-logging-allow {
+		limit rate 3/minute burst 10 packets counter packets 0 bytes 0 xt target "LOG"
+	}
+
+	chain ufw-skip-to-policy-input {
+		counter packets 34495 bytes 10438775 drop
+	}
+
+	chain ufw-skip-to-policy-output {
+		counter packets 0 bytes 0 accept
+	}
+
+	chain ufw-skip-to-policy-forward {
+		counter packets 0 bytes 0 drop
+	}
+
+	chain ufw-not-local {
+		xt match "addrtype" counter packets 155 bytes 147345 return
+		xt match "addrtype" counter packets 6376 bytes 264361 return
+		xt match "addrtype" counter packets 34487 bytes 10440410 return
+		limit rate 3/minute burst 10 packets counter packets 0 bytes 0 jump ufw-logging-deny
+		counter packets 0 bytes 0 drop
+	}
+
+	chain ufw-user-input {
+		ip protocol udp xt match "multiport" xt match "comment" counter packets 1 bytes 2337 accept
+		ip protocol tcp xt match "multiport" xt match "comment" counter packets 0 bytes 0 accept
+		ip saddr 192.0.2.10/24 tcp dport 22 counter packets 46 bytes 2760 accept
+	}
+
+	chain ufw-user-output {
+	}
+
+	chain ufw-user-forward {
+	}
+
+	chain ufw-user-logging-input {
+	}
+
+	chain ufw-user-logging-output {
+	}
+
+	chain ufw-user-logging-forward {
+	}
+
+	chain ufw-user-limit {
+		limit rate 3/minute burst 5 packets counter packets 0 bytes 0 xt target "LOG"
+		counter packets 0 bytes 0 xt target "REJECT"
+	}
+
+	chain ufw-user-limit-accept {
+		counter packets 0 bytes 0 accept
+	}
+}
+table ip6 filter {
+	chain ufw6-before-logging-input {
+	}
+
+	chain ufw6-before-logging-output {
+	}
+
+	chain ufw6-before-logging-forward {
+	}
+
+	chain ufw6-before-input {
+		iifname "lo" counter packets 2 bytes 152 accept
+		xt match "rt" counter packets 0 bytes 0 drop
+		xt match "conntrack" counter packets 0 bytes 0 accept
+		meta l4proto ipv6-icmp xt match "icmp6" counter packets 0 bytes 0 accept
+		xt match "conntrack" counter packets 0 bytes 0 jump ufw6-logging-deny
+		xt match "conntrack" counter packets 0 bytes 0 drop
+		meta l4proto ipv6-icmp xt match "icmp6" counter packets 0 bytes 0 accept
+		meta l4proto ipv6-icmp xt match "icmp6" counter packets 0 bytes 0 accept
+		meta l4proto ipv6-icmp xt match "icmp6" counter packets 0 bytes 0 accept
+		meta l4proto ipv6-icmp xt match "icmp6" counter packets 0 bytes 0 accept
+		meta l4proto ipv6-icmp xt match "icmp6" counter packets 0 bytes 0 accept
+		meta l4proto ipv6-icmp xt match "icmp6" xt match "hl" counter packets 0 bytes 0 accept
+		meta l4proto ipv6-icmp xt match "icmp6" xt match "hl" counter packets 0 bytes 0 accept
+		meta l4proto ipv6-icmp xt match "icmp6" xt match "hl" counter packets 0 bytes 0 accept
+		meta l4proto ipv6-icmp xt match "icmp6" xt match "hl" counter packets 11 bytes 792 accept
+		meta l4proto ipv6-icmp xt match "icmp6" xt match "hl" counter packets 0 bytes 0 accept
+		meta l4proto ipv6-icmp xt match "icmp6" xt match "hl" counter packets 0 bytes 0 accept
+		ip6 saddr 2001:db8::10/10 meta l4proto ipv6-icmp xt match "icmp6" counter packets 0 bytes 0 accept
+		ip6 saddr 2001:db8::10/10 meta l4proto ipv6-icmp xt match "icmp6" counter packets 0 bytes 0 accept
+		ip6 saddr 2001:db8::10/10 meta l4proto ipv6-icmp xt match "icmp6" counter packets 0 bytes 0 accept
+		ip6 saddr 2001:db8::10/10 meta l4proto ipv6-icmp xt match "icmp6" counter packets 0 bytes 0 accept
+		meta l4proto ipv6-icmp xt match "icmp6" xt match "hl" counter packets 0 bytes 0 accept
+		meta l4proto ipv6-icmp xt match "icmp6" xt match "hl" counter packets 0 bytes 0 accept
+		ip6 saddr 2001:db8::10/10 meta l4proto ipv6-icmp xt match "icmp6" xt match "hl" counter packets 0 bytes 0 accept
+		ip6 saddr 2001:db8::10/10 meta l4proto ipv6-icmp xt match "icmp6" xt match "hl" counter packets 0 bytes 0 accept
+		ip6 saddr 2001:db8::10/10 meta l4proto ipv6-icmp xt match "icmp6" xt match "hl" counter packets 0 bytes 0 accept
+		meta l4proto ipv6-icmp xt match "icmp6" counter packets 0 bytes 0 accept
+		meta l4proto ipv6-icmp xt match "icmp6" counter packets 0 bytes 0 accept
+		meta l4proto ipv6-icmp xt match "icmp6" counter packets 0 bytes 0 accept
+		meta l4proto ipv6-icmp xt match "icmp6" counter packets 0 bytes 0 accept
+		ip6 saddr 2001:db8::10/10 ip6 daddr 2001:db8::10/10 udp sport 547 udp dport 546 counter packets 0 bytes 0 accept
+		ip6 daddr 2001:db8::10 udp dport 5353 counter packets 7225 bytes 830631 accept
+		ip6 daddr 2001:db8::10 udp dport 1900 counter packets 0 bytes 0 accept
+		counter packets 32 bytes 4878 jump ufw6-user-input
+	}
+
+	chain ufw6-before-output {
+		oifname "lo" counter packets 2 bytes 152 accept
+		xt match "rt" counter packets 0 bytes 0 drop
+		xt match "conntrack" counter packets 0 bytes 0 accept
+		meta l4proto ipv6-icmp xt match "icmp6" counter packets 0 bytes 0 accept
+		meta l4proto ipv6-icmp xt match "icmp6" counter packets 0 bytes 0 accept
+		meta l4proto ipv6-icmp xt match "icmp6" counter packets 0 bytes 0 accept
+		meta l4proto ipv6-icmp xt match "icmp6" counter packets 0 bytes 0 accept
+		meta l4proto ipv6-icmp xt match "icmp6" counter packets 0 bytes 0 accept
+		meta l4proto ipv6-icmp xt match "icmp6" counter packets 0 bytes 0 accept
+		meta l4proto ipv6-icmp xt match "icmp6" xt match "hl" counter packets 215 bytes 10320 accept
+		meta l4proto ipv6-icmp xt match "icmp6" xt match "hl" counter packets 0 bytes 0 accept
+		meta l4proto ipv6-icmp xt match "icmp6" xt match "hl" counter packets 1 bytes 72 accept
+		meta l4proto ipv6-icmp xt match "icmp6" xt match "hl" counter packets 0 bytes 0 accept
+		meta l4proto ipv6-icmp xt match "icmp6" xt match "hl" counter packets 0 bytes 0 accept
+		meta l4proto ipv6-icmp xt match "icmp6" xt match "hl" counter packets 0 bytes 0 accept
+		ip6 saddr 2001:db8::10/10 meta l4proto ipv6-icmp xt match "icmp6" counter packets 0 bytes 0 accept
+		ip6 saddr 2001:db8::10/10 meta l4proto ipv6-icmp xt match "icmp6" counter packets 0 bytes 0 accept
+		ip6 saddr 2001:db8::10/10 meta l4proto ipv6-icmp xt match "icmp6" counter packets 0 bytes 0 accept
+		ip6 saddr 2001:db8::10/10 meta l4proto ipv6-icmp xt match "icmp6" counter packets 4 bytes 424 accept
+		meta l4proto ipv6-icmp xt match "icmp6" xt match "hl" counter packets 0 bytes 0 accept
+		meta l4proto ipv6-icmp xt match "icmp6" xt match "hl" counter packets 0 bytes 0 accept
+		ip6 saddr 2001:db8::10/10 meta l4proto ipv6-icmp xt match "icmp6" xt match "hl" counter packets 0 bytes 0 accept
+		ip6 saddr 2001:db8::10/10 meta l4proto ipv6-icmp xt match "icmp6" xt match "hl" counter packets 0 bytes 0 accept
+		ip6 saddr 2001:db8::10/10 meta l4proto ipv6-icmp xt match "icmp6" xt match "hl" counter packets 0 bytes 0 accept
+		counter packets 435 bytes 79207 jump ufw6-user-output
+	}
+
+	chain ufw6-before-forward {
+		xt match "rt" counter packets 0 bytes 0 drop
+		xt match "conntrack" counter packets 0 bytes 0 accept
+		meta l4proto ipv6-icmp xt match "icmp6" counter packets 0 bytes 0 accept
+		meta l4proto ipv6-icmp xt match "icmp6" counter packets 0 bytes 0 accept
+		meta l4proto ipv6-icmp xt match "icmp6" counter packets 0 bytes 0 accept
+		meta l4proto ipv6-icmp xt match "icmp6" counter packets 0 bytes 0 accept
+		meta l4proto ipv6-icmp xt match "icmp6" counter packets 0 bytes 0 accept
+		meta l4proto ipv6-icmp xt match "icmp6" counter packets 0 bytes 0 accept
+		counter packets 0 bytes 0 jump ufw6-user-forward
+	}
+
+	chain ufw6-after-input {
+		udp dport 137 counter packets 0 bytes 0 jump ufw6-skip-to-policy-input
+		udp dport 138 counter packets 0 bytes 0 jump ufw6-skip-to-policy-input
+		tcp dport 139 counter packets 0 bytes 0 jump ufw6-skip-to-policy-input
+		tcp dport 445 counter packets 0 bytes 0 jump ufw6-skip-to-policy-input
+		udp dport 546 counter packets 0 bytes 0 jump ufw6-skip-to-policy-input
+		udp dport 547 counter packets 0 bytes 0 jump ufw6-skip-to-policy-input
+	}
+
+	chain ufw6-after-output {
+	}
+
+	chain ufw6-after-forward {
+	}
+
+	chain ufw6-after-logging-input {
+		limit rate 3/minute burst 10 packets counter packets 32 bytes 4878 xt target "LOG"
+	}
+
+	chain ufw6-after-logging-output {
+	}
+
+	chain ufw6-after-logging-forward {
+		limit rate 3/minute burst 10 packets counter packets 0 bytes 0 xt target "LOG"
+	}
+
+	chain ufw6-reject-input {
+	}
+
+	chain ufw6-reject-output {
+	}
+
+	chain ufw6-reject-forward {
+	}
+
+	chain ufw6-track-input {
+	}
+
+	chain ufw6-track-output {
+		meta l4proto tcp xt match "conntrack" counter packets 0 bytes 0 accept
+		meta l4proto udp xt match "conntrack" counter packets 433 bytes 79055 accept
+	}
+
+	chain ufw6-track-forward {
+	}
+
+	chain INPUT {
+		type filter hook input priority filter; policy drop;
+		counter packets 7270 bytes 836453 jump ufw6-before-logging-input
+		counter packets 7270 bytes 836453 jump ufw6-before-input
+		counter packets 32 bytes 4878 jump ufw6-after-input
+		counter packets 32 bytes 4878 jump ufw6-after-logging-input
+		counter packets 32 bytes 4878 jump ufw6-reject-input
+		counter packets 32 bytes 4878 jump ufw6-track-input
+	}
+
+	chain OUTPUT {
+		type filter hook output priority filter; policy accept;
+		counter packets 657 bytes 90175 jump ufw6-before-logging-output
+		counter packets 657 bytes 90175 jump ufw6-before-output
+		counter packets 435 bytes 79207 jump ufw6-after-output
+		counter packets 435 bytes 79207 jump ufw6-after-logging-output
+		counter packets 435 bytes 79207 jump ufw6-reject-output
+		counter packets 435 bytes 79207 jump ufw6-track-output
+	}
+
+	chain FORWARD {
+		type filter hook forward priority filter; policy drop;
+		counter packets 0 bytes 0 jump ufw6-before-logging-forward
+		counter packets 0 bytes 0 jump ufw6-before-forward
+		counter packets 0 bytes 0 jump ufw6-after-forward
+		counter packets 0 bytes 0 jump ufw6-after-logging-forward
+		counter packets 0 bytes 0 jump ufw6-reject-forward
+		counter packets 0 bytes 0 jump ufw6-track-forward
+	}
+
+	chain ufw6-logging-deny {
+		xt match "conntrack" limit rate 3/minute burst 10 packets counter packets 0 bytes 0 return
+		limit rate 3/minute burst 10 packets counter packets 0 bytes 0 xt target "LOG"
+	}
+
+	chain ufw6-logging-allow {
+		limit rate 3/minute burst 10 packets counter packets 0 bytes 0 xt target "LOG"
+	}
+
+	chain ufw6-skip-to-policy-input {
+		counter packets 0 bytes 0 drop
+	}
+
+	chain ufw6-skip-to-policy-output {
+		counter packets 0 bytes 0 accept
+	}
+
+	chain ufw6-skip-to-policy-forward {
+		counter packets 0 bytes 0 drop
+	}
+
+	chain ufw6-user-input {
+		meta l4proto udp xt match "multiport" xt match "comment" counter packets 0 bytes 0 accept
+		meta l4proto tcp xt match "multiport" xt match "comment" counter packets 0 bytes 0 accept
+	}
+
+	chain ufw6-user-output {
+	}
+
+	chain ufw6-user-forward {
+	}
+
+	chain ufw6-user-logging-input {
+	}
+
+	chain ufw6-user-logging-output {
+	}
+
+	chain ufw6-user-logging-forward {
+	}
+
+	chain ufw6-user-limit {
+		limit rate 3/minute burst 5 packets counter packets 0 bytes 0 xt target "LOG"
+		counter packets 0 bytes 0 xt target "REJECT"
+	}
+
+	chain ufw6-user-limit-accept {
+		counter packets 0 bytes 0 accept
+	}
+}

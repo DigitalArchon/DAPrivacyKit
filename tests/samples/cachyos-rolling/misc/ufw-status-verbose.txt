@@ -1,0 +1,13 @@
+Status: active
+Logging: on (low)
+Default: deny (incoming), allow (outgoing), disabled (routed)
+New profiles: skip
+
+To                         Action      From
+--                         ------      ----
+1714:1764/udp (KDE Connect) ALLOW IN    Anywhere                  
+1714:1764/tcp (KDE Connect) ALLOW IN    Anywhere                  
+22/tcp                     ALLOW IN    192.0.2.10/24             # ssh-lan
+1714:1764/udp (KDE Connect (v6)) ALLOW IN    Anywhere (v6)             
+1714:1764/tcp (KDE Connect (v6)) ALLOW IN    Anywhere (v6)             
+

@@ -1,0 +1,15 @@
+gnome-keyring	50.0
+openssh	10.2p1
+openssh-clients	10.2p1
+NetworkManager	1.56.1
+fwupd	2.1.9
+gnupg2	2.4.9
+cups	2.4.19
+gtk4	4.22.5
+flatpak	1.18.4
+gvfs	1.60.3
+gnome-shell	50.6
+firefox	159.0
+localsearch	3.11.2
+nautilus	50.4
+libreoffice-core	192.0.2.10

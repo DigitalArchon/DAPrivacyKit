@@ -1,0 +1,34 @@
+# NetworkManager configuration: /etc/NetworkManager/NetworkManager.conf, /usr/lib/NetworkManager/conf.d/{10-default-firewall-use-iptables.conf,20-connectivity-ubuntu.conf,no-mac-addr-change.conf}, /run/NetworkManager/conf.d/10-globally-managed-devices.conf, /etc/NetworkManager/conf.d/default-wifi-powersave-on.conf
+
+[main]
+# rc-manager=auto
+# migrate-ifcfg-rh=false
+# auth-polkit=true
+# dhcp=internal
+# iwd-config-path=
+firewall-backend=iptables
+plugins=ifupdown,keyfile
+configure-and-quit=no
+
+[connectivity]
+uri=http://connectivity-check.ubuntu.com/
+
+[ifupdown]
+managed=false
+
+[logging]
+# backend=journal
+# audit=true
+
+[device]
+# wifi.backend=wpa_supplicant
+wifi.scan-rand-mac-address=no
+
+[device-31-mac-addr-change]
+match-device=driver:eagle_sdio,driver:wl
+wifi.scan-rand-mac-address=no
+
+[connection]
+wifi.powersave=3
+
+# no-auto-default file "/var/lib/NetworkManager/no-auto-default.state"

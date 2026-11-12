@@ -1,0 +1,170 @@
+{
+ "/run/udev/data/b253:0": [
+  "file",
+  "E:ID_FS_VERSION=1\nE:ID_FS_TYPE=swap\nE:ID_FS_USAGE=other\n"
+ ],
+ "/run/udev/data/b254:0": [
+  "file",
+  "\n"
+ ],
+ "/run/udev/data/b254:1": [
+  "file",
+  "E:ID_FS_VERSION=FAT32\nE:ID_FS_TYPE=vfat\nE:ID_FS_USAGE=filesystem\n"
+ ],
+ "/run/udev/data/b254:2": [
+  "file",
+  "E:ID_FS_TYPE=btrfs\nE:ID_FS_USAGE=filesystem\n"
+ ],
+ "/sys/block/vda": [
+  "link",
+  "../devices/pci0000:00/0000:00:02.3/0000:04:00.0/virtio3/block/vda"
+ ],
+ "/sys/block/zram0": [
+  "link",
+  "../devices/virtual/block/zram0"
+ ],
+ "/sys/class/block/vda": [
+  "link",
+  "../../devices/pci0000:00/0000:00:02.3/0000:04:00.0/virtio3/block/vda"
+ ],
+ "/sys/class/block/vda1": [
+  "link",
+  "../../devices/pci0000:00/0000:00:02.3/0000:04:00.0/virtio3/block/vda/vda1"
+ ],
+ "/sys/class/block/vda2": [
+  "link",
+  "../../devices/pci0000:00/0000:00:02.3/0000:04:00.0/virtio3/block/vda/vda2"
+ ],
+ "/sys/class/block/zram0": [
+  "link",
+  "../../devices/virtual/block/zram0"
+ ],
+ "/sys/devices/pci0000:00/0000:00:02.3/0000:04:00.0/virtio3/block/vda/dev": [
+  "file",
+  "254:0\n"
+ ],
+ "/sys/devices/pci0000:00/0000:00:02.3/0000:04:00.0/virtio3/block/vda/device/vendor": [
+  "file",
+  "0x1af4\n"
+ ],
+ "/sys/devices/pci0000:00/0000:00:02.3/0000:04:00.0/virtio3/block/vda/holders": [
+  "dir",
+  ""
+ ],
+ "/sys/devices/pci0000:00/0000:00:02.3/0000:04:00.0/virtio3/block/vda/queue/discard_max_bytes": [
+  "file",
+  "2147483136\n"
+ ],
+ "/sys/devices/pci0000:00/0000:00:02.3/0000:04:00.0/virtio3/block/vda/queue/rotational": [
+  "file",
+  "1\n"
+ ],
+ "/sys/devices/pci0000:00/0000:00:02.3/0000:04:00.0/virtio3/block/vda/removable": [
+  "file",
+  "0\n"
+ ],
+ "/sys/devices/pci0000:00/0000:00:02.3/0000:04:00.0/virtio3/block/vda/ro": [
+  "file",
+  "0\n"
+ ],
+ "/sys/devices/pci0000:00/0000:00:02.3/0000:04:00.0/virtio3/block/vda/size": [
+  "file",
+  "167772160\n"
+ ],
+ "/sys/devices/pci0000:00/0000:00:02.3/0000:04:00.0/virtio3/block/vda/slaves": [
+  "dir",
+  ""
+ ],
+ "/sys/devices/pci0000:00/0000:00:02.3/0000:04:00.0/virtio3/block/vda/stat": [
+  "file",
+  "  345461   317057 91655901   445025  1400612   782720 144903701  7561926        0  1530466  8958056    47992        0 363238032    26005   125121   925099\n"
+ ],
+ "/sys/devices/pci0000:00/0000:00:02.3/0000:04:00.0/virtio3/block/vda/vda1/dev": [
+  "file",
+  "254:1\n"
+ ],
+ "/sys/devices/pci0000:00/0000:00:02.3/0000:04:00.0/virtio3/block/vda/vda1/holders": [
+  "dir",
+  ""
+ ],
+ "/sys/devices/pci0000:00/0000:00:02.3/0000:04:00.0/virtio3/block/vda/vda1/partition": [
+  "file",
+  "1\n"
+ ],
+ "/sys/devices/pci0000:00/0000:00:02.3/0000:04:00.0/virtio3/block/vda/vda1/ro": [
+  "file",
+  "0\n"
+ ],
+ "/sys/devices/pci0000:00/0000:00:02.3/0000:04:00.0/virtio3/block/vda/vda1/size": [
+  "file",
+  "8388608\n"
+ ],
+ "/sys/devices/pci0000:00/0000:00:02.3/0000:04:00.0/virtio3/block/vda/vda1/stat": [
+  "file",
+  "    1906    16343   752125     7133     1344      559    53165     6895        0     2829    14076       18        0  7822680       47        0        0\n"
+ ],
+ "/sys/devices/pci0000:00/0000:00:02.3/0000:04:00.0/virtio3/block/vda/vda2/dev": [
+  "file",
+  "254:2\n"
+ ],
+ "/sys/devices/pci0000:00/0000:00:02.3/0000:04:00.0/virtio3/block/vda/vda2/holders": [
+  "dir",
+  ""
+ ],
+ "/sys/devices/pci0000:00/0000:00:02.3/0000:04:00.0/virtio3/block/vda/vda2/partition": [
+  "file",
+  "2\n"
+ ],
+ "/sys/devices/pci0000:00/0000:00:02.3/0000:04:00.0/virtio3/block/vda/vda2/ro": [
+  "file",
+  "0\n"
+ ],
+ "/sys/devices/pci0000:00/0000:00:02.3/0000:04:00.0/virtio3/block/vda/vda2/size": [
+  "file",
+  "159379384\n"
+ ],
+ "/sys/devices/pci0000:00/0000:00:02.3/0000:04:00.0/virtio3/block/vda/vda2/stat": [
+  "file",
+  "  343470   300714 90896936   437866  1399265   782161 144850536  7555028        0  1313328  8018853    47974        0 355415352    25957        0        0\n"
+ ],
+ "/sys/devices/virtual/block/zram0/dev": [
+  "file",
+  "253:0\n"
+ ],
+ "/sys/devices/virtual/block/zram0/holders": [
+  "dir",
+  ""
+ ],
+ "/sys/devices/virtual/block/zram0/queue/discard_max_bytes": [
+  "file",
+  "2199023255040\n"
+ ],
+ "/sys/devices/virtual/block/zram0/queue/rotational": [
+  "file",
+  "0\n"
+ ],
+ "/sys/devices/virtual/block/zram0/removable": [
+  "file",
+  "0\n"
+ ],
+ "/sys/devices/virtual/block/zram0/ro": [
+  "file",
+  "0\n"
+ ],
+ "/sys/devices/virtual/block/zram0/size": [
+  "file",
+  "12105728\n"
+ ],
+ "/sys/devices/virtual/block/zram0/slaves": [
+  "dir",
+  ""
+ ],
+ "/sys/devices/virtual/block/zram0/stat": [
+  "file",
+  " 3694704        0 29559896    14868  5512896        0 48366952    74753        0    89656    89621        0        0        0        0        0        0\n"
+ ],
+ "/sys/fs/btrfs/12345678-1234-4321-8765-123456789abc/devices/vda2": [
+  "link",
+  "../../../../devices/pci0000:00/0000:00:02.3/0000:04:00.0/virtio3/block/vda/vda2"
+ ]
+}

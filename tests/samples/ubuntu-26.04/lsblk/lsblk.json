@@ -1,0 +1,302 @@
+{
+ "blockdevices": [
+  {
+   "name": "loop0",
+   "type": "loop",
+   "fstype": "squashfs",
+   "mountpoints": [
+    "/snap/bare/5"
+   ],
+   "rm": false,
+   "hotplug": false,
+   "tran": null,
+   "label": null
+  },
+  {
+   "name": "loop2",
+   "type": "loop",
+   "fstype": "squashfs",
+   "mountpoints": [
+    "/snap/core24/2124"
+   ],
+   "rm": false,
+   "hotplug": false,
+   "tran": null,
+   "label": null
+  },
+  {
+   "name": "loop3",
+   "type": "loop",
+   "fstype": "squashfs",
+   "mountpoints": [
+    "/snap/desktop-security-center/151"
+   ],
+   "rm": false,
+   "hotplug": false,
+   "tran": null,
+   "label": null
+  },
+  {
+   "name": "loop4",
+   "type": "loop",
+   "fstype": "squashfs",
+   "mountpoints": [
+    "/snap/desktop-security-center/206"
+   ],
+   "rm": false,
+   "hotplug": false,
+   "tran": null,
+   "label": null
+  },
+  {
+   "name": "loop5",
+   "type": "loop",
+   "fstype": "squashfs",
+   "mountpoints": [
+    "/snap/firefox/9113"
+   ],
+   "rm": false,
+   "hotplug": false,
+   "tran": null,
+   "label": null
+  },
+  {
+   "name": "loop6",
+   "type": "loop",
+   "fstype": "squashfs",
+   "mountpoints": [
+    "/snap/firefox/8763"
+   ],
+   "rm": false,
+   "hotplug": false,
+   "tran": null,
+   "label": null
+  },
+  {
+   "name": "loop7",
+   "type": "loop",
+   "fstype": "squashfs",
+   "mountpoints": [
+    "/snap/firmware-updater/226"
+   ],
+   "rm": false,
+   "hotplug": false,
+   "tran": null,
+   "label": null
+  },
+  {
+   "name": "loop8",
+   "type": "loop",
+   "fstype": "squashfs",
+   "mountpoints": [
+    "/snap/firmware-updater/262"
+   ],
+   "rm": false,
+   "hotplug": false,
+   "tran": null,
+   "label": null
+  },
+  {
+   "name": "loop9",
+   "type": "loop",
+   "fstype": "squashfs",
+   "mountpoints": [
+    "/snap/gtk-common-themes/1535"
+   ],
+   "rm": false,
+   "hotplug": false,
+   "tran": null,
+   "label": null
+  },
+  {
+   "name": "loop10",
+   "type": "loop",
+   "fstype": "squashfs",
+   "mountpoints": [
+    "/snap/hwctl/131"
+   ],
+   "rm": false,
+   "hotplug": false,
+   "tran": null,
+   "label": null
+  },
+  {
+   "name": "loop11",
+   "type": "loop",
+   "fstype": "squashfs",
+   "mountpoints": [
+    "/snap/hwctl/123"
+   ],
+   "rm": false,
+   "hotplug": false,
+   "tran": null,
+   "label": null
+  },
+  {
+   "name": "loop12",
+   "type": "loop",
+   "fstype": "squashfs",
+   "mountpoints": [
+    "/snap/prompting-client/222"
+   ],
+   "rm": false,
+   "hotplug": false,
+   "tran": null,
+   "label": null
+  },
+  {
+   "name": "loop13",
+   "type": "loop",
+   "fstype": "squashfs",
+   "mountpoints": [
+    "/snap/gnome-46-2404/164"
+   ],
+   "rm": false,
+   "hotplug": false,
+   "tran": null,
+   "label": null
+  },
+  {
+   "name": "loop14",
+   "type": "loop",
+   "fstype": "squashfs",
+   "mountpoints": [
+    "/snap/snap-store/1447"
+   ],
+   "rm": false,
+   "hotplug": false,
+   "tran": null,
+   "label": null
+  },
+  {
+   "name": "loop15",
+   "type": "loop",
+   "fstype": "squashfs",
+   "mountpoints": [
+    "/snap/mesa-2404/1839"
+   ],
+   "rm": false,
+   "hotplug": false,
+   "tran": null,
+   "label": null
+  },
+  {
+   "name": "loop16",
+   "type": "loop",
+   "fstype": "squashfs",
+   "mountpoints": [
+    "/snap/prompting-client/228"
+   ],
+   "rm": false,
+   "hotplug": false,
+   "tran": null,
+   "label": null
+  },
+  {
+   "name": "loop17",
+   "type": "loop",
+   "fstype": "squashfs",
+   "mountpoints": [
+    "/snap/snapd/28254"
+   ],
+   "rm": false,
+   "hotplug": false,
+   "tran": null,
+   "label": null
+  },
+  {
+   "name": "loop18",
+   "type": "loop",
+   "fstype": "squashfs",
+   "mountpoints": [
+    "/snap/snapd/28332"
+   ],
+   "rm": false,
+   "hotplug": false,
+   "tran": null,
+   "label": null
+  },
+  {
+   "name": "loop19",
+   "type": "loop",
+   "fstype": "squashfs",
+   "mountpoints": [
+    "/snap/snap-store/1468"
+   ],
+   "rm": false,
+   "hotplug": false,
+   "tran": null,
+   "label": null
+  },
+  {
+   "name": "loop20",
+   "type": "loop",
+   "fstype": "squashfs",
+   "mountpoints": [
+    "/snap/snapd-desktop-integration/391"
+   ],
+   "rm": false,
+   "hotplug": false,
+   "tran": null,
+   "label": null
+  },
+  {
+   "name": "loop21",
+   "type": "loop",
+   "fstype": "squashfs",
+   "mountpoints": [
+    "/snap/core24/2307"
+   ],
+   "rm": false,
+   "hotplug": false,
+   "tran": null,
+   "label": null
+  },
+  {
+   "name": "sr0",
+   "type": "rom",
+   "fstype": null,
+   "mountpoints": [],
+   "rm": true,
+   "hotplug": false,
+   "tran": "sata",
+   "label": null
+  },
+  {
+   "name": "vda",
+   "type": "disk",
+   "fstype": null,
+   "mountpoints": [],
+   "rm": false,
+   "hotplug": false,
+   "tran": "virtio",
+   "label": null,
+   "children": [
+    {
+     "name": "vda1",
+     "type": "part",
+     "fstype": "vfat",
+     "mountpoints": [
+      "/boot/efi"
+     ],
+     "rm": false,
+     "hotplug": false,
+     "tran": "virtio",
+     "label": null
+    },
+    {
+     "name": "vda2",
+     "type": "part",
+     "fstype": "ext4",
+     "mountpoints": [
+      "/"
+     ],
+     "rm": false,
+     "hotplug": false,
+     "tran": "virtio",
+     "label": null
+    }
+   ]
+  }
+ ]
+}

@@ -1,0 +1,2 @@
+1: lo    inet 127.0.0.1/8 scope host lo\       valid_lft forever preferred_lft forever
+2: enp1s0    inet 192.0.2.10/24 brd 192.0.2.10 scope global noprefixroute enp1s0\       valid_lft forever preferred_lft forever

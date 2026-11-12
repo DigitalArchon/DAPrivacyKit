@@ -1,0 +1,2 @@
+Wired connection 1:802-3-ethernet:enp1s0
+lo:loopback:lo

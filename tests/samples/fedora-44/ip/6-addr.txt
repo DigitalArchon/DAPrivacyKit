@@ -1,0 +1,2 @@
+1: lo    inet6 ::1/128 scope host noprefixroute \       valid_lft forever preferred_lft forever
+2: enp1s0    inet6 2001:db8::10/64 scope link noprefixroute \       valid_lft forever preferred_lft forever

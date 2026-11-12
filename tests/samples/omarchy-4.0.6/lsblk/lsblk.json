@@ -1,0 +1,65 @@
+{
+ "blockdevices": [
+  {
+   "name": "sr0",
+   "type": "rom",
+   "fstype": null,
+   "mountpoints": [],
+   "rm": true,
+   "hotplug": false,
+   "tran": "sata",
+   "label": null
+  },
+  {
+   "name": "zram0",
+   "type": "disk",
+   "fstype": "swap",
+   "mountpoints": [
+    "[SWAP]"
+   ],
+   "rm": false,
+   "hotplug": false,
+   "tran": null,
+   "label": "LABEL"
+  },
+  {
+   "name": "vda",
+   "type": "disk",
+   "fstype": null,
+   "mountpoints": [],
+   "rm": false,
+   "hotplug": false,
+   "tran": "virtio",
+   "label": null,
+   "children": [
+    {
+     "name": "vda1",
+     "type": "part",
+     "fstype": "vfat",
+     "mountpoints": [
+      "/boot"
+     ],
+     "rm": false,
+     "hotplug": false,
+     "tran": "virtio",
+     "label": null
+    },
+    {
+     "name": "vda2",
+     "type": "part",
+     "fstype": "btrfs",
+     "mountpoints": [
+      "/var/log",
+      "/var/cache/pacman/pkg",
+      "/home",
+      "/"
+     ],
+     "rm": false,
+     "hotplug": false,
+     "tran": "virtio",
+     "label": null
+    }
+   ]
+  }
+ ]
+}

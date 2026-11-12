@@ -1,0 +1,15 @@
+Status: active
+Logging: on (low)
+Default: deny (incoming), allow (outgoing), disabled (routed)
+New profiles: skip
+
+To                         Action      From
+--                         ------      ----
+53317/udp                  ALLOW IN    Anywhere                  
+53317/tcp                  ALLOW IN    Anywhere                  
+192.0.2.10 53/udp          ALLOW IN    192.0.2.10/12              # allow-docker-dns
+192.0.2.10 53/udp          ALLOW IN    192.0.2.10/16             # allow-docker-dns
+22/tcp                     ALLOW IN    192.0.2.10/24             # ssh-lan
+53317/udp (v6)             ALLOW IN    Anywhere (v6)             
+53317/tcp (v6)             ALLOW IN    Anywhere (v6)             
+

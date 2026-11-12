@@ -1,0 +1,33 @@
+# NetworkManager configuration: /etc/NetworkManager/NetworkManager.conf, /usr/lib/NetworkManager/conf.d/{20-connectivity-fedora.conf,22-wifi-mac-addr.conf,99-nvme-nbft-no-ignore-carrier.conf}
+
+[main]
+# plugins=
+# rc-manager=auto
+# migrate-ifcfg-rh=false
+# auth-polkit=true
+# dhcp=internal
+# iwd-config-path=
+configure-and-quit=no
+
+[connectivity]
+enabled=true
+uri=http://fedoraproject.org/static/hotspot.txt
+response=OK
+interval=300
+
+[logging]
+# backend=journal
+# audit=false
+
+[device]
+# wifi.backend=wpa_supplicant
+
+[device-nbft-no-ignore-carrier]
+match-device=interface-name:nbft*
+ignore-carrier=no
+
+[connection.22-wifi-mac-addr]
+match-device=type:wifi
+wifi.cloned-mac-address=stable-ssid
+
+# no-auto-default file "/var/lib/NetworkManager/no-auto-default.state"

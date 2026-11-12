@@ -1,0 +1,1 @@
+root=PARTUUID=12345678-1234-4321-8765-123456789abc zswap.enabled=0 rootflags=subvol=@ rw rootfstype=btrfs rtc_cmos.use_acpi_alarm=1 resume=/dev/vda2 resume_offset=1946229 systemd.tty.term.console=dumb initramfs_async=0 quiet splash loglevel=0 systemd.show_status=false rd.udev.log_level=0 vt.global_cursor_default=0 console=uart,io,0x3f8 console=tty0

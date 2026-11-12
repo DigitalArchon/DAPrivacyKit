@@ -1,0 +1,23 @@
+# NetworkManager configuration: /etc/NetworkManager/NetworkManager.conf, /usr/lib/NetworkManager/conf.d/{20-connectivity.conf,dns.conf}
+
+[main]
+# plugins=keyfile
+# rc-manager=symlink
+# migrate-ifcfg-rh=false
+# auth-polkit=true
+# dhcp=internal
+# iwd-config-path=
+dns=systemd-resolved
+configure-and-quit=no
+
+[connectivity]
+uri=http://ping.archlinux.org/nm-check.txt
+
+[logging]
+# backend=journal
+# audit=true
+
+[device]
+# wifi.backend=wpa_supplicant
+
+# no-auto-default file "/var/lib/NetworkManager/no-auto-default.state"

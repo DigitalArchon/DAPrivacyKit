@@ -1,0 +1,374 @@
+table inet firewalld { # progname firewalld
+	flags owner,persist
+
+	ct helper helper-netbios-ns-udp {
+		type "netbios-ns" protocol udp
+		l3proto ip
+	}
+
+	chain mangle_PREROUTING {
+		type filter hook prerouting priority mangle + 10; policy accept;
+		jump mangle_PREROUTING_POLICIES
+	}
+
+	chain mangle_PREROUTING_POLICIES {
+		iifname "enp1s0" jump mangle_PRE_policy_allow-host-ipv6
+		iifname "enp1s0" jump mangle_PRE_FedoraWorkstation
+		iifname "enp1s0" return
+		jump mangle_PRE_policy_allow-host-ipv6
+		jump mangle_PRE_FedoraWorkstation
+		return
+	}
+
+	chain nat_PREROUTING {
+		type nat hook prerouting priority dstnat + 10; policy accept;
+		jump nat_PREROUTING_POLICIES
+	}
+
+	chain nat_PREROUTING_POLICIES {
+		iifname "enp1s0" jump nat_PRE_policy_allow-host-ipv6
+		iifname "enp1s0" jump nat_PRE_FedoraWorkstation
+		iifname "enp1s0" return
+		jump nat_PRE_policy_allow-host-ipv6
+		jump nat_PRE_FedoraWorkstation
+		return
+	}
+
+	chain nat_POSTROUTING {
+		type nat hook postrouting priority srcnat + 10; policy accept;
+		jump nat_POSTROUTING_POLICIES
+	}
+
+	chain nat_POSTROUTING_POLICIES {
+		iifname "enp1s0" oifname "enp1s0" jump nat_POST_FedoraWorkstation
+		iifname "enp1s0" oifname "enp1s0" return
+		oifname "enp1s0" jump nat_POST_FedoraWorkstation
+		oifname "enp1s0" return
+		iifname "enp1s0" jump nat_POST_FedoraWorkstation
+		iifname "enp1s0" return
+		jump nat_POST_FedoraWorkstation
+		return
+	}
+
+	chain nat_OUTPUT {
+		type nat hook output priority dstnat + 10; policy accept;
+		jump nat_OUTPUT_POLICIES
+	}
+
+	chain nat_OUTPUT_POLICIES {
+		oifname "enp1s0" jump nat_OUT_FedoraWorkstation
+		oifname "enp1s0" return
+		jump nat_OUT_FedoraWorkstation
+		return
+	}
+
+	chain filter_PREROUTING {
+		type filter hook prerouting priority filter + 10; policy accept;
+		icmpv6 type { nd-router-advert, nd-neighbor-solicit } accept
+		meta nfproto ipv6 fib saddr . mark check missing drop
+	}
+
+	chain filter_INPUT {
+		type filter hook input priority filter + 10; policy accept;
+		ct state { established, related } accept
+		ct status dnat accept
+		iifname "lo" accept
+		ct state invalid drop
+		jump filter_INPUT_POLICIES
+		reject with icmpx admin-prohibited
+	}
+
+	chain filter_FORWARD {
+		type filter hook forward priority filter + 10; policy accept;
+		ct state { established, related } accept
+		ct status dnat accept
+		iifname "lo" accept
+		ct state invalid drop
+		ip6 daddr { ::/96, 2001:db8::10.0.0.0/96, 2001:db8::10/24, 2001:db8::10/24, 2001:db8::10/24, 2001:db8::10/32, 2001:db8::10/28, 2001:db8::10/32, 2001:db8::10/19 } reject with icmpv6 addr-unreachable
+		jump filter_FORWARD_POLICIES
+		reject with icmpx admin-prohibited
+	}
+
+	chain filter_OUTPUT {
+		type filter hook output priority filter + 10; policy accept;
+		ct state { established, related } accept
+		ct status dnat accept
+		oifname "lo" accept
+		ip6 daddr { ::/96, 2001:db8::10.0.0.0/96, 2001:db8::10/24, 2001:db8::10/24, 2001:db8::10/24, 2001:db8::10/32, 2001:db8::10/28, 2001:db8::10/32, 2001:db8::10/19 } reject with icmpv6 addr-unreachable
+		jump filter_OUTPUT_POLICIES
+	}
+
+	chain filter_INPUT_POLICIES {
+		iifname "enp1s0" jump filter_IN_policy_allow-host-ipv6
+		iifname "enp1s0" jump filter_IN_FedoraWorkstation
+		iifname "enp1s0" reject with icmpx admin-prohibited
+		jump filter_IN_policy_allow-host-ipv6
+		jump filter_IN_FedoraWorkstation
+		reject with icmpx admin-prohibited
+	}
+
+	chain filter_FORWARD_POLICIES {
+		iifname "enp1s0" oifname "enp1s0" jump filter_FWD_FedoraWorkstation
+		iifname "enp1s0" oifname "enp1s0" reject with icmpx admin-prohibited
+		iifname "enp1s0" jump filter_FWD_FedoraWorkstation
+		iifname "enp1s0" reject with icmpx admin-prohibited
+		oifname "enp1s0" jump filter_FWD_FedoraWorkstation
+		oifname "enp1s0" reject with icmpx admin-prohibited
+		jump filter_FWD_FedoraWorkstation
+		reject with icmpx admin-prohibited
+	}
+
+	chain filter_OUTPUT_POLICIES {
+		oifname "enp1s0" jump filter_OUT_FedoraWorkstation
+		oifname "enp1s0" return
+		jump filter_OUT_FedoraWorkstation
+		return
+	}
+
+	chain filter_IN_FedoraWorkstation {
+		jump filter_IN_FedoraWorkstation_pre
+		jump filter_IN_FedoraWorkstation_log
+		jump filter_IN_FedoraWorkstation_deny
+		jump filter_IN_FedoraWorkstation_allow
+		jump filter_IN_FedoraWorkstation_post
+		meta l4proto { icmp, ipv6-icmp } accept
+	}
+
+	chain filter_IN_FedoraWorkstation_pre {
+	}
+
+	chain filter_IN_FedoraWorkstation_log {
+	}
+
+	chain filter_IN_FedoraWorkstation_deny {
+	}
+
+	chain filter_IN_FedoraWorkstation_allow {
+		ip6 daddr 2001:db8::10/64 udp dport 546 accept
+		tcp dport 22 accept
+		udp dport 137 ct helper set "helper-netbios-ns-udp"
+		udp dport 137 accept
+		udp dport 138 accept
+		udp dport 1025-65535 accept
+		tcp dport 1025-65535 accept
+	}
+
+	chain filter_IN_FedoraWorkstation_post {
+	}
+
+	chain filter_OUT_FedoraWorkstation {
+		jump filter_OUT_FedoraWorkstation_pre
+		jump filter_OUT_FedoraWorkstation_log
+		jump filter_OUT_FedoraWorkstation_deny
+		jump filter_OUT_FedoraWorkstation_allow
+		jump filter_OUT_FedoraWorkstation_post
+	}
+
+	chain filter_OUT_FedoraWorkstation_pre {
+	}
+
+	chain filter_OUT_FedoraWorkstation_log {
+	}
+
+	chain filter_OUT_FedoraWorkstation_deny {
+	}
+
+	chain filter_OUT_FedoraWorkstation_allow {
+	}
+
+	chain filter_OUT_FedoraWorkstation_post {
+	}
+
+	chain nat_OUT_FedoraWorkstation {
+		jump nat_OUT_FedoraWorkstation_pre
+		jump nat_OUT_FedoraWorkstation_log
+		jump nat_OUT_FedoraWorkstation_deny
+		jump nat_OUT_FedoraWorkstation_allow
+		jump nat_OUT_FedoraWorkstation_post
+	}
+
+	chain nat_OUT_FedoraWorkstation_pre {
+	}
+
+	chain nat_OUT_FedoraWorkstation_log {
+	}
+
+	chain nat_OUT_FedoraWorkstation_deny {
+	}
+
+	chain nat_OUT_FedoraWorkstation_allow {
+	}
+
+	chain nat_OUT_FedoraWorkstation_post {
+	}
+
+	chain nat_POST_FedoraWorkstation {
+		jump nat_POST_FedoraWorkstation_pre
+		jump nat_POST_FedoraWorkstation_log
+		jump nat_POST_FedoraWorkstation_deny
+		jump nat_POST_FedoraWorkstation_allow
+		jump nat_POST_FedoraWorkstation_post
+	}
+
+	chain nat_POST_FedoraWorkstation_pre {
+	}
+
+	chain nat_POST_FedoraWorkstation_log {
+	}
+
+	chain nat_POST_FedoraWorkstation_deny {
+	}
+
+	chain nat_POST_FedoraWorkstation_allow {
+	}
+
+	chain nat_POST_FedoraWorkstation_post {
+	}
+
+	chain filter_FWD_FedoraWorkstation {
+		jump filter_FWD_FedoraWorkstation_pre
+		jump filter_FWD_FedoraWorkstation_log
+		jump filter_FWD_FedoraWorkstation_deny
+		jump filter_FWD_FedoraWorkstation_allow
+		jump filter_FWD_FedoraWorkstation_post
+	}
+
+	chain filter_FWD_FedoraWorkstation_pre {
+	}
+
+	chain filter_FWD_FedoraWorkstation_log {
+	}
+
+	chain filter_FWD_FedoraWorkstation_deny {
+	}
+
+	chain filter_FWD_FedoraWorkstation_allow {
+		oifname "enp1s0" accept
+	}
+
+	chain filter_FWD_FedoraWorkstation_post {
+	}
+
+	chain nat_PRE_FedoraWorkstation {
+		jump nat_PRE_FedoraWorkstation_pre
+		jump nat_PRE_FedoraWorkstation_log
+		jump nat_PRE_FedoraWorkstation_deny
+		jump nat_PRE_FedoraWorkstation_allow
+		jump nat_PRE_FedoraWorkstation_post
+	}
+
+	chain nat_PRE_FedoraWorkstation_pre {
+	}
+
+	chain nat_PRE_FedoraWorkstation_log {
+	}
+
+	chain nat_PRE_FedoraWorkstation_deny {
+	}
+
+	chain nat_PRE_FedoraWorkstation_allow {
+	}
+
+	chain nat_PRE_FedoraWorkstation_post {
+	}
+
+	chain mangle_PRE_FedoraWorkstation {
+		jump mangle_PRE_FedoraWorkstation_pre
+		jump mangle_PRE_FedoraWorkstation_log
+		jump mangle_PRE_FedoraWorkstation_deny
+		jump mangle_PRE_FedoraWorkstation_allow
+		jump mangle_PRE_FedoraWorkstation_post
+	}
+
+	chain mangle_PRE_FedoraWorkstation_pre {
+	}
+
+	chain mangle_PRE_FedoraWorkstation_log {
+	}
+
+	chain mangle_PRE_FedoraWorkstation_deny {
+	}
+
+	chain mangle_PRE_FedoraWorkstation_allow {
+	}
+
+	chain mangle_PRE_FedoraWorkstation_post {
+	}
+
+	chain filter_IN_policy_allow-host-ipv6 {
+		jump filter_IN_policy_allow-host-ipv6_pre
+		jump filter_IN_policy_allow-host-ipv6_log
+		jump filter_IN_policy_allow-host-ipv6_deny
+		jump filter_IN_policy_allow-host-ipv6_allow
+		jump filter_IN_policy_allow-host-ipv6_post
+	}
+
+	chain filter_IN_policy_allow-host-ipv6_pre {
+	}
+
+	chain filter_IN_policy_allow-host-ipv6_log {
+	}
+
+	chain filter_IN_policy_allow-host-ipv6_deny {
+	}
+
+	chain filter_IN_policy_allow-host-ipv6_allow {
+		icmpv6 type mld-listener-done accept
+		icmpv6 type mld-listener-query accept
+		icmpv6 type mld-listener-report accept
+		icmpv6 type mld2-listener-report accept
+		icmpv6 type nd-neighbor-advert icmpv6 code 0 accept
+		icmpv6 type nd-neighbor-solicit icmpv6 code 0 accept
+		icmpv6 type nd-redirect icmpv6 code 0 accept
+		icmpv6 type nd-router-advert icmpv6 code 0 accept
+	}
+
+	chain filter_IN_policy_allow-host-ipv6_post {
+	}
+
+	chain nat_PRE_policy_allow-host-ipv6 {
+		jump nat_PRE_policy_allow-host-ipv6_pre
+		jump nat_PRE_policy_allow-host-ipv6_log
+		jump nat_PRE_policy_allow-host-ipv6_deny
+		jump nat_PRE_policy_allow-host-ipv6_allow
+		jump nat_PRE_policy_allow-host-ipv6_post
+	}
+
+	chain nat_PRE_policy_allow-host-ipv6_pre {
+	}
+
+	chain nat_PRE_policy_allow-host-ipv6_log {
+	}
+
+	chain nat_PRE_policy_allow-host-ipv6_deny {
+	}
+
+	chain nat_PRE_policy_allow-host-ipv6_allow {
+	}
+
+	chain nat_PRE_policy_allow-host-ipv6_post {
+	}
+
+	chain mangle_PRE_policy_allow-host-ipv6 {
+		jump mangle_PRE_policy_allow-host-ipv6_pre
+		jump mangle_PRE_policy_allow-host-ipv6_log
+		jump mangle_PRE_policy_allow-host-ipv6_deny
+		jump mangle_PRE_policy_allow-host-ipv6_allow
+		jump mangle_PRE_policy_allow-host-ipv6_post
+	}
+
+	chain mangle_PRE_policy_allow-host-ipv6_pre {
+	}
+
+	chain mangle_PRE_policy_allow-host-ipv6_log {
+	}
+
+	chain mangle_PRE_policy_allow-host-ipv6_deny {
+	}
+
+	chain mangle_PRE_policy_allow-host-ipv6_allow {
+	}
+
+	chain mangle_PRE_policy_allow-host-ipv6_post {
+	}
+}
