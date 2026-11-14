@@ -26,6 +26,10 @@ from typing import Callable
 DEFAULT_TIMEOUT = 10.0
 USER_AGENT = "Mozilla/5.0"        # generic: nothing that singles out this app or machine
 MAX_BODY = 2 * 1024 * 1024
+MAX_ERROR_BODY = 64 * 1024        # of an error's answer, read only that far: only its first words are ever read
+# a download that names no limit of its own: every caller names one (the update 256 MB, the browser 600 MB), and
+# none is ever unbounded
+MAX_DOWNLOAD = 1024 * 1024 * 1024
 
 DEFAULTS: dict = {
     "ip_echo_v4": "https://api.ipify.org",
@@ -201,7 +205,7 @@ class Net:
                  hosts: tuple[str, ...] = ()) -> HttpResult:
         """A file, written to `dest` as it arrives (never held in memory whole): for a tool the user
         starts (the browser in the RAM disk), not for online tests. `progress(done, total or None)`;
-        `stop()` ends it early (the result then has status None); `limit` caps the size."""
+        `stop()` ends it early (the result then has status None); `limit` caps the size (MAX_DOWNLOAD when 0)."""
         raise NotImplementedError
 
     def sleep(self, seconds: float) -> None:
@@ -409,8 +413,9 @@ def _read_body(r, limit: int, timeout: float) -> bytes:
     read waits that long at most anyway): a server trickling its answer held a 2 MiB read, and with it the online
     tests' Stop, for as long as it liked."""
     deadline, parts, size = time.monotonic() + timeout, [], 0
+    read = getattr(r, "read1", None) or r.read
     while size < limit:
-        chunk = r.read1(min(256 * 1024, limit - size))
+        chunk = read(min(256 * 1024, limit - size))
         if not chunk:
             break
         parts.append(chunk)
@@ -458,7 +463,11 @@ class RealNet(Net):
             with self._open(req, timeout) as r:
                 return HttpResult(r.status, _read_body(r, MAX_BODY, timeout))
         except urllib.error.HTTPError as e:
-            return HttpResult(e.code, e.read(MAX_BODY) if e.fp else b"", str(e))
+            try:          # its first words, within an answer's timeout: a server trickling one held Stop
+                body = _read_body(e, MAX_ERROR_BODY, timeout) if e.fp else b""
+            except (OSError, ValueError, TimeoutError):
+                body = b""
+            return HttpResult(e.code, body, str(e))
         except (urllib.error.URLError, OSError, ValueError) as e:
             return HttpResult(None, b"", str(getattr(e, "reason", e)))
 
@@ -494,6 +503,7 @@ class RealNet(Net):
         req.allowed_hosts = tuple(hosts)
         req.add_header("User-Agent", USER_AGENT)
         stopped = lambda: stop is not None and stop()  # noqa: E731
+        limit = limit or MAX_DOWNLOAD
         try:
             with self._open(req, timeout) as r, open(dest, "wb") as out, _cut_when(r, stopped):
                 total = int(r.headers.get("Content-Length") or 0) or None

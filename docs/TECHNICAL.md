@@ -676,7 +676,10 @@ http. The same is asked of the addresses in `online.json`. It follows a redirect
 into this computer or the local network, and never for a request that sends something (urllib turned a redirected
 POST, a router's SOAP request, into a GET of the new address). A download reads
 what arrives as it arrives, and Stop shuts its connection down, so a stalled server doesn't hold Stop up; an
-online test's answer has its timeout as a whole. The test suite uses `FakeNet` and never goes online. The browser download (section 7) is the only tool that uses the network,
+online test's answer has its timeout as a whole. An answer is read up to 2 MiB (`MAX_BODY`), an error's only
+up to 64 KB (`MAX_ERROR_BODY`), and a download up to the size its caller names, never more than 1 GiB
+(`MAX_DOWNLOAD`); nothing is asked for compressed (urllib's `Accept-Encoding: identity`) and nothing is
+decompressed, so each cap counts what the answer holds. The test suite uses `FakeNet` and never goes online. The browser download (section 7) is the only tool that uses the network,
 also through `online.Net`, and only when the user starts it. Check for updates… (below) is the app's only look at
 a newer version of itself, also only when the user clicks it.
 
