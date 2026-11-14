@@ -7018,7 +7018,15 @@ def _harden() -> None:
 
 def _no_dumps() -> None:
     # what it holds (deleted files' names, a drive's identify data) never reaches a crash dump or the journal's record
-    # of one: at a core size limit of 1 the kernel skips the dump altogether (the app's no_core_dumps, tested)
+    # of one: at a core size limit of 1 the kernel skips the dump altogether (the app's no_core_dumps, tested); and it
+    # is undumpable (PR_SET_DUMPABLE 0, the DA apps' one security standard, 2026-11-14), as the app is: what it runs
+    # (pkcheck, resolvectl, the watch's child) is dumpable again from its exec, and polkit reads the app's process,
+    # never this one
+    try:
+        import ctypes
+        ctypes.CDLL(None, use_errno=True).prctl(4, 0, 0, 0, 0)
+    except (ImportError, OSError, AttributeError):
+        pass
     try:
         with open("/proc/self/coredump_filter", "w", encoding="ascii") as f:
             f.write("0")

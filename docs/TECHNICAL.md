@@ -145,8 +145,19 @@ Tools are what the user starts on files, folders or drives they choose, where ch
 
 Programs the app runs get the host's environment (`hostenv.host_env`): the AppImage runtime's variables
 (`APPIMAGE`, `APPDIR`, `ARGV0`, `OWD`…) are left out, and variables the app changed for itself only (such as
-`GI_TYPELIB_PATH`, for its bundled typelibs) are given back as they were, so a host program never picks up
-the AppImage's libraries.
+`GI_TYPELIB_PATH`, for its bundled typelibs, and `GTK_USE_PORTAL`, below) are given back as they were, so a host
+program never picks up the AppImage's libraries.
+
+**Crash dumps and the process itself.** The app (`app.no_core_dumps`, first thing in `main`) and the helper
+(`_no_dumps`) start with a core size limit of 1, at which the kernel skips a dump altogether (at 0 systemd-coredump
+still keeps one: section 7.9), and `coredump_filter` 0; both are inherited by every program they start. Both are also
+undumpable (`PR_SET_DUMPABLE` 0): no other program of the account can read their memory, environment or open files
+through `/proc/<pid>` or attach a debugger to them (a program they start is dumpable again from its `exec`). Measured
+on Mint 22.3 (polkit 124, xdg-desktop-portal 1.20): polkit reads an undumpable process as any other (`pkcheck` gives
+the same answer for it, its uid given or looked up; `/proc/<pid>/stat`, `status` and `cgroup` stay readable), so
+`pkexec` and the helper's second password prompt are unchanged; xdg-desktop-portal refuses one ("Unable to open
+/proc/<pid>/root"), so the app tells GTK and GLib in its own process not to use portals (`GTK_USE_PORTAL=0`, for
+itself only: what it starts gets the variable as it was). pywebview's file dialog is GTK's own, never the portal's.
 
 What the app sets up to run later (the scheduled scan's timer, the Outbox's units, the right-click entries, a
 Box's menu entry) starts this copy of the app by its path (`launch.scan_command`). They are refused while that
@@ -566,7 +577,8 @@ listening have changed also when the list of them has, though some still listen.
   script directory off `sys.path`. Standard library only.
 - **What it inherits.** pkexec keeps the caller's umask, working folder and resource limits: the helper sets
   umask 022, works from `/`, lifts the limits that would cut a write or a read short (file size, address space,
-  data, CPU) and turns off crash dumps before anything else (`_harden`). Every folder it makes gets its mode set
+  data, CPU) and turns off crash dumps before anything else (`_harden`: a core size limit of 1, `coredump_filter`
+  0, undumpable, as the app; section 1). Every folder it makes gets its mode set
   (`_makedirs`), its own state folders (`OWN_DIRS`: /var/lib/daprivacyscanner, its journal, /run/daprivacyscanner)
   are root's and get their modes back where an older helper made them under the user's umask, and a state file it
   reads (a journal entry, swap.json, a RAM disk's record) must be root's, writable by root alone and have one name

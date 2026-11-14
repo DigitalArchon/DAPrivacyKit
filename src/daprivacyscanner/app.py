@@ -710,10 +710,20 @@ def no_core_dumps() -> None:
     a viewer, the file chooser) the user's files. A core size limit of 1 makes the kernel skip the dump altogether
     (sandbox.NO_CORE: at 0, systemd-coredump still wrote the command line, the environment and the open files' paths
     into the journal, tested); memory is left out too, where the limit can't be raised (coredump_filter 0). Both are
-    inherited by every program the app starts."""
+    inherited by every program the app starts.
+
+    And the app itself is undumpable (PR_SET_DUMPABLE 0, the DA apps' one security standard, 2026-11-14): no other
+    program of the account can read its memory, environment or open files through /proc/<pid> (mem, environ, fd,
+    maps) or attach to it, and it holds the session token and what the page shows. That isn't inherited: a program it
+    starts is dumpable again from its exec. Measured on Mint 22.3 (polkit 124, xdg-desktop-portal 1.20): polkit sees
+    an undumpable process as it sees any (pkcheck the same with its uid given or looked up: /proc/<pid>/stat, status
+    and cgroup stay readable), so pkexec and the helper's pkcheck work as before; xdg-desktop-portal refuses it
+    ("Unable to open /proc/<pid>/root"), so GTK and GLib in this process are told not to use portals
+    (GTK_USE_PORTAL=0, for this process only: hostenv gives every program it starts the environment as it was).
+    pywebview's file dialog is GTK's own, never the portal's."""
     import resource
     try:
-        with open("/proc/self/coredump_filter", "w") as f:
+        with open("/proc/self/coredump_filter", "w", encoding="ascii") as f:
             f.write("0")
     except OSError:
         pass
@@ -721,6 +731,13 @@ def no_core_dumps() -> None:
         resource.setrlimit(resource.RLIMIT_CORE, (1, 1))
     except (ValueError, OSError):
         pass
+    try:
+        import ctypes
+        undumpable = ctypes.CDLL(None, use_errno=True).prctl(4, 0, 0, 0, 0) == 0     # PR_SET_DUMPABLE, 0
+    except (OSError, AttributeError):
+        undumpable = False
+    if undumpable:
+        set_for_self("GTK_USE_PORTAL", "0")
 
 
 def quiet_tracebacks() -> None:

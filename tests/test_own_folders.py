@@ -36,6 +36,7 @@ def test_the_app_s_folders_are_put_back_to_0700_at_every_start(tmp_path):
 
 def test_main_keeps_them_private(tmp_path, monkeypatch):
     from daprivacyscanner import app
+    monkeypatch.setattr(app, "no_core_dumps", lambda: None)      # it would set this test process's limits for good
     state = Path(os.environ["XDG_STATE_HOME"]) / "daprivacyscanner"
     state.mkdir(parents=True)
     state.chmod(0o755)
