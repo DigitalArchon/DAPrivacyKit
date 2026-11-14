@@ -87,7 +87,8 @@ WITH_ADMIN: dict[str, str] = {
     "net.ipv6_reachable": "Reads ufw's rules (root-only) to leave out services the firewall blocks. Not needed with "
                           "firewalld.",
 }
-_HOST = re.compile(r"^(?=.{1,253}$)([A-Za-z0-9-]{1,63}\.)+[A-Za-z]{2,63}$")
+# \Z, not $: $ also matches before a newline at the end ("example.com\n")
+_HOST = re.compile(r"^(?=.{1,253}\Z)([A-Za-z0-9-]{1,63}\.)+[A-Za-z]{2,63}\Z")
 PROXY_VARS = ("ALL_PROXY", "all_proxy", "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy")
 
 
@@ -124,6 +125,9 @@ def load_settings(config_home: Path) -> dict:
         if k in ("ip_echo_v4", "ip_echo_v6", "ip_echo_v4b", "ip_echo_v6b", "ip_owner", "dns_leak", "port_probe"):
             if not isinstance(v, str) or (v and not v.startswith("https://")):
                 raise SettingsError(f"{p}: {k} must be an https:// URL (or empty)")
+            problem = address_problem(v) if v else ""
+            if problem:
+                raise SettingsError(f"{p}: {k} isn't used: {problem}")
         elif k in ("dnssec_failed", "dnssec_valid", "dot_probe"):
             if not isinstance(v, str) or not _HOST.match(v):
                 raise SettingsError(f"{p}: {k} must be a host name")
@@ -224,27 +228,103 @@ DEFAULT_PORTS = {"http": 80, "https": 443}
 STOP_EVERY = 2.0                # a download that stalls looks at Stop this often (seconds), within its own timeout
 
 
+# Where plain http may go (the HTTPS rule's own list): loopback, the private ranges, link-local, unique-local IPv6.
+# Not Python's is_private, which also takes the documentation, benchmarking and reserved ranges and 0.0.0.0/8:
+# 198.18.0.0/15 is where some proxies' fake-IP DNS answers point, so plain http "there" goes out through the proxy.
+LOCAL_NETWORKS = tuple(ipaddress.ip_network(n) for n in (
+    "127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16", "::1/128", "fc00::/7",
+    "fe80::/10"))
+# a host name as DNS writes it: letters, digits, hyphens (and underscores), dot-separated
+_DNS_NAME = re.compile(r"[a-z0-9_-]+(\.[a-z0-9_-]+)*")
+# what no address has in it, and which parsers may read apart (urllib's, the resolver's): whitespace, control
+# characters, a backslash
+_NOT_IN_AN_ADDRESS = re.compile(r"[\\\s\x00-\x1f\x7f]")
+
+
+def _address_as_a_name(host: str) -> bool:
+    """An address with a dot after it ("192.168.1.50."): the resolver doesn't read that as the address (glibc's
+    AI_NUMERICHOST refuses it), so it is a name, which whoever answers DNS resolves wherever they like."""
+    if not host.endswith("."):
+        return False
+    try:
+        ipaddress.ip_address(host.rstrip("."))
+    except ValueError:
+        return False
+    return True
+
+
 def is_local_host(host: str | None) -> bool:
     """An address on this computer or the local network, where plain http is allowed (the router's UPnP description):
     loopback, the private ranges, link-local, unique-local IPv6, "localhost" and .local names. Tor's onion services too
-    (Tor encrypts them end to end). Never a name that merely resolves to one: that is decided by whoever answers DNS."""
+    (Tor encrypts them end to end). Never a name that merely resolves to one: that is decided by whoever answers DNS.
+    A .local, .localhost or .onion name only as DNS writes one; an address read whole, so anything after a "%" but an
+    IPv6 zone ("192.168.1.1%.example.com") makes it a name."""
     if not host:
         return False
-    h = host.strip("[]").lower().rstrip(".")
+    h = host.lower()
+    if h.startswith("[") and h.endswith("]"):
+        h = h[1:-1]
+    if _address_as_a_name(h):
+        return False
+    h = h.rstrip(".")
     if h == "localhost" or h.endswith((".localhost", ".local", ".onion")):
-        return True
+        return bool(_DNS_NAME.fullmatch(h))
     try:
-        ip = ipaddress.ip_address(h.split("%", 1)[0])
+        ip = ipaddress.ip_address(h)
     except ValueError:
         return False
     if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
         ip = ip.ipv4_mapped
-    return ip.is_loopback or ip.is_private or ip.is_link_local
+    return any(ip in n for n in LOCAL_NETWORKS)
+
+
+def _unspecified(host: str) -> bool:
+    """0.0.0.0 (or ::) however it is written ("0", "0.0"): the address a server listens on, which reaches this
+    computer itself, not an address to send anything to."""
+    h = host.strip("[]").rstrip(".")
+    try:
+        return ipaddress.ip_address(h).is_unspecified
+    except ValueError:
+        pass
+    try:
+        return re.fullmatch(r"[0-9a-fx.]+", h) is not None and socket.inet_aton(h) == b"\0\0\0\0"
+    except OSError:
+        return False
+
+
+def address_problem(url: str) -> str:
+    """Why `url` can't be read as one address ("" when it can), whatever its scheme: a character no address has, a
+    user name or password in it (the online tests send nothing of the user's, and urllib would have sent it to DNS or
+    shown it in an error), a port no address can have, a "%" escape in its host (a parser may decode it into another
+    name) but an IPv6 zone's, or 0.0.0.0. Never the address itself in the words: it may hold a password."""
+    if _NOT_IN_AN_ADDRESS.search(url):
+        return "an address has no spaces, backslashes or control characters in it"
+    try:
+        parts = urllib.parse.urlsplit(url)
+        host, port = parts.hostname or "", parts.port
+    except ValueError:                              # "https://[fd00::5", half typed; a port past 65535
+        return "it isn't an address (check its host and port)"
+    if "@" in parts.netloc:
+        return "an address with a user name or password in it isn't used"
+    if port == 0:
+        return "it names port 0, which no server answers on"
+    if parts.netloc and not host:
+        return "it names no host"
+    if "%" in host and ":" not in host.split("%", 1)[0]:
+        return "a host has no % escapes in it"
+    if host and _unspecified(host):
+        return ("0.0.0.0 is the address a server listens on, not one to reach it at: use 127.0.0.1 for this computer, "
+                "or the server's own address on your network")
+    return ""
 
 
 def check_url(url: str) -> None:
     """Raises NotHttps unless the app may reach `url`: https anywhere, http only to a local address (rule: HTTPS only,
-    local addresses excepted). file:, ftp:, data: and the rest are never opened."""
+    local addresses excepted), and only an address that reads one way (address_problem). file:, ftp:, data: and the
+    rest are never opened."""
+    problem = address_problem(url)
+    if problem:
+        raise NotHttps(f"that address isn't used: {problem}")
     parts = urllib.parse.urlsplit(url)
     if parts.scheme == "https" and parts.hostname:
         return

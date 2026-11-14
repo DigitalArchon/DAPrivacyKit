@@ -663,9 +663,15 @@ listening have changed also when the list of them has, though some still listen.
 A scan never uses the network. Online tests (`scope: online`) run only when the user starts them, after
 the page has listed every host each one contacts (`contacts` in the YAML; endpoints configurable in
 `~/.config/daprivacyscanner/online.json`). All network access goes through `online.Net`, which opens https
-addresses only, plain http only to this computer or the local network (an address in the private, loopback or
-link-local ranges, `localhost`, a `.local` name: the router's UPnP description), never `file:`, `ftp:` or `data:`
-(`online.check_url`; the opener has no handler for them); it follows a redirect only to the host and port asked
+addresses only, plain http only to this computer or the local network (an address in 127.0.0.0/8, 10.0.0.0/8,
+172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, ::1, fc00::/7 or fe80::/10, read whole; `localhost`, a `.local`,
+`.localhost` or `.onion` name written as DNS writes one: the router's UPnP description), never `file:`, `ftp:` or
+`data:` (`online.check_url`; the opener has no handler for them). An address that could be read more than one way
+is refused whatever its scheme (`online.address_problem`): whitespace, a backslash or a control character in it, a
+user name or password, a port no address has (or 0), a `%` in its host but an IPv6 zone's (`192.168.1.1%.example.com`
+read as the router before), and 0.0.0.0, which is where a server listens, not an address to reach; a numeric
+address with a dot after it (`192.168.1.50.`) is a name, which DNS resolves wherever it likes, so it gets no plain
+http. The same is asked of the addresses in `online.json`. It follows a redirect only to the host and port asked
 (http to https there) or to one the call names on the https port, and never from https to http. A download reads
 what arrives as it arrives, and Stop shuts its connection down, so a stalled server doesn't hold Stop up; an
 online test's answer has its timeout as a whole. The test suite uses `FakeNet` and never goes online. The browser download (section 7) is the only tool that uses the network,
