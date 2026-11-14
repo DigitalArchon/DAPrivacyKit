@@ -14,8 +14,9 @@ from daprivacyscanner import helper, online, untrusted, update
 from daprivacyscanner.checks import online as checks_online
 from daprivacyscanner.online import FakeNet, HttpResult
 
-DEEP = "[" * 200_000                          # json.loads raised RecursionError on it
 NESTED = lambda n: "[" * n + "]" * n           # noqa: E731
+DEEP = NESTED(100_000)                         # json.loads raised RecursionError on it (and if a Python reads it, the
+                                               # walk refuses it)
 
 
 def test_loads_refuses_what_nests_too_deep_as_a_value_error():
@@ -61,7 +62,7 @@ def test_a_deep_line_with_cancel_in_it_doesnt_end_the_helper_s_session(monkeypat
     """_cancel_of read such a line before handle did, and caught only ValueError: the session ended."""
     mine, theirs, t = serve_in_thread(monkeypatch)
     try:
-        reply = ask(mine, ('{"action": "cancel", "x": ' + DEEP + "\n").encode())
+        reply = ask(mine, ('{"action": "cancel", "args": {"id": 1}, "x": ' + DEEP + "}\n").encode())
         assert reply == {"id": None, "ok": False, "error": "bad request"}
         assert ask(mine, {"id": 2, "action": "hello"})["result"]["version"] == helper.PROTOCOL
     finally:
