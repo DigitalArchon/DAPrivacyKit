@@ -46,6 +46,7 @@ from pathlib import Path
 from typing import Callable
 
 from . import __version__, about, launch
+from .untrusted import loads
 from .host import Host
 
 REPO = "DigitalArchon/DAPrivacyKit"
@@ -173,7 +174,7 @@ def latest(net) -> Release:
     if not r.ok:
         raise UpdateError(f"{API_HOST} couldn't be asked ({_failed(r)}). Nothing was downloaded.")
     try:
-        data = json.loads(r.text())
+        data = loads(r.text())
         tag, assets = data["tag_name"], data["assets"]
         if not isinstance(tag, str) or not isinstance(assets, list):
             raise TypeError

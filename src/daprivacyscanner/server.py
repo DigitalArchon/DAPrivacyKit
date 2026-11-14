@@ -49,6 +49,7 @@ from .privileged import (HelperDeclined, HelperError, HelperNotInstalled, Helper
 from .privileged import install_helper as install_helper_root
 from .runner import Runner
 from .undo import UndoLog
+from .untrusted import loads
 
 PLAN_TTL = 15 * 60
 ADMIN_IDLE = 5 * 60              # administrator access ends after this long unused
@@ -515,8 +516,10 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
         return {"result": d["results"].get(check_id), "rechecked": d["results"], "context": d["context"]}
 
     async def body_of(request: Request) -> dict:
+        # read with a limit on how deep it nests (untrusted.loads): Starlette's request.json() raised RecursionError,
+        # which this didn't catch, on a body of a few MB of "["
         try:
-            body = await request.json()
+            body = loads(await request.body())
         except ValueError:
             return {}
         return body if isinstance(body, dict) else {}
@@ -659,7 +662,7 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
         without, and system checks report that they couldn't check. Access granted for a scan is
         dropped again at once when nothing it found needs it to fix."""
         try:
-            body = await request.json()
+            body = loads(await request.body())
         except ValueError:
             body = {}
         want_admin = isinstance(body, dict) and bool(body.get("admin"))

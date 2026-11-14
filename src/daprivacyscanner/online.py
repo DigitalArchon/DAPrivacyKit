@@ -23,6 +23,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
+from .untrusted import loads
+
 DEFAULT_TIMEOUT = 10.0
 USER_AGENT = "Mozilla/5.0"        # generic: nothing that singles out this app or machine
 MAX_BODY = 2 * 1024 * 1024
@@ -116,7 +118,7 @@ def load_settings(config_home: Path) -> dict:
     out = json.loads(json.dumps(DEFAULTS))
     p = settings_path(config_home)
     try:
-        user = json.loads(p.read_text(encoding="utf-8"))
+        user = loads(p.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return out
     except (OSError, ValueError) as e:

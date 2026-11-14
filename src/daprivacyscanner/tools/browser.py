@@ -48,6 +48,7 @@ from typing import Callable
 from ..host import Host
 from ..procnames import comm
 from ..hostenv import host_env
+from ..untrusted import loads
 from . import owner, ramdisk, sandbox, seccomp, transfer, wayland
 
 PROJECT = "torbrowser"                  # signing-keys.yaml: the Tor Browser Developers key, which signs both
@@ -565,7 +566,7 @@ def release(net, b: Browser, plat: str) -> tuple[str, str, str]:
     if not r.ok:
         raise BrowserError(f"{urllib.parse.urlsplit(url).hostname} didn't answer ({_failed(r)}).")
     try:
-        data = json.loads(r.text())
+        data = loads(r.text())
         version, binary, sig = str(data["version"]), str(data["binary"]), str(data["sig"])
     except (ValueError, KeyError, TypeError):
         raise BrowserError("The project's download index couldn't be read.") from None

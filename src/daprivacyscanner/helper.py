@@ -171,6 +171,7 @@ OWN_DIRS = {STATE_DIR: 0o700, CHANGES_DIR: 0o700, RUN_DIR: 0o755, DONE_DIR: 0o70
 MAX_FILE = 256 * 1024
 COMMAND_TIMEOUT = 20
 MAX_REQUEST = 4 << 20                          # one request line at most (names_check's 500 paths fit many times)
+MAX_NESTING = 200                              # levels a request may nest (_loads)
 HELPER_IDLE = 6 * 60                           # seconds without a request before the helper ends (the app ends its own
                                                # access after 5 minutes unused, and sends keepalive while work holds it)
 HELPER_LIFETIME = 12 * 3600                    # and at most this long, however it is used
@@ -6834,10 +6835,29 @@ class _Input:
         return found
 
 
+def _loads(text: str | bytes | bytearray) -> Any:
+    """A request as json.loads reads it, refused (JSONDecodeError) when it nests past MAX_NESTING levels, whether the
+    parser gave up (RecursionError, which nothing here caught: a line of a few MB of "[" with "cancel" in it ended
+    the session from _cancel_of) or not. Walked, never recursed into (the app's untrusted.loads, in the helper's
+    own words: it imports nothing of the app's)."""
+    try:
+        data = json.loads(text)
+    except RecursionError:
+        raise json.JSONDecodeError("nested too deep", "", 0) from None
+    stack: list[tuple[Any, int]] = [(data, 1)]
+    while stack:
+        item, depth = stack.pop()
+        if depth > MAX_NESTING:
+            raise json.JSONDecodeError("nested too deep", "", 0)
+        children = item.values() if isinstance(item, dict) else item if isinstance(item, list) else ()
+        stack.extend((c, depth + 1) for c in children if isinstance(c, (dict, list)))
+    return data
+
+
 def _cancel_of(line: bytes | bytearray) -> object:
     """The id a cancel request names, or None if the line isn't one."""
     try:
-        req = json.loads(line)
+        req = _loads(line)
     except ValueError:
         return None
     if isinstance(req, dict) and req.get("action") == "cancel" and isinstance(req.get("args"), dict):
@@ -6862,7 +6882,7 @@ def handle(line: str) -> dict:
     global REQUEST_ID, ACTION, CURRENT
     rid = None
     try:
-        req = json.loads(line)
+        req = _loads(line)
         rid = req.get("id") if isinstance(req, dict) else None
         if not isinstance(req, dict) or req.get("action") not in ACTIONS or not isinstance(req.get("args", {}), dict):
             return {"id": rid, "ok": False, "error": "unknown action"}

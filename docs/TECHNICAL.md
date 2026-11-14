@@ -189,6 +189,8 @@ another program in between.
   Tokens are compared with `hmac.compare_digest`; a header beyond ASCII is simply wrong (403), never an
   error.
 - **DNS rebinding.** Requests whose `Host` header isn't the server's own address are refused.
+- **Request bodies** are read by `untrusted.loads`: JSON nested deeper than 200 levels is refused as unreadable,
+  as the parser giving up (`RecursionError`) is, never an error nothing caught.
 - **Headers on every answer.** The Content Security Policy (`default-src 'self'`, no inline script, no
   frames, no objects, no form actions, and `frame-ancestors 'none'`, which a `<meta>` can't say),
   `Cross-Origin-Resource-Policy: same-origin` (a website can't load the app's page, script or icon to tell
@@ -572,7 +574,8 @@ listening have changed also when the list of them has, though some still listen.
 - **Protocol.** One JSON object per line (`{"id", "action", "args"}`), one reply per line, over a socket pair: the
   helper's stdin and stdout are one end, the app holds the other. A pipe's end could be opened again by any process
   of the same user through `/proc/<app>/fd/N` (and requests written with an id the app skipped as late); a socket's
-  can't (ENXIO). A request line is at most `MAX_REQUEST` (4 MiB). It exits at end of input, after `HELPER_IDLE` (6
+  can't (ENXIO). A request line is at most `MAX_REQUEST` (4 MiB), nested at most `MAX_NESTING` (200) levels
+  (`_loads`: deeper is a bad request, never the session's end). It exits at end of input, after `HELPER_IDLE` (6
   minutes) without a request, and after `HELPER_LIFETIME` (12 hours) however it is used; while work holds the access
   the app sends `keepalive` every minute. `{"action": "cancel", "args": {"id": n}}` stops request n while it runs
   (the long loops look for it: the TRIM test's reads, the listing of deleted names, the traffic watch); it answers
@@ -679,7 +682,8 @@ what arrives as it arrives, and Stop shuts its connection down, so a stalled ser
 online test's answer has its timeout as a whole. An answer is read up to 2 MiB (`MAX_BODY`), an error's only
 up to 64 KB (`MAX_ERROR_BODY`), and a download up to the size its caller names, never more than 1 GiB
 (`MAX_DOWNLOAD`); nothing is asked for compressed (urllib's `Accept-Encoding: identity`) and nothing is
-decompressed, so each cap counts what the answer holds. The test suite uses `FakeNet` and never goes online. The browser download (section 7) is the only tool that uses the network,
+decompressed, so each cap counts what the answer holds. JSON in an answer (and in `online.json`) is read by
+`untrusted.loads`, which refuses what nests deeper than 200 levels as unreadable. The test suite uses `FakeNet` and never goes online. The browser download (section 7) is the only tool that uses the network,
 also through `online.Net`, and only when the user starts it. Check for updates… (below) is the app's only look at
 a newer version of itself, also only when the user clicks it.
 

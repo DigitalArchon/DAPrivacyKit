@@ -5,7 +5,6 @@ scan.net. Results never leave the machine."""
 from __future__ import annotations
 
 import ipaddress
-import json
 import os
 import re
 import secrets
@@ -20,6 +19,7 @@ from .. import network as net
 from .. import vpn
 from ..model import Evidence, Note, Outcome, Status
 from ..online import host_of, is_lan
+from ..untrusted import loads
 from ..privileged import HelperError
 from . import Check, Scan, register
 from .network import local_roots  # noqa: F401 (the guide imports it from here too)
@@ -304,7 +304,7 @@ class DnsLeak(OnlineCheck):
             scan.net.resolve(f"{i}.{test_id}.{domain}")              # failures are expected: only the asking counts
         r = scan.net.http_get(f"{base}/dnsleak/test/{test_id}?json")
         try:
-            you, resolvers, conclusion = _leak_entries(json.loads(r.text()) if r.ok else None)
+            you, resolvers, conclusion = _leak_entries(loads(r.text()) if r.ok else None)
         except ValueError:
             you, resolvers, conclusion = None, [], ""
         if you is None or not resolvers:
@@ -529,7 +529,7 @@ def _echo(scan: OnlineScan, url: str, family: int) -> str | None:
 
 def _json(r) -> dict:
     try:
-        d = json.loads(r.text()) if r.ok else {}
+        d = loads(r.text()) if r.ok else {}
     except ValueError:
         return {}
     return d if isinstance(d, dict) else {}
@@ -1003,7 +1003,7 @@ class Ipv6Reachable(OnlineCheck):
                     continue
                 r = scan.net.http_get(f"{probe}?{urllib.parse.urlencode({'host': addrs[0], 'port': s.port})}")
                 try:
-                    is_open = json.loads(r.text()).get("open") if r.ok else None
+                    is_open = loads(r.text()).get("open") if r.ok else None
                 except (ValueError, AttributeError):
                     is_open = None
                 (open_ if is_open is True else closed if is_open is False else unanswered).append(s.label())
