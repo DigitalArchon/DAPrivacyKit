@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import datetime as dt
 import json
-import os
 from pathlib import Path
 
 from . import __version__
@@ -93,12 +92,10 @@ def hide_welcome(config_home: Path, hide: bool) -> None:
         data["welcome_hidden_version"] = WELCOME_VERSION
     else:
         data.pop("welcome_hidden_version", None)
-    f = _ui_file(config_home)
-    f.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    tmp = f.with_suffix(".tmp")
-    with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as out:
-        json.dump(data, out)
-    os.replace(tmp, f)
+    # whole or not at all, through a temporary file of this write's own (one name, ui.tmp, for two windows let them
+    # mix what they wrote), on the disk before it replaces the old one
+    from .history import write_json
+    write_json(_ui_file(config_home), data)
 
 READS: list[dict] = [
     {"what": "Disks, partitions and swap", "why": "To tell which filesystems and swap are encrypted, where a "

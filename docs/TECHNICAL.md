@@ -2594,7 +2594,7 @@ drive they came from (its model, serial, size and WWN, `retire.identity`): anoth
 | Where | What | Notes |
 |---|---|---|
 | `$XDG_STATE_HOME/daprivacyscanner/` (0700) | `last-report.json`, `last-scan.json` (baseline), `accepted.json`, `undo.json` and file backups (an `undo.json` or `accepted.json` that couldn't be read, kept aside under its name, `.unreadable-` and the time), and `.lock`, the folder's lock file; each written to a temporary file, synced, renamed into place, its folder synced | Never holds deleted paths or Wi-Fi network names; the last report is saved without the entries of what starts at login (the baseline keeps hashes of them) and without the addresses and lookup names the online tests saw or the Wi-Fi networks a check names |
-| `$XDG_CONFIG_HOME/daprivacyscanner/` | `ui.json` (welcome dismissed), `online.json` (endpoints) | |
+| `$XDG_CONFIG_HOME/daprivacyscanner/` (0700) | `ui.json` (welcome dismissed; written as the state files are), `online.json` (endpoints, the user's) | |
 | `/var/lib/daprivacyscanner/changes` | The helper's journal of root changes | Root-owned |
 | `/run/daprivacyscanner/` | RAM disk state, swap state | Gone at reboot |
 | `/run/systemd/system/<unit>.d/50-daprivacyscanner.conf` | `LogLevelMax=notice` for an open RAM disk's mount unit; for ~/TempBrowser's also `BindsTo=`/`Before=user@UID.service` (unmounted when the session has ended) | Root-owned; removed at the close, gone at reboot |
@@ -2605,6 +2605,14 @@ drive they came from (its model, serial, size and WWN, `retire.identity`): anoth
 
 Tools keep nothing afterwards: no log, no history, nothing in reports or exports. The one exception is the
 browser's download, kept on the disk for next time when the user ticks it (section 7.4).
+
+The app's own folders (`daprivacyscanner` in the config, state, cache and data homes and the runtime folder) are
+0700, and every start puts one that is there with more back to 0700 (`paths.keep_own_folders_private`: made under
+the umask by an older version, or on the way to a folder inside it); a link in their place is never followed. Every
+file the app keeps (the state files above, `ui.json`, Presentation mode's `presentation.json`, a Box's `runs.json`,
+the rebuild's recovery note) is written whole or not at all: a temporary file of that write's own (0600), synced,
+renamed into place, its folder synced (`history.write_json`), never one temporary name shared by every writer. The
+AppImage Check for updates… puts in place is synced before it is renamed in.
 
 ---
 

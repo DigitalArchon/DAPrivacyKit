@@ -553,6 +553,14 @@ def _drop_pending(host: Host) -> None:
         pass
 
 
+def _sync_file(path: Path) -> None:
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def _sync_folder(folder: Path) -> None:
     try:
         fd = os.open(folder, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
@@ -592,6 +600,7 @@ def replace(host: Host, staged: Staged, current: str = __version__) -> dict:
                           "back, or delete it, and try again.")
     mode = (stat.S_IMODE(st.st_mode) & 0o777) | 0o100
     os.chmod(staged.file, mode)
+    _sync_file(staged.file)                              # on the disk before it is renamed in: never an empty AppImage
     try:
         os.link(target, keep, follow_symlinks=False)
         linked = True

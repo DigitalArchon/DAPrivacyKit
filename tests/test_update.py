@@ -738,3 +738,12 @@ def test_quitting_deletes_a_download_not_put_in_place(cat, tmp_path):
         c.app.state.update["staged"] = staged
         c.app.state.shutdown(wait=0, changes_wait=0)
         assert not staged.folder.exists() and f.exists()
+
+
+def test_the_new_appimage_is_on_the_disk_before_it_is_renamed_into_place(tmp_path, monkeypatch):
+    from test_own_folders import _fsynced_paths
+    host, f, staged = verified_copy(tmp_path)
+    new = str(staged.file)
+    seen = _fsynced_paths(monkeypatch)
+    U.replace(host, staged, "0.1.0b9")
+    assert new in seen and str(f.parent) in seen

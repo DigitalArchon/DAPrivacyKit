@@ -32,8 +32,10 @@ def _locks(host: Host) -> Path:
     runtime = host.environ.get("XDG_RUNTIME_DIR") or ""
     base = host.sys_path(runtime) if runtime.startswith("/") and host.sys_path(runtime).is_dir() else \
         Path(host.environ.get("XDG_CACHE_HOME") or host.home / ".cache")
-    d = base / "daprivacyscanner" / "owners"
-    d.mkdir(mode=0o700, parents=True, exist_ok=True)
+    # the app's folder 0700 too (paths.make_own_folder): made on the way to this one, it got the umask's mode
+    from ..paths import make_own_folder
+    d = make_own_folder(base / "daprivacyscanner") / "owners"
+    d.mkdir(mode=0o700, exist_ok=True)
     if d.is_symlink() or d.stat().st_uid != os.getuid():
         raise OSError(errno.EPERM, "the app's folder for its locks isn't its own")
     return d

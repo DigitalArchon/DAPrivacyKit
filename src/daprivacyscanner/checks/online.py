@@ -879,8 +879,8 @@ class UpdatesRefreshed(OnlineCheck):
         if room >= 400 * 2**20:
             base = runtime
         else:
-            own.mkdir(parents=True, exist_ok=True)
-            base = str(own)
+            from ..paths import make_own_folder
+            base = str(make_own_folder(own))                 # 0700, as the app's own folders are
         d = Path(tempfile.mkdtemp(prefix="daprivacyscanner-apt.", dir=base))
         try:
             for sub in ("lists/partial", "cache/archives/partial"):

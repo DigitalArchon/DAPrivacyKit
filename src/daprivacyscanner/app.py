@@ -752,6 +752,8 @@ def escaped_output() -> None:
 
 def main(argv: list[str] | None = None) -> None:
     no_core_dumps()
+    from .paths import keep_own_folders_private
+    keep_own_folders_private(Path.home(), os.environ)
     escaped_output()
     if not sys.stderr.isatty():
         quiet_tracebacks()
@@ -828,8 +830,6 @@ def main(argv: list[str] | None = None) -> None:
         raise SystemExit(str(e)) from None
 
     if args.capture:
-        from pathlib import Path
-
         from . import capture
         from .host import Host
 

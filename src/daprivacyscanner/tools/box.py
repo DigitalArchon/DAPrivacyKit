@@ -322,12 +322,10 @@ def record_run(host: Host, box: Box, t: trial.Trial) -> dict:
            "failed": bool(r.get("failed")), "signal": r.get("signal")}
     d["runs"] = (d["runs"] + [run])[-RUNS_KEPT:]
     d["hosts"] = (d["hosts"] + [h for h in dict.fromkeys(hashes) if h not in seen])[-HOSTS_KEPT:]
-    path = _runs_file(host, box.slug)
-    tmp = path.with_suffix(".tmp")
-    with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600), "w",
-              encoding="utf-8") as fh:
-        json.dump(d, fh)
-    os.replace(tmp, path)
+    # whole or not at all, through a temporary file of this write's own (history.write_json); the Box's folder is the
+    # user's, left as it is
+    from ..history import write_json
+    write_json(_runs_file(host, box.slug), d, own_folder=False)
     return run
 
 

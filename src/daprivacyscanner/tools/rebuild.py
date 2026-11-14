@@ -757,6 +757,8 @@ class Note:
         finally:
             os.close(fd)
         os.replace(tmp, self.path)
+        from ..fix import fsync_dir
+        fsync_dir(self.path.parent)                  # and the rename itself: a recovery note lost to a power cut
 
     def _release(self) -> None:
         if self.lock is not None:

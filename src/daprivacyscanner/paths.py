@@ -186,3 +186,57 @@ def _dedupe(locs: list[Location], existing: bool) -> list[Location]:
         seen.add(key)
         out.append(loc)
     return out
+
+
+# ------------------------------------------------------------ the app's own folders
+
+APP_FOLDER = "daprivacyscanner"
+
+
+def own_folders(home: Path, environ: Mapping[str, str]) -> list[Path]:
+    """The app's own folders: daprivacyscanner in the config, state, cache and data homes and the runtime folder."""
+    r = PathResolver(home, environ)
+    out = [r.config_home / APP_FOLDER, r.state_home / APP_FOLDER, r.cache_home / APP_FOLDER, r.data_home / APP_FOLDER]
+    if r.runtime_dir is not None:
+        out.append(r.runtime_dir / APP_FOLDER)
+    return out
+
+
+def owner_only(folder: Path) -> None:
+    """`folder` put back to 0700 when it is a folder of this account's with more (one made under the umask, by an
+    older version or a write that made it on the way to a folder inside it). Opened without following a link: a link,
+    or another account's folder, is left as it is (whoever uses it refuses it). Best effort, never raises."""
+    import os
+    import stat
+    try:
+        fd = os.open(folder, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except OSError:
+        return
+    try:
+        st = os.fstat(fd)
+        if st.st_uid == os.getuid() and stat.S_IMODE(st.st_mode) & 0o077:
+            os.fchmod(fd, 0o700)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
+def make_own_folder(folder: Path) -> Path:
+    """One of the app's own folders, made 0700 when missing (its parent, an XDG folder, as the umask makes it) and
+    kept 0700 when it is there: what it holds is this account's alone."""
+    import os
+    folder.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.mkdir(folder, 0o700)
+    except FileExistsError:
+        pass
+    owner_only(folder)
+    return folder
+
+
+def keep_own_folders_private(home: Path, environ: Mapping[str, str]) -> None:
+    """At every start: each of the app's own folders that is there kept 0700 (the DA apps' one security standard,
+    2026-11-14: data, config and state folders 0700, also when they already exist)."""
+    for folder in own_folders(home, environ):
+        owner_only(folder)

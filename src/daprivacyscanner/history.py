@@ -98,9 +98,13 @@ def locked(directory: Path):
         os.close(fd)
 
 
-def write_json(path: Path, data: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    os.chmod(path.parent, 0o700)
+def write_json(path: Path, data: dict, own_folder: bool = True) -> None:
+    """`data` as `path`, whole or not at all (a temporary file of this write's own, 0600, on the disk before it is
+    renamed into place, and the folder after). `own_folder`: the folder is the app's own (its state or config
+    folder), made and kept 0700; False for a folder of the user's (a Box's), which is left as it is."""
+    if own_folder:
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        os.chmod(path.parent, 0o700)
     # a temporary file of this write's own (0600): one name for every writer let two writing at once mix theirs, and
     # the file renamed into place could be cut short or hold both
     fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)

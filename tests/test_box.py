@@ -583,3 +583,17 @@ def test_boxes_through_the_api(cat, host, program):
         assert c.post("/api/tools/boxes/clear", headers=H, json={"box": "chat-app"}).json() == {"ok": True}
         assert not (f / "runs.json").exists()
         assert "app.boxes" in c.get("/api/tools", headers=H).json()["features"]
+
+
+def test_a_box_s_runs_are_written_whole_and_its_folder_left_as_it_is(host, monkeypatch):
+    """runs.tmp was one fixed temporary name for every writer, with nothing synced: written now through a file of the
+    write's own (history.write_json), the Box's folder, the user's, left as it is."""
+    from test_own_folders import _fsynced_paths
+    box = a_box(network="none")
+    f = set_up(host, box)
+    f.chmod(0o755)
+    (f / "runs.tmp").mkdir()
+    seen = _fsynced_paths(monkeypatch)
+    B.record_run(host, box, SimpleNamespace(started=1790000000, result={
+        "seconds": 1, "failed": False, "summary": {"totals": {}}, "exchange": 0, "hosts": {}}))
+    assert B.runs(host, "chat-app")["runs"] and stat.S_IMODE(f.stat().st_mode) == 0o755 and str(f) in seen
