@@ -186,8 +186,8 @@ another program in between.
 - **Every route** but the page's shell (`GET /` and `/static/`) needs the `X-Token` header, checked for all
   of them at once in the server's guard (a route that forgot its own check isn't left open). A cross-site
   form can't set it, and a cross-site `fetch` that sets it needs a CORS preflight the server never answers.
-  Tokens are compared with `hmac.compare_digest`; a header beyond ASCII is simply wrong (403), never an
-  error.
+  Tokens are compared as bytes with `hmac.compare_digest` (`server.same_token`); a header beyond ASCII is simply
+  wrong (403), never an error.
 - **DNS rebinding.** Requests whose `Host` header isn't the server's own address are refused.
 - **Request bodies** are read by `untrusted.loads`: JSON nested deeper than 200 levels is refused as unreadable,
   as the parser giving up (`RecursionError`) is, never an error nothing caught.

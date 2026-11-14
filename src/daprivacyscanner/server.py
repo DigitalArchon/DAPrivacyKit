@@ -272,6 +272,14 @@ class AdminSession:
                 self.last_used = time.monotonic()
 
 
+def same_token(given: str | None, wanted: str) -> bool:
+    """`given` (a header's or the link's) is `wanted`, compared as bytes in constant time: as text, compare_digest
+    refused anything beyond ASCII (a TypeError, which would have been a 500), and such a token is simply wrong."""
+    if given is None:
+        return False
+    return hmac.compare_digest(given.encode("utf-8", "surrogatepass"), wanted.encode("utf-8", "surrogatepass"))
+
+
 def needs_root_to_fix(catalogue: Catalogue, result: dict) -> bool:
     """A fixable result whose fix (or any step of its guide) goes through the helper."""
     if not result.get("fixable"):
@@ -367,9 +375,7 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
                 in_flight.notify_all()
 
     def token_ok(request: Request) -> bool:
-        # compare_digest refuses text beyond ASCII (a TypeError, which would be a 500): such a header is just wrong
-        t = request.headers.get("x-token")
-        return t is not None and t.isascii() and hmac.compare_digest(t, token)
+        return same_token(request.headers.get("x-token"), token)
 
     def shell_route(request: Request) -> bool:
         """The page's shell, served without the token: the page itself (where the launch token is exchanged) and its
@@ -534,7 +540,7 @@ def create_app(token: str, catalogue: Catalogue, make_host: Callable[[], Host] =
         if t is not None:
             # the launch token: one exchange for the session token, handed to the page in its body (it keeps it in
             # its session storage, this origin's own), then it is forgotten
-            if launch["token"] is not None and t.isascii() and hmac.compare_digest(t, launch["token"]):
+            if launch["token"] is not None and same_token(t, launch["token"]):
                 launch["token"] = None
                 if on_launched is not None:             # the launcher file that carried it has done its work
                     try:
