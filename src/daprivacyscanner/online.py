@@ -278,6 +278,11 @@ def is_local_host(host: str | None) -> bool:
     return any(ip in n for n in LOCAL_NETWORKS)
 
 
+def _on_this_network(host: str | None) -> bool:
+    """This computer or the local network (is_local_host, without Tor's onion services)."""
+    return is_local_host(host) and not (host or "").lower().rstrip(".").endswith(".onion")
+
+
 def _unspecified(host: str) -> bool:
     """0.0.0.0 (or ::) however it is written ("0", "0.0"): the address a server listens on, which reaches this
     computer itself, not an address to send anything to."""
@@ -345,10 +350,17 @@ class ConfinedRedirects(urllib.request.HTTPRedirectHandler):
     """Follows a redirect only to the request's own host and port (http to https there: from port 80 to 443), or to one
     of its `allowed_hosts` on the https port; never from https to http, never to anything but http or https, and plain
     http only to a local address (check_url). Anything else stops the request (Redirected) instead of reaching a host,
-    or a port on it, the user wasn't told about."""
+    or a port on it, the user wasn't told about. Never for a request that sends something (urllib turned a redirected
+    POST into a GET of the new address), and never from the internet into this computer or the local network.
+    `newurl` is already resolved against the request's own address (urllib's http_error_302)."""
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         old, new = urllib.parse.urlsplit(req.full_url), urllib.parse.urlsplit(newurl)
+        if req.data is not None:
+            raise Redirected("it answered a request that sends something with a redirect, which isn't followed")
+        if _on_this_network(new.hostname) and not _on_this_network(old.hostname):
+            raise Redirected("it redirected from the internet to this computer or the local network, so it was "
+                             "stopped there")
         named = set(getattr(req, "allowed_hosts", ()))
         same = new.hostname == old.hostname and (
             _port(new) == _port(old)
@@ -358,6 +370,9 @@ class ConfinedRedirects(urllib.request.HTTPRedirectHandler):
                 or new.scheme not in ("http", "https"):
             where = f"{new.scheme}://{new.hostname}" + (f":{new.port}" if _port(new) not in (None, 80, 443) else "")
             raise Redirected(f"it redirected to {where}, which isn't one of the hosts named, so it was stopped there")
+        problem = address_problem(newurl)
+        if problem:
+            raise Redirected(f"it redirected to an address the app doesn't use ({problem}), so it was stopped there")
         try:
             check_url(newurl)
         except NotHttps as e:

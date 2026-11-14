@@ -672,7 +672,9 @@ user name or password, a port no address has (or 0), a `%` in its host but an IP
 read as the router before), and 0.0.0.0, which is where a server listens, not an address to reach; a numeric
 address with a dot after it (`192.168.1.50.`) is a name, which DNS resolves wherever it likes, so it gets no plain
 http. The same is asked of the addresses in `online.json`. It follows a redirect only to the host and port asked
-(http to https there) or to one the call names on the https port, and never from https to http. A download reads
+(http to https there) or to one the call names on the https port, never from https to http, never from the internet
+into this computer or the local network, and never for a request that sends something (urllib turned a redirected
+POST, a router's SOAP request, into a GET of the new address). A download reads
 what arrives as it arrives, and Stop shuts its connection down, so a stalled server doesn't hold Stop up; an
 online test's answer has its timeout as a whole. The test suite uses `FakeNet` and never goes online. The browser download (section 7) is the only tool that uses the network,
 also through `online.Net`, and only when the user starts it. Check for updates… (below) is the app's only look at
