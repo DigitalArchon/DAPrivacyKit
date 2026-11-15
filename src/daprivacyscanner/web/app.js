@@ -4143,7 +4143,7 @@ function browserFiles(b, data, reload, ui = BROWSER_UI) {
       + "something (\"IMG_20260105_143022.jpg\", your name on a CV) before you add it."),
     data.picker === "zenity" || data.picker === "kdialog" ? h("div", { class: "notebox risk small" },
       `Choosing a file with ${data.picker} (the file chooser, outside the app's window) adds it to your desktop's recent `
-      + "files list, kept on the disk: a record that you used it now. In the app's window that is turned off. Recent "
+      + "files list, kept on the disk: a record that you used it now. In the app's window the list is left as it was. Recent "
       + "files' guide stops the list for good.", h("div", { class: "orow" }, (() => {
         const spec = S.state.catalogue.find(x => x.id === "desk.recent_files");
         return spec ? h("button", { class: "small", onclick: () => openGuide(spec) }, "Stop keeping recent files…") : null;

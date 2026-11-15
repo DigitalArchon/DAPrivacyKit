@@ -19,7 +19,7 @@ from typing import Callable
 
 import uvicorn
 
-from . import about, catalogue
+from . import about, catalogue, recentguard
 from .hostenv import host_env, set_for_self
 from .model import STATUS_WORD
 from .launch import scan_command, systemd_exec  # noqa: F401 - the timer, units and right-click entries use them
@@ -984,24 +984,19 @@ def main(argv: list[str] | None = None) -> None:
                     window.destroy()
                     return False
 
-                def no_recent_files():
-                    # GTK's file chooser adds every file chosen to the desktop's recent files list on the disk
-                    # (tested): never for the tools' files. The app's own setting outranks the desktop's.
-                    from gi.repository import Gtk
-                    settings = Gtk.Settings.get_default()
-                    if settings is not None:
-                        settings.set_property("gtk-recent-files-enabled", False)
-                    return False
-
-                GLib.idle_add(no_recent_files)
-
                 for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
                     GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, sig, close, sig)
 
+            # GTK's file chooser adds every file chosen to the desktop's recent files list on the disk (tested):
+            # the tools' files and the report's are put back out of it (recentguard), pywebview's dialogs and a
+            # page's alike. Never by switching recent files off for the app: GTK then writes an empty list over
+            # the user's whole one at the first file chosen (measured).
+            recentguard.guard_pywebview(window)
             webview.start(on_started, gui="gtk", private_mode=True, icon=window_icon())
     except KeyboardInterrupt:
         pass
     finally:
+        recentguard.put_back()                  # GTK writes the list from its model as the loop ends
         finish(app, server, thread, launched)
 
 

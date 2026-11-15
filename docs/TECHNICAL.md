@@ -2219,9 +2219,14 @@ drive they came from (its model, serial, size and WWN, `retire.identity`): anoth
   look (`OutboxLooks`); a stalled copy was cleaned half-written before. The working copy goes in the runtime folder
   when it has room for it and the cleaned copy (`_outbox_work`), else in a hidden folder inside `~/Outbox`, on the
   disk the original is on, never `/tmp`. A run that stops anyway says so in a notification. Nothing is deleted.
-- **File chooser** (`tools/pick.py`): pywebview's dialog in the window (GTK's recent-files recording
-  turned off for the app, which outranks the desktop's setting), zenity or kdialog in a browser, else a
-  typed path. The server accepts only absolute paths of regular files the user can read (and, for Remove
+- **File chooser** (`tools/pick.py`): pywebview's dialog in the window, zenity or kdialog in a browser, else a
+  typed path. In the window, what GTK's chooser adds to the recent-files list (every file chosen, and a rewrite of
+  the whole list that drops entries older than 30 days, then again as the app quits) is put back as it was, byte for
+  byte, after each of GTK's writes (`recentguard.py`, DA Assistant's copy, for every chooser of the window: its own
+  dialogs, the report's Save, a page's `<input type="file">`). Recent files used to be switched off for the app
+  instead, which made GTK write an empty list over the user's whole one at the first file chosen (measured with GTK
+  3.24.41). A program writing the list in the quarter of a second after a choice, or as the app quits, loses that
+  write, as GTK's own would. The server accepts only absolute paths of regular files the user can read (and, for Remove
   metadata, folders they can open), resolved one name at a time (`pick.resolved`) and refused when the way goes
   through a link inside `~/TempBrowser`: the browser writes there, and a link it planted (`Downloads/notes.txt`
   pointing at `~/.ssh/id_ed25519`) made Add a file to upload… copy the key where the browser reads it (found in the
