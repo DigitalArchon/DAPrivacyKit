@@ -2231,7 +2231,9 @@ drive they came from (its model, serial, size and WWN, `retire.identity`): anoth
   of the monitor it opens on (a hook on "realize" while one is open: geometry hints of the work area less 5% a side,
   and on X11 moved onto it), since GTK sizes one from the size it saved last: on a 640x480 screen it was 1096x822 with
   its top left off the screen, and on 1280x800 desktops and under Hyprland its header bar (Cancel, Open, the location
-  bar) was off the screen. The server accepts only absolute paths of regular files the user can read (and, for Remove
+  bar) was off the screen. Hyprland centres a dialog on its parent and keeps neither on the screen, so there the
+  chooser is also held to the room around its parent's centre, the parent's place read from Hyprland's own socket
+  (the parent's size where that can't be had). The server accepts only absolute paths of regular files the user can read (and, for Remove
   metadata, folders they can open), resolved one name at a time (`pick.resolved`) and refused when the way goes
   through a link inside `~/TempBrowser`: the browser writes there, and a link it planted (`Downloads/notes.txt`
   pointing at `~/.ssh/id_ed25519`) made Add a file to upload… copy the key where the browser reads it (found in the
