@@ -17,7 +17,7 @@ from .. import ini
 from ..host import Unreadable
 from ..model import Evidence, Note, Outcome, Status
 from . import Check, Scan, register
-from ._util import absent, failed, installed, mounts, passed, read_text, sys_children, unknown, warned
+from ._util import absent, failed, installed, isfile, mounts, passed, read_text, sys_children, unknown, warned
 
 
 # The packages the running system's core is made of: the kernel (on Debian and Ubuntu a meta package
@@ -59,7 +59,10 @@ def kernel_restart(scan: Scan) -> tuple[bool | None, list[Evidence]]:
     running = (host.read_sys("/proc/sys/kernel/osrelease") or "").strip()
     dirs = {d.name: d for base in ("/usr/lib/modules", "/lib/modules") for d in sys_children(host, base)
             if d.is_dir()}
-    kernels = [n for n, d in dirs.items() if (d / "vmlinuz").is_file() or host.sys_path(f"/boot/vmlinuz-{n}").exists()]
+    # a folder in /usr/lib/modules that holds no kernel of its own (Omarchy keeps a ".old" one) is looked up in /boot,
+    # which may be root's alone (0700 there): pathlib's exists() raises for that and failed the whole check, where a
+    # kernel that can't be seen is simply not counted (none counted at all is "can't tell", below)
+    kernels = [n for n, d in dirs.items() if isfile(d / "vmlinuz") or isfile(host.sys_path(f"/boot/vmlinuz-{n}"))]
     if not running or not kernels:
         return None, []
     ev = [Evidence.val("Running kernel", running)]

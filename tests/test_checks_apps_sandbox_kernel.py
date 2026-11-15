@@ -444,6 +444,22 @@ def test_updates_arch_kernel_replaced_in_place(cat, tmp_path):
     assert (sev.lowest, sev.value) == (2, 6) and sev.uncertain_on == ("security_updates_pending",)
 
 
+@skip_if_root
+def test_updates_a_modules_folder_with_no_kernel_and_boot_root_only(cat, tmp_path):
+    """Omarchy (tested 2026-11-15): /usr/lib/modules holds a ".old" folder with no vmlinuz, and /boot is root's alone
+    (0700). Looking for /boot/vmlinuz-.old raised PermissionError, and the whole check said "The check failed"."""
+    files = {**_kernels("6.10.2-arch1-1", "6.10.2-arch1-1", "6.10.3-arch1-1", arch=True),
+             "/usr/lib/modules/.old/modules.dep": "", "/boot/vmlinuz-linux": ""}
+    host = make_host(tmp_path, installed=["pacman"], commands={"pacman -Qu": CommandResult((), 0, "")}, files=files)
+    boot = tmp_path / "root/boot"
+    os.chmod(boot, 0o000)                     # root's alone, as to the user there
+    try:
+        o = detect(cat, "kern.updates", make_scan(host))
+    finally:
+        os.chmod(boot, 0o755)
+    assert o.status is Status.FAIL and ev(o)["Newest installed kernel"] == "6.10.3-arch1-1"
+
+
 def test_updates_in_a_container_ignore_the_kernel(cat, tmp_path):
     host = make_host(tmp_path, commands={"apt list --upgradable": "Listing...\n"},
                      files=_kernels("6.8.0-45-generic", "6.8.0-47-generic"))
