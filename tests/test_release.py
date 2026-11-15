@@ -88,6 +88,19 @@ def test_the_appimage_names_its_updates_and_the_zsync_carries_nothing_of_this_ma
     assert "hostca.crt:ro,Z" not in wrapper and 'install -m 0644 "$ca" "$WORK/context/hostca.crt"' in wrapper
 
 
+def test_the_readme_claims_no_signature_the_release_doesnt_have():
+    """sign-release.sh signs the AppImage and its .sha256, nothing else: the README said, after signed tags and a
+    required second build had been backed out (2026-11-12), that the tag was signed, each release built on two
+    machines, and the .zsync signed like the rest."""
+    sign = (ROOT / "packaging/sign-release.sh").read_text(encoding="utf-8")
+    assert "files=(dist/DAPrivacyKit-*-x86_64.AppImage dist/DAPrivacyKit-*-x86_64.AppImage.sha256)" in sign
+    assert "git tag -s" not in sign and "zsync" not in sign
+    readme = " ".join((ROOT / "README.md").read_text(encoding="utf-8").split())
+    for claim in ("tag is signed", "git tag -s", "built on two machines", "signed like the rest"):
+        assert claim not in readme, claim
+    assert "The `.zsync` itself isn't signed" in readme
+
+
 def test_the_sbom_is_made_from_what_was_installed(tmp_path):
     import json
     import sys
