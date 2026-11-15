@@ -535,9 +535,9 @@ apps:
     name: "mpv"
     packages: [mpv]
     flatpak: [io.mpv.Mpv]
-    checked: "0.41.0"
+    checked: "0.42.0"
     basis: current
-    checked_on: 2026-10-08
+    checked_on: 2026-11-15
     major_parts: 2
     checks: [app.media_players]
     data: [config:mpv, state:mpv]
@@ -720,9 +720,9 @@ apps:
     name: "Shotwell"
     packages: [shotwell]
     flatpak: [org.gnome.Shotwell]
-    checked: "33.0"
+    checked: "33.2"
     basis: current
-    checked_on: 2026-10-08
+    checked_on: 2026-11-15
     major_parts: 2
     checks: [app.photo_dbs]
     data: [data:shotwell]
@@ -913,9 +913,9 @@ apps:
     name: "Dropbox"
     packages: [dropbox, nautilus-dropbox]
     flatpak: [com.dropbox.Client]
-    checked: "273.4.4708"
+    checked: "279.4.5723"
     basis: current
-    checked_on: 2026-10-08
+    checked_on: 2026-11-15
     checks: [tel.cloud_sync]
     data: [home:.dropbox]
     relies_on: >-
@@ -959,9 +959,9 @@ apps:
     name: "rclone"
     packages: [rclone]
     snap: [rclone]
-    checked: "1.75.1"
+    checked: "1.76.0"
     basis: current
-    checked_on: 2026-10-08
+    checked_on: 2026-11-15
     major_parts: 2
     checks: [tel.cloud_sync, auth.plaintext_credentials]
     data: [config:rclone]
@@ -1101,9 +1101,9 @@ apps:
   - id: gsconnect
     name: "GSConnect"
     packages: [gnome-shell-extension-gsconnect]
-    checked: "73"
+    checked: "74"
     basis: current
-    checked_on: 2026-10-08
+    checked_on: 2026-11-15
     checks: [net.kdeconnect]
     relies_on: >-
       gnome-extensions list (gsconnect@andyholmes.github.io)
