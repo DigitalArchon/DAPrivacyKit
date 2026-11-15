@@ -65,6 +65,26 @@ def test_from_a_source_tree_the_helper_runs_where_it_is(monkeypatch):
     assert cmd[-1] == hashlib.sha256(Path(helper.__file__).read_bytes()).hexdigest()
 
 
+def test_the_mounted_smoke_test_reads_the_copy_and_its_hash_where_the_fallback_command_puts_them(tmp_path):
+    """packaging/test-appimage.sh --mounted asks the AppImage's Python for the helper's copy: since the fallback command
+    ended with the copy's SHA-256 (2026-11-12) it took that hash for the path, and failed on every distribution. Its
+    Python one-liner, run here as there (APPDIR naming the folder the package is in), prints the copy, then its hash."""
+    import re
+    import subprocess
+    import sys
+    script = (ROOT / "packaging/test-appimage.sh").read_text(encoding="utf-8")
+    code = re.search(r"HELPER_COPY='[^\n]*?-I -c \"([^\"]+)\"", script).group(1)
+    run = tmp_path / "run"
+    run.mkdir(mode=0o700)
+    env = {**os.environ, "APPDIR": str(ROOT / "src"), "XDG_RUNTIME_DIR": str(run), "PYTHONPATH": str(ROOT / "src")}
+    out = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True, check=True,
+                         timeout=60).stdout.splitlines()
+    copy = run / "daprivacyscanner/helper.py"
+    assert copy.read_bytes() == (ROOT / "src/daprivacyscanner/helper.py").read_bytes()
+    assert out == [str(copy), hashlib.sha256(copy.read_bytes()).hexdigest()]
+    assert "{ read -r P; read -r H; } < /tmp/helper-path.txt" in script and '"${ours%% *}" = "$H"' in script
+
+
 @pytest.fixture
 def root(tmp_path, monkeypatch):
     r = tmp_path / "root"

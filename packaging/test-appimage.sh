@@ -61,14 +61,16 @@ else
     PODMAN_OPTS=()
     PREPARE='A=/tmp/squashfs-root PROG=/tmp/squashfs-root/AppRun'
 fi
-# --mounted: the helper's copy, made as the app makes it, then run by root as pkexec would run it
+# --mounted: the helper's copy, made as the app makes it, then run by root as pkexec would run it. The fallback
+# command ends with the copy's path, then the SHA-256 its loader checks the copy against (privileged.fallback_command)
 # shellcheck disable=SC2016
-HELPER_COPY='APPDIR=$A $A/usr/python/bin/python3 -I -c "from daprivacyscanner import privileged; print(privileged.fallback_command()[-1])" > /tmp/helper-path.txt
-P=$(cat /tmp/helper-path.txt)
+HELPER_COPY='APPDIR=$A $A/usr/python/bin/python3 -I -c "from daprivacyscanner import privileged; c = privileged.fallback_command(); print(c[-2]); print(c[-1])" > /tmp/helper-path.txt
+{ read -r P; read -r H; } < /tmp/helper-path.txt
 case "$P" in "$XDG_RUNTIME_DIR"/daprivacyscanner/helper.py) echo "PASS the helper is copied out of the FUSE mount into the runtime folder";;
   *) echo "FAIL the helper copy is $P, not in $XDG_RUNTIME_DIR/daprivacyscanner"; exit 1;; esac
 ours=$(sha256sum < "$P"); theirs=$(sha256sum < "$A/usr/python/lib/python3.12/site-packages/daprivacyscanner/helper.py")
-if [ "$ours" = "$theirs" ]; then echo "PASS the copy is the mount'"'"'s helper.py"; else echo "FAIL the copy differs"; exit 1; fi'
+if [ "$ours" = "$theirs" ] && [ "${ours%% *}" = "$H" ]; then echo "PASS the copy is the mount'"'"'s helper.py, with the hash its loader checks"
+else echo "FAIL the copy differs, or its hash is not $H"; exit 1; fi'
 
 status=0
 for d in "${@:-ubuntu debian fedora arch cachyos}"; do
