@@ -1056,7 +1056,7 @@ def media_players(check, scan, outcome):
             a.append(ClearInFile(ini_file, _clear_smplayer_recents, "Empty SMPlayer's list of recent files",
                                  scan.host.display(ini_file), settings=True).unless(smplayer))
         a += guarded(delete(scan, loc.path / "file_settings", "SMPlayer per-file settings"), smplayer)
-    from .apps import CELLULOID_FLATPAK, HARUNA_NEVER, haruna
+    from .apps import CELLULOID_FLATPAK, HARUNA_DEFAULT_PLAYLIST, HARUNA_NEVER, haruna
     for loc in scan.paths.config("celluloid/watch_later", flatpak=[CELLULOID_FLATPAK]):
         if in_use(scan, loc.path, "celluloid"):
             effects.append("Skipped Celluloid: close it first.")
@@ -1068,12 +1068,18 @@ def media_players(check, scan, outcome):
             effects.append("Skipped Haruna: close it first.")
             continue
         start = len(a)
-        if (h.recent or h.positions) and h.only_history:
+        if (h.recent or h.positions or h.cached) and h.only_history:
             a += delete(scan, h.db.parent, "Haruna's database of recent files and resume points (it holds nothing "
                         "else; Haruna makes it again)", re.compile(r"^haruna\.db(-wal|-shm|-journal)?$"))
-        elif h.recent or h.positions:
+        elif h.recent or h.positions or h.cached:
             effects.append("Haruna's recent files and resume points are left: its database (haruna.db) now holds more "
-                           "than those, so it isn't deleted. Clear them in Haruna instead.")
+                           "than those, so it isn't deleted. Clear them in Haruna instead (Settings → Database, from "
+                           "Haruna 1.9).")
+        if h.playlist:
+            playlist = h.db.parent / HARUNA_DEFAULT_PLAYLIST
+            a += delete(scan, playlist.parent, "Haruna's saved default playlist (it makes it again)",
+                        re.compile(rf"^{re.escape(playlist.name)}$"))
+            effects.append("Haruna saves its default playlist again as you use it: no setting stops that (Haruna 1.9).")
         if h.last:
             a.append(ClearInFile(h.conf, lambda t: re.sub(r"^LastPlayedFile(\[\$e\])?=.*\n?", "", t, flags=re.M),
                                  "Remove the last file Haruna played from its settings", scan.host.display(h.conf),

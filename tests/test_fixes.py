@@ -566,6 +566,37 @@ def test_media_players_say_they_clear_lines_not_delete_settings(cat, tmp_path):
                                       "[OpenDialog]\ntimes=keep\n")
 
 
+def test_haruna_1_9_s_new_tables_and_saved_default_playlist(cat, tmp_path):
+    """Haruna 1.9 (its source, reviewed 2026-11-15): recent_files points at a new urls table (the full path of every
+    recent file and cached playlist item, which nothing in Haruna clears), metadata_cache holds titles and durations,
+    and the default playlist is saved to playlists/Default.m3u8. All of it is counted; haruna.db, holding only those,
+    is still deleted (Haruna makes it again), and so is the default playlist, never a named one."""
+    import sqlite3
+    host = make_host(tmp_path, home_files={
+        ".config/haruna/haruna.conf": "[General]\nOsdFontSize=25\n",
+        ".local/share/haruna/playlists/Default.m3u8": "#EXTM3U\n/home/alice/Videos/secret.mp4\n/home/alice/Videos/b.mp4\n",
+        ".local/share/haruna/playlists/Mine.m3u8": "#EXTM3U\n/home/alice/Music/mine.mp3\n"})
+    host.runner.handlers["kwriteconfig6"] = FakeKwriteconfig(host.home / ".config")
+    db = sqlite3.connect(host.home / ".local/share/haruna/haruna.db")
+    db.executescript("CREATE TABLE urls (url_id INTEGER PRIMARY KEY, url TEXT);"
+                     "CREATE TABLE recent_files (recent_file_id INTEGER, url_id INTEGER, opened_from TEXT, timestamp INTEGER);"
+                     "CREATE TABLE playback_position (md5_hash TEXT, path TEXT, position REAL);"
+                     "CREATE TABLE metadata_cache (url_id INTEGER, title TEXT, duration REAL);"
+                     "INSERT INTO urls VALUES (1, 'file:///home/alice/Videos/secret.mp4'), (2, 'file:///home/alice/Videos/b.mp4');"
+                     "INSERT INTO recent_files VALUES (1, 1, 'x', 1);"
+                     "INSERT INTO metadata_cache VALUES (2, 'b', 60.0);")
+    db.commit()
+    db.close()
+    o = detect(cat, "app.media_players", make_scan(host, desktop=("kde",), plasma_major=6))
+    assert o.status is Status.FAIL and ev(o)["Haruna recent files and resume points"] == 1
+    assert ev(o)["Haruna's saved file names and details"] == 3 and ev(o)["Haruna's saved default playlist"] == 2
+    plan, res, log = run_fix(cat, host, "app.media_players", desktop=("kde",), plasma_major=6)
+    assert not (host.home / ".local/share/haruna/haruna.db").exists()
+    assert not (host.home / ".local/share/haruna/playlists/Default.m3u8").exists()
+    assert (host.home / ".local/share/haruna/playlists/Mine.m3u8").exists()          # the user's own
+    assert redetect(cat, host, "app.media_players", desktop=("kde",), plasma_major=6).status is Status.PASS
+
+
 def test_haruna_s_database_is_kept_when_it_holds_more_than_history(cat, tmp_path):
     """Deleting haruna.db is right only while it holds the two history tables (1.8): a later Haruna that keeps
     anything else there keeps its database, and the plan says so."""

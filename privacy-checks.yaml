@@ -3106,11 +3106,14 @@ checks:
       - 'Celluloid (Linux Mint''s player): mpv''s resume files in ~/.config/celluloid/watch_later (its source, 0.30)'
       - 'Haruna (KDE''s player): $XDG_DATA_HOME/haruna/haruna.db, tables recent_files and playback_position (full paths),
         and haruna.conf [General] LastPlayedFile; it saves a position for anything longer than [Playback]
-        MinDurationToSavePosition minutes (1), whether or not it restores it (tested with Haruna 1.8)'
+        MinDurationToSavePosition minutes (1), whether or not it restores it (tested with Haruna 1.8); 1.9 (its
+        source) adds tables urls (every recent file''s and cached playlist item''s path) and metadata_cache, and saves
+        the default playlist to $XDG_DATA_HOME/haruna/playlists/Default.m3u8'
     fix: >
       Clear; disable recent lists where supported. Haruna: its database and last file cleared, MaxRecentFiles=0 and
       MinDurationToSavePosition=9999 (the most its settings page offers), after which it kept no recent files or
-      positions (tested); it still notes the last file played, which no setting stops.
+      positions (tested); it still notes the last file played, which no setting stops; from 1.9 its saved default
+      playlist is deleted too (it saves it again as it is used, and no setting stops that).
     remedy: >
       Clean… clears media players' recent lists and turns them off where possible.
 

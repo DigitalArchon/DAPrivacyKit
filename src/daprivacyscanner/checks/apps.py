@@ -260,8 +260,12 @@ HARUNA_FLATPAK = "org.kde.haruna"
 # it restores it is another setting), and lists MaxRecentFiles (10) recent files, none at 0. 9999 minutes is the
 # most its settings page offers: about a week, so positions are never saved.
 HARUNA_NEVER = "9999"
-# the tables of haruna.db (1.8): the fix deletes the file only while it holds no other
-HARUNA_TABLES = ("recent_files", "playback_position")
+# the tables of haruna.db: the fix deletes the file only while it holds no other. 1.9 (its source, reviewed 2026-11-15)
+# added urls (the full path of every recent file and of every playlist item whose details it cached; nothing in Haruna
+# clears it) and metadata_cache (titles, artists, durations), both history or cache that Haruna makes again
+HARUNA_TABLES = ("recent_files", "playback_position", "urls", "metadata_cache")
+# 1.9 saves the default playlist as it is used, in the data folder (named playlists are the user's own, kept)
+HARUNA_DEFAULT_PLAYLIST = "playlists/Default.m3u8"
 
 
 @dataclass
@@ -274,7 +278,9 @@ class Haruna:
     max_recent: str | None
     min_duration: str | None
     where: str
-    only_history: bool = False      # haruna.db holds no table but those two: deleting it loses nothing else
+    only_history: bool = False      # haruna.db holds no table but those: deleting it loses nothing else
+    cached: int = 0                 # 1.9's urls and metadata_cache rows
+    playlist: int = 0               # entries in 1.9's saved default playlist
 
 
 def haruna(scan: Scan) -> list[Haruna]:
@@ -286,11 +292,14 @@ def haruna(scan: Scan) -> list[Haruna]:
         db = data / "haruna.db"
         others = sqlite_count(db, "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name NOT IN "
                                   f"({', '.join(repr(t) for t in HARUNA_TABLES)}) AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\'")
+        cached = sum(sqlite_count(db, f"SELECT count(*) FROM {t}", optional=True) or 0 for t in ("urls", "metadata_cache"))
+        playlist = [ln for ln in (read_text(scan.host, data / HARUNA_DEFAULT_PLAYLIST) or "").splitlines()
+                    if ln.strip() and not ln.startswith("#")]
         out.append(Haruna(loc.path / "haruna.conf", db, sqlite_count(db, "SELECT count(*) FROM recent_files") or 0,
                           sqlite_count(db, "SELECT count(*) FROM playback_position") or 0,
                           bool(ini.get(conf, "General", "LastPlayedFile")), ini.get(conf, "General", "MaxRecentFiles"),
                           ini.get(conf, "Playback", "MinDurationToSavePosition"),
-                          "" if loc.install == "native" else f" ({loc.install})", others == 0))
+                          "" if loc.install == "native" else f" ({loc.install})", others == 0, cached, len(playlist)))
     return out
 
 
@@ -326,8 +335,12 @@ class MediaPlayers(Check):
             ev.append(Evidence.count("Celluloid resume points", t.files))
         for h in haruna(scan):
             found = True
-            items += h.recent + h.positions + bool(h.last)
+            items += h.recent + h.positions + bool(h.last) + h.cached + h.playlist
             ev.append(Evidence.count("Haruna recent files and resume points" + h.where, h.recent + h.positions + bool(h.last)))
+            if h.cached:
+                ev.append(Evidence.count("Haruna's saved file names and details" + h.where, h.cached))
+            if h.playlist:
+                ev.append(Evidence.count("Haruna's saved default playlist" + h.where, h.playlist))
         if not found:
             return absent("No mpv, VLC, SMPlayer, Celluloid or Haruna data.")
         if items:
