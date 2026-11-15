@@ -798,14 +798,15 @@ apps:
     name: "Vorta"
     packages: [vorta]
     flatpak: [com.borgbase.Vorta]
-    checked: "0.11.6"
-    basis: tested
-    checked_on: 2026-10-07
+    checked: "0.12.2"
+    basis: current
+    checked_on: 2026-11-15
     major_parts: 2
     checks: [enc.backups_unencrypted]
     data: [data:Vorta]
     relies_on: >-
-      Vorta/settings.db, table repomodel (encryption column)
+      Vorta/settings.db, table repomodel (encryption column: borg 1's modes, and from Vorta 0.12.2 with Borg 2
+      repokey-/keyfile- and the cipher, authenticated-… unencrypted; none recorded up to 0.12.1 with Borg 2)
     upstream:
       repology: vorta
       notes: https://github.com/borgbase/vorta/releases

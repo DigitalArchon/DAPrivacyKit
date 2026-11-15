@@ -380,9 +380,11 @@ checks:
         local_gocryptfs/ssh_gocryptfs encrypt; ssh doesn''t; local is judged by the drive of snapshots.path)'
       - 'Kup: ~/.config/kuprc [Plan/N]: it never encrypts, so Destination type 0 (Filesystem destination path) or 1
         (External drive UUID) is judged by its drive'
-      - 'Vorta: $XDG_DATA_HOME/Vorta/settings.db repomodel.encryption (Vorta 0.11.6, tested); Pika Backup:
+      - 'Vorta: $XDG_DATA_HOME/Vorta/settings.db repomodel.encryption (Vorta 0.11.6, tested; 0.12.2 with Borg 2
+        records repokey- or keyfile- and the cipher, from its source; none recorded is "couldn''t tell"); Pika Backup:
         ~/.config/pika-backup/config.json encryption_mode (0.8.4, from the program); borg''s none and authenticated
-        modes are unencrypted'
+        modes are unencrypted, and so is any mode with authenticated in its name (Borg 2''s authenticated-sha256 and
+        authenticated-blake3)'
     fix: Recommend an encrypting tool (restic, borg, Déjà Dup with encryption) or a LUKS target drive.
     remedy: >
       Backups hold copies of your files, deleted ones included, without encryption. Guide… shows how

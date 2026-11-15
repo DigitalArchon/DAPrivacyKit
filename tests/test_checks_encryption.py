@@ -498,6 +498,29 @@ def test_backups_of_back_in_time_kup_vorta_and_pika(cat, tmp_path):
     assert o.status is Status.UNKNOWN and ev(o)["Kup"] == "plan 1: Kup doesn't encrypt; its drive isn't attached"
 
 
+@pytest.mark.parametrize("modes, state, words", [
+    (["repokey-blake2", "keyfile"], "ok", "2 repositories, encrypted"),
+    # Vorta 0.12.2 with Borg 2: the cipher after repokey-/keyfile-; "authenticated-…" stores the data unencrypted
+    (["repokey-aes-ocb", "repokey-authenticated-sha256"], "bad", "1 of 2 repositories not encrypted"),
+    (["keyfile-authenticated-blake3"], "bad", "1 of 1 repository not encrypted"),
+    (["repokey-chacha20-poly1305", "none"], "bad", "1 of 2 repositories not encrypted"),
+    # Vorta up to 0.12.1 with Borg 2.0.0b22 and later: the row added, its mode never recorded
+    (["repokey-blake2", None], "unsure", "1 of 2 repositories: Vorta didn't record whether it is encrypted"),
+])
+def test_vortas_modes_old_and_borg_2s(cat, tmp_path, modes, state, words):
+    import sqlite3
+    from daprivacyscanner.checks import encryption
+    host = make_host(tmp_path)
+    (host.home / ".local/share/Vorta").mkdir(parents=True)
+    db = sqlite3.connect(host.home / ".local/share/Vorta/settings.db")
+    db.execute("CREATE TABLE repomodel (id INTEGER, url TEXT, encryption TEXT)")
+    db.executemany("INSERT INTO repomodel VALUES (?, '/x', ?)", list(enumerate(modes)))
+    db.commit()
+    db.close()
+    assert encryption.other_backups(make_scan(host)) == [("Vorta", state, words)]
+    assert encryption.borg_plain("repokey-authenticated-sha256") and not encryption.borg_plain("repokey-blake2")
+
+
 @pytest.mark.parametrize("conf, status", [
     ("volume /mnt/btr_pool\n  subvolume home\n", Status.FAIL),                     # snapshot_preserve_min all (default)
     ("snapshot_preserve_min 2d\nsnapshot_preserve 14d 4w\nvolume /mnt/pool\n", Status.FAIL),

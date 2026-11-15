@@ -493,6 +493,15 @@ def _encrypted_drive(d: blockdev.Device) -> bool:
 
 # borg's modes that store the data unencrypted ("authenticated" only checks it hasn't been changed)
 BORG_PLAIN = frozenset({"none", "authenticated", "authenticated-blake2"})
+# Borg 2 (2.0.0b22 on) names a repository's cipher, not a mode: its unencrypted ones are "authenticated-sha256" and
+# "authenticated-blake3", which Vorta 0.12.2 on records as "repokey-…" or "keyfile-…" (its encryption_mode(),
+# borgbase/vorta fdac41f): any mode with "authenticated" as a part of its name stores the data unencrypted
+BORG_PLAIN_PART = re.compile(r"(?:^|-)authenticated(?:-|$)")
+
+
+def borg_plain(mode: str) -> bool:
+    """Whether a borg encryption mode, as Vorta or Pika Backup records it, stores the data unencrypted."""
+    return mode in BORG_PLAIN or bool(BORG_PLAIN_PART.search(mode))
 
 
 def _destination(scan: Scan, path: str) -> tuple[str, str]:
@@ -509,7 +518,7 @@ def other_backups(scan: Scan) -> list[tuple[str, str, str]]:
     local_encfs/ssh_encfs or, in newer releases, local_gocryptfs/ssh_gocryptfs) and snapshots.path; Kup's
     kuprc [Plan/N] (it never encrypts: Destination type 0, a folder, or 1, an external drive by UUID); Vorta's
     settings.db repomodel.encryption and Pika Backup's config.json encryption_mode (borg's modes; tested on
-    CachyOS: Vorta 0.11.6's table, Pika Backup 0.8.4's field)."""
+    CachyOS: Vorta 0.11.6's table, Pika Backup 0.8.4's field; Vorta 0.12.2's Borg 2 modes read from its source)."""
     host, out = scan.host, []
     for loc in scan.paths.config("backintime/config"):
         conf = dict(line.split("=", 1) for line in (read_text(host, loc.path) or "").splitlines() if "=" in line)
@@ -545,17 +554,25 @@ def other_backups(scan: Scan) -> list[tuple[str, str, str]]:
             out.append(("Vorta", "unsure", "its settings couldn't be read"))
             continue
         quoted = ", ".join(f"'{m}'" for m in sorted(BORG_PLAIN))
-        plain = sqlite_count(loc.path, f"SELECT count(*) FROM repomodel WHERE encryption IN ({quoted})") or 0
-        if total:
-            out.append(("Vorta", "bad" if plain else "ok",
-                        f"{plain} of {total} repositor{'ies' if total > 1 else 'y'} not encrypted" if plain
-                        else f"{total} repositor{'ies' if total > 1 else 'y'}, encrypted"))
+        plain = sqlite_count(loc.path, f"SELECT count(*) FROM repomodel WHERE encryption IN ({quoted}) "
+                                       "OR encryption = 'authenticated' OR encryption LIKE 'authenticated-%' "
+                                       "OR encryption LIKE '%-authenticated' OR encryption LIKE '%-authenticated-%'") or 0
+        # none recorded: Vorta up to 0.12.1 failed reading what Borg 2.0.0b22 and later report, after adding the row
+        untold = sqlite_count(loc.path, "SELECT count(*) FROM repomodel WHERE encryption IS NULL OR encryption = ''") or 0
+        repos = lambda n: f"{n} repositor{'ies' if n > 1 else 'y'}"        # noqa: E731
+        if plain:
+            out.append(("Vorta", "bad", f"{plain} of {repos(total)} not encrypted"))
+        elif untold:
+            out.append(("Vorta", "unsure", f"{untold} of {repos(total)}: Vorta didn't record whether "
+                                           f"{'they are' if untold > 1 else 'it is'} encrypted"))
+        elif total:
+            out.append(("Vorta", "ok", f"{repos(total)}, encrypted"))
     for loc in scan.paths.config("pika-backup/config.json", flatpak=["org.gnome.World.PikaBackup"]):
         data = read_json(host, loc.path)
         backups = data if isinstance(data, list) else []
         modes = [str(b.get("encryption_mode") or "") for b in backups if isinstance(b, dict)]
         if modes:
-            plain = sum(1 for m in modes if m in BORG_PLAIN)
+            plain = sum(1 for m in modes if borg_plain(m))
             out.append(("Pika Backup", "bad" if plain else "ok",
                         f"{plain} of {len(modes)} backup{'s' if len(modes) > 1 else ''} not encrypted" if plain
                         else f"{len(modes)} backup{'s' if len(modes) > 1 else ''}, encrypted"))
