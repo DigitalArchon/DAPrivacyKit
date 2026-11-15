@@ -155,6 +155,30 @@ def test_the_list_gtk_writes_after_a_choice_is_put_back_byte_for_byte_with_its_m
     assert not keeper.pending and folder.timers.waiting == []
 
 
+STAMP_NOW = time.strftime("%Y-%m-%dT%H:%M:%S.000000Z", time.gmtime(NOW))
+
+
+def test_a_write_landing_before_the_answer_is_put_back_byte_for_byte(folder):
+    """A name typed into a Save dialog reaches the app a quarter of a second after GTK took the
+    file in (GTK holds the default button pressed that long), and a write of GTK's already on its
+    way - another program had just changed the list - lands first, the file in it: the list kept
+    while the chooser was open is put back (DA Assistant's tests hold the rest, and GTK's own)."""
+    folder.write(folder.seed)
+    keeper = folder.keeper()
+    keeper.opened()
+    theirs = folder.seed.replace(b"</xbel>", entry("file:///srv/theirs.odt") + b"</xbel>")
+    folder.write(theirs, 0o640)
+    folder.manager.changed()
+    folder.manager.model["file:///home/u/new.pdf"] = NOW
+    gtk_writes(folder.recent, xbel(entry("file:///home/u/new.pdf", STAMP_NOW, APP)))
+    folder.manager.changed()
+    keeper.chose(["file:///home/u/new.pdf"])
+    keeper.closed()
+    assert folder.read() == theirs
+    assert stat.S_IMODE(os.lstat(folder.recent).st_mode) == 0o640
+    assert not keeper.pending and not keeper.watching and folder.timers.waiting == []
+
+
 def test_another_programs_change_is_kept_and_is_what_a_later_choice_puts_back(folder):
     folder.write(folder.seed)
     keeper = folder.keeper()
