@@ -59,6 +59,18 @@ def test_every_bundled_key_matches_its_pins():
     assert any(p.checksums for p in projects if p.id == "protonvpn")
 
 
+def test_proton_vpn_is_pinned_to_what_its_pages_publish_now():
+    """Read from Proton's own pages on 2026-11-15 (packaging/check-signing-keys.py had found Fedora 44's fingerprint and
+    the 1.0.8 repository packages' checksums gone from them): Fedora 45's key, the only one its Fedora page gives, and
+    the 1.0.10 repository packages' SHA-256s from its Debian and Ubuntu page."""
+    p = next(p for p in K.load(REPO / K.DATA_NAME) if p.id == "protonvpn")
+    assert p.keys == (("D3AA11B3B1BFB96DF3CA26A2D59CE240EB3EE0B0", "Proton Technologies AG (Fedora 45)"),)
+    assert p.key_from == "https://repo.protonvpn.com/fedora-45-stable/public_key.asc"
+    assert {name: digest for name, digest, _ in p.checksums} == {
+        "protonvpn-stable-release_1.0.10_all.deb": "c8a9fffb4ebdd63db08ce7f11c9b0ac394064ae6a210feb9ab63a0f7d8d060a7",
+        "protonvpn-beta-release_1.0.10_all.deb": "c8986b908898d06f9bdd3660718f1087282409a62c8d9059f67fc78b263bc6fb"}
+
+
 def test_the_apps_own_releases_name_its_key():
     """The release key in docs/release-key.asc is the one the app carries, and its releases' names lead to it."""
     own = next(p for p in K.load(REPO / K.DATA_NAME) if p.id == "digitalarchon")
