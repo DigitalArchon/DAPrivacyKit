@@ -2227,7 +2227,11 @@ drive they came from (its model, serial, size and WWN, `retire.identity`): anoth
   app included (a Save's typed name: the lists seen while a chooser is open are kept). Recent files used to be
   switched off for the app instead, which made GTK write an empty list over the user's whole one at the first file
   chosen (measured with GTK 3.24.41). A program writing the list in the quarter of a second around a choice, or as
-  the app quits, loses that write, as GTK's own would. The server accepts only absolute paths of regular files the user can read (and, for Remove
+  the app quits, loses that write, as GTK's own would. The same module fits each of those choosers to the work area
+  of the monitor it opens on (a hook on "realize" while one is open: geometry hints of the work area less 5% a side,
+  and on X11 moved onto it), since GTK sizes one from the size it saved last: on a 640x480 screen it was 1096x822 with
+  its top left off the screen, and on 1280x800 desktops and under Hyprland its header bar (Cancel, Open, the location
+  bar) was off the screen. The server accepts only absolute paths of regular files the user can read (and, for Remove
   metadata, folders they can open), resolved one name at a time (`pick.resolved`) and refused when the way goes
   through a link inside `~/TempBrowser`: the browser writes there, and a link it planted (`Downloads/notes.txt`
   pointing at `~/.ssh/id_ed25519`) made Add a file to upload… copy the key where the browser reads it (found in the

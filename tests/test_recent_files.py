@@ -647,3 +647,206 @@ def test_without_the_guard_gtk_changes_the_list_as_it_writes_and_as_the_loop_end
     for written in (seen["after_write"], seen["after_loop"]):
         assert written != seed and "report-from-august" not in written and "agenda.txt" in written
     assert seen["mode"] == 0o600
+
+
+# ------------------------------------------------------------------ fitting the screen (DA Assistant's FittingTheScreen
+# and AChooserFitsTheScreen, for this app's choosers: pywebview's own dialog)
+
+def test_the_room_is_the_work_area_less_a_margin_on_each_side():
+    assert recentguard.fit_room(1280, 800) == (1152, 720)
+    assert recentguard.fit_room(640, 480) == (576, 432)
+    assert recentguard.fit_room(1920, 1080) == (1728, 972)
+    assert recentguard.fit_room(200, 100) == (168, 68)            # 16 px at least
+    assert recentguard.fit_room(20, 20) == (1, 1)
+
+
+def test_a_window_off_the_area_is_moved_in_as_little_as_it_takes():
+    area = (0, 26, 1280, 774)                                       # a bar of 26 px at the top
+    assert recentguard.placed(100, 100, 600, 400, area) == (100, 100)
+    assert recentguard.placed(-228, -171, 600, 400, area) == (0, 26)
+    assert recentguard.placed(1000, 600, 600, 400, area) == (680, 400)
+    assert recentguard.placed(-50, -50, 2000, 1000, area) == (0, 26)  # larger: its top left, the header bar, on it
+    assert recentguard.placed(10, 30, 600, 400, (1280, 0, 1920, 1080)) == (1280, 30)    # a second monitor's area
+
+
+def test_fit_holds_the_window_to_the_room_and_keeps_it_on_the_area():
+    """fit(): geometry hints of the room, a default size no larger, and a map-event handler that keeps it on the
+    area; anything failing is said, never raised."""
+    if importlib.util.find_spec("gi") is None:
+        pytest.skip("needs PyGObject")
+    import gi
+    gi.require_version("Gdk", "3.0")
+    from gi.repository import Gdk
+    window = mock.Mock()
+    window.get_default_size.return_value = (1096, 822)
+    with mock.patch.object(recentguard, "_area", return_value=(0, 0, 640, 480)):
+        recentguard.fit(window)
+    hints, flags = window.set_geometry_hints.call_args[0][1:]
+    assert (hints.max_width, hints.max_height) == (576, 432) and flags == Gdk.WindowHints.MAX_SIZE
+    window.set_default_size.assert_called_once_with(576, 432)
+    window.connect.assert_called_once_with("map-event", recentguard._keep_on)
+    window = mock.Mock()
+    window.get_default_size.return_value = (-1, -1)                  # GTK's own: left to the hints
+    with mock.patch.object(recentguard, "_area", return_value=(0, 0, 640, 480)):
+        recentguard.fit(window)
+    window.set_default_size.assert_not_called()
+    with mock.patch.object(recentguard, "_area", side_effect=RuntimeError("no screen")), \
+            mock.patch.object(recentguard, "_say") as said:
+        recentguard.fit(mock.Mock())
+    said.assert_called_once()
+
+
+def test_a_hook_that_cannot_be_had_never_stops_the_chooser():
+    with mock.patch.object(recentguard, "_fit_choosers", side_effect=RuntimeError("no")), \
+            mock.patch.object(recentguard, "_say") as said:
+        unfit = recentguard._fitting()
+    unfit()
+    said.assert_called_once()
+
+
+def test_pywebviews_dialog_and_a_pages_file_input_are_fitted_until_they_answer():
+    calls = []
+    fitting = mock.patch.object(recentguard, "_fitting",
+                                side_effect=lambda: calls.append("fit") or (lambda: calls.append("unfit")))
+
+    class BrowserView:
+        def create_file_dialog(self, *args, **kwargs):
+            calls.append("dialog")
+
+    backend = mock.Mock(BrowserView=BrowserView)
+    platforms = mock.Mock(gtk=backend)
+    modules = {"webview": mock.Mock(platforms=platforms), "webview.platforms": platforms,
+               "webview.platforms.gtk": backend}
+    for kept in (mock.Mock(), None):                                 # the list kept or not: fitted either way
+        BrowserView.create_file_dialog = lambda self, *a, **k: calls.append("dialog")
+        with mock.patch.dict(sys.modules, modules), fitting, \
+                mock.patch.object(recentguard, "keeper", return_value=kept), \
+                mock.patch.object(recentguard, "_hook_responses", return_value=lambda: None):
+            recentguard._wrap_pywebview_dialogs()
+            BrowserView().create_file_dialog()
+        assert calls == ["fit", "dialog", "unfit"]
+        calls.clear()
+
+    made = []
+
+    class Native:
+        def __init__(self):
+            self.handlers = []
+
+        def connect(self, name, handler):
+            self.handlers.append(handler)
+
+        def show(self):
+            calls.append("show")
+
+        def __getattr__(self, name):
+            return lambda *a: None
+
+    class FileChooserNative:
+        @staticmethod
+        def new(*_args):
+            made.append(Native())
+            return made[-1]
+
+    gtk = mock.Mock(FileChooserNative=FileChooserNative)
+    gtk.Window, gtk.OffscreenWindow = type("W", (), {}), type("O", (), {})
+    gtk.ResponseType.ACCEPT = -3
+    request = mock.Mock()
+    request.get_select_multiple.return_value = False
+    request.get_mime_types_filter.return_value = None
+    request.get_selected_files.return_value = None
+    with fitting, mock.patch.object(recentguard, "keeper", return_value=None), \
+            mock.patch.object(recentguard, "_gtk", return_value=(None, gtk)):
+        recentguard.answer_file_input(mock.Mock(), request)
+        assert calls == ["fit", "show"]
+        made[0].handlers[0](made[0], -6)
+    assert calls == ["fit", "show", "unfit"]
+
+
+FIT_SCRIPT = textwrap.dedent('''
+    import json, os, sys
+    sys.path.insert(0, {src!r})
+    import gi
+    gi.require_version("Gtk", "3.0")
+    gi.require_version("Gdk", "3.0")
+    gi.require_version("WebKit2", "4.1")
+    from gi.repository import Gdk, GLib, Gtk
+    from daprivacyscanner import recentguard
+
+    how, folder, guarded = sys.argv[1], sys.argv[2], sys.argv[3] == "guarded"
+    if guarded:
+        recentguard._wrap_pywebview_dialogs()       # what guard_pywebview does to pywebview's dialog
+    seen = {{}}
+
+    def measure():
+        # once the chooser is on the screen: where, and how large, then Cancel
+        for window in Gtk.Window.list_toplevels():
+            if isinstance(window, Gtk.FileChooserDialog) and window.get_mapped():
+                frame = window.get_window().get_frame_extents()
+                area = Gdk.Display.get_default().get_monitor(0).get_workarea()
+                seen["frame"] = [frame.x, frame.y, frame.width, frame.height]
+                seen["area"] = [area.x, area.y, area.width, area.height]
+                window.response(Gtk.ResponseType.CANCEL)
+                return False
+        return True
+
+    window = Gtk.Window()
+    window.set_default_size(300, 200)
+    window.move(500, 380)                       # near the screen's bottom right
+    window.show()
+
+    def choose():
+        GLib.timeout_add(400, measure)
+        from webview import FileDialog
+        from webview.localization import original_localization
+        from webview.platforms import gtk as backend
+        view = type("View", (), dict(window=window, localization=dict(original_localization),
+                                     _add_file_filters=backend.BrowserView._add_file_filters))()
+        kind = {{"open": FileDialog.OPEN, "folder": FileDialog.FOLDER, "save": FileDialog.SAVE}}[how]
+        backend.BrowserView.create_file_dialog(view, kind, folder, False, "report.txt" if how == "save" else "", ())
+        Gtk.main_quit()
+        return False
+
+    GLib.idle_add(choose)
+    Gtk.main()
+    print("RESULT", json.dumps(seen), flush=True)
+''')
+
+
+def shown_on_a_small_screen(tmp_path, how, guarded):
+    """pywebview's dialog (`how`: open, folder, save) on a 640x480 screen, a parent window near its bottom right:
+    (its frame, the work area)."""
+    if not shutil.which("xvfb-run") or importlib.util.find_spec("gi") is None:
+        pytest.skip("needs Xvfb and PyGObject")
+    top = tmp_path / "fit"
+    top.mkdir()
+    env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "LANG": "C.UTF-8", "GTK_USE_PORTAL": "0",
+           "NO_AT_BRIDGE": "1", "GSETTINGS_BACKEND": "memory", "GIO_USE_VFS": "local"}
+    for name, sub in (("HOME", "home"), ("XDG_DATA_HOME", "data"), ("XDG_CONFIG_HOME", "config"),
+                      ("XDG_CACHE_HOME", "cache"), ("XDG_RUNTIME_DIR", "run"), ("XDG_STATE_HOME", "state")):
+        env[name] = str(top / sub)
+        os.mkdir(env[name], 0o700)
+    script = top / "fit.py"
+    script.write_text(FIT_SCRIPT.format(src=str(SRC)), encoding="utf-8")
+    command = ["xvfb-run", "-a", "-s", "-screen 0 640x480x24"]
+    command += ["dbus-run-session", "--"] if shutil.which("dbus-run-session") else []
+    command += [sys.executable, "-I", str(script), how, env["HOME"], "guarded" if guarded else "unguarded"]
+    done = subprocess.run(command, env=env, capture_output=True, text=True, timeout=180, check=False)
+    assert done.returncode == 0, done.stderr[-3000:]
+    results = [line[len("RESULT "):] for line in done.stdout.splitlines() if line.startswith("RESULT ")]
+    assert len(results) == 1, done.stdout[-3000:] + done.stderr[-3000:]
+    seen = json.loads(results[0])
+    assert "frame" in seen, done.stderr[-3000:]
+    return seen["frame"], seen["area"]
+
+
+@pytest.mark.parametrize("how", ["open", "folder", "save"])
+def test_the_windows_choosers_lie_inside_the_work_area(tmp_path, how):
+    (x, y, width, height), (left, top, across, down) = shown_on_a_small_screen(tmp_path, how, guarded=True)
+    assert x >= left and y >= top and x + width <= left + across and y + height <= top + down, (x, y, width, height)
+
+
+def test_gtks_own_chooser_on_that_screen_does_not(tmp_path):
+    """What the guard changes: unfitted, pywebview's chooser is larger than the screen."""
+    frame, area = shown_on_a_small_screen(tmp_path, "open", guarded=False)
+    assert frame[2] * frame[3] > area[2] * area[3]
