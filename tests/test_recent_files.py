@@ -754,6 +754,7 @@ def test_hyprlands_answer_names_the_parents_place_and_nothing_else():
         shutil.rmtree(runtime, True)
 
 
+@pytest.mark.skipif(importlib.util.find_spec("gi") is None, reason="needs PyGObject")
 def test_fit_on_hyprland_holds_the_chooser_to_the_room_around_its_parent():
     window = mock.Mock()
     window.get_default_size.return_value = (-1, -1)
@@ -914,6 +915,7 @@ def test_pywebviews_dialog_and_a_pages_file_input_are_fitted_until_they_answer()
         BrowserView.create_file_dialog = lambda self, *a, **k: calls.append("dialog")
         with mock.patch.dict(sys.modules, modules), fitting, \
                 mock.patch.object(recentguard, "keeper", return_value=kept), \
+                mock.patch.object(recentguard, "_gtk", return_value=(None, mock.Mock(FileChooser=type("C", (), {})))), \
                 mock.patch.object(recentguard, "_hook_responses", return_value=lambda: None):
             recentguard._wrap_pywebview_dialogs()
             BrowserView().create_file_dialog()
