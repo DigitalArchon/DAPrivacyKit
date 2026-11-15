@@ -483,13 +483,14 @@ apps:
     name: "ONLYOFFICE Desktop Editors"
     packages: [onlyoffice-desktopeditors, onlyoffice-bin]
     flatpak: [org.onlyoffice.desktopeditors]
-    checked: "9.4.0"
+    checked: "10.0.0"
     basis: current
-    checked_on: 2026-10-08
+    checked_on: 2026-11-15
     checks: [app.office]
     data: [data:onlyoffice]
     relies_on: >-
-      Its recent files and the data folder
+      onlyoffice/desktopeditors/recents.xml (up to 9.x) and desktopeditors/data/recents.xml (from 10.0): <file> entries
+      in <recents>
     upstream:
       repology: onlyoffice-desktopeditors
       notes: https://github.com/ONLYOFFICE/DesktopEditors/releases

@@ -3087,8 +3087,12 @@ checks:
     detect:
       - 'LibreOffice: ~/.config/libreoffice/4/user/registrymodifications.xcu (history entries), backup/'
       - 'Flatpak: ~/.var/app/org.libreoffice.LibreOffice/config/libreoffice'
-      - 'OnlyOffice: $XDG_DATA_HOME/onlyoffice'
-    fix: Clear history via the app (editing registrymodifications.xcu directly is fragile); clear backup copies.
+      - 'OnlyOffice: $XDG_DATA_HOME/onlyoffice/desktopeditors/recents.xml up to 9.x, desktopeditors/data/recents.xml
+        from 10.0, which never reads the old one (its source): the documents in each (<file> entries), so a cleared
+        list counts nothing'
+    fix: >
+      Clear history via the app (editing registrymodifications.xcu directly is fragile); clear backup copies; delete
+      the list ONLYOFFICE 9 left behind once 10 keeps its own.
     remedy: >
       Guide… clears LibreOffice's recent documents and leftover backup copies.
 

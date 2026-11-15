@@ -242,11 +242,26 @@ def office(check, scan, outcome):
             busy |= bool(in_use(scan, loc.path, "soffice.bin", "soffice"))
     if acts and busy:
         blockers.append("Close LibreOffice first: it keeps copies of open documents there.")
-    return Guide(check.id, "Clear office apps' recent lists and copies", "", [
+    from ..apps import ONLYOFFICE_OLD_RECENTS, onlyoffice_recents
+    old = []
+    for loc in scan.paths.data("onlyoffice", flatpak=["org.onlyoffice.desktopeditors"]):
+        if onlyoffice_recents(host, loc.path)[1]:
+            f = loc.path / ONLYOFFICE_OLD_RECENTS
+            old.append(DeleteFiles(f.parent, [f], "ONLYOFFICE 9's list of recent documents (10 no longer reads it)",
+                                   host.display(f.parent), prune=False))
+    steps = [
         Step("Delete LibreOffice's backup copies",
              options=[option(check, "Delete them", acts, blockers=blockers)] if acts else [], done=not acts),
-        Step("Clear the recent documents list", "LibreOffice: File → Recent Documents → Clear List. ONLYOFFICE: the "
-             "Recent files tab → right-click → Clear. (Editing their settings files directly is fragile.)"),
+        Step("Clear the recent documents list", "LibreOffice: File → Recent Documents → Clear List. ONLYOFFICE 10: "
+             "Home on the start page → right-click a document, or ⋯ → Clear; ONLYOFFICE 9: the Recent files tab → "
+             "right-click → Clear. (Editing their settings files directly is fragile.)"),
+    ]
+    if old:
+        steps.append(Step("Delete the list ONLYOFFICE 9 left behind",
+                          "ONLYOFFICE 10 keeps its list in a new place and never reads 9's, so clearing it in the app "
+                          "leaves 9's list of your documents on the disk.",
+                          options=[option(check, "Delete it", old)]))
+    return Guide(check.id, "Clear office apps' recent lists and copies", "", steps + [
         Step("Stop keeping backup copies", "LibreOffice: Tools → Options → Load/Save → General → turn off \"Always "
              "create backup copy\"; keep AutoRecovery if you want crash protection."),
     ])

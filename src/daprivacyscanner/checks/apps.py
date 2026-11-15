@@ -223,6 +223,22 @@ class EditorResidue(Check):
 
 
 PICKLIST = re.compile(r"HistoryInfo\['PickList'\]/ItemList/org\.openoffice\.Office\.Histories:HistoryItem\['([^']+)'\]")
+# ONLYOFFICE's recent documents (desktop-sdk Recents_Dump: <recents><file path="…" …/>…</recents>, an empty <recents>
+# once cleared) in its data folder: desktopeditors/recents.xml up to 9.x, desktopeditors/data/recents.xml from 10.0,
+# which never reads the old one (its source, reviewed 2026-11-15: desktop-apps 6643706 dropped the recover folder 9.x
+# set, and the SDK's default puts it under data/)
+ONLYOFFICE_RECENTS = "desktopeditors/data/recents.xml"
+ONLYOFFICE_OLD_RECENTS = "desktopeditors/recents.xml"
+ONLYOFFICE_FILE = re.compile(r"<file\s")
+
+
+def onlyoffice_recents(host, folder: Path) -> tuple[int, int]:
+    """(documents in the list ONLYOFFICE reads, documents in 9.x's list that 10.0 left behind and never reads)."""
+    new, old = folder / ONLYOFFICE_RECENTS, folder / ONLYOFFICE_OLD_RECENTS
+    count = lambda f: len(ONLYOFFICE_FILE.findall(read_text(host, f) or ""))       # noqa: E731
+    if isfile(new):
+        return count(new), count(old)
+    return count(old), 0
 
 
 @register
@@ -242,9 +258,12 @@ class Office(Check):
             ev.append(Evidence.val(f"LibreOffice backup copies{where}", backups.describe()))
         for loc in scan.paths.data("onlyoffice", flatpak=["org.onlyoffice.desktopeditors"]):
             found = True
-            t = tally(loc.path, pattern=re.compile(r"recent", re.I))
-            items += t.files
-            ev.append(Evidence.val("ONLYOFFICE recent list", t.describe()))
+            where = "" if loc.install == "native" else f" ({loc.install})"
+            recent, left = onlyoffice_recents(host, loc.path)
+            items += recent + left
+            ev.append(Evidence.count(f"ONLYOFFICE recent documents{where}", recent))
+            if left:
+                ev.append(Evidence.count(f"ONLYOFFICE 9's recent documents, which 10 no longer reads{where}", left))
         if not found:
             return absent("No LibreOffice or ONLYOFFICE data.")
         if items:

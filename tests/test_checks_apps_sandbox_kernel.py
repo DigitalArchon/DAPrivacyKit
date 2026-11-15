@@ -61,6 +61,46 @@ def test_libreoffice(cat, tmp_path):
     assert o.status is Status.FAIL and ev(o)["LibreOffice recent documents (flatpak)"] == 1
 
 
+RECENTS = '<?xml version="1.0" encoding="utf-8"?><recents>{}</recents>'
+ONE = '<file path="/home/alice/Documents/{}.docx" type="65" date="2026-11-01" url="" parent="/home/alice/Documents"/>'
+
+
+@pytest.mark.parametrize("files, recent, left", [
+    # ONLYOFFICE 9: its list beside the recover folder
+    ({".local/share/onlyoffice/desktopeditors/recents.xml": RECENTS.format(ONE.format("a") + ONE.format("b"))}, 2, None),
+    # 10.0, upgraded from 9: its own list under data/, and 9's, which it never reads
+    ({".local/share/onlyoffice/desktopeditors/data/recents.xml": RECENTS.format(ONE.format("c")),
+      ".local/share/onlyoffice/desktopeditors/recents.xml": RECENTS.format(ONE.format("a") + ONE.format("b"))}, 1, 2),
+    # cleared in the app (an empty list is written, the file stays): nothing kept
+    ({".local/share/onlyoffice/desktopeditors/data/recents.xml": RECENTS.format("")}, 0, None),
+])
+def test_onlyoffice_9_and_10_s_recent_lists(cat, tmp_path, files, recent, left):
+    """ONLYOFFICE 10.0 moved its list from desktopeditors/recents.xml to desktopeditors/data/recents.xml and never
+    reads the old one (its source, reviewed 2026-11-15). Documents are counted, not files: a cleared list is a file
+    with no document in it, which used to count as one."""
+    host = make_host(tmp_path, home_files=files)
+    o = detect(cat, "app.office", make_scan(host))
+    assert ev(o)["ONLYOFFICE recent documents"] == recent
+    assert ev(o).get("ONLYOFFICE 9's recent documents, which 10 no longer reads") == left
+    assert o.status is (Status.FAIL if recent or left else Status.PASS)
+
+
+def test_the_office_guide_deletes_the_list_onlyoffice_9_left_behind(cat, tmp_path):
+    from daprivacyscanner.checks import load_all
+    from daprivacyscanner.fix import apply_plan
+    from daprivacyscanner.undo import UndoLog
+    old = ".local/share/onlyoffice/desktopeditors/recents.xml"
+    host = make_host(tmp_path, home_files={old: RECENTS.format(ONE.format("a")),
+                                           ".local/share/onlyoffice/desktopeditors/data/recents.xml": RECENTS.format("")})
+    check = load_all()["app.office"](cat["app.office"])
+    scan = make_scan(host)
+    guide = check.plan_guide(scan, check.detect(scan))
+    [plan] = [o.plan for s in guide.steps for o in s.options if o.label == "Delete it"]
+    assert apply_plan(plan, host, UndoLog(host.home / ".local/state/daprivacyscanner"), confirmed_irreversible=True).ok
+    assert not (host.home / old).exists() and (host.home / ".local/share/onlyoffice/desktopeditors/data/recents.xml").exists()
+    assert detect(cat, "app.office", make_scan(host)).status is Status.PASS
+
+
 def test_media_players(cat, tmp_path):
     host = make_host(tmp_path, home_files={".local/state/mpv/watch_later/ABC123": "start=12.3",
                                            ".config/vlc/vlc-qt-interface.conf": "[RecentsMRL]\nlist=file:///a.mkv, file:///b.mkv\n"})
