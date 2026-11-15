@@ -704,6 +704,49 @@ def window_icon() -> str | None:
     return None
 
 
+WINDOW_SIZE = (1480, 940)
+WINDOW_MIN = (900, 600)
+# What the window's frame (a title bar and borders the desktop draws) and a panel take beyond the size asked for: a
+# Wayland desktop gives GTK the whole monitor as its work area, panels included
+WINDOW_ROOM = (40, 80)
+
+
+def window_geometry(area: tuple[int, int] | None) -> dict:
+    """create_window's size for a monitor whose work area is `area` (width, height; None when it can't be read): the
+    usual size where that fits with room for the frame and a panel, else maximized, so the desktop fits it to the work
+    area (panels left out), with a size and a minimum that fit too. On KDE a 1480x940 window on a 1280x800 screen stayed
+    larger than the screen, and the welcome warning's button was below its edge (tested); GNOME shrinks such a window
+    by itself."""
+    width, height = WINDOW_SIZE
+    if area is None:
+        return {"width": width, "height": height, "min_size": WINDOW_MIN, "maximized": False}
+    room_w, room_h = max(1, area[0] - WINDOW_ROOM[0]), max(1, area[1] - WINDOW_ROOM[1])
+    if width <= room_w and height <= room_h:
+        return {"width": width, "height": height, "min_size": WINDOW_MIN, "maximized": False}
+    return {"width": min(width, room_w), "height": min(height, room_h),
+            "min_size": (min(WINDOW_MIN[0], room_w), min(WINDOW_MIN[1], room_h)), "maximized": True}
+
+
+def work_area() -> tuple[int, int] | None:
+    """The work area of the monitor the window opens on, as GDK reads it: the primary monitor where the desktop names
+    one, else the first, which pywebview centres the window on. None where there is no display or GTK can't say."""
+    try:
+        import gi
+        gi.require_version("Gtk", "3.0")
+        gi.require_version("Gdk", "3.0")
+        from gi.repository import Gdk, Gtk  # noqa: F401 - importing Gtk initialises GDK, as pywebview's start will
+        display = Gdk.Display.get_default()
+        if display is None:
+            return None
+        monitor = display.get_primary_monitor() or display.get_monitor(0)
+        if monitor is None:
+            return None
+        rect = monitor.get_workarea()
+        return (rect.width, rect.height) if rect.width > 0 and rect.height > 0 else None
+    except (ImportError, ValueError, AttributeError, TypeError):
+        return None
+
+
 def no_core_dumps() -> None:
     """Nothing the app holds reaches a crash dump, nor the journal's record of one: it and WebKit's processes hold what
     the page shows (downloads' names, where a photo was taken, deleted files' names), and the programs it starts (mat2,
@@ -969,7 +1012,8 @@ def main(argv: list[str] | None = None) -> None:
             GLib.set_prgname(desktop_id())
             GLib.set_application_name("DA Privacy Kit")
             webview.settings["ALLOW_DOWNLOADS"] = True       # the report export
-            window = webview.create_window("DA Privacy Kit", url, width=1480, height=940, min_size=(900, 600))
+            # sized to the screen it opens on: never larger than its work area (window_geometry)
+            window = webview.create_window("DA Privacy Kit", url, **window_geometry(work_area()))
             windows.append(window)
             from .host import Host
             from .tools import browser as _browser
