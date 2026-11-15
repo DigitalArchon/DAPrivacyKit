@@ -2233,7 +2233,9 @@ drive they came from (its model, serial, size and WWN, `retire.identity`): anoth
   its top left off the screen, and on 1280x800 desktops and under Hyprland its header bar (Cancel, Open, the location
   bar) was off the screen. Hyprland centres a dialog on its parent and keeps neither on the screen, so there the
   chooser is also held to the room around its parent's centre, the parent's place read from Hyprland's own socket
-  (the parent's size where that can't be had). The server accepts only absolute paths of regular files the user can read (and, for Remove
+  (the parent's size where that can't be had). A Save chooser whose header bar is wider than its room (GTK sizes a
+  window no smaller than its minimum, whatever the hints) has its name entry narrowed until it fits, to 12 characters
+  at least: beside a window tiled to half a 1280 px screen on Hyprland it was 41 px past the screen. The server accepts only absolute paths of regular files the user can read (and, for Remove
   metadata, folders they can open), resolved one name at a time (`pick.resolved`) and refused when the way goes
   through a link inside `~/TempBrowser`: the browser writes there, and a link it planted (`Downloads/notes.txt`
   pointing at `~/.ssh/id_ed25519`) made Add a file to upload… copy the key where the browser reads it (found in the
